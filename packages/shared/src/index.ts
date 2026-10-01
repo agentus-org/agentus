@@ -64,7 +64,7 @@ export type ServerEvent =
   | { t: "hello"; clientId: string; resumed: boolean }
   | { t: "sessions"; sessions: SessionInfo[] }
   | { t: "session"; session: SessionInfo }
-  | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean }
+  | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean; partial?: boolean }
   | { t: "message"; message: StoredMessage } // one appended/updated row
   | { t: "permission"; request: PermissionRequestView }
   | { t: "permission-resolved"; requestId: string; decision: PermissionDecision }

@@ -22,13 +22,19 @@ export function App(): JSX.Element {
 }
 
 function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
-  const { sessions, activeId, conn } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const { sessions, activeId, conn, net, netError } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
         <span className="logo">⛟ AgentSlot</span>
         <span className="tagline">keep your agents on the track</span>
       </header>
+      {net === "degraded" && (
+        <div className="net-banner" title={netError}>
+          <span>⚠ 服务不可达 — 请求超时</span>
+          <button onClick={() => location.reload()}>reload</button>
+        </div>
+      )}
       <button className="new-btn" onClick={onNew}>+ new slot</button>
       <div className="session-list">
         {sessions.map((s) => (
@@ -240,6 +246,7 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
             </button>
           ))}
           <button
+            title="拒绝该请求：agent 会收到 cancelled，本轮就停在这里"
             onClick={() =>
               cockpit.send({
                 t: "respond-permission", sessionId: sid, requestId: req.requestId,
@@ -247,7 +254,7 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
               })
             }
           >
-            Dismiss
+            Dismiss (deny)
           </button>
         </div>
       </div>
@@ -289,17 +296,30 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   );
 }
 
+type BackendRow = { id: string; label: string; home?: string | null; blocked?: string | null };
+
 function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
-  const [backend, setBackend] = useState("mock");
+  const [backend, setBackend] = useState("");
   const [cwd, setCwd] = useState("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [backends, setBackends] = useState<{ id: string; label: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [backends, setBackends] = useState<BackendRow[]>([]);
 
-  useEffect(() => {
-    fetch("/api/backends").then((r) => r.json()).then(setBackends).catch(() => {});
-  }, []);
+  const load = () => {
+    setLoading(true); setErr("");
+    cockpit
+      .loadBackends()
+      .then((rows) => {
+        setBackends(rows);
+        const first = rows.find((b) => !b.blocked);
+        setBackend((cur) => cur || first?.id || "");
+      })
+      .catch((e) => setErr(`后端列表拉取失败：${String((e as Error).message ?? e)}`))
+      .finally(() => setLoading(false));
+  };
+  useEffect(load, []);
 
   const create = async () => {
     setBusy(true); setErr("");
@@ -320,12 +340,25 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
         <h3>New slot</h3>
         <label>backend</label>
         <div className="backend-pick">
-          {(backends.length ? backends : [{ id: "mock", label: "Mock" }]).map((b) => (
-            <button key={b.id} className={backend === b.id ? "sel" : ""} onClick={() => setBackend(b.id)}>
+          {loading && <span className="dim">loading…</span>}
+          {!loading && !backends.length && <span className="dim">no backends</span>}
+          {backends.map((b) => (
+            <button
+              key={b.id}
+              title={b.blocked ? `blocked: ${b.blocked}` : b.home ? `home: ${b.home}` : undefined}
+              disabled={!!b.blocked}
+              className={`${backend === b.id ? "sel" : ""} ${b.blocked ? "blocked" : ""}`}
+              onClick={() => setBackend(b.id)}
+            >
               {b.label}
+              {b.blocked ? " ⊘" : ""}
             </button>
           ))}
+          <button className="retry" title="reload backend list" onClick={load}>⟳</button>
         </div>
+        {backends.find((b) => b.id === backend)?.home && (
+          <div className="hint">isolated home: {backends.find((b) => b.id === backend)!.home}</div>
+        )}
         <label>working directory (abs path)</label>
         <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="/Users/me/project" />
         <label>title (optional)</label>

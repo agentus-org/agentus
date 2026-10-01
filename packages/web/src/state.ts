@@ -27,13 +27,27 @@ export interface SessionView {
   seen: Set<number>; // ingested seqs — dedup between REST replay & WS live (QA#3)
 }
 
+/** Snapshot shape handed to useSyncExternalStore. */
+export interface StoreSnapshot {
+  sessions: SessionInfo[];
+  activeId: string | null;
+  active: SessionView | undefined;
+  conn: ConnState;
+  net: NetState;
+  netError: string;
+  version: number;
+}
+
 export type ConnState = "connecting" | "online" | "offline";
+export type NetState = "ok" | "degraded";
 
 class Cockpit {
   sessions: SessionInfo[] = [];
   byId = new Map<string, SessionView>();
   activeId: string | null = null;
   conn: ConnState = "connecting";
+  net: NetState = "ok";
+  netError = "";
   lastSeq: Record<string, number> = {};
   ws: WebSocket | null = null;
   #retry = 0;
@@ -43,6 +57,46 @@ class Cockpit {
 
   constructor() {
     this.#snapshot = this.#build();
+  }
+
+  /** REST with a hard timeout + one retry (QA#6: a wedged page used to hang
+   *  every request forever with no feedback after a server restart). */
+  async #req<T>(path: string, init?: RequestInit): Promise<T> {
+    const TIMEOUT_MS = 15_000;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+      try {
+        const res = await fetch(path, { ...init, signal: ac.signal });
+        clearTimeout(timer);
+        const body = res.status === 204 ? null : await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        this.#setNet(true, "");
+        return body as T;
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = e;
+        const why = (e as Error)?.name === "AbortError" ? `请求超时 ${TIMEOUT_MS / 1000}s` : String((e as Error)?.message ?? e);
+        if (attempt === 1) {
+          this.#setNet(false, `${why} (${path})`);
+          throw new Error(why);
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  #setNet(ok: boolean, msg: string): void {
+    const next: NetState = ok ? "ok" : "degraded";
+    if (this.net === next && this.netError === msg) return;
+    this.net = next;
+    this.netError = msg;
+    this.bump();
   }
 
   subscribe = (fn: () => void) => {
@@ -57,6 +111,8 @@ class Cockpit {
       activeId: this.activeId,
       active: this.activeId ? this.byId.get(this.activeId) : undefined,
       conn: this.conn,
+      net: this.net,
+      netError: this.netError,
       version: this.#version,
     };
   }
@@ -75,6 +131,8 @@ class Cockpit {
     this.ws = ws;
     ws.onopen = () => {
       this.conn = "online";
+      this.net = "ok";
+      this.netError = "";
       this.#retry = 0;
       ws.send(JSON.stringify({ t: "resume", lastSeq: this.lastSeq } satisfies ClientCommand));
       this.bump();
@@ -103,9 +161,9 @@ class Cockpit {
 
   async loadHistory(id: string): Promise<void> {
     try {
-      const res = await fetch(`/api/sessions/${id}/messages?after=-1`);
-      if (!res.ok) return;
-      const { messages } = (await res.json()) as { messages: StoredMessage[] };
+      const { messages } = await this.#req<{ messages: StoredMessage[] }>(
+        `/api/sessions/${id}/messages?after=-1`,
+      );
       const v = this.#view(id);
       v.seen.clear();
       v.msgs = [];
@@ -118,20 +176,28 @@ class Cockpit {
     }
   }
 
+  /** Backend list for the new-slot dialog; surfaces failures instead of
+   *  silently degrading to a single fallback button (QA#6). */
+  async loadBackends(): Promise<
+    { id: string; label: string; home?: string | null; blocked?: string | null }[]
+  > {
+    return await this.#req<{ id: string; label: string; home?: string | null; blocked?: string | null }[]>(
+      "/api/backends",
+    );
+  }
+
   async createSession(backend: string, cwd: string, title: string): Promise<string> {
-    const res = await fetch("/api/sessions", {
+    const body = await this.#req<SessionInfo>("/api/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ backend, cwd, title: title || undefined }),
     });
-    const body = (await res.json()) as SessionInfo & { error?: string };
-    if (!res.ok) throw new Error(body.error ?? "create failed");
     this.bump();
     return body.id;
   }
 
   closeSession(id: string): void {
-    void fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    void this.#req(`/api/sessions/${id}`, { method: "DELETE" }).catch(() => {});
     this.byId.delete(id);
     if (this.activeId === id) {
       const next = this.sessions.find((s) => s.id !== id);
@@ -177,6 +243,14 @@ class Cockpit {
       }
       case "messages": {
         const v = this.#view(e.sessionId);
+        if (e.partial) {
+          // reconnect tail (resume): merge into what we already rendered.
+          // seq-dedup in #ingest drops the overlap; a rebuild here would lose
+          // everything before the drop (QA#17).
+          for (const m of e.messages) this.#ingest(v, m);
+          v.lastAt = Date.now();
+          break;
+        }
         // authoritative full replay: rebuild from scratch (server wrote every row
         // to SQLite before emitting, so snapshot ⊇ anything we saw live)
         v.seen.clear();
@@ -236,8 +310,15 @@ class Cockpit {
   }
 
   #ingest(v: SessionView, m: StoredMessage): void {
-    if (v.seen.has(m.seq)) return; // dedup REST-replay vs WS-live (QA#3)
-    v.seen.add(m.seq);
+    // Dedup REST-replay vs WS-live (QA#3) — but ONLY for append-only rows.
+    // Tool rows are upserted server-side keeping their original seq, so a
+    // seq-based guard would swallow every tool_call_update (QA#12: the card
+    // stayed "pending" live while a reload showed "completed").
+    const upsertRow = m.kind === "tool" || m.kind === "meta" || m.seq <= 0;
+    if (!upsertRow) {
+      if (v.seen.has(m.seq)) return;
+      v.seen.add(m.seq);
+    }
     const p = m.payload as Record<string, unknown>;
     const text = extractText(p);
     const last = v.msgs[v.msgs.length - 1];
@@ -293,10 +374,3 @@ function extractText(payload: Record<string, unknown>): string {
 }
 
 export const cockpit = new Cockpit();
-export type StoreSnapshot = {
-  sessions: SessionInfo[];
-  activeId: string | null;
-  active: SessionView | undefined;
-  conn: ConnState;
-  version: number;
-};

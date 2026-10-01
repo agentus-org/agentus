@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
-import type { BackendId, ClientCommand, ServerEvent } from "@agentslot/shared";
+import type { BackendId, ClientCommand, PermissionDecision, ServerEvent } from "@agentslot/shared";
 
 const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
 const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.join(process.cwd(), ".data");
@@ -29,6 +29,38 @@ function emit(evt: ServerEvent): void {
 }
 
 const mgr = new SessionManager(store, emit);
+
+/**
+ * Single prompt entry point (REST + WS both use it).
+ * A failed turn must never be silent: the UI used to show a bare
+ * "-32603 Internal error" with nothing in the server log, and it also never
+ * emitted turn-end, so the bubble stayed "running" forever (QA#11).
+ */
+function runPrompt(sessionId: string, text: string): void {
+  void mgr.prompt(sessionId, text).catch((e: unknown) => {
+    const msg = String((e as Error)?.message ?? e);
+    const tail = mgr.stderrTail(sessionId);
+    console.error(`[agentslot] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
+    emit({ t: "message", message: {
+      seq: -1, sessionId, kind: "meta", payload: { text: `turn failed: ${msg}` }, createdAt: Date.now(),
+    } });
+    emit({ t: "turn-end", sessionId, error: msg });
+  });
+}
+
+// A single bad request must never take the cockpit down: one unhandled
+// rejection used to exit the process and silently drop every live session
+// (QA#19). Installed only AFTER we own the port — a startup failure
+// (EADDRINUSE etc.) must still crash loudly instead of lingering as a
+// zombie with no listener (QA#22).
+function installSafetyNet(): void {
+  process.on("unhandledRejection", (reason) => {
+    console.error("[agentslot] unhandled rejection (kept alive):", reason);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[agentslot] uncaught exception (kept alive):", err);
+  });
+}
 
 // AC5: reclaim orphans from previous run before serving anything.
 const killed = mgr.reclaimOrphans();
@@ -119,7 +151,10 @@ const httpServer = createServer(async (req, res) => {
       const id = sessMatch[1];
       const sub = sessMatch[2] ?? "";
       if (req.method === "DELETE" && sub === "") {
-        mgr.closeSession(id);
+        // awaited on purpose: closeSession is async and a floating rejection
+        // here used to kill the whole server (QA#19, unhandled rejection)
+        if (!mgr.hasSession(id)) return send(res, 404, { error: `no such session: ${id}` });
+        await mgr.closeSession(id);
         return send(res, 200, { closed: id });
       }
       if (req.method === "GET" && sub === "/messages") {
@@ -132,9 +167,7 @@ const httpServer = createServer(async (req, res) => {
         const text = String(body.text ?? "").trim();
         if (!text) return send(res, 400, { error: "empty prompt" });
         // fire & forget: stream arrives via WS; client watches turn-start/end
-        mgr.prompt(id, text).catch((e) =>
-          emit({ t: "turn-end", sessionId: id, error: String(e?.message ?? e) }),
-        );
+        void runPrompt(id, text);
         return send(res, 202, { ok: true });
       }
       if (req.method === "POST" && sub === "/mode") {
@@ -142,11 +175,32 @@ const httpServer = createServer(async (req, res) => {
         await mgr.setMode(id, String(body.modeId));
         return send(res, 200, { ok: true });
       }
+      if (req.method === "POST" && sub === "/cancel") {
+        // REST twin of the WS "cancel" command (API symmetry: QA#21 found the
+        // endpoint missing, so scripted checks could not stop a turn)
+        if (!mgr.hasSession(id)) return send(res, 404, { error: `no such session: ${id}` });
+        await mgr.cancel(id);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === "POST" && sub === "/permission") {
+        const body = await readJson(req);
+        const requestId = String(body.requestId ?? "");
+        if (!requestId) return send(res, 400, { error: "requestId required" });
+        const ok = mgr.respondPermission(id, requestId, (body.decision as PermissionDecision) ?? { outcome: "cancelled" }, {
+          optionKind: typeof body.optionKind === "string" ? body.optionKind : undefined,
+          signature: typeof body.signature === "string" ? body.signature : undefined,
+        });
+        if (!ok) return send(res, 404, { error: `no pending permission: ${requestId}` });
+        return send(res, 200, { ok: true });
+      }
     }
     if (url.pathname.startsWith("/api/")) return send(res, 404, { error: "not_found" });
     return serveStatic(req, res);
   } catch (err) {
-    return send(res, 500, { error: String((err as Error)?.message ?? err) });
+    // "no such X" is a client error, not a server fault (QA#24)
+    const msg = String((err as Error)?.message ?? err);
+    const code = /no such session|no pending permission/.test(msg) ? 404 : 500;
+    return send(res, code, { error: msg });
   }
 });
 
@@ -171,16 +225,19 @@ wss.on("connection", (ws) => {
     try {
       switch (cmd.t) {
         case "resume": {
-          // AC6: replay missed messages per session after client's lastSeq
+          // AC6: replay missed messages per session after client's lastSeq.
+          // `partial: true` tells the client to MERGE into what it already
+          // rendered — a rebuild from this tail would drop the pre-drop prefix
+          // (QA#17: 26 chars vanished after a mid-turn reconnect).
           for (const [sid, seq] of Object.entries(cmd.lastSeq)) {
             const msgs = store.messagesAfter(sid, seq);
-            if (msgs.length) sendEvt({ t: "messages", sessionId: sid, messages: msgs, hasMore: false });
+            if (msgs.length) sendEvt({ t: "messages", sessionId: sid, messages: msgs, hasMore: false, partial: true });
           }
           sendEvt({ t: "sessions", sessions: mgr.list() });
           break;
         }
         case "prompt":
-          await mgr.prompt(cmd.sessionId, cmd.text);
+          void runPrompt(cmd.sessionId, cmd.text);
           break;
         case "cancel":
           await mgr.cancel(cmd.sessionId);
@@ -218,5 +275,10 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 }
 
 httpServer.listen(PORT, "0.0.0.0", () => {
+  installSafetyNet(); // we own the port: from here on, survive per-request errors
   console.log(`[agentslot-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+});
+httpServer.on("error", (err) => {
+  console.error(`[agentslot] cannot listen on ${PORT}: ${(err as Error).message}`);
+  process.exit(1); // fail fast: never linger as a listener-less zombie
 });

@@ -22,7 +22,9 @@ import type {
   SessionModeState,
 } from "@agentslot/shared";
 
-const PERMISSION_TIMEOUT_MS = 5 * 60_000;
+// Permission prompts must not hang a session forever (design.md §8-4).
+// Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
+const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 * 60_000);
 
 interface LiveSession {
   info: SessionInfo;
@@ -74,6 +76,13 @@ export class SessionManager {
       }
     }
     return killed;
+  }
+
+  /** Last stderr lines from a session's agent (for diagnosing failed turns). */
+  stderrTail(id: string, lines = 12): string {
+    const s = this.#sessions.get(id);
+    if (!s) return "";
+    return s.stderrBuf.slice(-lines).join("\n  ");
   }
 
   /** Graceful shutdown: SIGTERM every live child before server exit. */
@@ -252,17 +261,18 @@ export class SessionManager {
     requestId: string,
     decision: PermissionDecision,
     meta?: { optionKind?: string; signature?: string },
-  ): void {
+  ): boolean {
     const s = this.#need(sessionId);
     if (decision.outcome === "selected" && meta?.optionKind === "allow_always" && meta.signature) {
       s.alwaysAllow.add(meta.signature);
     }
     const pending = s.pendingPermissions.get(requestId);
-    if (!pending) return; // already timed out / resolved
+    if (!pending) return false; // already timed out / resolved / never existed
     clearTimeout(pending.timer);
     s.pendingPermissions.delete(requestId);
     pending.resolve({ outcome: decision });
     this.#emit({ t: "permission-resolved", requestId, decision });
+    return true;
   }
 
   // ---- ACP callbacks ----

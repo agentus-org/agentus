@@ -80,6 +80,16 @@ const agent = () => ({
     s.cancelled = false;
     const text = prompt.map((p) => p.text || "").join(" ");
 
+    // QA triggers: prompt text flips behaviors per turn (env sets global defaults).
+    // Declared up front — used by the blocks below (a hoisting mistake here shows
+    // up as an opaque "-32603 Internal error" over ACP, QA#11).
+    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text);
+    const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
+    const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
+    const wantPlan = process.env.MOCK_PLAN === "1" || /\[plan\]/.test(text);
+    // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
+    const slow = /\[slow\]/.test(text) ? Math.max(SLOW, 900) : SLOW;
+
     if (wantThink) {
       for (const w of "pondering the user's request very deeply".split(" ")) {
         await send(agent._conn, sessionId, {
@@ -116,11 +126,6 @@ const agent = () => ({
       }
     }
 
-    // QA triggers: prompt text can flip behaviors per turn (env sets global defaults)
-    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text);
-    const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
-    const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
-    const wantPlan = /\[plan\]/.test(text);
     if (wantPlan) {
       await send(agent._conn, sessionId, {
         sessionUpdate: "plan",
@@ -140,7 +145,7 @@ const agent = () => ({
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: w + " " },
       });
-      await sleep(SLOW);
+      await sleep(slow);
     }
     // A code block to stress markdown rendering.
     await send(agent._conn, sessionId, {
