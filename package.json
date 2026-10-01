@@ -1,0 +1,22 @@
+{
+  "name": "agentslot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @agentslot/server & npm run dev -w @agentslot/web & wait",
+    "dev:server": "npm run dev -w @agentslot/server",
+    "dev:web": "npm run dev -w @agentslot/web",
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "lint": "npm run lint -ws --if-present",
+    "test": "npm run test -ws --if-present"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
