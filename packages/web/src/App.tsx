@@ -22,19 +22,21 @@ export function App(): JSX.Element {
 }
 
 function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
-  const { sessions, activeId, conn, net, netError } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const { sessions, archived, activeId, conn, net, netError } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
         <span className="logo">⛟ AgentSlot</span>
         <span className="tagline">keep your agents on the track</span>
       </header>
-      {net === "degraded" && (
+      {net === "degraded" || conn === "offline" ? (
         <div className="net-banner" title={netError}>
-          <span>⚠ 服务不可达 — 请求超时</span>
+          <span>
+            {conn === "offline" ? "⚠ 与服务的连接已断开 — 正在重连（指令会排队）" : "⚠ 服务不可达 — 请求超时"}
+          </span>
           <button onClick={() => location.reload()}>reload</button>
         </div>
-      )}
+      ) : null}
       <button className="new-btn" onClick={onNew}>+ new slot</button>
       <div className="session-list">
         {sessions.map((s) => (
@@ -58,6 +60,26 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
           <div style={{ padding: 16, color: "var(--text-dim)", fontSize: 13 }}>
             No sessions yet — open a slot.
           </div>
+        )}
+        {archived.length > 0 && (
+          <>
+            <div className="rail-sep">
+              <span>cold slots</span>
+              <span className="hint" title="sessions kept in SQLite after their process exited">
+                on disk · {archived.length}
+              </span>
+            </div>
+            {archived.map((s) => (
+              <div key={s.id} className="session-item cold" onClick={() => void cockpit.resume(s.id)}>
+                <div className="title">{s.title}</div>
+                <div className="meta">
+                  <span className="dot cold" />
+                  <span>{s.backend}</span>
+                  <span className="hint">resume ⟲</span>
+                </div>
+              </div>
+            ))}
+          </>
         )}
       </div>
       <footer>
@@ -107,6 +129,7 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
           value={info.modes?.currentModeId ?? ""}
           onChange={(e) => cockpit.send({ t: "set-mode", sessionId: info.id, modeId: e.target.value })}
           title="permission mode"
+          aria-label="permission mode"
         >
           {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
@@ -116,6 +139,7 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
           value={String(cfg.currentValue ?? "")}
           onChange={(e) => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: e.target.value })}
           title="reasoning effort"
+          aria-label="reasoning effort"
         >
           {cfg.options.map((o) => <option key={o.value} value={o.value}>🧠 {o.name}</option>)}
         </select>
@@ -126,7 +150,16 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
           ■ stop
         </button>
       ) : null}
-      <button className="ghost-btn danger" onClick={() => cockpit.closeSession(info.id)}>close</button>
+      <button
+        className="ghost-btn danger"
+        onClick={() => {
+          if (confirm(`close slot "${info.title}"?\n\nthe agent process is killed; the transcript stays on disk as a cold slot you can resume.`)) {
+            cockpit.closeSession(info.id);
+          }
+        }}
+      >
+        close
+      </button>
     </div>
   );
 }

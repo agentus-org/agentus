@@ -51,6 +51,18 @@ button { font: inherit; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
 .dot.ready { background: var(--ok); } .dot.running { background: var(--accent); animation: pulse 1s infinite; }
 .dot.starting { background: var(--text-dim); } .dot.error, .dot.closed { background: var(--err); }
+
+/* cold slots — sessions on disk whose process is gone (M4-lite resume) */
+.rail-sep {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 12px 10px 6px; font-size: 11px; letter-spacing: 0.4px;
+  text-transform: uppercase; color: var(--text-dim); border-top: 1px solid var(--line);
+  margin: 8px 4px 0;
+}
+.session-item.cold { opacity: 0.72; border: 1px dashed var(--line); }
+.session-item.cold:hover { opacity: 1; border-color: var(--accent-dim); background: rgba(255, 180, 84, 0.06); }
+.dot.cold { background: transparent; border: 1px solid var(--text-dim); }
+.hint { color: var(--text-dim); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 .badge { font-size: 10.5px; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; color: var(--text-dim); }
 .badge.perm { border-color: var(--accent-dim); color: var(--accent); }
@@ -183,5 +195,23 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   .sidebar.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0, 0, 0, 0.6); }
   .menu-btn { display: block; }
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 25; }
-  .chat-head select { max-width: 44vw; }
+
+  /* header wraps instead of squashing the title/cwd into nothing */
+  .chat-head { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
+  .chat-head .title { flex: 1 1 100%; order: -1; font-size: 14px; }
+  .chat-head select { max-width: 45vw; min-height: 34px; flex: 1 1 auto; }
+  .chat-head .kv { flex: 1 1 100%; font-size: 11px; }
+  .chat-head .ghost-btn { min-height: 34px; padding: 4px 12px; }
+  .chat-head .menu-btn { font-size: 22px; padding: 0 10px 0 2px; }
+
+  /* composer: thumb-sized hit area + home-indicator safe area */
+  .composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
+  .composer textarea { font-size: 16px; min-height: 46px; } /* 16px = no iOS zoom-on-focus */
+  .send-btn { min-width: 64px; min-height: 46px; font-size: 15px; }
+
+  /* permission cards must be tappable, not a thin strip */
+  .perm-card button { min-height: 40px; padding: 8px 14px; }
+
+  .msg { max-width: 100%; }
+  .empty .big { font-size: 42px; }
 }

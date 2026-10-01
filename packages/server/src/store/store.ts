@@ -14,12 +14,26 @@ export interface SessionRow {
   pid: number | null;
   createdAt: number;
   closedAt: number | null;
+  /** JSON round-trip of the ACP mode state + config options, so a resumed
+   *  session (M4-lite) comes back with the operator's mode/effort intact. */
+  modes?: unknown;
+  configOptions?: unknown;
 }
 
 interface RawSessionRow {
   id: string; backend: BackendId; acp_session_id: string | null; cwd: string;
   title: string; status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null;
+  modes?: string | null; config_options?: string | null;
+}
+
+function parseJson(v: string | null | undefined): unknown {
+  if (v == null || v === "") return null;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
 }
 
 function rowToSession(r: RawSessionRow): SessionRow {
@@ -27,6 +41,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
     title: r.title, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at,
+    modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
   };
 }
 
@@ -49,6 +64,13 @@ export class Store {
       );
       create index if not exists idx_messages_ts on messages (session_id, seq);
     `);
+    // additive migration: mode/config persistence for resume (M4-lite)
+    const cols = new Set(
+      (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
+    );
+    for (const col of ["modes", "config_options"]) {
+      if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
+    }
   }
 
   upsertSession(s: SessionRow): void {
@@ -56,16 +78,18 @@ export class Store {
     if (exist) {
       this.#db
         .prepare(
-          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=? where id=?`,
+          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=? where id=?`,
         )
-        .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt, s.id);
+        .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt,
+          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []), s.id);
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at)
-           values (?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options)
+           values (?,?,?,?,?,?,?,?,?,?,?)`,
         )
-        .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt);
+        .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
+          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []));
     }
   }
 
@@ -82,6 +106,14 @@ export class Store {
       | RawSessionRow
       | undefined;
     return r ? rowToSession(r) : undefined;
+  }
+
+  /** Highest persisted seq for a session (0 when empty) — the resume anchor. */
+  maxSeq(sessionId: string): number {
+    const row = this.#db
+      .prepare("select max(seq) as m from messages where session_id = ?")
+      .get(sessionId) as { m: number | null };
+    return row.m ?? 0;
   }
 
   nextSeq(sessionId: string): number {

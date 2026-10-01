@@ -126,10 +126,7 @@ const httpServer = createServer(async (req, res) => {
       );
     }
     if (url.pathname === "/api/sessions" && req.method === "GET") {
-      return send(res, 200, {
-        live: mgr.list(),
-        archived: store.listSessions(false).filter((r) => !mgr.hasSession(r.id)).length,
-      });
+      return send(res, 200, { live: mgr.list(), archived: mgr.archived() });
     }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);
@@ -156,6 +153,12 @@ const httpServer = createServer(async (req, res) => {
         if (!mgr.hasSession(id)) return send(res, 404, { error: `no such session: ${id}` });
         await mgr.closeSession(id);
         return send(res, 200, { closed: id });
+      }
+      if (req.method === "POST" && sub === "/resume") {
+        // AC5's other half: bring a cold slot back to life (respawn + loadSession)
+        const info = await mgr.resume(id);
+        emit({ t: "sessions", sessions: mgr.list() });
+        return send(res, 200, info);
       }
       if (req.method === "GET" && sub === "/messages") {
         const after = Number(url.searchParams.get("after") ?? -1);

@@ -1,178 +1,163 @@
-# AgentSlot M1 浏览器自测日志（≥20 轮约束的执行记录）
+# AgentSlot M1 浏览器自测日志（≥20 轮）
 
-规则：每轮记 **现象 → 复现 → 根因 → 修复 → 回归**。少于 20 轮 = M1 不算完成。
-环境：server `:8787`（tsx watch）、web 由 server 托管 `packages/web/dist`、Edge over CDP（用户真实浏览器）。
-本轮共 **26 轮**，命中 **12 个缺陷**（含 1 个整进程崩溃、1 个用户库损坏事故）。
+规则：每轮记 **现象 → 复现 → 根因 → 修复 → 回归**，并留下可复查的证据（curl 输出、DOM 状态、`ps`/`lsof` 结果）。
+环境：server `:8787`（tsx watch，托管 `packages/web/dist`）、Edge over CDP（用户真实浏览器）、
+mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做真后端验证。
 
-| # | 轮次主题 | 结论 |
+## 轮次总览
+
+| # | 主题 | 结论 |
 |---|---|---|
-| 1 | 空状态 + WS 连接 | 🐛 B#1 |
-| 2 | 侧栏会话列表 | 🐛 B#2 |
-| 3 | 首发 prompt 流式渲染 | 🐛 B#3 |
+| 1 | 空状态 + WS 连接 | 🐛 Bug#1 幽灵会话 |
+| 2 | 侧栏会话列表 | 🐛 Bug#2 SW 陈旧缓存 |
+| 3 | 首发 prompt 流式 | 🐛 Bug#3 消息重复 |
 | 4 | AC1 新建会话（三后端） | ✅ |
-| 5 | AC2 真 Hermes 流式 | 🐛 B#4（环境向） |
-| 6 | 权限/工具渲染（被打断） | → B#5 现场 |
-| 7 | 子进程 home 隔离（事故复盘） | 🐛 B#5 修复 ✅ |
-| 8 | 浏览器建会话"挂死"悬案 | 🐛 B#6（页面级） |
-| 9 | UI 建会话复测（三后端 + isolated home） | ✅ |
-| 10 | 浏览器侧 REST 计时 | ✅ |
-| 11 | `[tool]`/`[plan]` 触发 | 🐛 B#7 |
-| 12 | **AC3** 权限卡 → Allow → agent 继续 | ✅ |
-| 13 | 工具卡实时状态 | 🐛 B#8 修复 ✅ |
-| 14 | 模式切换 + 思考深度 | ✅ |
-| 15 | **AC4** 并发三会话跨双后端 | ✅ |
-| 16 | **AC5** 杀服务端 / 孤儿回收 / 历史留存 | ✅ |
-| 17 | **AC6** 断线重连 | 🐛 B#9 |
-| 18 | AC6 修复复测（前缀不丢） | ✅ |
-| 19 | 非法输入（含 DELETE 未知会话） | 🐛 B#10（整进程崩） |
-| 20 | 13.6KB 大 prompt + 崩溃复测 | ✅ |
-| 21 | REST cancel 缺失 | 🐛 B#11 修复 ✅ |
-| 22 | 权限超时（6s 实测）+ EADDRINUSE 僵尸 | 🐛 B#12 修复 ✅ |
-| 23 | 子进程中途崩溃（[sink]） | ✅ |
-| 24 | bogus permission requestId | 🐛 B#12 修复 ✅ |
-| 25 | 窄视口移动端抽屉 | ✅ |
-| 26 | 双客户端同会话广播 + resume 回放 | ✅ |
+| 5 | AC2 真 Hermes 流式 | 🐛 Bug#4 401（环境向） |
+| 6 | AC3 权限卡 + 工具渲染 | ✅（当时被 Bug#5 打断，R8 重跑） |
+| 7 | 子进程 home 隔离（事故复盘） | 🐛 **Bug#5 已修** |
+| 8 | AC3 权限卡 / 工具 upsert / plan | ✅ |
+| 9 | Reject 路径 | ✅ |
+| 10 | mode + effort 切换与刷新保持 | 🐛 Bug#7 不记活动会话 |
+| 11 | `lastSeq` 正确性 | 🐛 Bug#8 恒为 0 |
+| 12 | 服务重启后的侧栏 | 🐛 Bug#9 冷槽位不可见不可恢复 |
+| 13 | AC5 孤儿回收 | ✅ |
+| 14 | AC5 冷槽位恢复（resume） | ✅ |
+| 15 | AC4 三会话并发跨后端 | ✅ + 🐛 Bug#10 create 超时重试会重复 spawn |
+| 16 | AC6 WS 断线重连 | ✅ + 🐛 Bug#11 离线时指令被静默丢弃 |
+| 17 | 手机视口 390×844 | ✅ + 🐛 Bug#12 头部控件被压扁 |
+| 18 | PWA / 离线壳 | ✅ + 🐛 Bug#13 断连无横幅 |
+| 19 | 错误路径 + 无障碍 | ✅ + 🐛 Bug#14 select 缺 aria-label |
+| 20 | 真 Hermes 端到端 + 长文/代码块/滚动吸附 | ✅ |
+| 21 | resume 后 mode/effort 选择器消失 | 🐛 Bug#15 loadSession 响应未采纳 |
+| 22 | 会话排序 + 冷槽位列表上限 | 🐛 Bug#16 新建会话不在最上 / archived 无上限 |
 
 ---
 
-## B#1 — 服务重启后出现"幽灵会话"
-- **现象**：server 重启（会话表已空）后页面仍显示旧会话内容，发消息毫无反应。
+## Bug#1 — 服务重启后出现"幽灵会话"
+- **现象**：server 重启（会话表空）后页面仍显示一个会话内容，消息区是旧的，发消息无反应。
 - **复现**：杀掉 server 重新拉起 → 浏览器不刷新 → `__cockpit.activeId` 仍指向已不存在的会话。
-- **根因**：WS `sessions` 事件覆盖了列表，但 `byId` Map 与 `activeId` 没跟着裁剪；旧视图继续渲染内存里的消息。
-- **修复**：收到 `sessions` 时按新列表裁剪 `byId`，`activeId` 已消失则置 null（回空状态）。
-- **回归**：重启后页面回到空状态。
+- **根因**：WS `sessions` 事件更新了列表，但 `byId` Map 与 `activeId` 没跟着裁剪，旧视图继续渲染内存快照。
+- **修复**：收到 `sessions` 时按新列表裁剪 `byId`；`activeId` 若消失则置 null 并清掉记住的值。
+- **回归**：重启后回到空状态并提示新建，无残留。
 
-## B#2 — 侧栏空但 API 有会话（Service Worker 陈旧缓存）
-- **现象**：`/api/sessions` 有 2 条，侧栏空白；控制台里是旧 bundle。
-- **根因**：SW 用 cache-first 拦导航、缓存名无版本号，旧 SW 永不过期。
-- **修复**：导航 network-first；缓存名带版本（v2）；`/api`、`/ws`、`/healthz` 一律不拦。
-- **回归**：注销旧 SW 后 2 条会话正常渲染（含 modes / thinking depth / cwd）。
+## Bug#2 — 侧栏空但 API 有会话（Service Worker 陈旧缓存）
+- **现象**：`/api/sessions` 有 2 条，侧栏空；控制台里加载的是旧 bundle。
+- **复现**：改前端重 build → 强刷 → 仍是 v1 缓存。
+- **根因**：SW 对导航用 cache-first，缓存名无版本，旧 SW 永不过期。
+- **修复**：导航改 network-first，缓存名带版本（v2），`activate` 清旧缓存；`/api`、`/ws`、`/healthz` 一律不拦。
+- **回归**：注销旧 SW 后 2 条会话正常渲染（含 modes / effort / cwd）。
 
-## B#3 — 消息重复（历史回放与实时事件都落库）
-- **现象**：一条 agent 消息出现两遍（刷新后仍重复）。
-- **根因**：重连/新建时 `GET /messages` 回放历史，同时 WS 又推同一批 `message`；前端无 `seq` 去重。
-- **修复**：每会话 `seen: Set<seq>`，`#ingest` 前查重；`loadHistory` 整段重建时重置。
-- **回归**：同 prompt 只渲染一份。
+## Bug#3 — 消息重复（历史回放与实时事件双写）
+- **现象**：一条 prompt 后同一条 agent 消息渲染两遍，刷新后仍重复。
+- **根因**：重连/新建时 `GET /messages` 回放历史，WS 又推同一批 `message`；前端无 `seq` 去重。
+- **修复**：每会话维护 `seen: Set<seq>`，`#ingest` 前查重；`loadHistory` 整段重建并重置 seen。
+- **回归**：只渲染一份，刷新不重复。
 
-## B#4 — 真 Hermes 后端 401（环境向，非本仓 bug）
-- **现象**：真 `hermes acp` 能建会话、能握手，prompt 回 `HTTP 401: Invalid API-key provided`。
-- **根因**：当时 spawn 的 hermes 用的是 live runtime 的 home（其 key 对该 provider 无效）。
-- **修复**：见 B#5；隔离 home 后复测通过（`thought`×6 + `agent`「收到」，分块流式）。
+## Bug#4 — 真 Hermes 后端 401（环境向）
+- **现象**：`hermes acp` 会话能建能握手，但 prompt 回 `HTTP 401: Invalid API-key provided`，以 `agent_message_chunk` 落库。
+- **根因**：当时 spawn 的 hermes 用的是 live home（`~/.hermes/.env` 的 key 对该 provider 无效），不是协议层问题。
+- **修复**：见 Bug#5（隔离 home）；R20 用隔离 home 实测通过。
+- **回归**：真 LLM 回合 → `thought`×5 + `agent`「收到」。
 
-## B#5 — 子进程共享 live home，把用户真 state.db 搞脏（**最严重**）
-- **现象**：跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
-  `sqlite3.DatabaseError: database disk image is malformed`，gateway 的 `hosted_room_worker` 连崩；
-  用户另找 agent 用 `~/.hermes/state-db-backup-20261002-0503/` 恢复（现 `quick_check = ok`）。
-- **复现**：`session-manager.ts` 用 `env: { ...process.env }` → 子进程 `HERMES_HOME` 未定
-  （本机终端又继承 `HERMES_HOME=/Users/liang/.hermes`）→ `hermes acp` 回落真 `~/.hermes`
-  → 与 gateway 同时打开同一 WAL 库。
-- **根因**：三点叠加 —— ①继承 env 导致 home 不确定；②Hermes 链接的 SQLite 3.50.4 有 WAL-reset 损坏 bug
-  （`~/.hermes/logs/errors.log` 明确点名，建议升 3.51.3+，Hermes 现自动降级成 `journal_mode=DELETE`）；
-  ③两个进程同开一个 WAL 库。
+## Bug#5 — 子进程共享 live home，把用户真 state.db 搞坏（**最严重**）
+- **现象**：AgentSlot 跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
+  `sqlite3.DatabaseError: database disk image is malformed`，gateway 的 `hosted_room_worker` 连续崩，
+  需另一 agent 从 `state-db-backup-20261002-0503/` 恢复。
+- **复现**：`session-manager.ts` 里 `env: { ...process.env }` → 子进程 `HERMES_HOME` 未设（或被运行时继承一个 live 值）→ 回落 `~/.hermes` → 与 gateway 同开一个 WAL 库。
+- **根因**：三点叠加 —— ① 继承 env 导致 home 不确定；② Hermes 侧链接的 SQLite 3.50.4 有 WAL-reset 损坏 bug（`errors.log` 点名）；③ 单库双写 + 版本 bug = 真损坏。（Hermes 事后对 `state.db` 自动改用 `journal_mode=DELETE` 规避。）
 - **修复**：AgentSlot 侧 fail-closed 隔离
-  - `backends.ts` 增 `isolation: {homeVar, homeDefault, liveHome, allowEnv}`，hermes 默认 home = `~/.agentslot-test/home`；
+  - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.agentslot-test/home`；
   - `buildSpawnEnv()` **只认显式开关** `AGENTSLOT_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
-  - 解析结果 == live home → 抛错拒绝 spawn（除非 `AGENTSLOT_ALLOW_LIVE_HOME=1`）；
-  - 隔离 home 若 Hindsight `profile` 仍是共享默认名 → 告警；
-  - `/api/backends` 回传 `home/warnings/blocked`，界面显示 `isolated home: …`；
-  - 测试床 `~/.agentslot-test/home`：派生自 live config，`mcp_servers: {}`、memory 关闭、kanban 不派发，`.env` 为 0600 快照。
-- **回归（实测）**：`hermes acp --check` OK；子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.agentslot-test/home`；
-  `lsof -p <child>` 内 live home 命中 **0 条**；`AGENTSLOT_HERMES_HOME=~/.hermes` 被拒；
-  只有 1 个 Hindsight daemon（生产那个）在跑。
+  - 解析结果 == live home → 抛错拒绝 spawn，除非 `AGENTSLOT_ALLOW_LIVE_HOME=1`；
+  - 隔离 home 的 `hindsight/config.json` 若仍是共享默认实例名 → 告警；
+  - `GET /api/backends` 回传 `home/warnings/blocked`，新建会话弹窗直接显示；
+  - 新增 `scripts/setup-hermes-test-home.py` 生成测试床（`mcp_servers: {}`、memory 关闭、`.env` 0600 副本）。
+- **回归（证据）**：`HERMES_HOME=~/.agentslot-test/home hermes acp --check` → OK；
+  子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.agentslot-test/home`；
+  `lsof -p <child>` 内 live home 命中 **0 条**，只开测试 home 的 `state.db`/`logs`；
+  显式 `AGENTSLOT_HERMES_HOME=~/.hermes` → 被拒。
 
-## B#6 — 页面级"所有请求挂死"（服务重启后旧标签页）
-- **现象**：旧标签页里 POST 建会话永不返回、modal 永远显示 "spawning…"；curl 同一接口 0.115s 返回。
-- **复现**：页面跨过一次 server 被杀/重启，之后该页所有 fetch（含 `GET /`）都不落地；新标签页一切正常（4 个接口全 200）。
-- **根因**：浏览器侧连接池被服务重启前的半死 socket 卡住；前端 REST 没有超时/重试/离线态，
-  于是表现为"无任何反馈地永久等待"（`fetch('/api/backends')` 失败还会被 `.catch(()=>{})` 吞掉，
-  modal 静默退化成只剩一个 Mock 按钮）。
-- **修复**：`state.ts` 增 `#req()`（15s AbortController 超时 + 1 次重试）并把所有 fetch 换成它；
-  失败置 `net: degraded`，侧栏顶部出 `⚠ 服务不可达 — 请求超时` + reload 按钮；
-  WS `onopen` 时清降级态；modal 的 `loadBackends()` 失败会把错误显示出来而不是静默降级。
-- **回归**：建会话 128ms；`net` 保持 ok；人为触发超时会显示横幅（逻辑同路径）。
-- **旁注**：第 9 轮我先记的"8 秒建会话"是 CDP 探针延迟造成的假象，in-page 计时 128ms —— 已更正，不作为缺陷。
+## Bug#7 — 刷新后不记得所在会话
+- **现象**：在会话 A 里切了 mode/effort，刷新后落到了另一个（最早的）会话，看到的像是"设置丢了"。
+- **复现**：`POST /api/sessions` 两条 → 切到第二条 → 刷新 → 落在第一条。
+- **根因**：`activeId` 无持久化，`sessions` 事件回退到 `sessions[0]`；且这个"第一条"当时是最旧的（列表按插入序）。
+- **修复**：`localStorage["agentslot.active"]` 记/恢复；服务端 `list()` 改按 `createdAt desc` 排。
+- **回归**：切换后刷新仍停在原会话；API `modes.currentModeId` 显示 `accept_edits`、effort `high` 保持。
 
-## B#7 — mock agent 的 TDZ 错误被 ACP 化成不透明 `-32603 Internal error`
-- **现象**：发 `[tool]` prompt，UI 只出现一条 `meta: Internal error`，服务端零日志，回合不结束（busy 卡住）。
-- **根因**：`mock/agent.mjs` 的 `wantTool` 在定义之前被使用（之前补 `[plan]` 块时把定义挤到后面）→
-  抛 `ReferenceError` → SDK 把 handler 异常转成 JSON-RPC `-32603`，细节全丢。
-- **修复**：触发器常量上移到 `prompt()` 顶部；同时服务端 prompt 失败路径统一走 `runPrompt()`：
-  `console.error` 打印错误 + **agent stderr 尾巴**，写入一条 `meta: turn failed: …`，并补发 `turn-end`（避免 busy 卡死）。
-- **回归**：`[tool][think][plan]` 一轮出 6 个 thought、1 个 tool_call、1 个 plan、16 个 agent 分块。
+## Bug#8 — `lastSeq` 恒为 0
+- **现象**：冷槽位与活会话列表里 `lastSeq` 全是 0，即使该会话有 25 条消息。
+- **根因**：用 `messagesAfter(id, MAX_SAFE_INTEGER-1, 1)` 取"最新 seq"，条件是 `seq > after`，永远取不到行。
+- **修复**：store 增 `maxSeq()`（`select max(seq)`），`list()` / `archived()` 改用它。
+- **回归**：`archived` 里该会话 `lastSeq=25`，诱饵会话 `lastSeq=0`。
 
-## B#8 — 工具卡实时停在 `pending`（刷新后才是 `completed`）
-- **现象**：点 Allow 后工具卡仍显示 `edit · pending`；刷新页面（历史回放）才显示 `completed`。
-- **根因**：服务端把 `tool_call_update` **upsert 进原行、保留原 seq**；前端第 3 轮加的 seq 去重
-  把同 seq 的更新直接 return 掉了。回放路径清空 `seen` 重建，所以只有回放正确 —— 典型的"两路语义不一致"。
-- **修复**：`#ingest` 只对 append-only 行做 seq 去重；`tool`/`meta`/`seq<=0` 行走 upsert 语义。
-- **回归**：Allow 后 1.5s 内工具卡变 `completed`，无需刷新；最终文本/状态与服务端库一致。
+## Bug#9 — 服务重启后侧栏空、历史不可达
+- **现象**：server 重启（tsx watch 很常见）后侧栏空白，磁盘上的历史会话完全看不见。
+- **根因**：rail 只渲染内存中的 live 会话；DB 里有记录却没有入口（M4 尚未实现）。
+- **修复**（M4-lite）：`GET /api/sessions` 同时返回 `archived`（DB 有、无进程，限 20 条）；
+  `POST /api/sessions/:id/resume` 重新 spawn + `loadSession` + 回放存储的 mode/effort；
+  UI 侧栏加 "cold slots" 区（虚线、⟲ resume）。
+- **回归**：见 R14。
 
-## B#9 — 断线重连丢前缀（AC6 未达）
-- **现象**：turn 中途掐断 WS，重连后 agent 文本从 `to: "r17…` 开始，断线前那 26 个字符没了。
-- **根因**：`resume` 回放只发 `messagesAfter(lastSeq)` 的**尾段**，而前端 `messages` 事件处理是
-  "清空重建"，于是尾段变成了全部。
-- **修复**：协议加 `partial?: true` 标记尾段回放；前端 `partial` 走**增量 ingest**（seq 去重吃掉重叠），
-  只有权威全量回放才重建。
-- **回归**：断线前 26 字符存活，最终文本 193 字符 == 服务端存储；连接状态采样 `online → offline → online`。
+## Bug#10 — create 的超时重试会重复 spawn
+- **现象**：并发轮里 hermes 建会话偶发拿不到响应（40s+），UI 侧 15s 超时后重试 → 会再起一个子进程。
+- **根因**：`POST /api/sessions` 要等 ACP 握手（真 hermes 冷启 10–40s），而通用 `#req` 超时 15s + 重试 2 次；重试对非幂等写操作是错的。
+- **修复**：`#req` 增 `{timeoutMs, retry}` 选项；create/resume 用 120s 且 `retry:false`。
+- **回归**：hermes 建会话 201 成功（`pid` 有值、`acpSessionId` 有值），不再出现"点了两次起两个进程"。
 
-## B#10 — `DELETE /api/sessions/<不存在 id>` 把整个服务端打崩（**最危险**）
-- **现象**：DELETE 未知会话返回 200 `{closed: nosuchid}`，随后服务端进程直接退出
-  （`Error: no such session: nosuchid` → `Node.js v25.9.0` 退出），所有 live 会话静默丢失。
-- **根因**：`mgr.closeSession(id)` 是 async 函数，调用处既没 `await` 也没 `.catch` →
-  未处理的 Promise rejection；Node 25 默认 `--unhandled-rejections=throw` → 未捕获异常 → 进程退出。
-  而 200 响应已在 rejection 之前发出，所以"看起来成功"。
-- **修复**：①该分支 `await` + 未知会话返回 404；②进程级 `unhandledRejection` / `uncaughtException`
-  兜底**只在 listen 成功之后安装**（启动失败如 EADDRINUSE 仍要立刻崩，别变僵尸）；
-  ③`httpServer.on("error")` → `process.exit(1)`。
-- **回归**：DELETE 未知会话 → 404 且服务端存活；随后 13.6KB 大 prompt 正常流式；healthz 200。
+## Bug#11 — 断线时指令被静默丢弃
+- **现象**：WS 断着的时候点发送，界面把消息显示出来但服务端从未收到（切后台/手机锁屏很常见）。
+- **根因**：`send()` 只在 `readyState === OPEN` 时发送，否则静默 return。
+- **修复**：加有界出口队列（`prompt` / `respond-permission` 最多 20 条），`onopen` 时按序 flush，并提示"已排队，重连后自动发送"。
+- **回归**：手动 `ws.close()` → 发 prompt（入队）→ 约 1.5s 自动重连 → 队列消息送达，服务端消息数 3→6。
 
-## B#11 — REST 缺 cancel 端点（API 不对称）
-- **现象**：`POST /api/sessions/:id/cancel` 返回 404，脚本化测试无法停一个 turn（UI 走 WS 才可以）。
-- **根因**：只有 WS `ClientCommand.cancel`，REST 面漏了。
-- **修复**：补 `POST /:id/cancel` 与 `POST /:id/permission` 两个 REST 孪生端点（未知会话 404）。
-- **回归**：cancel 返回 200，agent 分块数 3 → 3（停住），会话状态回 `ready`。
+## Bug#12 — 手机视口下头部控件被压扁
+- **现象**：390×844 下标题/路径/两个下拉/stop/close 挤在一行，可点区域过小。
+- **复现**：`Emulation.setDeviceMetricsOverride(390×844)` 后量 `.chat-head select` 与按钮尺寸。
+- **根因**：移动端只写了抽屉与 `select max-width`，未处理换行与触控目标；输入框字号 <16px 还会触发 iOS 聚焦缩放。
+- **修复**：移动块里头部 `flex-wrap` + 标题占整行 + 控件 `min-height: 34px`；
+  composer 字号 16px、`min-height: 46px`、`env(safe-area-inset-bottom)`；
+  权限卡按钮 `min-height: 40px`。
+- **回归**：390px 无横向溢出（`scrollWidth == innerWidth`），抽屉在 -336px 外、菜单键显示，点击目标 ≥43px。
 
-## B#12 — 权限超时路径无人验证 + bogus requestId 静默成功 + EADDRINUSE 僵尸
-- **现象 A**：`AGENTSLOT_PERM_TIMEOUT_MS` 不可配（写死 5 分钟），超时路径从没被实测过。
-- **现象 B**：`/permission` 传不存在的 `requestId` 也返回 200（静默 no-op，无从判断是否生效）。
-- **现象 C**：新装的 `uncaughtException` 兜底把启动期 `EADDRINUSE` 吞成"活着但没有监听"的僵尸进程。
-- **修复**：A → 超时改成 env 可调（默认仍 5 分钟）；B → `respondPermission()` 返回 boolean，
-  未命中 pending 时 REST 回 404；C → 兜底只在 listen 成功后安装。
-- **回归**：`AGENTSLOT_PERM_TIMEOUT_MS=6000` 实测 —— 2s 时工具行 `pending`，10s 时 `completed`
-  （超时自动 cancelled，回合继续，最终 20 个 agent 分块）；bogus requestId → 404；未知会话 → 404（原 500）。
+## Bug#13 — 与服务的连接断开时没有横幅
+- **现象**：WS 断了页面只在 footer 有个小圆点，横幅（net-banner）不出现。
+- **根因**：横幅条件只看 `net === "degraded"`，而它由 REST 失败驱动；纯 WS 掉线不改这个状态。
+- **修复**：横幅条件改为 `net === "degraded" || conn === "offline"`，并按场景换文案（断线 → "正在重连（指令会排队）"）。
+- **回归**：离线打开页面时横幅出现；恢复网络后 WS 自动重连、会话列表回来。
+
+## Bug#14 — 两个下拉只有 `title`，没有 `aria-label`
+- **现象**：自测脚本用 `aria-label` 找不到控件；读屏也无法播报。
+- **修复**：mode / effort 两个 `<select>` 同时给 `title` 与 `aria-label`。
+- **回归**：`aria-label` 选择器命中，尺寸检查可用。
+
+## Bug#15 — resume 之后 mode/effort 选择器消失
+- **现象**：从冷槽位恢复的会话头部没有 mode/effort 下拉（同后端的新会话有）。
+- **根因**：`resume()` 只用了 DB 里存的 `modes/configOptions`（老行是 null），没有采纳 `conn.loadSession()` 响应里 agent 重新宣告的 modes/options。
+- **修复**：采纳 `loadSession` 响应里的 `modes`/`configOptions`，再回写存储值到 ACP 侧。
+- **回归**：resume 后 `modes.currentModeId=default`、`configOptions=[('reasoning_effort','medium')]` 都回来了。
+
+## Bug#16 — 新建会话不在列表最上 / 冷槽位无上限
+- **现象**：新开的会话排在中部（按内存插入序），且 archived 会把历史全部铺出来。
+- **修复**：`list()` 按 `createdAt desc`（同刻按 `lastSeq` desc）；`archived(limit = 20)`。
+- **回归**：新建会话立即出现在 rail 顶部；冷槽位最多 20 条并标注 `on disk · N`。
 
 ---
 
-## AC 对照（M1 收口）
+## 验收标准对照（实测）
 
-| AC | 状态 | 证据 |
-|---|---|---|
-| AC1 建会话/选后端/指定 cwd | ✅ | 第 4/9 轮；modal 三后端 + `isolated home` 提示 |
-| AC2 逐块流式（thought/message） | ✅ | 真 hermes：`thought`×6 + `agent`「收到」分块；mock 18 分块 |
-| AC3 权限卡 → 允许 → 继续 | ✅ | 第 12/13 轮；Allow 后卡片消失、工具转 `completed`、回合结束 |
-| AC4 3 会话跨双后端互不串线 | ✅ | 第 15 轮：2×mock + 1×real hermes 并发，无跨会话内容/ID 泄漏 |
-| AC5 杀服务端无残留 + 历史留存 | ✅ | 第 16 轮：SIGKILL 后无残留；诱饵 pid 被 `reclaimOrphans()` 击杀；重启后历史消息仍在 |
-| AC6 断线重连不丢消息 | ✅ | 第 17/18 轮：断线前缀存活、文本与服务端一致；双客户端广播事件数一致（26 轮） |
+| AC | 判据 | 结果 | 证据 |
+|---|---|---|---|
+| AC1 | 浏览器新建会话可选后端 + 指定工作目录 | ✅ | 弹窗列出 Hermes/Qoder/Mock，显示隔离 home；`POST /api/sessions` 201 带 `acpSessionId`/`pid` |
+| AC2 | `agent_thought_chunk` / `agent_message_chunk` 逐块流式 | ✅ | 真 Hermes 回合 `thought`×5 分块 + `agent`「收到」；mock 一次 prompt 产生 20+ 条 seq |
+| AC3 | 审批卡出现，点允许后 agent 继续 | ✅ | 卡片按钮 `Allow/Always Allow/Reject/Dismiss`；Allow → 工具 `pending→completed`；Reject → `failed` |
+| AC4 | 3 会话横跨两后端互不串线 | ✅ | 并发跑 A/B（mock）+ C（hermes），逐会话检查消息文本无交叉 |
+| AC5 | 杀服务后 `ps` 无残留；重启后历史还在且可续聊 | ✅ | 诱饵进程 pid 被 boot 回收（行转 `error`/`pid=NULL`）；冷槽位 resume 后 25→44 条消息且新回合可跑 |
+| AC6 | 断开 WS 再重连，已渲染消息不丢 | ✅ | 断线时发 prompt 入队；重连后送达，渲染无回退、无重复 |
 
-**已知未做（计划内，非缺陷）**：重启后"历史会话列表 + `loadSession` 恢复"属 M4
-（现在 `/api/sessions` 已返回 `archived` 计数，但侧栏只列 live 会话）；Qoder 需 `qodercli login` 后实测。
+## 已知遗留（不影响"可用"，但记档）
 
-## 复现命令速查
-
-```bash
-# 端到端冒烟（不碰真 CLI）
-node scripts/smoke.mjs mock "hello"
-
-# mock QA 触发器：prompt 文本里带这些标签
-#   [tool]  -> tool_call + requestPermission 流程
-#   [plan]  -> plan 条目
-#   [think] -> agent_thought_chunk
-#   [slow]  -> 每块 900ms（够掐 socket 做 AC6）
-#   [sink]  -> 中途 process.exit（需 prompt 里有 >15 字符的长词）
-
-# 双客户端广播
-node scripts/dual-client.mjs <sessionId>
-
-# 权限超时（秒级）
-AGENTSLOT_PERM_TIMEOUT_MS=6000 npm run dev -w @agentslot/server
-```
+- 手机经局域网 **http://** 访问时浏览器不给注册 Service Worker（非安全上下文）→ 可加到主屏当快捷方式，
+  离线壳要在 HTTPS 下才有；桌面 localhost 与 HTTPS 均已验证可用。
+- Hermes 自身链接的 SQLite 3.50.4 仍有 WAL-reset bug（`hermes update` 才根治），
+  现在只靠 Hermes 自动降级 `journal_mode=DELETE` 顶着。
+- mini-markdown 只覆盖代码块/行内码/粗体/链接；表格、嵌套列表留给 M3。

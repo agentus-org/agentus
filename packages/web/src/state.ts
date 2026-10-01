@@ -30,6 +30,7 @@ export interface SessionView {
 /** Snapshot shape handed to useSyncExternalStore. */
 export interface StoreSnapshot {
   sessions: SessionInfo[];
+  archived: SessionInfo[];
   activeId: string | null;
   active: SessionView | undefined;
   conn: ConnState;
@@ -43,6 +44,7 @@ export type NetState = "ok" | "degraded";
 
 class Cockpit {
   sessions: SessionInfo[] = [];
+  archived: SessionInfo[] = [];
   byId = new Map<string, SessionView>();
   activeId: string | null = null;
   conn: ConnState = "connecting";
@@ -51,8 +53,28 @@ class Cockpit {
   lastSeq: Record<string, number> = {};
   ws: WebSocket | null = null;
   #retry = 0;
+  #outbox: ClientCommand[] = [];
   #listeners = new Set<() => void>();
   #snapshot: StoreSnapshot;
+
+  /** Remember which slot the operator was in, so a reload (or a phone waking up)
+   *  lands back where they were instead of the oldest session (QA#7). */
+  #rememberActive(id: string | null): void {
+    try {
+      if (id) localStorage.setItem("agentslot.active", id);
+      else localStorage.removeItem("agentslot.active");
+    } catch {
+      /* private mode / storage disabled — not worth failing over */
+    }
+  }
+
+  #restoreActive(): string | null {
+    try {
+      return localStorage.getItem("agentslot.active");
+    } catch {
+      return null;
+    }
+  }
   #version = 0;
 
   constructor() {
@@ -60,11 +82,14 @@ class Cockpit {
   }
 
   /** REST with a hard timeout + one retry (QA#6: a wedged page used to hang
-   *  every request forever with no feedback after a server restart). */
-  async #req<T>(path: string, init?: RequestInit): Promise<T> {
-    const TIMEOUT_MS = 15_000;
+   *  every request forever with no feedback after a server restart).
+   *  `retry: false` for non-idempotent calls — retrying POST /api/sessions
+   *  would spawn a *second* agent process for one click (QA#15). */
+  async #req<T>(path: string, init?: RequestInit, opts?: { timeoutMs?: number; retry?: boolean }): Promise<T> {
+    const TIMEOUT_MS = opts?.timeoutMs ?? 15_000;
+    const attempts = opts?.retry === false ? 1 : 2;
     let lastErr: unknown = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
       try {
@@ -81,7 +106,7 @@ class Cockpit {
         clearTimeout(timer);
         lastErr = e;
         const why = (e as Error)?.name === "AbortError" ? `请求超时 ${TIMEOUT_MS / 1000}s` : String((e as Error)?.message ?? e);
-        if (attempt === 1) {
+        if (attempt === attempts - 1) {
           this.#setNet(false, `${why} (${path})`);
           throw new Error(why);
         }
@@ -108,6 +133,7 @@ class Cockpit {
   #build(): StoreSnapshot {
     return {
       sessions: this.sessions,
+      archived: this.archived,
       activeId: this.activeId,
       active: this.activeId ? this.byId.get(this.activeId) : undefined,
       conn: this.conn,
@@ -135,7 +161,18 @@ class Cockpit {
       this.netError = "";
       this.#retry = 0;
       ws.send(JSON.stringify({ t: "resume", lastSeq: this.lastSeq } satisfies ClientCommand));
+      // flush anything the operator tapped while we were offline
+      while (this.#outbox.length) {
+        const cmd = this.#outbox.shift()!;
+        try {
+          ws.send(JSON.stringify(cmd));
+        } catch {
+          this.#outbox.unshift(cmd);
+          break;
+        }
+      }
       this.bump();
+      void this.refreshArchived();
     };
     ws.onmessage = (ev) => this.apply(JSON.parse(ev.data) as ServerEvent);
     ws.onclose = () => {
@@ -148,11 +185,25 @@ class Cockpit {
   }
 
   send(cmd: ClientCommand): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(cmd));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(cmd));
+      return;
+    }
+    // Phone reality: iOS/Android suspend sockets when the app backgrounds, so a
+    // tap can land while we're offline. Dropping it silently would look like the
+    // cockpit ate the instruction — hold it and flush on reconnect (QA#14).
+    if (cmd.t === "prompt" || cmd.t === "respond-permission") {
+      this.#outbox.push(cmd);
+      if (this.#outbox.length > 20) this.#outbox.shift();
+      this.#setNet(false, "连接已断开 — 指令已排队，重连后自动发送");
+      return;
+    }
+    this.#setNet(false, "连接已断开 — 该操作未能送达");
   }
 
   setActive(id: string): void {
     this.activeId = id;
+    this.#rememberActive(id);
     this.#snapshot = this.#build();
     this.bump();
     const v = this.byId.get(id);
@@ -187,13 +238,45 @@ class Cockpit {
   }
 
   async createSession(backend: string, cwd: string, title: string): Promise<string> {
-    const body = await this.#req<SessionInfo>("/api/sessions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ backend, cwd, title: title || undefined }),
-    });
+    // spawning a real agent boots a python process (hermes: 10-40s) — long
+    // timeout, and NO retry: a retry would spawn a second child for one click
+    const body = await this.#req<SessionInfo>(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ backend, cwd, title: title || undefined }),
+      },
+      { timeoutMs: 120_000, retry: false },
+    );
     this.bump();
     return body.id;
+  }
+
+  /** Pull the cold-slot list (sessions on disk with no live process, QA#8/AC5).
+   *  Kept as REST (not a WS event) so the rail still fills when the socket is down. */
+  async refreshArchived(): Promise<void> {
+    try {
+      const { archived } = await this.#req<{ archived: SessionInfo[] }>("/api/sessions");
+      this.archived = archived ?? [];
+      this.bump();
+    } catch {
+      /* rail stays as-is; the net banner already reports the trouble */
+    }
+  }
+
+  /** Wake a cold slot: respawn its agent + loadSession, then focus it. */
+  async resume(id: string): Promise<void> {
+    try {
+      const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
+      this.#view(id).info = info;
+      if (!this.sessions.some((s) => s.id === id)) this.sessions = [info, ...this.sessions];
+      this.archived = this.archived.filter((s) => s.id !== id);
+      this.setActive(id);
+      await this.loadHistory(id);
+    } catch (e) {
+      this.#setNet(false, `恢复失败：${String((e as Error).message ?? e)}`);
+    }
   }
 
   closeSession(id: string): void {
@@ -202,8 +285,12 @@ class Cockpit {
     if (this.activeId === id) {
       const next = this.sessions.find((s) => s.id !== id);
       this.activeId = next?.id ?? null;
+      this.#rememberActive(this.activeId);
     }
+    this.sessions = this.sessions.filter((s) => s.id !== id);
     this.bump();
+    // the closed transcript is still on disk → show it as a cold slot right away
+    void this.refreshArchived();
   }
 
   #view(id: string): SessionView {
@@ -228,10 +315,17 @@ class Cockpit {
         for (const s of e.sessions) this.#view(s.id).info = s;
         // prune views whose session vanished server-side (restart / close elsewhere)
         for (const id of [...this.byId.keys()]) if (!live.has(id)) this.byId.delete(id);
-        if (this.activeId && !live.has(this.activeId)) this.activeId = null;
+        if (this.activeId && !live.has(this.activeId)) {
+          this.activeId = null;
+          this.#rememberActive(null);
+        }
         if (!this.activeId && e.sessions.length) {
-          this.activeId = e.sessions[0].id;
-          void this.loadHistory(this.activeId);
+          // restore the slot the operator left, else the newest one (server list
+          // is already newest-first — QA#7)
+          const remembered = this.#restoreActive();
+          const pick = remembered && live.has(remembered) ? remembered : e.sessions[0].id;
+          this.activeId = pick;
+          void this.loadHistory(pick);
         }
         break;
       }

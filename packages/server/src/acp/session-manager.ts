@@ -49,10 +49,13 @@ export class SessionManager {
   }
 
   list(): SessionInfo[] {
-    return [...this.#sessions.values()].map((s) => ({
-      ...s.info,
-      lastSeq: this.#store.messagesAfter(s.info.id, Number.MAX_SAFE_INTEGER - 1, 1)[0]?.seq ?? 0,
-    }));
+    // newest slot first — the cockpit's left rail is a launch pad, not a log file
+    return [...this.#sessions.values()]
+      .map((s) => ({
+        ...s.info,
+        lastSeq: this.#store.maxSeq(s.info.id),
+      }))
+      .sort((a, b) => b.createdAt - a.createdAt || (b.lastSeq ?? 0) - (a.lastSeq ?? 0));
   }
 
   isBusy(id: string): boolean {
@@ -170,6 +173,115 @@ export class SessionManager {
       this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
       throw err instanceof Error ? err : new Error(String(err));
     }
+  }
+
+  /** Re-attach to a session that outlived its process (server restart, crash, or
+   *  a deliberate close): spawn a fresh child and ask the agent to load the old
+   *  ACP session, then re-apply the stored mode/effort. AC5's "restart and keep
+   *  going" half — no intelligence here, the agent owns the transcript. */
+  async resume(id: string): Promise<SessionInfo> {
+    const existing = this.#sessions.get(id);
+    if (existing) return existing.info;
+
+    const row = this.#store.getSession(id);
+    if (!row) throw new Error(`unknown session: ${id}`);
+    if (!row.acpSessionId) throw new Error(`session ${id} was never handed to an agent`);
+    const spec = BACKENDS[row.backend];
+    if (!spec) throw new Error(`unknown backend: ${row.backend}`);
+
+    const plan = buildSpawnEnv(spec);
+    const child = spawn(spec.cmd, spec.args, {
+      cwd: row.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+      env: plan.env,
+    });
+    child.unref();
+
+    const live: LiveSession = {
+      info: {
+        id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
+        status: "starting", pid: child.pid ?? null, title: row.title,
+        createdAt: row.createdAt,
+        modes: (row.modes ?? null) as SessionModeState | null,
+        configOptions: (row.configOptions ?? []) as ConfigOptionView[],
+        commands: [],
+      },
+      child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+    };
+    this.#sessions.set(id, live);
+    this.#store.upsertSession(sessionRow(live.info));
+
+    child.stderr?.on("data", (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line) {
+        live.stderrBuf.push(line);
+        if (live.stderrBuf.length > 50) live.stderrBuf.shift();
+      }
+    });
+    child.on("exit", (code, sig) => this.#onChildExit(live, code, sig));
+
+    try {
+      const conn = new ClientSideConnection(
+        () => ({
+          sessionUpdate: (params) => this.#onSessionUpdate(live, params),
+          requestPermission: (params) => this.#onRequestPermission(live, params),
+        }),
+        ndJsonStream(
+          Writable.toWeb(child.stdin!) as unknown as WritableStream<Uint8Array>,
+          Readable.toWeb(child.stdout!) as unknown as ReadableStream<Uint8Array>,
+        ),
+      );
+      live.conn = conn;
+      await conn.initialize({
+        protocolVersion: 1,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+      });
+      const loaded = (await conn.loadSession({
+        sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: [],
+      })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | undefined;
+      // the agent re-announces its modes/options on load — prefer those over the
+      // archived snapshot, else the mode/effort selects vanish after a resume
+      if (loaded?.modes) live.info.modes = loaded.modes;
+      if (loaded?.configOptions?.length) live.info.configOptions = loaded.configOptions;
+      this.#updateSession(live);
+      const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
+      if (modeId) await conn.setSessionMode({ sessionId: row.acpSessionId, modeId }).catch(() => {});
+      for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
+        if (cfg?.id && cfg.currentValue != null) {
+          await conn
+            .setSessionConfigOption({ sessionId: row.acpSessionId, configId: cfg.id, value: String(cfg.currentValue) })
+            .catch(() => {});
+        }
+      }
+      live.info.status = "ready";
+      this.#updateSession(live);
+      this.#emit({ t: "sessions", sessions: this.list() });
+      return live.info;
+    } catch (err) {
+      child.kill("SIGKILL");
+      live.info.status = "error";
+      live.info.lastError = errMessage(err) + stderrTail(live);
+      this.#sessions.delete(id);
+      this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /** Sessions we know about on disk but have no process for (rail's cold slots). */
+  archived(limit = 20): SessionInfo[] {
+    return this.#store
+      .listSessions(false)
+      .filter((r) => !this.#sessions.has(r.id))
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
+        title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
+        modes: (r.modes ?? null) as SessionModeState | null,
+        configOptions: (r.configOptions ?? []) as ConfigOptionView[],
+        commands: [],
+        lastSeq: this.#store.maxSeq(r.id),
+      }));
   }
 
   async prompt(sessionId: string, text: string): Promise<void> {
@@ -417,6 +529,7 @@ function sessionRow(i: SessionInfo) {
   return {
     id: i.id, backend: i.backend, acpSessionId: i.acpSessionId, cwd: i.cwd,
     title: i.title, status: i.status, pid: i.pid, createdAt: i.createdAt, closedAt: null,
+    modes: i.modes ?? null, configOptions: i.configOptions ?? [],
   };
 }
 
