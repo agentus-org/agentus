@@ -119,6 +119,14 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   try {
+    // ---- outer lock: optional HTTP Basic, in front of EVERYTHING (static, /healthz,
+    // /api, login page). This is the layer that a public tunnel needs, because a
+    // tunnel's own "auth_pass" does not necessarily gate HTTP (see auth.ts).
+    if (!auth.verifyBasic(req.headers.authorization)) {
+      res.writeHead(401, auth.basicChallenge());
+      return res.end("AgentSlot: authentication required\n");
+    }
+
     // ---- auth gate. Everything under /api except the login/me endpoints is
     // closed; the SPA shell, its assets and /healthz stay public so the login
     // page itself can load (the browser has no cookie yet at that point).
@@ -316,6 +324,13 @@ httpServer.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+  if (!auth.verifyBasic(req.headers.authorization)) {
+    // Same outer lock as HTTP: browsers resend cached Basic credentials on the
+    // handshake, so a logged-in browser passes; anything else gets nothing.
+    socket.write("HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"AgentSlot\"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+    socket.destroy();
+    return;
+  }
   if (!auth.authenticate(req.headers, url)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
     socket.destroy();
@@ -408,6 +423,10 @@ httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[agentslot-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
   }
   if (authStatus.tokenFile) console.log(`[agentslot-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
+  const basic = auth.basicAuthConfig();
+  console.log(basic
+    ? `[agentslot-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
+    : "[agentslot-server] HTTP Basic off (set AGENTSLOT_BASIC_AUTH=user:pass before exposing a tunnel)");
   // A wrong/absent dist used to fail silently: the browser's service worker served a stale
   // shell, every request looked fine, and the operator just saw a blank page (QA R36).
   // Say it out loud at boot instead.

@@ -336,3 +336,53 @@ export function resetLoginLimiter(): void {
 export const AUTH_COOKIE_NAME = COOKIE_NAME;
 export const AUTH_DEFAULT_USERNAME = DEFAULT_USERNAME;
 export const AUTH_DEFAULT_PASSWORD = DEFAULT_PASSWORD;
+
+// ---- HTTP Basic (the outer lock) --------------------------------------------
+//
+// Why this exists at all: SakuraFrp's per-tunnel `auth_pass` turned out NOT to gate
+// HTTP — measured against this account's own tunnels (openclaw, hermes_studio), an
+// anonymous `https://…/ ` returns 200. natfrp's real "访问认证" is an IP allow-list,
+// which is useless for "let me in from anywhere with a password". So the outer lock
+// lives here: a standard Basic challenge in front of everything, which any tunnel,
+// proxy or phone browser honours.
+//
+// AGENTSLOT_BASIC_AUTH="user:pass" — unset means no Basic layer (LAN/local default).
+
+export function basicAuthConfig(): { user: string; pass: string } | null {
+  const raw = process.env.AGENTSLOT_BASIC_AUTH?.trim();
+  if (!raw) return null;
+  const idx = raw.indexOf(":");
+  if (idx < 1) return null; // malformed => treat as off rather than lock everyone out
+  return { user: raw.slice(0, idx), pass: raw.slice(idx + 1) };
+}
+
+export function verifyBasic(header: string | string[] | undefined): boolean {
+  const cfg = basicAuthConfig();
+  if (!cfg) return true;
+  const raw = Array.isArray(header) ? header[0] : header;
+  const value = String(raw ?? "");
+  if (!value.toLowerCase().startsWith("basic ")) return false;
+  let decoded = "";
+  try {
+    decoded = Buffer.from(value.slice(6).trim(), "base64").toString("utf8");
+  } catch {
+    return false;
+  }
+  const idx = decoded.indexOf(":");
+  if (idx < 0) return false;
+  const userOk = safeEqual(digest(decoded.slice(0, idx)), digest(cfg.user));
+  const passOk = safeEqual(digest(decoded.slice(idx + 1)), digest(cfg.pass));
+  return userOk && passOk;
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** 401 + the challenge. Without WWW-Authenticate a browser never asks. */
+export function basicChallenge(): Record<string, string> {
+  return {
+    "www-authenticate": 'Basic realm="AgentSlot", charset="UTF-8"',
+    "content-type": "text/plain; charset=utf-8",
+  };
+}

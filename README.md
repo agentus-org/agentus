@@ -103,12 +103,33 @@ Auth environment:
 | `AGENTSLOT_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
 | `AGENTSLOT_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
 | `AGENTSLOT_LOGIN_MAX_FAILS` / `AGENTSLOT_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
+| `AGENTSLOT_BASIC_AUTH` | — | `user:pass` → an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
 
-What this is *not*: TLS. A bare LAN IP cannot carry a trusted certificate, so the
-password crosses the wire in clear text on your own network. Treat it as a lock on
-the shed — enough to stop a colleague or a port scanner, not a hostile network.
-Put it behind a TLS proxy (and `X-Forwarded-Proto: https`, which flips the cookie to
-`Secure`) if you expose it beyond your LAN.
+### Exposing it publicly (tunnel / reverse proxy)
+
+Put `AGENTSLOT_BASIC_AUTH=user:pass` in the server's environment, then point the tunnel at
+`<lan-ip>:8787`. That gives you two independent locks — Basic at the edge of the app, the
+operator login inside it — and scripts can still get in (`curl -u user:pass` plus the
+machine token).
+
+Why app-level Basic instead of the tunnel's own access auth: relay/tunnel products often
+implement "access auth" as a **200 page that asks you to authorise your IP**, not as a
+401 challenge (SakuraFrp's `auth_pass` behaves exactly that way — measured). That flavour
+is invisible to `curl`, unscriptable, and stacks a third password prompt on top. A real
+Basic challenge is understood by every browser, proxy and HTTP client.
+
+Two things to know about a tunnel in front of this app:
+
+- **WebSockets must pass through.** The cockpit's live stream rides on `/ws`; an HTTP/1.1
+  tunnel that drops `Upgrade` gives you a page that loads and then says "reconnecting"
+  forever. Verified working through SakuraFrp's TCP+auto-HTTPS tunnels.
+- **Terminate TLS at the edge.** When the request arrives with `X-Forwarded-Proto: https`
+  the session cookie is issued `Secure` automatically (verified through that same tunnel),
+  so no config needed. The last hop inside your LAN stays plain HTTP.
+
+What this is *not*: TLS by itself. A bare LAN IP cannot carry a trusted certificate, so
+the password crosses your own network in clear text. Put it behind a TLS proxy if you
+expose it beyond your LAN.
 
 Logout revokes the session id server-side, so "sign out" ends the session instead of
 just hiding the UI — the cookie stops working immediately.

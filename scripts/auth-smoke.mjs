@@ -49,8 +49,10 @@ async function boot(port, dataDir, extraEnv = {}) {
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 60; i++) {
     try {
+      // any HTTP answer means the listener is up — a 401 counts, and the Basic-locked
+      // server D answers 401 to this very probe
       const r = await fetch(`${base}/healthz`);
-      if (r.ok) return { proc, base, log: () => log };
+      if (r.status > 0) return { proc, base, log: () => log };
     } catch { /* not up yet */ }
     await sleep(250);
   }
@@ -205,6 +207,49 @@ check("auth off -> /api/auth/me says authenticated", await (async () => {
   return b2.authEnabled === false && b2.authenticated === true;
 })());
 c.proc.kill("SIGTERM");
+
+// ---- server D: the HTTP Basic outer lock ---------------------------------------
+// This is the layer a public tunnel relies on, so it gets the same treatment:
+// anonymous refusal, challenge header, and the WS handshake behind it.
+const dataD = mkdtempSync(path.join(tmpdir(), "agentslot-authD-"));
+const BASIC_USER = "outer";
+const BASIC_PASS = "outer-pass";
+const d = await boot(8896, dataD, { AGENTSLOT_BASIC_AUTH: `${BASIC_USER}:${BASIC_PASS}`, AGENTSLOT_AUTH: "off" });
+const basicHeader = { authorization: `Basic ${Buffer.from(`${BASIC_USER}:${BASIC_PASS}`).toString("base64")}` };
+
+check("basic: anon /healthz -> 401", status(await fetch(`${d.base}/healthz`)) === 401);
+const challenge = await fetch(`${d.base}/healthz`);
+check("basic: 401 carries WWW-Authenticate", /^Basic realm=/i.test(challenge.headers.get("www-authenticate") ?? ""),
+  challenge.headers.get("www-authenticate") ?? "(missing)");
+check("basic: anon app shell -> 401 (static is behind the lock too)", status(await fetch(`${d.base}/`)) === 401);
+check("basic: anon /api/sessions -> 401", status(await fetch(`${d.base}/api/sessions`)) === 401);
+check("basic: wrong password -> 401", status(await fetch(`${d.base}/healthz`, {
+  headers: { authorization: `Basic ${Buffer.from(`${BASIC_USER}:nope`).toString("base64")}` },
+})) === 401);
+check("basic: right password -> 200", status(await fetch(`${d.base}/healthz`, { headers: basicHeader })) === 200);
+check("basic: /api/sessions behind it -> 200", status(await fetch(`${d.base}/api/sessions`, { headers: basicHeader })) === 200);
+check("basic: WS without Basic -> refused", await (async () => {
+  const ws = new WebSocket("ws://127.0.0.1:8896/ws");
+  return await new Promise((resolve) => {
+    const done = (v) => resolve(v);
+    ws.on("open", () => { ws.close(); done(false); });
+    ws.on("unexpected-response", (_q, res) => { const c = res.statusCode; res.destroy(); done(c === 401); });
+    ws.on("error", () => done(false));
+    setTimeout(() => done(false), 4000);
+  });
+})());
+check("basic: WS with Basic -> hello event", await (async () => {
+  const ws = new WebSocket("ws://127.0.0.1:8896/ws", { headers: basicHeader });
+  return await new Promise((resolve) => {
+    const t = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 4000);
+    ws.on("message", (raw) => {
+      if (JSON.parse(String(raw)).t === "hello") { clearTimeout(t); ws.close(); resolve(true); }
+    });
+    ws.on("error", () => { clearTimeout(t); resolve(false); });
+  });
+})());
+d.proc.kill("SIGTERM");
+await sleep(300);
 
 console.log(`\n${failed === 0 ? "AUTH SMOKE PASS" : `AUTH SMOKE FAIL (${failed} of ${results.length})`}`);
 process.exit(failed === 0 ? 0 : 1);

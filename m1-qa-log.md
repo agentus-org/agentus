@@ -288,3 +288,20 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **R44 伪 Cookie（CDP 在网线上注入，JS 注入被浏览器拒掉正好证明 HttpOnly 起效）**：伪造签名段 → 首屏落回登录卡、`/api/sessions` 401、WS refused，且 **6 秒内 0 次 `/api` 请求**（客户端退避，不会对着门狂敲）。
 
 **自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`AGENTSLOT_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。
+
+## R45–R45c · 公网隧道（SakuraFrp）+ 应用层 HTTP Basic
+
+**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentslot`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `REDACTED-TUNNEL`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
+
+**R45a 认证分层实测**
+- j→Mac:8787 前置条件 OK（`/healthz` 200），隧道启动成功、online=true。
+- 樱花自带的 `auth_pass` 实测**不返回 401**：未认证时返回 **HTTP 200 + "访问认证"页面**（IP 白名单制）。只看状态码会误判成"没挡"（我犯过一次，随后用响应体特征词核实）。对照：`openclaw` 也是认证页，`hermes_studio`（绑域名路径）直通应用。
+- 决定分层：**移除**樱花 `auth_pass`，外层改成 AgentSlot 自身的 **HTTP Basic**（标准 401 + `WWW-Authenticate`，脚本可 `curl -u`），内层仍是操作者登录。
+
+**R45b/R45c 浏览器端到端（真 Edge + CDP）**
+- 裸访问隧道 URL → 自签证书拦一次（`NET::ERR_CERT_AUTHORITY_INVALID`）。
+- 首次测试用 URL 内嵌凭据（`https://user:pass@host`）→ 应用能加载但**页内 fetch 全废**：`Request cannot be constructed from a URL that includes credentials`（Chrome 行为，非产品 bug）→ 改用正规 CDP：`Security.setIgnoreCertificateErrors` + `Fetch.enable({handleAuthRequests:true})` 响应 `Fetch.authRequired` 填凭据。
+- 换新 origin（`dx./lt.REDACTED-TUNNEL`）严格复验：**匿名 → 1 次 Basic 挑战 → 应用加载 → 登录 admin → 驾驶舱 `● online`（WS 穿隧道成功）、rail 16 槽**；`/api/auth/me` 返回 `{who:"admin",kind:"session"}`。
+- Cookie 走 HTTPS 隧道时为 `Secure: true / HttpOnly: true / SameSite: Lax` → natfrp 确实转发了 `X-Forwarded-Proto: https`，代码里的判定生效。
+
+**自动化**：`npm run auth-smoke` 扩到 **40 项**（新增 server D：Basic 开启下匿名 `/healthz`、`/`、`/api` 全 401、挑战头存在、错口令 401、对口令 200、WS 无凭据拒、WS 有凭据 `hello`）。全绿。
