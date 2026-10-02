@@ -169,8 +169,24 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - 伪造 `requestId` 应答静默 200 → 改 404。
 - `.catch(() => {})` 造成的 UI 静默降级 → 加 `net: degraded` 横幅 + 请求超时重试（也就是 Bug#6/#13 的来源）。
 
-## 已知遗留（不影响"可用"，但记档）
+## R27 — 真后端思考深度下拉（P1 联调，源码 hermes 测试床）
 
+- 测试床：`AGENTSLOT_HERMES_CMD=~/.hermes/cache/agentslot/hermes-acp-src`（`uv run --project ~/Project/hermes-agent hermes` 的 wrapper）
+  指向 fork 的 `yl-dev/merge-20261002-1558`（= thinking-depth + mode-persist 合并版）。
+  `ps eww` + `lsof` 铁证：子进程跑的是源码仓 `acp_adapter`，`HERMES_HOME=~/.agentslot-test/home`，live `~/.hermes` 零 fd。
+- 后端广播（官方 0.21.5 二进制此处是空数组）：`configOptions=[{id:reasoning_effort, type:select,
+  options:none..max 七档(路由裁剪), currentValue:""}]`。
+- UI：头部出现第二个下拉（aria="reasoning effort"，🧠 标签）；切到 High → WS `config` 命令 →
+  服务端 `setSessionConfigOption` → 服务端状态回读 `currentValue:"high"`。
+- 切档后真实 prompt「只回答两个字：收到」→ thought 分块 + agent「收到」流式正常（回合未被切换打断）。
+- 冷槽恢复：close → `POST /resume` → `restored effort: ['high']`（hermes 侧 `loadSession` 把持久化的
+  reasoning_config 重新广播，前端下拉复原）。**R27 PASS**
+- 顺带修：resume 回放 configOptions 时 `currentValue===""` 也会被回推（"unset"不是选项值，可能被
+  严格后端拒绝）→ 只回推非空选择。
+- 顺带观察：tsx 热重启后旧 live 会话被按 pid 重挂但 metadata 空（不重连 ACP 回路）——M2 若做
+  服务端热升级需把 boot 路径改为真正 resume；当前 SIGTERM 语义（杀会话+回收）不受影响。
+
+## 已知遗留（不影响"可用"，但记档）
 - 手机经局域网 **http://** 访问时浏览器不给注册 Service Worker（非安全上下文）→ 可加到主屏当快捷方式，
   离线壳要在 HTTPS 下才有；桌面 localhost 与 HTTPS 均已验证可用。
 - Hermes 自身链接的 SQLite 3.50.4 仍有 WAL-reset bug（`hermes update` 才根治），

@@ -248,7 +248,9 @@ export class SessionManager {
       const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
       if (modeId) await conn.setSessionMode({ sessionId: row.acpSessionId, modeId }).catch(() => {});
       for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
-        if (cfg?.id && cfg.currentValue != null) {
+        // "" is a legitimate "unset / follow default" — replaying it can be rejected as an
+        // invalid option value, so only re-apply real picks.
+        if (cfg?.id && cfg.currentValue) {
           await conn
             .setSessionConfigOption({ sessionId: row.acpSessionId, configId: cfg.id, value: String(cfg.currentValue) })
             .catch(() => {});
