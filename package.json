@@ -16,7 +16,8 @@
     "lint": "npm run lint -ws --if-present",
     "test": "npm run test -ws --if-present",
     "start": "bash scripts/start.sh",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "auth-smoke": "node scripts/auth-smoke.mjs"
   },
   "engines": {
     "node": ">=22"

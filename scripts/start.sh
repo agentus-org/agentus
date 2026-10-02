@@ -37,6 +37,10 @@ if [ "$need_build" = 1 ]; then
 fi
 
 echo "[agentslot] starting on :${PORT} (open http://localhost:${PORT})"
+if [ -z "${AGENTSLOT_PASSWORD:-}" ] && [ "${AGENTSLOT_AUTH:-on}" != "off" ]; then
+  echo "[agentslot] login: admin / 123456 (default) — set AGENTSLOT_PASSWORD to change it."
+  echo "[agentslot] scripts: the machine token is written to packages/server/.data/auth.token"
+fi
 export AGENTSLOT_PORT="$PORT"
 export NODE_ENV="${NODE_ENV:-development}"
 exec node_modules/.bin/tsx watch packages/server/src/index.ts

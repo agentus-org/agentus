@@ -5,3 +5,8 @@ dist/
 .env
 *.sqlite
 *.sqlite-*
+# local data + auth key material. auth.secret signs session cookies and auth.token is
+# a password-equivalent machine credential — committing either would publish the lock.
+.data/
+auth.secret
+auth.token

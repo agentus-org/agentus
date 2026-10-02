@@ -277,3 +277,49 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   .msg { max-width: 100%; }
   .empty .big { font-size: 42px; }
 }
+
+/* ---- auth (login / splash) ---- */
+.sidebar footer { display: flex; align-items: center; gap: 6px; }
+.sidebar footer .logout-btn {
+  margin-left: auto; background: transparent; border: 1px solid var(--line);
+  color: var(--text-dim); border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  line-height: 1.4;
+}
+.sidebar footer .logout-btn:hover { color: var(--err); border-color: var(--err); }
+
+.auth-wrap {
+  min-height: 100%; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background:
+    radial-gradient(1000px 500px at 50% -10%, rgba(255, 180, 84, 0.07), transparent 60%),
+    var(--bg);
+}
+.auth-card {
+  width: 100%; max-width: 360px; background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 26px 24px 20px; display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.auth-logo { color: var(--accent); font-weight: 700; font-size: 20px; letter-spacing: 0.5px; }
+.auth-sub { font-size: 11.5px; color: var(--text-dim); margin-top: -8px; }
+.auth-note { font-size: 12.5px; color: var(--text-dim); padding: 6px 0; }
+.auth-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+.auth-field input {
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus */
+  font: inherit; font-size: 16px; padding: 10px 11px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg-raised); color: var(--text);
+}
+.auth-field input:focus { outline: none; border-color: var(--accent-dim); }
+.auth-btn {
+  margin-top: 4px; padding: 11px; min-height: 44px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--accent-dim); background: rgba(255, 180, 84, 0.12); color: var(--accent);
+  font-weight: 600;
+}
+.auth-btn:disabled { opacity: 0.6; cursor: default; }
+.auth-err { color: var(--err); font-size: 12.5px; border-left: 2px solid var(--err); padding-left: 8px; }
+.auth-warn { color: var(--accent); font-size: 11.5px; line-height: 1.5; opacity: 0.9; }
+.auth-foot { color: var(--text-dim); font-size: 11px; line-height: 1.5; border-top: 1px solid var(--line); padding-top: 10px; }
+.auth-card code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+
+@media (max-width: 480px) {
+  .auth-card { padding: 20px 16px 16px; }
+  .sidebar footer .logout-btn { min-height: 44px; padding: 2px 12px; }
+}

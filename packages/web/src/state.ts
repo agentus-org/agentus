@@ -50,11 +50,35 @@ export interface StoreSnapshot {
   conn: ConnState;
   net: NetState;
   netError: string;
+  auth: AuthState;
+  authInfo: AuthInfo | null;
+  authError: string;
+  authBusy: boolean;
   version: number;
 }
 
 export type ConnState = "connecting" | "online" | "offline";
 export type NetState = "ok" | "degraded";
+/** `unknown` = we have not asked yet (show a splash, not the login form) */
+export type AuthState = "unknown" | "in" | "out";
+
+export interface AuthInfo {
+  authEnabled: boolean;
+  authenticated: boolean;
+  kind: "session" | "token" | null;
+  username: string | null;
+  expiresAt: number | null;
+  usingDefaultPassword: boolean;
+}
+
+/** Thrown instead of a generic error when the server says 401: the caller must
+ *  show the login view, not a "network degraded" banner (a retry cannot help). */
+class AuthRequired extends Error {
+  constructor() {
+    super("unauthorized");
+    this.name = "AuthRequired";
+  }
+}
 
 class Cockpit {
   sessions: SessionInfo[] = [];
@@ -64,9 +88,14 @@ class Cockpit {
   conn: ConnState = "connecting";
   net: NetState = "ok";
   netError = "";
+  auth: AuthState = "unknown";
+  authInfo: AuthInfo | null = null;
+  authError = "";
+  authBusy = false;
   lastSeq: Record<string, number> = {};
   ws: WebSocket | null = null;
   #retry = 0;
+  #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #outbox: ClientCommand[] = [];
   #listeners = new Set<() => void>();
   #snapshot: StoreSnapshot;
@@ -109,6 +138,12 @@ class Cockpit {
       try {
         const res = await fetch(path, { ...init, signal: ac.signal });
         clearTimeout(timer);
+        if (res.status === 401) {
+          // Cookie expired / revoked: retrying cannot help, and a "network
+          // degraded" banner would misdiagnose it. Flip to the login view.
+          this.#setLoggedOut("会话已过期，请重新登录");
+          throw new AuthRequired();
+        }
         const body = res.status === 204 ? null : await res.json().catch(() => null);
         if (!res.ok) {
           const msg = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
@@ -118,6 +153,7 @@ class Cockpit {
         return body as T;
       } catch (e) {
         clearTimeout(timer);
+        if (e instanceof AuthRequired) throw e; // already handled above
         lastErr = e;
         const why = (e as Error)?.name === "AbortError" ? `请求超时 ${TIMEOUT_MS / 1000}s` : String((e as Error)?.message ?? e);
         if (attempt === attempts - 1) {
@@ -138,6 +174,137 @@ class Cockpit {
     this.bump();
   }
 
+  // ---- auth ----------------------------------------------------------------
+
+  #setLoggedOut(reason: string): void {
+    const wasIn = this.auth === "in";
+    this.auth = "out";
+    this.authError = wasIn ? reason : this.authError;
+    if (this.ws) {
+      // Drop the socket *before* nulling it so its onclose handler cannot start a
+      // reconnect loop we just decided to stop.
+      const ws = this.ws;
+      this.ws = null;
+      ws.onclose = null;
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.conn = "offline";
+    if (wasIn || this.sessions.length) {
+      this.sessions = [];
+      this.archived = [];
+      this.byId.clear();
+      this.activeId = null;
+      this.#rememberActive(null);
+    }
+    this.bump();
+  }
+
+  /** Ask the server who we are. Called once at boot: the answer decides whether
+   *  we render the cockpit or the login view (and whether opening a WS is even
+   *  worth it — an unauthenticated upgrade is refused with 401). */
+  async checkAuth(): Promise<void> {
+    try {
+      const info = await this.#req<AuthInfo>("/api/auth/me", undefined, { retry: false, timeoutMs: 8000 });
+      this.authInfo = info;
+      if (info.authEnabled && !info.authenticated) {
+        this.#setLoggedOut("");
+        this.authError = "";
+        return;
+      }
+      this.#retry = 0;
+      this.auth = "in";
+      this.authError = "";
+      this.bump();
+      this.connect();
+      void this.refreshArchived();
+    } catch (e) {
+      if (e instanceof AuthRequired) return; // #req already flipped us out
+      const msg = `无法连接服务端：${String((e as Error).message ?? e)}`;
+      if (this.auth === "in") {
+        // Transient outage (server restarting): keep the cockpit and let the net
+        // banner explain. Flipping to the login view here would lose the
+        // operator's place for a problem that fixes itself.
+        this.#setNet(false, msg);
+        this.#scheduleRecheck(Math.min(10_000, 800 * 2 ** this.#retry++));
+        return;
+      }
+      this.auth = "out";
+      this.authError = msg;
+      this.bump();
+    }
+  }
+
+  /** One pending re-check at a time: onclose and a failed check must not stack
+   *  into overlapping retry loops (that is how a phone in a lift hammers a server). */
+  #scheduleRecheck(ms: number): void {
+    if (this.#retryTimer) return;
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = null;
+      void this.checkAuth();
+    }, ms);
+  }
+
+  /** Operator login. Errors are surfaced in the form, never as a net banner. */
+  async login(username: string, password: string): Promise<boolean> {
+    if (this.authBusy) return false;
+    this.authBusy = true;
+    this.authError = "";
+    this.bump();
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.status === 401) {
+        this.authError = "用户名或密码不正确";
+        return false;
+      }
+      if (res.status === 429) {
+        const body = (await res.json().catch(() => ({}))) as { retryAfterMs?: number };
+        const secs = Math.ceil((body.retryAfterMs ?? 30_000) / 1000);
+        this.authError = `尝试次数过多，请 ${secs} 秒后再试`;
+        return false;
+      }
+      if (!res.ok) {
+        this.authError = `登录失败：HTTP ${res.status}`;
+        return false;
+      }
+      const body = (await res.json()) as { username: string; expiresAt: number };
+      this.authInfo = {
+        authEnabled: true, authenticated: true, kind: "session",
+        username: body.username, expiresAt: body.expiresAt ?? null,
+        usingDefaultPassword: Boolean((body as { usingDefaultPassword?: boolean }).usingDefaultPassword),
+      };
+      this.auth = "in";
+      this.authError = "";
+      this.bump();
+      this.connect();
+      return true;
+    } catch (e) {
+      this.authError = `登录请求失败：${String((e as Error).message ?? e)}`;
+      return false;
+    } finally {
+      this.authBusy = false;
+      this.bump();
+    }
+  }
+
+  async logout(): Promise<void> {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      /* the cookie may already be gone; the local flip below is what matters */
+    }
+    this.#setLoggedOut("");
+    this.authError = "";
+    this.bump();
+  }
+
   subscribe = (fn: () => void) => {
     this.#listeners.add(fn);
     return () => this.#listeners.delete(fn);
@@ -153,6 +320,10 @@ class Cockpit {
       conn: this.conn,
       net: this.net,
       netError: this.netError,
+      auth: this.auth,
+      authInfo: this.authInfo,
+      authError: this.authError,
+      authBusy: this.authBusy,
       version: this.#version,
     };
   }
@@ -166,6 +337,7 @@ class Cockpit {
   }
 
   connect(): void {
+    if (this.auth === "out") return; // the upgrade would be refused with 401
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     this.ws = ws;
@@ -192,13 +364,23 @@ class Cockpit {
     ws.onclose = () => {
       this.conn = "offline";
       this.bump();
+      if (this.auth === "out") return;
       const delay = Math.min(10_000, 800 * 2 ** this.#retry++);
-      setTimeout(() => this.connect(), delay);
+      // A refused upgrade is indistinguishable from a network drop in the browser
+      // (both surface as close code 1006), so re-ask /api/auth/me before dialling
+      // again. That is how an expired cookie becomes a login screen instead of a
+      // socket retrying forever behind a "reconnecting" spinner.
+      this.#scheduleRecheck(delay);
     };
     ws.onerror = () => ws.close();
   }
 
   send(cmd: ClientCommand): void {
+    if (this.auth === "out") {
+      // Queueing here would promise a delivery that can never happen.
+      this.#setNet(false, "未登录 — 请先登录再发送指令");
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(cmd));
       return;

@@ -268,3 +268,23 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **顺带修复**：`WEB_DIST`/`DATA_DIR` 改按**文件位置**解析（此前按 cwd，`scripts/start.sh`
 从仓库根启动会指向 `packages/server/web/dist` → 配上浏览器 SW 缓存 = 白页且无任何报错）；
 启动时 dist 缺失会**大声告警**；mock 路径用 `fileURLToPath`（路径含空格不再 %编码）。
+
+## R39–R44 · 登录鉴权（默认 admin / 123456，参考 hermes-studio）
+
+**R39 界面速览实拍**：为 `track.md` §10 拍 6 张真 Edge 截图（真 hermes 槽 → 会话流 / 权限卡 / 完整回合 / 工具卡展开 / 手机抽屉 / 手机会话）。拍摄脚本 `shots{,2,3}.mjs`；顺带修正 `track.md` 时间线里一处漏换行。
+
+**R40 登录门（真 Edge + CDP）**
+- 匿名首屏 → 登录卡（`用户名` 预填 `admin`、密码、登录按钮、默认口令警告），错误密码 → `用户名或密码不正确`，正确 → 驾驶舱（rail 14 槽、WS `● online`）
+- 页面内 `fetch('/api/sessions')` 无 Cookie → **401**；`new WebSocket('/ws')` 无 Cookie → **refused**（升级在握手前被拒）
+- `document.cookie` 为空 → 会话 Cookie **HttpOnly 生效**（JS 读不到，也写不动）
+
+**R41 登出与吊销**：点 ⏻ → 回登录卡；`/api/sessions` → 401；reload 仍在门内。
+（设计点：无状态 Cookie 若只"清 Cookie"，登出后旧值直到过期仍然有效；故会话体带 `jti`，登出写入内存吊销集 —— 实测复用旧 Cookie 立即 401。）
+
+**R42 手机登录（390×844）**：`scrollWidth == innerWidth == 390`（零横向溢出）、输入框 `16px`（iOS 不缩放）、登录按钮 `46.5px`（≥44）。
+
+**R43 鉴权不破坏本职**：登录后建真 hermes 槽 → `configOptions=[reasoning_effort]`、`modes` 有 → 切 high → 流式回「在线」，trace `effort high · mode default`、`ctx 13k/1000k`、WS `● online`。
+
+**R44 伪 Cookie（CDP 在网线上注入，JS 注入被浏览器拒掉正好证明 HttpOnly 起效）**：伪造签名段 → 首屏落回登录卡、`/api/sessions` 401、WS refused，且 **6 秒内 0 次 `/api` 请求**（客户端退避，不会对着门狂敲）。
+
+**自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`AGENTSLOT_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。

@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
+import * as auth from "./auth.js";
 import type { BackendId, ClientCommand, PermissionDecision, ServerEvent } from "@agentslot/shared";
 
 const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
@@ -23,6 +24,15 @@ const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const store = new Store(path.join(DATA_DIR, "agentslot.sqlite"));
+
+// Auth key material next to the store: a restart must NOT log the operator out,
+// and the machine token has to stay stable for scripts/CI.
+const authStatus = auth.initAuth(DATA_DIR);
+
+function clientIp(req: IncomingMessage): string {
+  const fwd = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+  return fwd || req.socket.remoteAddress || "unknown";
+}
 
 // ---- event fan-out to all WS clients + per-client replay tracking ----
 const clients = new Map<string, { ws: WebSocket; lastSeen: Map<string, number> }>();
@@ -109,6 +119,65 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   try {
+    // ---- auth gate. Everything under /api except the login/me endpoints is
+    // closed; the SPA shell, its assets and /healthz stay public so the login
+    // page itself can load (the browser has no cookie yet at that point).
+    if (auth.requiresAuth(url.pathname)) {
+      const who = auth.authenticate(req.headers, url);
+      if (!who) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: "unauthorized", authRequired: true }));
+      }
+      (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal = who;
+    }
+
+    if (url.pathname === "/api/auth/me" && req.method === "GET") {
+      const who = auth.authenticate(req.headers, url);
+      return send(res, 200, {
+        authEnabled: authStatus.enabled,
+        authenticated: Boolean(who),
+        kind: who?.kind ?? null,
+        username: who?.username ?? null,
+        expiresAt: who?.expiresAt ?? null,
+        usingDefaultPassword: authStatus.usingDefaultPassword,
+      });
+    }
+    if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      const secure = auth.isSecureRequest(req.headers);
+      const body = await readJson(req);
+      const username = String(body.username ?? "");
+      const password = String(body.password ?? "");
+      const ip = clientIp(req);
+      const gate = auth.loginAllowed(ip);
+      if (!gate.allowed) {
+        // 429 so the UI can say "slow down" rather than "wrong password"
+        res.writeHead(429, { "content-type": "application/json", "retry-after": String(Math.ceil(gate.retryAfterMs / 1000)) });
+        return res.end(JSON.stringify({ error: "too_many_attempts", retryAfterMs: gate.retryAfterMs }));
+      }
+      if (!auth.verifyCredentials(username, password)) {
+        auth.recordLoginFailure(ip);
+        const left = auth.loginLimits().maxFails;
+        const after = auth.loginAllowed(ip);
+        console.warn(`[agentslot] failed login for "${username}" from ${ip}${after.allowed ? "" : " (locked out)"}`);
+        return send(res, 401, { error: "bad_credentials", hint: `username/password rejected (limit ${left} tries per IP)` });
+      }
+      auth.recordLoginSuccess(ip);
+      const { value, expiresAt } = auth.issueSession(authStatus.username);
+      console.log(`[agentslot] login ok: ${authStatus.username} from ${ip}`);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": auth.sessionCookie(value, Math.floor(authStatus.sessionTtlMs / 1000), secure),
+      });
+      return res.end(JSON.stringify({ username: authStatus.username, expiresAt, usingDefaultPassword: authStatus.usingDefaultPassword }));
+    }
+    if (url.pathname === "/api/auth/logout" && req.method === "POST") {
+      // Revoke, don't just clear: see auth.revokeSession
+      const cookie = auth.parseCookies(String(req.headers.cookie ?? ""))[auth.AUTH_COOKIE_NAME];
+      const revoked = auth.revokeSession(cookie);
+      console.log(`[agentslot] logout from ${clientIp(req)}${revoked ? "" : " (no live session)"}`);
+      res.writeHead(200, { "content-type": "application/json", "set-cookie": auth.clearedCookie(auth.isSecureRequest(req.headers)) });
+      return res.end(JSON.stringify({ ok: true, revoked }));
+    }
     if (url.pathname === "/healthz") {
       return send(res, 200, { ok: true, ts: Date.now(), backends: Object.keys(BACKENDS) });
     }
@@ -237,7 +306,23 @@ const httpServer = createServer(async (req, res) => {
 });
 
 // ---- WebSocket ----
-const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+// noServer + a manual upgrade hook: the handshake must be authenticated *before*
+// it becomes a socket. A browser cannot set headers on a WS handshake, so auth
+// rides on the cookie (sent automatically, same-origin) — or ?token= for scripts.
+const wss = new WebSocketServer({ noServer: true });
+httpServer.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url ?? "/", "http://x");
+  if (url.pathname !== "/ws") {
+    socket.destroy();
+    return;
+  }
+  if (!auth.authenticate(req.headers, url)) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
 wss.on("connection", (ws) => {
   const clientId = randomUUID().slice(0, 8);
   clients.set(clientId, { ws, lastSeen: new Map() });
@@ -309,6 +394,20 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 httpServer.listen(PORT, "0.0.0.0", () => {
   installSafetyNet(); // we own the port: from here on, survive per-request errors
   console.log(`[agentslot-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+  // Auth state belongs in the boot log: "is this thing locked, and with which
+  // password?" is the first question anyone asks when it is on a LAN.
+  if (!authStatus.enabled) {
+    console.warn("[agentslot-server] ⚠ AGENTSLOT_AUTH=off — every visitor can drive your agents. Local dev only.");
+  } else if (authStatus.usingDefaultPassword) {
+    console.warn(
+      `[agentslot-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
+      + "Anyone on this network can spawn agents in any directory.\n"
+      + "[agentslot-server]   set AGENTSLOT_PASSWORD (or AGENTSLOT_PASSWORD_HASH) before exposing the port.",
+    );
+  } else {
+    console.log(`[agentslot-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
+  }
+  if (authStatus.tokenFile) console.log(`[agentslot-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
   // A wrong/absent dist used to fail silently: the browser's service worker served a stale
   // shell, every request looked fine, and the operator just saw a blank page (QA R36).
   // Say it out loud at boot instead.

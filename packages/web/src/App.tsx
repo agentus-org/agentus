@@ -8,8 +8,13 @@ export function App(): JSX.Element {
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState(false);
 
-  useEffect(() => { cockpit.connect(); }, []);
+  // Who are we? Asked before anything else: /api/auth/me decides between the login
+  // view and the cockpit. Dialling the socket first would be wasted — an
+  // unauthenticated upgrade is refused with 401.
+  useEffect(() => { void cockpit.checkAuth(); }, []);
   useEffect(() => { setDrawer(false); }, [snap.activeId]);
+
+  if (snap.auth !== "in") return <AuthScreen />;
 
   return (
     <div className="app">
@@ -21,8 +26,68 @@ export function App(): JSX.Element {
   );
 }
 
+/** Login / splash. Deliberately plain — this is a door, not a dashboard. */
+function AuthScreen(): JSX.Element {
+  const { auth, authError, authBusy, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const splash = auth === "unknown";
+  const submit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    void cockpit.login(username.trim(), password).then((ok) => { if (ok) setPassword(""); });
+  };
+  return (
+    <div className="auth-wrap">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-logo">⛟ AgentSlot</div>
+        <div className="auth-sub">keep your agents on the track</div>
+        {splash ? (
+          <div className="auth-note">正在检查登录状态…</div>
+        ) : (
+          <>
+            <label className="auth-field">
+              <span>用户名</span>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+              />
+            </label>
+            <label className="auth-field">
+              <span>密码</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </label>
+            {authError ? <div className="auth-err" role="alert">{authError}</div> : null}
+            <button className="auth-btn" type="submit" disabled={authBusy}>
+              {authBusy ? "登录中…" : "登录"}
+            </button>
+            {authInfo?.usingDefaultPassword ? (
+              <div className="auth-warn">
+                ⚠ 当前是默认口令 <code>admin / 123456</code>。够挡住误闯，挡不住同网段的人 —
+                设置 <code>AGENTSLOT_PASSWORD</code> 后重启即可更换。
+              </div>
+            ) : null}
+            <div className="auth-foot">
+              会话保存在 HttpOnly Cookie 中（7 天）。脚本可用 <code>Authorization: Bearer</code> +
+              数据目录里的 <code>auth.token</code>。
+            </div>
+          </>
+        )}
+      </form>
+    </div>
+  );
+}
+
 function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
-  const { sessions, archived, activeId, conn, net, netError } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [q, setQ] = useState("");
   // Search spans live + cold slots by title / backend / cwd — the rail is a launch pad,
   // so "where was that session?" must work without opening each slot (M4).
@@ -115,6 +180,14 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
         <span className={`conn ${conn === "online" ? "" : "off"}`}>● {conn}</span>
         {" · "}
         <span title={location.hostname}>{location.host}</span>
+        <button
+          className="logout-btn"
+          title={`signed in as ${authInfo?.username ?? "?"} — sign out`}
+          aria-label="sign out"
+          onClick={() => void cockpit.logout()}
+        >
+          ⏻
+        </button>
       </footer>
     </aside>
   );

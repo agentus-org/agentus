@@ -17,3 +17,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # the auth matrix spawns its own server on scratch ports, so no service is needed
+      - run: npm run auth-smoke

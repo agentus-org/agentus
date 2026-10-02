@@ -5,9 +5,9 @@ agents: open several sessions in the browser, each one backed by a real
 `hermes acp` / `qodercli --acp` subprocess, and drive them from any device.
 
 > **Red line:** the UI holds *zero* intelligence. No agent loop, no model calls, no
-> prompt engineering. The server does exactly five things — spawn a child, relay ACP
-> JSON-RPC, stream events to the browser, persist the transcript, surface permission
-> prompts. Reasoning lives in the CLI processes.
+> prompt engineering. The server does exactly six things — gate access, spawn a child,
+> relay ACP JSON-RPC, stream events to the browser, persist the transcript, surface
+> permission prompts. Reasoning lives in the CLI processes.
 
 ```
 [browser React SPA]  ──HTTP + WS──▶  [AgentSlot server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
@@ -29,7 +29,8 @@ python3 scripts/setup-hermes-test-home.py
 
 # 2) run it — installs if needed, builds, serves
 npm start
-# open http://localhost:8787, "+ new slot", pick a backend + working directory
+# open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
+# then "+ new slot", pick a backend + working directory
 ```
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
@@ -62,6 +63,55 @@ layer never changes.
 | `AGENTSLOT_ALLOW_LIVE_HOME` | unset | `1` = allow spawning against `~/.hermes` (you almost never want this) |
 | `AGENTSLOT_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
 | `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
+
+## Login
+
+The cockpit is behind a login by default — this thing spawns processes that write to
+your disk, so an open port is a remote shell waiting to happen.
+
+```
+username: admin
+password: 123456     (default — change it)
+```
+
+Change it with `AGENTSLOT_PASSWORD` (or `AGENTSLOT_PASSWORD_HASH` holding
+`scrypt:<salt>:<hex>`, so no plaintext sits in your env), then restart. The server
+warns on every boot while the default is still in use, and the login card says so too.
+
+Two credentials exist, deliberately:
+
+| credential | how it travels | who uses it |
+|---|---|---|
+| **session cookie** | `HttpOnly` + `SameSite=Lax`, HMAC-SHA256 signed, 7d | the browser (issued by `POST /api/auth/login`) |
+| **machine token** | `Authorization: Bearer <t>` or `?token=<t>` | scripts, CI, launchers — read it from `<DATA_DIR>/auth.token` (0600) |
+
+The cookie is `HttpOnly` rather than a token in `localStorage`, and it rides along on
+the WebSocket handshake for free. Everything under `/api` is closed to anonymous
+callers; the app shell, its assets, `/healthz` and `/api/auth/*` stay open so the
+login page itself can load. `scripts/*.mjs` read the machine token automatically
+(`scripts/lib/auth.mjs`).
+
+Auth environment:
+
+| var | default | meaning |
+|---|---|---|
+| `AGENTSLOT_AUTH` | `on` | `off` = no login at all (local hacking; the boot log will scold you) |
+| `AGENTSLOT_USERNAME` | `admin` | operator name |
+| `AGENTSLOT_PASSWORD` | `123456` | operator password (plaintext in env) |
+| `AGENTSLOT_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `AGENTSLOT_PASSWORD` if set |
+| `AGENTSLOT_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
+| `AGENTSLOT_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
+| `AGENTSLOT_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
+| `AGENTSLOT_LOGIN_MAX_FAILS` / `AGENTSLOT_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
+
+What this is *not*: TLS. A bare LAN IP cannot carry a trusted certificate, so the
+password crosses the wire in clear text on your own network. Treat it as a lock on
+the shed — enough to stop a colleague or a port scanner, not a hostile network.
+Put it behind a TLS proxy (and `X-Forwarded-Proto: https`, which flips the cookie to
+`Secure`) if you expose it beyond your LAN.
+
+Logout revokes the session id server-side, so "sign out" ends the session instead of
+just hiding the UI — the cookie stops working immediately.
 
 ## Isolation (read this before pointing it at your real agent)
 
@@ -112,10 +162,16 @@ to your production memory daemon), and `.env` copied 0600.
 
 ```bash
 npm run typecheck
+npm run auth-smoke                        # 30 assertions: the lock, both credentials
 node scripts/smoke.mjs mock "hello"      # end-to-end against the mock agent
 ```
 
-Browser QA evidence (28+ rounds, each with repro → root cause → fix → regression)
+`auth-smoke` boots its own servers on scratch ports with throwaway data dirs, so it
+runs anywhere (CI included) and covers: anonymous REST/WS refusal, brute-force
+lockout, cookie signing and tamper detection, expiry, WS-via-cookie, the machine
+token, logout revocation, and the `AGENTSLOT_AUTH=off` escape hatch.
+
+Browser QA evidence (44 rounds, each with repro → root cause → fix → regression)
 lives in [`m1-qa-log.md`](./m1-qa-log.md). The `mock` backend triggers extra paths on
 demand: `[tool]` (permission flow), `[think]`, `[plan]`, `[slow]` (reconnect drills),
 `[sink]` (mid-turn child crash).
