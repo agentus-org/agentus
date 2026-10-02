@@ -20,6 +20,20 @@ const send = async (conn, sid, update) => {
   await conn.sessionUpdate({ sessionId: sid, update });
 };
 
+const MODES = [
+  { id: "default", name: "Default", description: "Ask before edits" },
+  { id: "accept_edits", name: "Accept Edits", description: "Auto-approve file edits" },
+  { id: "dont_ask", name: "Yolo", description: "Never ask" },
+];
+
+// One shape for "what this session currently runs with", shared by newSession and
+// loadSession so a resume re-announces the session's OWN config instead of a default.
+const configOptionsFor = (config) => [
+  { id: "reasoning_effort", name: "Reasoning Effort", type: "select",
+    currentValue: config.reasoning_effort || "medium",
+    options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+];
+
 const agent = () => ({
   async initialize() {
     return {
@@ -49,23 +63,25 @@ const agent = () => ({
     }, 30);
     return {
       sessionId,
-      modes: {
-        currentModeId: "default",
-        availableModes: [
-          { id: "default", name: "Default", description: "Ask before edits" },
-          { id: "accept_edits", name: "Accept Edits", description: "Auto-approve file edits" },
-          { id: "dont_ask", name: "Yolo", description: "Never ask" },
-        ],
-      },
-      configOptions: [
-        { id: "reasoning_effort", name: "Reasoning Effort", type: "select",
-          currentValue: "medium",
-          options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
-      ],
+      modes: { currentModeId: "default", availableModes: MODES },
+      configOptions: configOptionsFor({}),
     };
   },
 
-  async loadSession(params) { return this.newSession(params); },
+  // A real agent restores its own session state on load (hermes re-reads the persisted
+  // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
+  // minting a fresh one, so a resume doesn't silently reset modes/config.
+  async loadSession({ sessionId, cwd }) {
+    if (sessions.has(sessionId)) {
+      const s = sessions.get(sessionId);
+      return {
+        sessionId,
+        modes: { currentModeId: s.currentModeId || "default", availableModes: MODES },
+        configOptions: configOptionsFor(s.config || {}),
+      };
+    }
+    return this.newSession({ cwd });
+  },
 
   async setSessionMode({ sessionId, modeId }) {
     if (!sessions.has(sessionId)) throw new Error("no such session");

@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
@@ -12,8 +13,13 @@ import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
 import type { BackendId, ClientCommand, PermissionDecision, ServerEvent } from "@agentslot/shared";
 
 const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
-const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.join(process.cwd(), ".data");
-const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.join(process.cwd(), "../web/dist");
+// Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
+// launches from the repo root while the dev server runs from packages/server, and a
+// cwd-relative path would silently open a second database (the operator's slots would
+// "disappear"). Both entry points must land on the same store.
+const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
+const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.resolve(HERE, "../.data");
+const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const store = new Store(path.join(DATA_DIR, "agentslot.sqlite"));
@@ -303,6 +309,15 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 httpServer.listen(PORT, "0.0.0.0", () => {
   installSafetyNet(); // we own the port: from here on, survive per-request errors
   console.log(`[agentslot-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+  // A wrong/absent dist used to fail silently: the browser's service worker served a stale
+  // shell, every request looked fine, and the operator just saw a blank page (QA R36).
+  // Say it out loud at boot instead.
+  if (!fs.existsSync(path.join(WEB_DIST, "index.html"))) {
+    console.error(
+      `[agentslot-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
+      + `[agentslot-server]   build it with:  NODE_ENV=development npm run build -w @agentslot/web`,
+    );
+  }
 });
 httpServer.on("error", (err) => {
   console.error(`[agentslot] cannot listen on ${PORT}: ${(err as Error).message}`);

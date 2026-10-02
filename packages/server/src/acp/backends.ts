@@ -10,6 +10,7 @@
 // hard error unless AGENTSLOT_ALLOW_LIVE_HOME=1 is set deliberately.
 import fs from "node:fs";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 export interface HomeIsolation {
@@ -62,10 +63,12 @@ export const BACKENDS: Record<string, BackendSpec> = {
   mock: {
     label: "Mock Agent",
     cmd: process.env.AGENTSLOT_MOCK_CMD || "node",
-    // resolve mock relative to this file, not process.cwd()
+    // resolve mock relative to this file, not process.cwd() (start.sh launches from the
+    // repo root, the dev server from packages/server); fileURLToPath so a clone inside a
+    // path with spaces ("~/My Projects/…") doesn't arrive percent-encoded
     args: [
       path.join(
-        path.dirname(new URL(import.meta.url).pathname),
+        path.dirname(fileURLToPath(import.meta.url)),
         "../../mock/agent.mjs",
       ),
     ],

@@ -246,3 +246,25 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 **R33 修复后复验**：顶栏 select 44/44、ghost 按钮 44、发送键 46、权限卡按钮 8 个全 44；
 斜杠面板移动端 44px 行 + 40vh 上限。PWA：SW `scope=http://127.0.0.1:8787/`、`active`、
 缓存 `agentslot-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。
+
+## R34–R38 — 真 hermes 回归 + 冷槽位语义连修三处（2026-10-02 下午）
+
+**R34 真 hermes（源码测试床）**：新建会话广播 `reasoning_effort`；顶栏切 High 生效；
+prompt「只回答两个字：收到」→ 思考块 + 「收到」；用量表 **`ctx 13k/1000k`**（真 agent 上报
+used/size，1M 窗口）；追踪行 `effort high · mode default`。
+
+**R36/R37/R38 抓到三处真问题（都属"重启/关闭后信息丢失"类）**：
+1. `#updateSession` 只持久化 status/pid/title，**不写 modes/configOptions/usage/commands** →
+   运行期切的档位、累积的用量、agent 广播的命令列表在重启/关闭后全丢（AionUi F-DISPLAY-07
+   明确要求用量持久化，我们此前没做到）。修：`?? row.*` 合并写回。
+2. 冷槽位栏用 `listSessions(false)`（排除 `status='closed'`）→ **点 close 的槽位从界面消失**，
+   与 close 提示词"转存为冷槽位可恢复"矛盾（真删除是冷槽位上的 ✕ purge）。修：`archived()`
+   含 closed 行。
+3. resume 时以 agent 重播的 currentValue 为准 → **记不住自身状态的后端会在每次 resume 把档位/
+   模式悄悄重置**（mock 就复现了：high → medium）。修：以归档快照里的操作者选择覆盖同名选项，
+   再回推给 agent；mock 的 `loadSession` 也改成"重播同一会话"以贴合真 agent 行为。
+   证据（R38）：close 前后与 resume 后均为 `effort@high` + `mode=dont_ask`。
+
+**顺带修复**：`WEB_DIST`/`DATA_DIR` 改按**文件位置**解析（此前按 cwd，`scripts/start.sh`
+从仓库根启动会指向 `packages/server/web/dist` → 配上浏览器 SW 缓存 = 白页且无任何报错）；
+启动时 dist 缺失会**大声告警**；mock 路径用 `fileURLToPath`（路径含空格不再 %编码）。

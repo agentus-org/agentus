@@ -244,10 +244,25 @@ export class SessionManager {
       const loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: [],
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | undefined;
-      // the agent re-announces its modes/options on load — prefer those over the
-      // archived snapshot, else the mode/effort selects vanish after a resume
+      // The agent re-announces its modes/options on load — prefer that SET (capabilities can
+      // differ after an upgrade), but keep the OPERATOR's pick for any option that still
+      // exists: a backend that does not restore its own session state would otherwise silently
+      // reset thinking depth on every resume while the rail still showed the old choice.
+      const storedPicks = new Map(
+        ((row.configOptions ?? []) as ConfigOptionView[])
+          .filter((o) => o?.id && o.currentValue)
+          .map((o) => [o.id, o.currentValue]),
+      );
       if (loaded?.modes) live.info.modes = loaded.modes;
-      if (loaded?.configOptions?.length) live.info.configOptions = loaded.configOptions;
+      if (loaded?.configOptions?.length) {
+        live.info.configOptions = loaded.configOptions.map((o) => (
+          storedPicks.has(o.id) ? { ...o, currentValue: storedPicks.get(o.id) } : o
+        ));
+      }
+      // same for the mode: the archived mode wins over a backend default
+      if (row.modes && live.info.modes && (row.modes as SessionModeState).currentModeId) {
+        live.info.modes = { ...live.info.modes, currentModeId: (row.modes as SessionModeState).currentModeId };
+      }
       this.#updateSession(live);
       const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
       if (modeId) await conn.setSessionMode({ sessionId: row.acpSessionId, modeId }).catch(() => {});
@@ -277,7 +292,11 @@ export class SessionManager {
   /** Sessions we know about on disk but have no process for (rail's cold slots). */
   archived(limit = 20): SessionInfo[] {
     return this.#store
-      .listSessions(false)
+      // include closed rows: "close" means "kill the process, keep the transcript as a cold
+      // slot" (that is what the UI's close prompt promises) — filtering status!='closed' made
+      // the slot vanish from the rail entirely, leaving the transcript unreachable even though
+      // it was still on disk. Real deletion is the separate ✕ purge button.
+      .listSessions(true)
       .filter((r) => !this.#sessions.has(r.id))
       .slice(0, limit)
       .map((r) => ({
@@ -537,12 +556,21 @@ export class SessionManager {
     this.#emit({ t: "session", session: s.info });
     const row = this.#store.getSession(s.info.id);
     if (row) {
+      // Persist the LIVE metadata too, not just status/pid: without modes/configOptions/
+      // usage/commands here, a restart (or a cold-slot rail) shows a slot that has lost the
+      // operator's thinking depth, the context gauge and the slash palette — the stored
+      // snapshot stayed frozen at creation time. `??` keeps whatever the row already had
+      // when the live value is genuinely absent (e.g. before the agent announces it).
       this.#store.upsertSession({
         ...row,
         acpSessionId: s.info.acpSessionId ?? row.acpSessionId,
         status: s.info.status,
         pid: s.info.pid,
         title: s.info.title,
+        modes: s.info.modes ?? row.modes ?? null,
+        configOptions: s.info.configOptions ?? row.configOptions ?? [],
+        usage: s.info.usage ?? row.usage ?? null,
+        commands: s.info.commands?.length ? s.info.commands : (row.commands ?? []),
       });
     }
   }
