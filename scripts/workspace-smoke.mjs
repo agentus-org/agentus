@@ -107,16 +107,16 @@ try {
     headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ backend: "mock", cwd: ROOT }),
   }));
-  check("created a slot with no workspace override", created.workspace === null || created.workspace === undefined, String(created.workspace));
+  check("created a session with no workspace override", created.workspace === null || created.workspace === undefined, String(created.workspace));
   const setWs = await j(await fetch(`${base}/api/sessions/${created.id}/workspace`, {
     method: "POST",
     headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ path: root }),
   }));
   check("workspace can be pointed at another directory", setWs.workspace === root, String(setWs.workspace));
-  check("the running slot keeps its spawn cwd", setWs.cwd === ROOT, `${setWs.cwd} vs ${ROOT}`);
+  check("the running session keeps its spawn cwd", setWs.cwd === ROOT, `${setWs.cwd} vs ${ROOT}`);
   const rooted = await j(await fetch(`${base}/api/fs/dirs?sessionId=${created.id}`, { headers: H }));
-  check("fs/dirs?sessionId= resolves the slot workspace", rooted.path === root, rooted.path);
+  check("fs/dirs?sessionId= resolves the session workspace", rooted.path === root, rooted.path);
   check("the workspace survives a re-read of the session list",
     (await j(await fetch(`${base}/api/sessions`, { headers: H }))).live.some((s) => s.workspace === root));
   check("workspace rejects a path that is not a directory",
@@ -124,11 +124,23 @@ try {
       method: "POST", headers: { "content-type": "application/json", ...H },
       body: JSON.stringify({ path: path.join(root, "notes.txt") }),
     })).status === 400);
-  check("workspace rejects an unknown slot",
+  check("workspace rejects an unknown session",
     (await fetch(`${base}/api/sessions/nope/workspace`, {
       method: "POST", headers: { "content-type": "application/json", ...H },
       body: JSON.stringify({ path: root }),
     })).status === 404);
+
+  // ---- fork (ACP session/fork) ---------------------------------------------------
+  const forkRes = await fetch(`${base}/api/sessions/${created.id}/fork`, { method: "POST", headers: H });
+  const forked = await forkRes.json();
+  check("fork returns a new live session", forkRes.status === 200 && forked.id && forked.id !== created.id, `${forkRes.status} ${forked.id ?? forked.error}`);
+  check("the fork gets its own agent-side session id", forked.acpSessionId && forked.acpSessionId !== created.acpSessionId,
+    `${forked.acpSessionId} vs ${created.acpSessionId}`);
+  check("the fork keeps the parent's workspace", (forked.workspace ?? null) === (created.workspace ?? null), String(forked.workspace));
+  check("the fork's title says where it came from", /\bfork\b/.test(String(forked.title)), String(forked.title));
+  check("the fork shows up in the session list", (await j(await fetch(`${base}/api/sessions`, { headers: H }))).live.some((s) => s.id === forked.id));
+  check("forking an unknown session is a 404", (await fetch(`${base}/api/sessions/nope/fork`, { method: "POST", headers: H })).status === 404);
+  await fetch(`${base}/api/sessions/${forked.id}`, { method: "DELETE", headers: H });
 
   // ---- models (ACP session model state + session/set_model) ----------------------
   check("the mock advertises its models", created.models?.availableModels?.length === 3,
@@ -151,7 +163,7 @@ try {
     method: "POST", headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ limit: 64000 }),
   }));
-  check("context-limit is stored on the slot", withLimit.contextLimit === 64000, String(withLimit.contextLimit));
+  check("context-limit is stored on the session", withLimit.contextLimit === 64000, String(withLimit.contextLimit));
   check("context-limit survives a re-read",
     (await j(await fetch(`${base}/api/sessions`, { headers: H }))).live.some((s) => s.id === created.id && s.contextLimit === 64000));
   check("context-limit rejects a non-positive number", (await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
@@ -176,7 +188,7 @@ try {
   });
   await Promise.race([termDone, sleep(15_000)]);
   const joined = termOut.join("");
-  check("terminal starts in the slot workspace", termReady?.cwd === root, String(termReady?.cwd));
+  check("terminal starts in the session workspace", termReady?.cwd === root, String(termReady?.cwd));
   check("terminal runs the command and streams the output", /WORKSPACE_SMOKE_OK/.test(joined), joined.slice(-120).replace(/\n/g, "\\n"));
   term.send(JSON.stringify({ t: "term-close" }));
   await sleep(600);

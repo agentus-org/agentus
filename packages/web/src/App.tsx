@@ -9,10 +9,10 @@ import {
 } from "./voice";
 import {
   IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFile, IconFolder, IconGauge,
-  IconChip, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
+  IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
   IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
-import type { ClientCommand, PromptAttachment, TurnTrace, UsageView } from "@agentslot/shared";
+import type { ClientCommand, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -97,17 +97,54 @@ function AuthScreen(): JSX.Element {
   );
 }
 
+/** The rail groups sessions by the directory they work in — the thing an operator
+ *  actually organises their work around. The header is the folder's name (the full path
+ *  is in the tooltip), and a group collapses, so twenty sessions across four projects stay
+ *  readable. Live and cold sessions live in the same group: they belong to the same work,
+ *  and splitting them by process state was a machine's view, not the operator's. */
 function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
   const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [q, setQ] = useState("");
-  // Search spans live + cold slots by title / backend / cwd — the rail is a launch pad,
-  // so "where was that session?" must work without opening each slot (M4).
+  const [closed, setClosed] = useState<Record<string, boolean>>({});
+  const [busyId, setBusyId] = useState("");
+  const [err, setErr] = useState("");
   const needle = q.trim().toLowerCase();
-  const match = (s: { title: string; backend: string; cwd: string }) =>
-    !needle ||
-    `${s.title} ${s.backend} ${s.cwd}`.toLowerCase().includes(needle);
-  const live = sessions.filter(match);
-  const cold = archived.filter(match);
+  const match = (s: { title: string; backend: string; cwd: string; workspace?: string | null }) =>
+    !needle || `${s.title} ${s.backend} ${s.workspace || s.cwd}`.toLowerCase().includes(needle);
+
+  const groups = useMemo(() => {
+    const all = [
+      ...sessions.map((s) => ({ s, cold: false })),
+      ...archived.map((s) => ({ s, cold: true })),
+    ].filter(({ s }) => match(s));
+    const byPath = new Map<string, { path: string; label: string; items: { s: SessionInfo; cold: boolean }[] }>();
+    for (const it of all) {
+      const path = it.s.workspace || it.s.cwd;
+      const label = path.split("/").filter(Boolean).pop() ?? path;
+      const g = byPath.get(path) ?? { path, label, items: [] };
+      g.items.push(it);
+      byPath.set(path, g);
+    }
+    const activeKey = activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : "";
+    return [...byPath.values()]
+      // live before cold inside a group (a session you can talk to now beats one you cannot)
+      .map((g) => ({ ...g, items: [...g.items].sort((a, b) => (a.cold === b.cold ? 0 : a.cold ? 1 : -1)) }))
+      // the group you are working in first, then alphabetically
+      .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : a.label.localeCompare(b.label)));
+  }, [sessions, archived, activeId, needle]);
+
+  const onFork = async (id: string): Promise<void> => {
+    setBusyId(id);
+    setErr("");
+    try {
+      await cockpit.fork(id);
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+    } finally {
+      setBusyId("");
+    }
+  };
+
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
@@ -122,8 +159,8 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
           <button onClick={() => location.reload()}>reload</button>
         </div>
       ) : null}
-      <button className="new-btn" onClick={onNew} title="new slot (pick a backend + working directory)">
-        <IconPlus size={14} /> new slot
+      <button className="new-btn" onClick={onNew} title="new session (pick a backend + working directory)">
+        <IconPlus size={14} /> new session
       </button>
       <div className="rail-search-wrap">
         <IconSearch size={13} />
@@ -131,78 +168,109 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
           className="rail-search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="search slots…"
+          placeholder="search sessions…"
           aria-label="search sessions"
         />
       </div>
+      {err ? (
+        <div className="rail-error" title={err}>
+          {err}
+          <button className="draft-x" aria-label="dismiss" onClick={() => setErr("")}><IconClose size={11} /></button>
+        </div>
+      ) : null}
       <div className="session-list">
-        {live.map((s) => (
-          <div
-            key={s.id}
-            className={`session-item ${s.id === activeId ? "active" : ""}`}
-            onClick={() => cockpit.setActive(s.id)}
-          >
-            <div className="title">{s.title}</div>
-            <div className="meta">
-              <span className={`dot ${s.status}`} />
-              <span>{s.backend}</span>
-              <span>{s.status === "running" ? "running" : s.status}</span>
-              {cockpit.byId.get(s.id)?.perms.length ? (
-                <span className="badge perm">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
+        {groups.map((g) => {
+          const isOpen = Boolean(needle) || !closed[g.path];
+          const liveCount = g.items.filter((i) => !i.cold).length;
+          return (
+            <div className="rail-group" key={g.path}>
+              <button
+                type="button"
+                className={`rail-group-head ${isOpen ? "open" : ""}`}
+                title={g.path}
+                aria-expanded={isOpen}
+                data-workspace={g.path}
+                onClick={() => setClosed((c) => ({ ...c, [g.path]: !c[g.path] }))}
+              >
+                <IconChevronRight size={11} className={`rail-group-chev ${isOpen ? "open" : ""}`} />
+                <IconFolder size={12} />
+                <span className="rail-group-name">{g.label}</span>
+                <span className="rail-group-count">
+                  {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
+                </span>
+              </button>
+              {isOpen ? (
+                <div className="rail-group-body">
+                  {g.items.map(({ s, cold }) => (
+                    <div
+                      key={s.id}
+                      className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""}`}
+                      title={cold ? "resume this session" : s.title}
+                      onClick={() => (cold ? void cockpit.resume(s.id) : cockpit.setActive(s.id))}
+                    >
+                      <div className="title">{s.title}</div>
+                      <div className="meta">
+                        <span className={`dot ${cold ? "cold" : s.status}`} />
+                        <span>{s.backend}</span>
+                        {!cold ? <span>{s.status}</span> : null}
+                        {cockpit.byId.get(s.id)?.perms.length ? (
+                          <span className="badge perm">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
+                        ) : null}
+                        <span className="item-actions">
+                          {s.acpSessionId ? (
+                            <button
+                              className="item-btn"
+                              title="fork this session — the agent copies its context into a new session"
+                              aria-label={`fork ${s.title}`}
+                              disabled={busyId === s.id}
+                              onClick={(e) => { e.stopPropagation(); void onFork(s.id); }}
+                            >
+                              {busyId === s.id ? "…" : <IconFork size={12} />}
+                            </button>
+                          ) : null}
+                          {cold ? (
+                            <>
+                              <button
+                                className="item-btn"
+                                title="resume this session (respawn the agent and reload its transcript)"
+                                aria-label={`resume ${s.title}`}
+                                onClick={(e) => { e.stopPropagation(); void cockpit.resume(s.id); }}
+                              >
+                                <IconResume size={12} />
+                              </button>
+                              <button
+                                className="item-btn danger"
+                                title="delete this session and its transcript for good"
+                                aria-label={`delete ${s.title}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`delete "${s.title}"?\n\nthe transcript is removed from disk — this cannot be undone.`)) {
+                                    cockpit.purgeCold(s.id);
+                                  }
+                                }}
+                              >
+                                <IconClose size={12} />
+                              </button>
+                            </>
+                          ) : null}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </div>
+          );
+        })}
+        {!groups.length && (
+          <div className="rail-empty">
+            {needle ? "no session matches that search." : "No sessions yet — create one."}
           </div>
-        ))}
-        {!live.length && (
-          <div style={{ padding: 16, color: "var(--text-dim)", fontSize: 13 }}>
-            {needle ? "no live slot matches that search." : "No sessions yet — open a slot."}
-          </div>
-        )}
-        {cold.length > 0 && (
-          <>
-            <div className="rail-sep">
-              <span>cold slots</span>
-              <span className="hint" title="sessions kept in SQLite after their process exited">
-                on disk · {cold.length}{needle ? ` of ${archived.length}` : ""}
-              </span>
-            </div>
-            {cold.map((s) => (
-              <div key={s.id} className="session-item cold" title="resume this cold slot" onClick={() => void cockpit.resume(s.id)}>
-                <div className="title">{s.title}</div>
-                <div className="meta">
-                  <span className="dot cold" />
-                  <span>{s.backend}</span>
-                  <button
-                    className="cold-resume"
-                    title="resume this cold slot (respawn the agent and reload its transcript)"
-                    aria-label={`resume cold slot ${s.title}`}
-                    onClick={(e) => { e.stopPropagation(); void cockpit.resume(s.id); }}
-                  >
-                    <IconResume size={13} />
-                  </button>
-                  <button
-                    className="cold-purge"
-                    title="delete this cold slot and its transcript for good"
-                    aria-label={`delete cold slot ${s.title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`delete cold slot "${s.title}"?\n\nthe transcript is removed from disk — this cannot be undone.`)) {
-                        cockpit.purgeCold(s.id);
-                      }
-                    }}
-                  >
-                    <IconClose size={12} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </>
         )}
       </div>
       <footer>
-        <span className={`conn ${conn === "online" ? "" : "off"}`}>● {conn}</span>
-        {" · "}
-        <span title={location.hostname}>{location.host}</span>
+        <span className={`conn ${conn}`}>{conn === "online" ? "● online" : conn}</span>
+        {authInfo ? <span className="who" title={`signed in as ${authInfo.username ?? "?"}`}>{authInfo.username}</span> : null}
         <button
           className="logout-btn"
           title={`signed in as ${authInfo?.username ?? "?"} — sign out`}
@@ -231,12 +299,12 @@ function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
     return (
       <div className="main">
         <div className="chat-head">
-          <button className="icon-btn menu-btn" onClick={onMenu} title="slots" aria-label="slots"><IconMenu /></button>
+          <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
           <span className="title">AgentSlot</span>
         </div>
         <div className="empty">
           <div className="big">⛟</div>
-          <p>No slot selected.<br />Create one and point it at a real <code>hermes acp</code> / <code>qodercli --acp</code>.</p>
+          <p>No session selected.<br />Create one and point it at a real <code>hermes acp</code> / <code>qodercli --acp</code>.</p>
         </div>
       </div>
     );
@@ -310,7 +378,7 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
         <h3>workspace</h3>
         <div className="hint">
           the file panel and terminal work here. A running agent keeps the directory it
-          was started in — the new one applies to this slot from the next resume.
+          was started in — the new one applies to this session from the next resume.
         </div>
         <WorkspacePicker value={path} onChange={setPath} />
         {err && <div className="err">{err}</div>}
@@ -340,17 +408,17 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
   // a header is a place for identity, not for settings.
   return (
     <div className="chat-head">
-      <button className="icon-btn menu-btn" onClick={onMenu} title="slots" aria-label="slots"><IconMenu /></button>
+      <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
       <span className="title" title={info.title}>{info.title}</span>
       {v.perms.length > 0 ? (
-        <span className="chip perm-chip" title="requests waiting for your approval in this slot">
+        <span className="chip perm-chip" title="requests waiting for your approval in this session">
           <span className="perm-pulse" />⚿ {v.perms.length}
         </span>
       ) : null}
       <span className="head-spacer" />
       <button
         className="icon-btn"
-        title={`workspace: ${info.workspace || info.cwd}\nclick to point this slot at another directory`}
+        title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}
         aria-label="workspace"
         onClick={onPickWorkspace}
       >
@@ -1619,7 +1687,7 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New slot</h3>
+        <h3>New session</h3>
         <label>backend</label>
         <div className="backend-pick">
           {loading && <span className="dim">loading…</span>}

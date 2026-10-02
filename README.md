@@ -1,6 +1,6 @@
 # AgentSlot
 
-**Keep your agents on the track.** A multi-slot web cockpit for ACP-speaking coding
+**Keep your agents on the track.** A multi-session web cockpit for ACP-speaking coding
 agents: open several sessions in the browser, each one backed by a real
 `hermes acp` / `qodercli --acp` subprocess, and drive them from any device.
 
@@ -14,7 +14,7 @@ agents: open several sessions in the browser, each one backed by a real
                                          · session registry (who runs, where, pid)
                                          · ACP client (ClientSideConnection)
                                          · event fan-out → WS, commands → ACP
-                                         · SQLite transcript + cold-slot resume
+                                         · SQLite transcript + resume
 ```
 
 ## Quick start
@@ -30,7 +30,7 @@ python3 scripts/setup-hermes-test-home.py
 # 2) run it — installs if needed, builds, serves
 npm start
 # open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
-# then "+ new slot", pick a backend + working directory
+# then "+ new session", pick a backend + working directory
 ```
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
@@ -164,7 +164,7 @@ So the server is **fail-closed**: it resolves an explicit home for every backend
 owns one, ignores an *inherited* `HERMES_HOME` (a Hermes-launched shell leaks the live
 one down), and refuses to spawn when the resolved home equals the live home unless you
 say `AGENTSLOT_ALLOW_LIVE_HOME=1`. `GET /api/backends` reports `home` / `warnings` /
-`blocked` and the new-slot dialog shows them.
+`blocked` and the new-session dialog shows them.
 
 `scripts/setup-hermes-test-home.py` builds that home: config derived from yours with
 `mcp_servers: {}`, memory off (the embedded Hindsight instance is named by
@@ -173,7 +173,8 @@ to your production memory daemon), and `.env` copied 0600.
 
 ## What it does today (M0 → M4)
 
-- multi-session rail — live slots + **cold slots** (transcripts whose process exited;
+- multi-session rail, **grouped by working directory** — running sessions and **closed
+  cases** (transcripts whose process exited;
   click to respawn + `loadSession` resume, re-applying the stored permission mode/effort),
   with search across both by title / backend / cwd
 - streaming render of `agent_message_chunk` / `agent_thought_chunk`, tool calls
@@ -181,29 +182,32 @@ to your production memory daemon), and `.env` copied 0600.
   compact line — status dot, truncated title, chevron — and shows the full name, kind,
   status, input and output only when expanded (a transcript of twenty calls stays
   readable)
-- **context-window gauge** per slot from ACP `usage_update` (warns at 65% / 85%; degrades
+- **context-window gauge** per session from ACP `usage_update` (warns at 65% / 85%; degrades
   to used-only when the agent reports no window size) and a per-turn trace chip showing the
   effort/mode a turn actually runs with
 - **slash-command palette** driven by the agent's own `available_commands_update`
   (filter, ↑/↓, Tab to accept, Esc) — never an invented command list
+- **fork a session** (ACP `session/fork`, an unstable capability Hermes does offer): the
+  agent copies the parent's context into a new session, which comes up here as a session
+  of its own — same workspace, same modes, independent from then on
 - permission cards (allow / always allow / reject / dismiss) wired to ACP's
   server→client `requestPermission`, with a pending-count chip and a timeout so a session
   can't wedge
 - permission mode + reasoning-effort switches (`setSessionMode` / `setSessionConfigOption`),
   persisted per session
 - SQLite transcript with monotonic per-session `seq`; reconnect replays only the tail;
-  long slots **page** backwards ("load earlier") instead of truncating
+  long transcripts **page** backwards ("load earlier") instead of truncating
 - orphan reaping: every child is spawned detached and its pid recorded, so a crashed
   server's leftovers are killed on next boot
 - offline-tolerant: WS reconnect with an outbox (taps while disconnected are queued,
   not swallowed), offline app shell via service worker
 - PWA + phone layout: drawer rail, thumb-sized controls, safe-area padding,
   16px inputs (no iOS zoom), no horizontal overflow at 390px
-- a head with **two** controls: which directory this slot works in, and the workspace
+- a head with **two** controls: which directory this session works in, and the workspace
   panel. Everything that was up there moved next to the prompt where it belongs
 - **workspace panel** (head ▤): a read-only file browser (breadcrumb, sizes, text
-  preview) and a shell rooted in the slot's workspace, both killed with the socket.
-  Cwd is a per-slot field: a *running* agent keeps the directory it was started in,
+  preview) and a shell rooted in the session's workspace, both killed with the socket.
+  Cwd is a per-session field: a *running* agent keeps the directory it was started in,
   the panels and the next resume follow the one you pick
 - **replies rendered as markdown** (markdown-it + highlight.js, sanitised with DOMPurify
   and `html: false`, so an agent's `<script>` stays visible text): headings, lists,
@@ -218,7 +222,7 @@ to your production memory daemon), and `.env` copied 0600.
   uses ACP `session/set_model`, which Hermes implements (the SDK in use does not type it,
   so it goes through the generic request() overload)
 - **the context window is yours to declare**: click the usage line to set the window the
-  gauge measures against, per slot, persisted. ACP has no method to change a model's
+  gauge measures against, per session, persisted. ACP has no method to change a model's
   window (it is the provider's property — that is what `usage_update.size` reports), so
   this number only drives the gauge; switching models is the real lever
 - composer that reads like a chat box, not a toolbar: attachments (`+`), settings
@@ -237,7 +241,13 @@ to your production memory daemon), and `.env` copied 0600.
   new output is announced by a "jump to newest" button instead of yanking the viewport
 - workspace picker: browse the server's directories (`GET /api/fs/dirs`, one level at a
   time) or pick from the working directories you used before; the same picker re-points
-  an existing slot
+  an existing session
+
+## Naming
+
+The UI says **session** everywhere (the rail, the empty state, the dialogs). "Slot" is
+only the project's name — the concept an operator works with is a session, and the
+product may well be renamed; nothing in the interface leans on the metaphor.
 
 ## Tests
 

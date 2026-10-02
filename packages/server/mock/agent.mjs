@@ -121,6 +121,15 @@ const agent = () => ({
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
   async loadSession({ sessionId, cwd }) {
+    // A resumed/forked session arrives in a FRESH process whose in-memory map is empty.
+    // A real agent reads the transcript from its store, so the id it is asked for is the
+    // id it ends up serving — the mock has to do the same, or every later call on that
+    // session ("no such session: mock-2") fails for reasons that have nothing to do with
+    // the cockpit. Register the id as the parent's stand-in instead of inventing a new one.
+    if (!sessions.has(sessionId)) {
+      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true });
+      process.stderr.write(`[mock-agent] loadSession ${sessionId} -> restored (not in memory)\n`);
+    }
     if (sessions.has(sessionId)) {
       const s = sessions.get(sessionId);
       return {
@@ -266,7 +275,7 @@ const agent = () => ({
 // (ACP's model switch — the Python SDK hermes uses does). The cockpit sends that method
 // anyway, so the mock answers it itself: watch for it on stdin, reply, and swallow the
 // line instead of handing it to a router that would answer "method not found".
-const STDIN_INTERCEPTED = new Set(["session/set_model"]);
+const STDIN_INTERCEPTED = new Set(["session/set_model", "session/fork"]);
 const stdinFilter = new Transform({
   transform(chunk, _enc, cb) {
     const out = [];
@@ -274,6 +283,26 @@ const stdinFilter = new Transform({
       if (!line.trim()) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { out.push(line); continue; }
+      if (msg?.method === "session/fork") {
+        // ACP fork: a new session seeded with the parent's transcript (the deep copy a
+        // real agent does server-side; the mock only needs the observable shape).
+        const params = msg.params ?? {};
+        const parent = sessions.get(params.sessionId);
+        if (!parent) {
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `no such session: ${params.sessionId}` } }) + "\n");
+          continue;
+        }
+        const forkId = `mock-${++seq}`;
+        sessions.set(forkId, { ...parent, parent: params.sessionId, currentModeId: parent.currentModeId, config: { ...(parent.config || {}) } });
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {
+          sessionId: forkId,
+          modes: { currentModeId: parent.currentModeId || "default", availableModes: MODES },
+          configOptions: configOptionsFor(parent.config || {}),
+          models: modelsFor(parent.config || {}),
+        } }) + "\n");
+        process.stderr.write(`[mock-agent] session/fork ${params.sessionId} -> ${forkId}\n`);
+        continue; // never forwarded: this SDK version does not route the method
+      }
       if (msg?.method && STDIN_INTERCEPTED.has(msg.method)) {
         const params = msg.params ?? {};
         const target = sessions.get(params.sessionId);

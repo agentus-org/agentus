@@ -445,3 +445,16 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 展开：`h=314`，labels = `tool / kind · status / input / output`，`tool` 行是完整标题，`kind · status` = `edit · completed`。
   - 手机 390：卡片宽 350 ≤ 390、无横向溢出、单行同样成立。
 - 截图：`36-tool-card-collapsed.png`、`37-tool-card-expanded.png`、`38-mobile-tool-card.png`。
+
+**R61–R62 工作空间默认路径 + 侧栏按工作空间分组 + 措辞去 slot + 会话 fork**
+
+- **文件/终端默认路径**：面板根目录 = 会话的 `workspace || cwd`，服务端 `sessionRoot()` 同源。实测（会话工作空间 = `/tmp/agentslot-ws-b`）：文件面板 `path=/tmp/agentslot-ws-b`、终端 `pwd` → `/private/tmp/agentslot-ws-b`（macOS `/tmp` 是软链）。**改工作空间后终端必须重开**：`TerminalTab` 的 effect 依赖加上 `root`（shell 无法从外面 cd，只能新开一个）。实测改成 `agentslot-ws-a` 后 `pwd` → `/private/tmp/agentslot-ws-a`。
+- **侧栏按工作空间分组**：组名 = 文件夹名（完整路径在 tooltip），组内 live 在前、cold 在后，当前会话所在组置顶并默认展开，可折叠；搜索时强制展开。实测 8 组（`liang`/`agent-dev-workspace`/`agentslot`/`agentslot-ws-a`/`agentslot-ws-b`/…），计数 `1/1`、折叠/展开正常。
+- **措辞**：`new session`（原 new slot）、`search sessions…`、冷会话按钮只说 resume/delete、头部菜单 title=sessions、"No session selected"、工作空间弹窗里的 "this session"。**侧栏整块 innerText 里 `slot` 出现 0 次**（实测正则计数）。服务端两处面向用户的错误串（"resume the slot first"）也改了；README 里用户可见的 slot 措辞改为 session，并新增 **Naming** 段说明"UI 一律说 session，slot 只是项目名，产品可能改名"。
+- **会话 fork（ACP `session/fork`）**：
+  - 协议侧：请求 `{sessionId, cwd}` → 响应 `{sessionId, modes?, configOptions?}`；**SDK 类型里有（UNSTABLE）但 `AGENT_METHODS` 未路由**，所以走 `conn.request("session/fork", …)`。Hermes 公告 `sessionCapabilities.fork` 且实现了 `fork_session`（"deep-copy a session's history"）。
+  - 实现：`mgr.fork(id)` = 冷会话先 resume → 在父连接上 fork → 新行入库（`acpSessionId` = fork 出来的 id，标题 `… · fork`，沿用父的 workspace/modes/options）→ 走既有的 resume 流程（新子进程 + `loadSession`）。父会话 busy 时拒绝（409），未知会话 404。
+  - 实测：会话 → fork（`mock-2` ready）→ fork 的 fork（ready）；**Hermes 的 fork 会把父会话 9 条历史重放进新会话**（4 thought / 2 agent / 3 tool，实测 `loadSession` 后新会话 messages=9）→ 界面上 fork 出来就能看到之前的上下文；mock 无历史所以是空的（符合预期）。UI 入口在侧栏会话项上的 ⑂ 按钮，fork 后自动切到新会话，并**独立对话验证通过**（在新会话里发 prompt 得到自己的回复）。
+  - CI 断言 39 → **45**（fork 返回新会话/新 agent 侧 id/继承工作空间/标题含 fork/出现在列表里/未知会话 404）。
+  - 踩坑：mock 的 `loadSession` 对不认识的 sessionId 原来会**另起一个新 id**（真 agent 是从库里恢复同一个 id），于是"resume 一个 mock 会话后再 fork 它"报 `no such session: mock-N` —— 测试替身必须模拟"持久化恢复同一个 id"，否则假失败。
+- 截图：`39-rail-groups.png`、`40-panel-workspace.png`、`41-fork.png`。

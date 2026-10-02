@@ -125,7 +125,9 @@ export class SessionManager {
 
     const live: LiveSession = {
       info: {
-        id, backend, acpSessionId: null, cwd, status: "starting",
+        id, backend, acpSessionId: null, cwd,
+        workspace: null, contextLimit: null,
+        status: "starting",
         pid: child.pid ?? null, title: title || `${spec.label} @ ${shortCwd(cwd)}`,
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
@@ -634,7 +636,7 @@ export class SessionManager {
    *  to switch: resume it first, then pick (same rule as modes). */
   async setModel(id: string, modelId: string): Promise<SessionInfo> {
     const s = this.#need(id);
-    if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready — resume the slot first");
+    if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready — resume it first");
     const known = s.info.models?.availableModels ?? [];
     if (known.length && !known.some((m) => m.modelId === modelId)) {
       throw new Error(`unknown model: ${modelId}`);
@@ -679,6 +681,57 @@ export class SessionManager {
       commands: normCommands(r.commands),
       lastSeq: this.#store.maxSeq(id),
     };
+  }
+
+  /** Fork a session (ACP `session/fork`): the agent deep-copies the parent's history into
+   *  a NEW session id, which we then bring up as its own slot — same architecture as every
+   *  other session (one child, one ACP session), so a fork behaves like a resume whose id
+   *  came from the parent instead of from the store.
+   *
+   *  A cold parent is resumed first: the fork call has to reach a live agent, and asking
+   *  the operator to wake a session before forking it would be a pointless step.
+   *
+   *  Note the capability is `unstable` in ACP and only some agents offer it (hermes does;
+   *  it advertises session.fork). When the agent does not, this throws and the UI shows
+   *  the reason instead of inventing a client-side "fork". */
+  async fork(id: string): Promise<SessionInfo> {
+    if (!this.#sessions.has(id)) await this.resume(id); // cold parent: wake it first
+    const source = this.#need(id);
+    if (!source.conn || !source.info.acpSessionId) throw new Error("session not ready — resume it first");
+    if (source.busy) throw new Error("the session is mid-turn — wait for it to finish before forking");
+    const cwd = source.info.workspace || source.info.cwd;
+    const res = (await source.conn.request("session/fork", {
+      sessionId: source.info.acpSessionId,
+      cwd,
+      mcpServers: [],
+    })) as { sessionId?: unknown; modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | null;
+    const acpSessionId = res?.sessionId ? String(res.sessionId) : "";
+    if (!acpSessionId) throw new Error("the agent did not return a session id for the fork");
+
+    const newId = randomUUID();
+    const now = Date.now();
+    this.#store.upsertSession({
+      id: newId,
+      backend: source.info.backend,
+      acpSessionId,
+      cwd,
+      title: `${source.info.title} · fork`,
+      // "closed" so the rail treats it as a slot to open (resume spawns its child)
+      status: "closed",
+      pid: null,
+      createdAt: now,
+      closedAt: null,
+      // the agent just told us the fork's modes/options — keep them so the new slot shows
+      // the right permission mode and thinking depth before it is even resumed
+      modes: res?.modes ?? source.info.modes ?? null,
+      configOptions: res?.configOptions ?? source.info.configOptions ?? [],
+      usage: null,
+      commands: source.info.commands ?? [],
+      workspace: source.info.workspace ?? null,
+    });
+    this.#emit({ t: "sessions", sessions: this.list() });
+    // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
+    return await this.resume(newId);
   }
 
   hasSession(id: string): boolean {

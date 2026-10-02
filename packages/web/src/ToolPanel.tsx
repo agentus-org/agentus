@@ -148,7 +148,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
         <span className="head-spacer" />
         <button
           className="icon-btn"
-          title={`workspace: ${root}\nclick to point this slot at another directory`}
+          title={`workspace: ${root}\nclick to point this session at another directory`}
           aria-label="change workspace"
           onClick={onPickWorkspace}
         >
@@ -308,7 +308,10 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       ws.close();
       wsRef.current = null;
     };
-  }, [v.info.id, nonce]);
+    // `root` is a dependency on purpose: re-pointing the session's workspace must move
+    // the shell too (the server starts it in sessionRoot(sessionId)), and a shell cannot
+    // be re-cd'd from outside — it has to be a new one.
+  }, [v.info.id, root, nonce]);
 
   // Follow the output unless the operator scrolled up (same rule as the chat stream).
   useEffect(() => {

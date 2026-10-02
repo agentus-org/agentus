@@ -126,3 +126,7 @@ export const IconChip = (p: IconProps = {}): JSX.Element =>
 /** thinking depth/brain, used as the reasoning-effort button icon */
 export const IconBrain = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M9.5 4a2.5 2.5 0 0 1 2.5 2.5v11a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 2.26-4.9A2.5 2.5 0 0 1 9.5 4Z" /><path d="M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-2.26-4.9A2.5 2.5 0 0 0 14.5 4Z" /></>, p);
+
+/** fork a session: the branch glyph */
+export const IconFork = (p: IconProps = {}): JSX.Element =>
+  svg(<><circle cx="7" cy="5" r="2" /><circle cx="7" cy="19" r="2" /><circle cx="17" cy="9" r="2" /><path d="M7 7v10M17 11c0 3-3 4-6 4H9" /></>, p);

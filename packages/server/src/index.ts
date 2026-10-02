@@ -401,6 +401,18 @@ const httpServer = createServer(async (req, res) => {
         emit({ t: "sessions", sessions: mgr.list() });
         return send(res, 200, info);
       }
+      if (req.method === "POST" && sub === "/fork") {
+        try {
+          // forking a cold session resumes it first (the call has to reach a live agent)
+          const info = await mgr.fork(id);
+          emit({ t: "sessions", sessions: mgr.list() });
+          return send(res, 200, info);
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          if (/no such session|unknown session/.test(msg)) return send(res, 404, { error: msg });
+          return send(res, /mid-turn|not ready/.test(msg) ? 409 : 400, { error: msg });
+        }
+      }
       if (req.method === "POST" && sub === "/model") {
         const body = await readJson(req);
         const modelId = String(body.modelId ?? "").trim();
@@ -410,7 +422,7 @@ const httpServer = createServer(async (req, res) => {
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
           // 409: the slot exists but has no live agent to switch (resume first)
-          return send(res, /not ready|resume the slot/.test(msg) ? 409 : 400, { error: msg });
+          return send(res, /not ready|resume it first/.test(msg) ? 409 : 400, { error: msg });
         }
       }
       if (req.method === "POST" && sub === "/context-limit") {

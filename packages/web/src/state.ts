@@ -483,6 +483,18 @@ class Cockpit {
     return await this.#req(`/api/fs/file?path=${encodeURIComponent(path)}`);
   }
 
+  /** Fork a session: the agent copies its context into a new session (ACP
+   *  `session/fork`), and we bring that up as its own session. Resolves to the new one. */
+  async fork(id: string): Promise<string> {
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/fork`, { method: "POST" },
+      // the source may need resuming first, and the fork itself is a spawn + load
+      { timeoutMs: 120_000, retry: false });
+    if (!this.sessions.some((s) => s.id === info.id)) this.sessions = [info, ...this.sessions];
+    this.archived = this.archived.filter((s) => s.id !== info.id);
+    this.setActive(info.id);
+    return info.id;
+  }
+
   /** Switch the model of a live slot (ACP `session/set_model`). */
   async setModel(id: string, modelId: string): Promise<void> {
     // The agent may re-init its provider client when the model changes (Hermes rebuilds
