@@ -420,3 +420,15 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - CI 断言从 31 → **39**（模型列表/切换/非法模型/缺参数、上限设置/回读/非法值/清除）。
 - **"no voices" 的真因**：语音列表**不是**在模块加载时就绪的 —— Chromium 异步填充 `getVoices()`，`voiceschanged` 可能几秒后才来（甚至要等首次交互）。旧代码只读一次，于是"该浏览器没有语音"这句谎话盖在 203 个语音上。修法：读一次 + 监听 + 轮询（~10s 后停）+ 首次 `pointerdown` 再读；并且**只有真的没有 `speechSynthesis` 时才显示这句**。
 - **模拟端补了两件事**：mock 现在公告 3 个模型与带 `category` 的推理强度（离线也能走这条渲染路径）；TS SDK 路由不到 `session/set_model`，所以 mock 在 stdin 上拦截该方法自答（真 agent 用 Python SDK，有这个方法 —— 实测 Hermes 可切）。
+
+**R58 手机排版 + 工具条瘦身（发送按钮被挤出屏幕、深度去文字、模型分组）**
+
+- **真因定位（这次先量再改）**：390px 下逐个控件量右边距 → 发送按钮 `right=407 > vw=390`，`.composer-bar` 的 `scrollWidth=398 > clientWidth=372`（溢出**被裁掉**而不是出现横向滚动），而 `documentElement.scrollWidth` 仍是 390。**所以 R55 那句"零横向溢出"是假阳性** —— 我的检查只看整页，没看单个控件。
+- 修法（三件事一起做，才算真塞得下）：
+  1. **思考深度去文字**：`icon + 7 段小刻度 + tooltip`，用**颜色**分档（Off→Max 从灰到红：`#7f8c98, #5fb3a1, #7fb069, #d9a441, #e8843c, #f0603f, #ff4d4d`），刻度按档位填充（High 实测 5/7 点亮、颜色 `rgb(232,132,60)`）。列表里的每一档也带同色圆点。
+  2. **模型按钮只显模型名**：`Alibaba Coding Plan · qwen3.8-flash` → **`qwen3.8-flash`**（`shortModelName` 从 "·" 和 ":" 右侧取），列表里保留完整 id（tooltip）。
+  3. **让控件会收缩**：`.tb-wrap{flex:0 1 auto;min-width:0}` + 手机上 `.tb-btn{max-width:34vw}` + 隐藏 chevron + 图标 36px；`.send-btn`/mic 固定不缩。
+- **实测（390 与 320 两档都过）**：`offscreen=[]`、`barScrollW=clientW`、发送按钮 `right=377≤390 / 307≤320`、且 `elementFromPoint(发送按钮中心)` 命中它自己（**可点**，不是被别的元素盖住）。
+- **模型列表按 provider 分组、可折叠**：实测真 Hermes **501 个模型 → 6 组**（Alibaba Coding Plan 25 / DashScope 200 / DeepSeek 2 / GitHub Copilot 17 / OpenRouter 57 / Qwen Cloud 200），当前 provider 排第一并默认展开；折叠/展开、过滤（输入 `claude` → 2 组 13 项）都实测过。
+  - 踩到的坑：Hermes 给当前模型附的 description 是 `Provider: Alibaba Coding Plan · current`，我的 provider 解析把 "· current" 当成了 provider 名 → **同一个 provider 被拆成两组**（25 + 1）。修法：解析时剥掉结尾的 current/active/selected/default 标记。
+- 截图：`33-mobile-toolbar.png`（390px 一行放得下）、`34-model-groups.png`（分组 + 当前高亮）、`35-model-groups-filtered.png`。

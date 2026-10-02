@@ -743,3 +743,48 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   .tb-btn { max-width: 34vw; }
   .md { font-size: 14px; }
 }
+
+/* ---- toolbar: shrinkable controls, a model button that shows the model only,
+   and thinking depth as colour + pips instead of a word ---------------------- */
+/* `flex: 0 1 auto` (not 0 0 auto) is the whole trick: a long model name must be able to
+   give room back, otherwise the send button gets pushed off a phone screen. */
+.tb-wrap { flex: 0 1 auto; min-width: 0; }
+.tb-btn { min-width: 0; }
+.tb-label { min-width: 0; }
+.tb-effort { padding: 0 5px; gap: 4px; }
+.tb-pips { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.tb-pips i { display: block; width: 3px; border-radius: 1px; background: var(--line); }
+.tb-pips i:nth-child(1) { height: 4px; }
+.tb-pips i:nth-child(2) { height: 5px; }
+.tb-pips i:nth-child(3) { height: 6px; }
+.tb-pips i:nth-child(4) { height: 7px; }
+.tb-pips i:nth-child(5) { height: 9px; }
+.tb-pips i:nth-child(6) { height: 11px; }
+.tb-pips i:nth-child(7) { height: 13px; }
+.tb-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
+/* grouped model list */
+.tb-group { border-top: 1px solid var(--line); }
+.tb-group:first-of-type { border-top: none; }
+.tb-group-head {
+  display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  font-family: inherit; font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase;
+  padding: 5px 6px; border-radius: 6px;
+}
+.tb-group-head:hover { background: var(--bg-panel); color: var(--text); }
+.tb-group-chev { transition: transform 0.12s ease; }
+.tb-group-chev.open { transform: rotate(90deg); }
+.tb-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-group-count { font-size: 10px; color: var(--text-dim); }
+.tb-group-body { padding: 0 0 4px 8px; }
+
+@media (max-width: 720px) {
+  /* On a phone every control must fit one 390px row with the send button on screen:
+     icons only, and the model name ellipsised at a third of the width. */
+  .tb-btn { max-width: 34vw; padding: 0 4px; gap: 3px; }
+  .tb-btn .tb-chev { display: none; }
+  .tb-effort { max-width: none; }
+  .composer-bar { gap: 2px; padding: 2px 4px 4px; }
+  .composer-bar .icon-btn { width: 36px; height: 36px; }
+  .send-btn { width: 44px; height: 36px; }
+}

@@ -792,6 +792,60 @@ function humanBytes(n: number): string {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} kB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/** What to print on the model button: the model, not its provider.
+ *  Agents name models "Provider · model" (Hermes) or "provider:model" (wire ids), and the
+ *  toolbar only has room for the interesting half. */
+export function shortModelName(name: string, modelId?: string): string {
+  const source = (name || modelId || "").trim();
+  if (!source) return "";
+  const afterDot = source.includes("·") ? source.split("·").pop()!.trim() : source;
+  const afterColon = afterDot.includes(":") ? afterDot.split(":").pop()!.trim() : afterDot;
+  return afterColon || afterDot || source;
+}
+
+/** Which provider a model came from: the id prefix ("openrouter:anthropic/…") or the
+ *  description agents attach ("Provider: OpenRouter"). Used to group the list. */
+export function modelProvider(m: { modelId: string; name?: string; description?: string | null }): string {
+  const clean = (raw: string): string => raw
+    // agents mark the active entry in the description ("Provider: X · current"): that is
+    // a state, not a provider, and keeping it split one provider into two groups.
+    .replace(/[•·|,-]?\s*\b(current|active|selected|default)\b\s*$/i, "")
+    .replace(/[•·|,\s-]+$/g, "")
+    .trim();
+  const fromDesc = /^\s*provider:\s*(.+)$/i.exec(m.description ?? "");
+  if (fromDesc) {
+    const name = clean(fromDesc[1]);
+    if (name) return name;
+  }
+  const prefix = m.modelId.includes(":") ? m.modelId.split(":")[0] : "";
+  return clean(prefix) || "other";
+}
+
+/** Thinking depth as colour + filled pips rather than words: the operator asked for the
+ *  label to go away, and a level is easier to read as a small scale than as text. */
+const EFFORT_COLORS = ["#7f8c98", "#5fb3a1", "#7fb069", "#d9a441", "#e8843c", "#f0603f", "#ff4d4d"];
+
+export function effortStyle(value: string, options: { value: string }[]): { color: string; level: number; total: number } {
+  const total = Math.max(1, options.length);
+  const idx = options.findIndex((o) => String(o.value) === String(value));
+  const level = idx < 0 ? 0 : idx + 1;
+  const color = idx < 0 ? "var(--text-dim)" : EFFORT_COLORS[Math.min(idx, EFFORT_COLORS.length - 1)];
+  return { color, level, total };
+}
+
+/** Seven ticks, filled up to the level, in the level's colour. */
+function EffortPips({ level, total, color }: { level: number; total: number; color: string }): JSX.Element {
+  const ticks = Math.min(7, total);
+  const filled = Math.max(0, Math.min(ticks, Math.round((level / total) * ticks)));
+  return (
+    <span className="tb-pips" aria-hidden="true">
+      {Array.from({ length: ticks }).map((_, i) => (
+        <i key={i} style={{ background: i < filled ? color : "var(--line)" }} />
+      ))}
+    </span>
+  );
+}
+
 /** ACP tags config options with a `category` ("model" | "mode" | "thought_level" | …)
  *  exactly so clients can place them. Hermes leaves it unset today, so fall back to the
  *  option's id — and never invent an option the agent did not advertise. */
@@ -836,7 +890,7 @@ function ToolbarSelect({ label, title, icon, value, children, open, onToggle, te
 
 /** A list of agent-advertised choices (thinking depth, model, mode). */
 function ChoiceList({ items, current, onPick, empty }: {
-  items: { value: string; name: string; hint?: string | null }[];
+  items: { value: string; name: string; hint?: string | null; color?: string }[];
   current: string | null;
   onPick: (value: string) => void;
   empty: string;
@@ -853,7 +907,10 @@ function ChoiceList({ items, current, onPick, empty }: {
           title={it.hint ? `${it.name} — ${it.hint}` : it.name}
           onClick={() => onPick(it.value)}
         >
-          <span className="tb-opt-name">{it.name}</span>
+          <span className="tb-opt-name">
+            {it.color ? <i className="tb-dot" style={{ background: it.color }} /> : null}
+            {it.name}
+          </span>
           {it.hint ? <span className="tb-opt-hint">{it.hint}</span> : null}
         </button>
       ))}
@@ -1176,17 +1233,40 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   const modelCfg = pickConfigOption(v.info.configOptions, "model");
   const models = v.info.models?.availableModels ?? [];
   const currentModel = v.info.models?.currentModelId ?? "";
-  const modelName = models.find((m) => m.modelId === currentModel)?.name
-    ?? (modelCfg?.options?.find((o) => String(o.value) === String(modelCfg.currentValue ?? ""))?.name)
-    ?? currentModel.split(":").pop() ?? "";
+  const modelFullName = models.find((m) => m.modelId === currentModel)?.name
+    ?? modelCfg?.options?.find((o) => String(o.value) === String(modelCfg.currentValue ?? ""))?.name
+    ?? currentModel;
+  // the button shows the model alone ("qwen3.8-flash"), never "Provider · model"
+  const modelName = shortModelName(modelFullName, currentModel);
   const effortName = effortCfg?.options?.find((o) => String(o.value) === String(effortCfg.currentValue ?? ""))?.name ?? "";
-  const shownModels = useMemo(() => {
+  const effort = effortCfg ? effortStyle(String(effortCfg.currentValue ?? ""), effortCfg.options ?? []) : null;
+  // Group by provider (Hermes knows 500+ models: a flat list is unusable), with the
+  // current model's group open. Filtering opens everything that matches.
+  const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>({});
+  const modelGroups = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
-    const list = q
+    const filtered = q
       ? models.filter((m) => `${m.modelId} ${m.name} ${m.description ?? ""}`.toLowerCase().includes(q))
       : models;
-    return list.slice(0, 300);
-  }, [models, modelQuery]);
+    const byProvider = new Map<string, typeof filtered>();
+    for (const m of filtered) {
+      const key = modelProvider(m);
+      const list = byProvider.get(key);
+      if (list) list.push(m);
+      else byProvider.set(key, [m]);
+    }
+    const currentProvider = models.find((m) => m.modelId === currentModel);
+    const currentKey = currentProvider ? modelProvider(currentProvider) : "";
+    return [...byProvider.entries()]
+      .map(([provider, list]) => ({
+        provider,
+        list: list.slice(0, 200),
+        truncated: list.length > 200,
+        current: provider === currentKey,
+      }))
+      // the operator's provider first, then alphabetically
+      .sort((a, b) => (a.current === b.current ? a.provider.localeCompare(b.provider) : a.current ? -1 : 1));
+  }, [models, modelQuery, currentModel]);
 
   return (
     <div
@@ -1310,26 +1390,41 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             >
               <IconPlus size={16} />
             </button>
-            {effortCfg ? (
-              <ToolbarSelect
-                label="depth"
-                title={`thinking depth — currently ${effortName || "agent default"}`}
-                icon={<IconBrain size={15} />}
-                value={effortName}
-                testId="tb-effort"
-                open={pop === "effort"}
-                onToggle={() => setPop((p) => (p === "effort" ? null : "effort"))}
-              >
-                <ChoiceList
-                  items={(effortCfg.options ?? []).map((o) => ({ value: String(o.value), name: o.name }))}
-                  current={String(effortCfg.currentValue ?? "")}
-                  empty="the agent advertises no levels"
-                  onPick={(value) => {
-                    cockpit.send({ t: "set-config", sessionId: v.info.id, configId: effortCfg.id, value });
-                    setPop(null);
-                  }}
-                />
-              </ToolbarSelect>
+            {effortCfg && effort ? (
+              // No label: the colour and the pips say the level (the name lives in the
+              // tooltip and in the list). It also gives the model button its room back.
+              <div className="tb-wrap" style={{ ["--effort" as string]: effort.color }}>
+                <button
+                  type="button"
+                  className={`tb-btn tb-effort ${pop === "effort" ? "on" : ""}`}
+                  style={{ color: effort.level ? effort.color : undefined }}
+                  title={`thinking depth — ${effortName || "agent default"}`}
+                  aria-label={`thinking depth: ${effortName || "agent default"}`}
+                  aria-expanded={pop === "effort"}
+                  data-testid="tb-effort"
+                  onClick={() => setPop((p) => (p === "effort" ? null : "effort"))}
+                >
+                  <IconBrain size={15} />
+                  <EffortPips level={effort.level} total={effort.total} color={effort.color} />
+                  <IconChevronDown size={11} className="tb-chev" />
+                </button>
+                {pop === "effort" ? (
+                  <ChoiceList
+                    items={(effortCfg.options ?? []).map((o, i) => ({
+                      value: String(o.value),
+                      name: o.name,
+                      hint: null,
+                      color: EFFORT_COLORS[Math.min(i, EFFORT_COLORS.length - 1)],
+                    }))}
+                    current={String(effortCfg.currentValue ?? "")}
+                    empty="the agent advertises no levels"
+                    onPick={(value) => {
+                      cockpit.send({ t: "set-config", sessionId: v.info.id, configId: effortCfg.id, value });
+                      setPop(null);
+                    }}
+                  />
+                ) : null}
+              </div>
             ) : null}
             <button
               className={`icon-btn ${settingsOpen ? "on" : ""}`}
@@ -1362,29 +1457,50 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
                         onChange={(e) => setModelQuery(e.target.value)}
                       />
                     ) : null}
-                    {shownModels.map((m) => (
-                      <button
-                        key={m.modelId}
-                        className={`tb-opt ${m.modelId === currentModel ? "sel" : ""}`}
-                        title={m.description ? `${m.modelId} — ${m.description}` : m.modelId}
-                        onClick={() => {
-                          setPop(null);
-                          setModelQuery("");
-                          if (m.modelId === currentModel) return;
-                          setSwitching(true);
-                          void cockpit.setModel(v.info.id, m.modelId)
-                            .catch((e) => setAttachErr(`model switch failed: ${String((e as Error)?.message ?? e)}`))
-                            .finally(() => setSwitching(false));
-                        }}
-                      >
-                        <span className="tb-opt-name">{m.name}</span>
-                        {m.description ? <span className="tb-opt-hint">{m.description}</span> : null}
-                      </button>
-                    ))}
-                    {!shownModels.length ? <div className="tb-empty">no model matches “{modelQuery}”</div> : null}
-                    {models.length > shownModels.length && shownModels.length === 300 ? (
-                      <div className="tb-empty">showing the first 300 — type to narrow</div>
-                    ) : null}
+                    {modelGroups.map((g) => {
+                      const open = Boolean(modelQuery.trim()) || !closedGroups[g.provider];
+                      return (
+                        <div className="tb-group" key={g.provider}>
+                          <button
+                            type="button"
+                            className={`tb-group-head ${open ? "open" : ""}`}
+                            aria-expanded={open}
+                            title={`${g.provider} · ${g.list.length} model(s)`}
+                            data-provider={g.provider}
+                            onClick={() => setClosedGroups((c) => ({ ...c, [g.provider]: !c[g.provider] }))}
+                          >
+                            <IconChevronRight size={11} className={`tb-group-chev ${open ? "open" : ""}`} />
+                            <span className="tb-group-name">{g.provider}</span>
+                            <span className="tb-group-count">{g.list.length}</span>
+                          </button>
+                          {open ? (
+                            <div className="tb-group-body">
+                              {g.list.map((m) => (
+                                <button
+                                  key={m.modelId}
+                                  className={`tb-opt ${m.modelId === currentModel ? "sel" : ""}`}
+                                  title={m.description ? `${m.modelId} — ${m.description}` : m.modelId}
+                                  data-model={m.modelId}
+                                  onClick={() => {
+                                    setPop(null);
+                                    setModelQuery("");
+                                    if (m.modelId === currentModel) return;
+                                    setSwitching(true);
+                                    void cockpit.setModel(v.info.id, m.modelId)
+                                      .catch((e) => setAttachErr(`model switch failed: ${String((e as Error)?.message ?? e)}`))
+                                      .finally(() => setSwitching(false));
+                                  }}
+                                >
+                                  <span className="tb-opt-name">{shortModelName(m.name, m.modelId)}</span>
+                                </button>
+                              ))}
+                              {g.truncated ? <div className="tb-empty">first 200 of this provider — filter to narrow</div> : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    {!modelGroups.length ? <div className="tb-empty">no model matches “{modelQuery}”</div> : null}
                   </div>
                 ) : (
                   <ChoiceList
