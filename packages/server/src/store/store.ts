@@ -116,6 +116,16 @@ export class Store {
     return r ? rowToSession(r) : undefined;
   }
 
+  /** Purge a cold slot: drop the row and its transcript. Used by the rail's ✕ on
+   *  cold slots — without it the "on disk · N" list only ever grows. */
+  deleteSession(sessionId: string): boolean {
+    const row = this.#db.prepare("select id from sessions where id = ?").get(sessionId);
+    if (!row) return false;
+    this.#db.prepare("delete from messages where session_id = ?").run(sessionId);
+    this.#db.prepare("delete from sessions where id = ?").run(sessionId);
+    return true;
+  }
+
   /** Highest persisted seq for a session (0 when empty) — the resume anchor. */
   maxSeq(sessionId: string): number {
     const row = this.#db

@@ -322,6 +322,17 @@ class Cockpit {
     }
   }
 
+  /** Delete a cold slot for good (row + transcript). The rail only ever grows
+   *  otherwise — "on disk · N" with no way back down. */
+  purgeCold(id: string): void {
+    this.archived = this.archived.filter((s) => s.id !== id);
+    this.byId.delete(id);
+    this.bump();
+    void this.#req(`/api/sessions/${id}`, { method: "DELETE" })
+      .catch(() => this.refreshArchived())
+      .then(() => this.refreshArchived());
+  }
+
   closeSession(id: string): void {
     void this.#req(`/api/sessions/${id}`, { method: "DELETE" }).catch(() => {});
     this.byId.delete(id);

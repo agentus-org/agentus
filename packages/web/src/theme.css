@@ -47,6 +47,13 @@ button { font: inherit; }
 }
 .rail-search:focus { outline: none; border-color: var(--accent-dim); }
 .load-earlier { display: flex; justify-content: center; margin-bottom: 10px; }
+/* cold-slot purge: quiet until you hover the row, then a clear ✕ */
+.cold-purge {
+  margin-left: auto; background: transparent; border: 1px solid transparent;
+  color: var(--text-dim); font-size: 11px; line-height: 1; padding: 2px 5px;
+  border-radius: 5px; cursor: pointer;
+}
+.session-item.cold:hover .cold-purge { border-color: var(--line); color: var(--err); }
 .session-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
 .session-item {
   padding: 10px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px;

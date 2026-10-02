@@ -150,9 +150,17 @@ const httpServer = createServer(async (req, res) => {
       if (req.method === "DELETE" && sub === "") {
         // awaited on purpose: closeSession is async and a floating rejection
         // here used to kill the whole server (QA#19, unhandled rejection)
-        if (!mgr.hasSession(id)) return send(res, 404, { error: `no such session: ${id}` });
-        await mgr.closeSession(id);
-        return send(res, 200, { closed: id });
+        if (mgr.hasSession(id)) {
+          await mgr.closeSession(id);
+          return send(res, 200, { closed: id });
+        }
+        // not live: either a cold slot the operator wants gone, or an unknown id.
+        // Purging is what makes the rail's "on disk · N" list manageable (M4).
+        if (store.deleteSession(id)) {
+          emit({ t: "sessions", sessions: mgr.list() });
+          return send(res, 200, { purged: id });
+        }
+        return send(res, 404, { error: `no such session: ${id}` });
       }
       if (req.method === "POST" && sub === "/resume") {
         // AC5's other half: bring a cold slot back to life (respawn + loadSession)

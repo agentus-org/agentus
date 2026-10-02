@@ -92,6 +92,19 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
                   <span className="dot cold" />
                   <span>{s.backend}</span>
                   <span className="hint">resume ⟲</span>
+                  <button
+                    className="cold-purge"
+                    title="delete this cold slot and its transcript for good"
+                    aria-label={`delete cold slot ${s.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`delete cold slot "${s.title}"?\n\nthe transcript is removed from disk — this cannot be undone.`)) {
+                        cockpit.purgeCold(s.id);
+                      }
+                    }}
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
             ))}
