@@ -117,11 +117,19 @@ asks the browser for a username (RFC 7617 carries `user:pass`), but a single-ope
 service gains nothing from one — typing any name, or leaving it blank, works. If you do
 configure a username, it is checked too.
 
-Why app-level Basic instead of the tunnel's own access auth: relay/tunnel products often
-implement "access auth" as a **200 page that asks you to authorise your IP**, not as a
-401 challenge (SakuraFrp's `auth_pass` behaves exactly that way — measured). That flavour
-is invisible to `curl`, unscriptable, and stacks a third password prompt on top. A real
-Basic challenge is understood by every browser, proxy and HTTP client.
+Pick one outer lock, not both:
+
+- **The tunnel's own gate**, if it has one. SakuraFrp's `auth_pass` is an IP-level
+  authorisation: the first visit shows a small page asking for the access password, the
+  IP is remembered after that, and the WebSocket keeps working through it (both measured
+  end to end). Zero config on this side; the cost is that machines cannot get in without
+  the extra authorisation dance (`POST /v4/tunnel/auth`).
+- **`AGENTSLOT_BASIC_AUTH`**, when the tunnel has no gate, is a plain TCP forward, or you
+  want scriptable access (`curl -u :pass`). A real 401 challenge is understood by every
+  browser, proxy and HTTP client — unlike some tunnel "access auth" flavours, which answer
+  HTTP **200** with an authorise-your-IP page and are invisible to `curl`.
+
+Turning both on means three password prompts in a row, so pick one.
 
 Two things to know about a tunnel in front of this app:
 

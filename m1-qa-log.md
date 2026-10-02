@@ -324,3 +324,24 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 | 浏览器（新 origin `yd.REDACTED-TUNNEL`，用户名随便填 `admin`） | 1 次挑战 → 登录页 → 应用登录 → 驾驶舱 **`● online`**（WS 穿隧道） |
 
 **自动化**：`auth-smoke` 扩到 **48 项** —— 新增 server E（`:pass` 形式：匿名仍 401 即"没有静默关闭"、空用户名/任意用户名过、错口令 401、WS 通过）与 server F（裸 `pass` 形式）。全绿。
+
+## R46–R46b · 外层改回樱花访问认证（应用层 Basic 关闭）
+
+**口径**：用户要的是「应用自身的用户名密码登录」+「SakuraFrp 的保护鉴权」两层 —— 不要应用层 Basic（能力与测试保留，只是不注入）。
+
+**改动**
+- `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("AGENTSLOT_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
+- 樱花侧写回 `extra = "auth_pass = REDACTED-PASS\nauto_https = auto"` 并重启 frpc 单元（`extra` 二次确认）。
+
+**实测**
+| 场景 | 结果 |
+|---|---|
+| 本地 / 局域网匿名 | `GET /` **200**（无 Basic 提示）、`/api/sessions` 401（登录门）、`/healthz` 200 |
+| 隧道匿名 | **SakuraFrp 访问认证页**（"当前 IP REDACTED-IP 尚未完成访问认证"），非 401 |
+| 樱花认证页 | 表单 `#pw` 访问密码 + 「记住我」+ 提交；提交后提示"认证成功, 现在可以关闭页面并正常连接隧道了" → **IP 级授权**，需重新访问 |
+| 认证后重新访问（真浏览器） | 直接进驾驶舱（会话 Cookie 仍有效）→ rail 16 槽、**`● online`**、`/api/sessions` 200 |
+| **关键验证：WebSocket 是否穿得过樱花那层** | **穿得过** —— 认证授权后 WS 正常建立并保持（这是双层方案能否成立的前提） |
+
+截图：`screens/11-sakura-auth-page.png`（樱花认证页）、`screens/12-tunnel-via-sakura-auth.png`（隧道内的驾驶舱，页脚 `● online · REDACTED-TUNNEL`）。
+
+**副作用记录**：`launch.py` 里 `env.pop` 之后，本地开发若想再开 Basic 只需取消 `basic_auth.txt` 注释里的那行；`auth-smoke` 的 48 项里 server D/E/F 用显式环境变量自起服务器，不受本次关闭影响（仍全绿）。
