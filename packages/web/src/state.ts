@@ -30,6 +30,11 @@ export interface SessionView {
   perms: PermissionRequestView[];
   busy: boolean;
   loaded: boolean; // history fetched
+  /** an older page exists on disk (M4: long slots are paged, not truncated) */
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  /** lowest seq currently held — the backwards-paging anchor */
+  minSeq: number | null;
   lastAt: number; // last activity timestamp (idle hint anchor)
   seen: Set<number>; // ingested seqs — dedup between REST replay & WS live (QA#3)
   /** latest turn's provenance (model/effort/mode) — shown once per turn */
@@ -221,18 +226,47 @@ class Cockpit {
 
   async loadHistory(id: string): Promise<void> {
     try {
-      const { messages } = await this.#req<{ messages: StoredMessage[] }>(
-        `/api/sessions/${id}/messages?after=-1`,
+      // tail: open on the NEWEST page (a long slot must not open on its oldest rows)
+      const { messages, hasOlder } = await this.#req<{ messages: StoredMessage[]; hasOlder?: boolean }>(
+        `/api/sessions/${id}/messages?tail=1`,
       );
       const v = this.#view(id);
       v.seen.clear();
       v.msgs = [];
+      v.minSeq = null;
       for (const m of messages) this.#ingest(v, m);
       v.loaded = true;
+      v.hasOlder = Boolean(hasOlder);
       this.#keepLastOpen(v); // mid-turn: resume appending into the open bubble
       this.bump();
     } catch {
       /* offline etc */
+    }
+  }
+
+  /** Page backwards through a long transcript (M4). Older rows are prepended in order
+   *  and deduped through the same `seen` set, so a WS replay racing the fetch cannot
+   *  double-render a message. */
+  async loadEarlier(id: string): Promise<void> {
+    const v = this.#view(id);
+    if (v.loadingOlder || !v.hasOlder || v.minSeq == null) return;
+    v.loadingOlder = true;
+    this.bump();
+    try {
+      const { messages, hasOlder } = await this.#req<{ messages: StoredMessage[]; hasOlder?: boolean }>(
+        `/api/sessions/${id}/messages?before=${v.minSeq}`,
+      );
+      // ingest into an empty list, then prepend: keeps #ingest's upsert/dedup intact
+      const tail = v.msgs;
+      v.msgs = [];
+      for (const m of messages) this.#ingest(v, m);
+      v.msgs = [...v.msgs, ...tail];
+      v.hasOlder = Boolean(hasOlder);
+    } catch {
+      /* keep hasOlder so the affordance stays for a retry */
+    } finally {
+      v.loadingOlder = false;
+      this.bump();
     }
   }
 
@@ -307,7 +341,8 @@ class Cockpit {
     if (!v) {
       v = {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
-        msgs: [], perms: [], busy: false, loaded: false, lastAt: Date.now(), seen: new Set(),
+        msgs: [], perms: [], busy: false, loaded: false, hasOlder: false, loadingOlder: false,
+        minSeq: null, lastAt: Date.now(), seen: new Set(),
       };
       this.byId.set(id, v);
     }
@@ -429,6 +464,9 @@ class Cockpit {
       if (v.seen.has(m.seq)) return;
       v.seen.add(m.seq);
     }
+    // paging anchor: the lowest seq we hold, whatever the row kind (tool rows are
+    // upserted but still carry the seq the store assigned them)
+    if (m.seq > 0 && (v.minSeq == null || m.seq < v.minSeq)) v.minSeq = m.seq;
     const p = m.payload as Record<string, unknown>;
     const text = extractText(p);
     const last = v.msgs[v.msgs.length - 1];

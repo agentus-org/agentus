@@ -173,6 +173,45 @@ export class Store {
     };
   }
 
+  /** The NEWEST page, oldest-first: what a fresh view of a long slot should open on.
+   *  `hasOlder` says whether the transcript continues above it (the "load earlier"
+   *  affordance). Distinct from messagesAfter, which walks FORWARD from a replay anchor. */
+  messagesTail(sessionId: string, limit = 500): { messages: StoredMessage[]; hasOlder: boolean } {
+    const page = this.messagesBefore(sessionId, Number.MAX_SAFE_INTEGER, limit);
+    return { messages: page.messages, hasOlder: page.hasMore };
+  }
+
+  /** Page BACKWARDS: the `limit` newest rows strictly before `beforeSeq`, returned
+   *  oldest-first so the client can prepend without re-sorting. `hasMore` tells the
+   *  UI whether an older page still exists. */
+  messagesBefore(sessionId: string, beforeSeq: number, limit = 200): { messages: StoredMessage[]; hasMore: boolean } {
+    const rows = this.#db
+      .prepare(
+        `select * from messages where session_id = ? and seq < ? order by seq desc limit ?`,
+      )
+      .all(sessionId, beforeSeq, limit + 1) as unknown as {
+      seq: number;
+      session_id: string;
+      kind: StoredMessage["kind"];
+      payload: string;
+      tool_call_id: string | null;
+      created_at: number;
+    }[];
+    const hasMore = rows.length > limit;
+    const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
+    return {
+      hasMore,
+      messages: page.map((r) => ({
+        seq: r.seq,
+        sessionId: r.session_id,
+        kind: r.kind,
+        payload: JSON.parse(r.payload),
+        toolCallId: r.tool_call_id ?? undefined,
+        createdAt: r.created_at,
+      })),
+    };
+  }
+
   messagesAfter(sessionId: string, afterSeq: number, limit = 500): StoredMessage[] {
     const rows = this.#db
       .prepare(

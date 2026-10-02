@@ -39,6 +39,14 @@ button { font: inherit; }
   border: 1px dashed var(--accent-dim); background: transparent; color: var(--accent);
 }
 .new-btn:hover { background: rgba(255, 180, 84, 0.08); }
+/* rail search (M4): find a slot by title/backend/cwd without opening it */
+.rail-search {
+  margin: 0 8px 6px; padding: 7px 9px; border-radius: 8px;
+  background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
+  font-size: 12.5px; font-family: var(--mono);
+}
+.rail-search:focus { outline: none; border-color: var(--accent-dim); }
+.load-earlier { display: flex; justify-content: center; margin-bottom: 10px; }
 .session-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
 .session-item {
   padding: 10px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px;

@@ -23,6 +23,15 @@ export function App(): JSX.Element {
 
 function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
   const { sessions, archived, activeId, conn, net, netError } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const [q, setQ] = useState("");
+  // Search spans live + cold slots by title / backend / cwd — the rail is a launch pad,
+  // so "where was that session?" must work without opening each slot (M4).
+  const needle = q.trim().toLowerCase();
+  const match = (s: { title: string; backend: string; cwd: string }) =>
+    !needle ||
+    `${s.title} ${s.backend} ${s.cwd}`.toLowerCase().includes(needle);
+  const live = sessions.filter(match);
+  const cold = archived.filter(match);
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
@@ -38,8 +47,15 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
         </div>
       ) : null}
       <button className="new-btn" onClick={onNew}>+ new slot</button>
+      <input
+        className="rail-search"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="search slots… (title / backend / cwd)"
+        aria-label="search sessions"
+      />
       <div className="session-list">
-        {sessions.map((s) => (
+        {live.map((s) => (
           <div
             key={s.id}
             className={`session-item ${s.id === activeId ? "active" : ""}`}
@@ -56,20 +72,20 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
             </div>
           </div>
         ))}
-        {!sessions.length && (
+        {!live.length && (
           <div style={{ padding: 16, color: "var(--text-dim)", fontSize: 13 }}>
-            No sessions yet — open a slot.
+            {needle ? "no live slot matches that search." : "No sessions yet — open a slot."}
           </div>
         )}
-        {archived.length > 0 && (
+        {cold.length > 0 && (
           <>
             <div className="rail-sep">
               <span>cold slots</span>
               <span className="hint" title="sessions kept in SQLite after their process exited">
-                on disk · {archived.length}
+                on disk · {cold.length}{needle ? ` of ${archived.length}` : ""}
               </span>
             </div>
-            {archived.map((s) => (
+            {cold.map((s) => (
               <div key={s.id} className="session-item cold" onClick={() => void cockpit.resume(s.id)}>
                 <div className="title">{s.title}</div>
                 <div className="meta">
@@ -241,6 +257,17 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
   return (
     <div className="stream" ref={ref}>
       <div className="stream-inner">
+        {v.hasOlder && (
+          <div className="load-earlier">
+            <button
+              className="ghost-btn"
+              disabled={v.loadingOlder}
+              onClick={() => void cockpit.loadEarlier(v.info.id)}
+            >
+              {v.loadingOlder ? "loading…" : "↑ load earlier messages"}
+            </button>
+          </div>
+        )}
         {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
         {v.msgs.map((m) => <Bubble key={m.key} m={m} />)}
         {v.busy && <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>▸ turn in progress…</div>}

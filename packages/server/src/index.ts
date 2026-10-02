@@ -161,9 +161,24 @@ const httpServer = createServer(async (req, res) => {
         return send(res, 200, info);
       }
       if (req.method === "GET" && sub === "/messages") {
-        const after = Number(url.searchParams.get("after") ?? -1);
-        const msgs = store.messagesAfter(id, after);
-        return send(res, 200, { messages: msgs, hasMore: msgs.length >= 500 });
+        // Paging contract (M4):
+        //   no params / tail=1   -> NEWEST page, oldest-first, hasOlder says more exist above
+        //   before=<seq>         -> the previous page above that seq
+        //   after=<seq>          -> forward replay rows from a reconnect anchor (WS path)
+        // Page size is env-tunable so the paging path is testable without 500+ messages.
+        const pageSize = Number(process.env.AGENTSLOT_HISTORY_PAGE || 500);
+        const before = url.searchParams.get("before");
+        const after = url.searchParams.get("after");
+        if (before != null) {
+          const page = store.messagesBefore(id, Number(before), Math.min(pageSize, 200));
+          return send(res, 200, { messages: page.messages, hasOlder: page.hasMore });
+        }
+        if (after != null && !url.searchParams.has("tail")) {
+          const msgs = store.messagesAfter(id, Number(after), pageSize);
+          return send(res, 200, { messages: msgs, hasOlder: false });
+        }
+        const page = store.messagesTail(id, pageSize);
+        return send(res, 200, { messages: page.messages, hasOlder: page.hasOlder });
       }
       if (req.method === "POST" && sub === "/prompt") {
         const body = await readJson(req);
