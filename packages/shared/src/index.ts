@@ -11,6 +11,14 @@ export type SessionStatus =
   | "error" // subprocess died or handshake failed
   | "closed";
 
+/** A model the agent offers (ACP session model state). Hermes reports these on the
+ *  wire as ``models: {currentModelId, availableModels}`` — the type is not in the SDK's
+ *  published surface, so we model the field ourselves. */
+export interface SessionModelState {
+  currentModelId: string | null;
+  availableModels: { modelId: string; name: string; description?: string | null }[];
+}
+
 export interface SessionInfo {
   id: string; // our own id (browser-facing)
   backend: BackendId;
@@ -26,6 +34,13 @@ export interface SessionInfo {
   createdAt: number;
   modes: SessionModeState | null;
   configOptions: ConfigOptionView[];
+  /** models the agent advertised for this session (null = it offers none) */
+  models?: SessionModelState | null;
+  /** Operator override for the context window shown in the gauge. ACP has no method to
+   *  change a model's window (it is a property of the provider), so the number is either
+   *  what the agent reports via usage_update or this — the operator's declared window.
+   *  null = use whatever the agent reports. */
+  contextLimit?: number | null;
   commands: AvailableCommandView[]; // slash commands advertised by the agent
   /** context-window gauge, from ACP usage_update (AionUi F-DISPLAY-07 lineage) */
   usage?: UsageView | null;
@@ -55,6 +70,10 @@ export interface ConfigOptionView {
   id: string;
   name: string;
   type: "boolean" | "select" | "string" | "number";
+  /** ACP's semantic hint: "model" | "mode" | "thought_level" | … — lets a client place
+   *  the control (own button vs settings) instead of guessing from the id (which is all
+   *  a backend like Hermes gives us today). */
+  category?: string | null;
   currentValue?: string | number | boolean | null;
   options?: { value: string; name: string }[];
 }
@@ -125,6 +144,7 @@ export type ClientCommand =
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }
+  | { t: "set-model"; sessionId: string; modelId: string }
   | {
       t: "respond-permission";
       sessionId: string;

@@ -174,14 +174,29 @@ class Speaker {
 
   voices = (): SpeechSynthesisVoice[] => this.#voices;
 
+  /** The voice list is NOT ready at module load: Chromium populates it asynchronously and
+   *  may fire `voiceschanged` seconds later (or only after speech is first used). Reading
+   *  `getVoices()` once made the UI claim "no voices" on a browser with 200 of them —
+   *  which is exactly what the operator saw. So: read, listen, AND poll briefly. */
   init(): void {
     if (!browserSpeechAvailable()) return;
     const load = (): void => {
-      this.#voices = window.speechSynthesis.getVoices();
-      if (this.#voices.length) for (const fn of this.#voiceListeners) fn();
+      const next = window.speechSynthesis.getVoices();
+      if (next.length === this.#voices.length) return;
+      this.#voices = next;
+      for (const fn of this.#voiceListeners) fn();
     };
     load();
     window.speechSynthesis.addEventListener("voiceschanged", load);
+    let tries = 0;
+    const poll = window.setInterval(() => {
+      tries += 1;
+      load();
+      if (this.#voices.length || tries > 40) window.clearInterval(poll); // ~10s, then stop
+    }, 250);
+    // Safari fills the list on first interaction, and some Chromium builds only after a
+    // user gesture: one extra read on the first tap costs nothing.
+    window.addEventListener("pointerdown", load, { once: true });
   }
 
   /** The voice to use: the operator's pick, else the first one matching the language. */

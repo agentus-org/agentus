@@ -128,6 +128,38 @@ try {
       body: JSON.stringify({ path: root }),
     })).status === 404);
 
+  // ---- models (ACP session model state + session/set_model) ----------------------
+  check("the mock advertises its models", created.models?.availableModels?.length === 3,
+    JSON.stringify(created.models?.currentModelId));
+  const switched = await j(await fetch(`${base}/api/sessions/${created.id}/model`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ modelId: "mock:deep" }),
+  }));
+  check("set-model switches the session's model", switched.models?.currentModelId === "mock:deep", String(switched.models?.currentModelId));
+  check("set-model rejects an unknown model", (await fetch(`${base}/api/sessions/${created.id}/model`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ modelId: "mock:nope" }),
+  })).status === 400);
+  check("set-model needs a modelId", (await fetch(`${base}/api/sessions/${created.id}/model`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({}),
+  })).status === 400);
+
+  // ---- the operator's context window --------------------------------------------
+  const withLimit = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ limit: 64000 }),
+  }));
+  check("context-limit is stored on the slot", withLimit.contextLimit === 64000, String(withLimit.contextLimit));
+  check("context-limit survives a re-read",
+    (await j(await fetch(`${base}/api/sessions`, { headers: H }))).live.some((s) => s.id === created.id && s.contextLimit === 64000));
+  check("context-limit rejects a non-positive number", (await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ limit: 0 }),
+  })).status === 400);
+  const cleared = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ limit: null }),
+  }));
+  check("context-limit can be cleared (back to what the agent reports)", cleared.contextLimit === null, String(cleared.contextLimit));
+
   // ---- terminal ------------------------------------------------------------------
   const term = new WebSocket(`ws://127.0.0.1:${PORT}/ws/term?sessionId=${created.id}&token=${token}`);
   const termOut = [];

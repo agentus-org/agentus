@@ -399,3 +399,24 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 输入区：用量行在框上方、下排 `[attach, chat settings, dictate, send]`、触摸高度 38px。
   - 面板：全屏 sheet `width=390`、零横向溢出、文件列表正常；零控制台报错。
   - 踩坑：新面板/输入区的**基础样式写在文件末尾**，把前面的 `@media (max-width:720px)` 覆盖掉了（同特异性、后者胜）—— 手机规则必须放到文件最后，或写在基础样式之后。
+
+**R56–R57 四条反馈：模型/强度拆按钮、真 markdown、上下文上限可改、"no voices" 误报**
+
+先做的是「研究」而不是改代码：把 ACP 到底能给什么查清楚了（探针 `~/.hermes/cache/agentslot/probe_raw.mjs` 看原始帧，`packages/server` 里临时脚本看 SDK 到底留不留字段）。
+
+- **ACP 事实（实测）**
+  - `session/new` 的**原始响应**有四个顶层键：`sessionId, modes, configOptions, models`；`models = {currentModelId, availableModels[501]}（Hermes 实测）`。
+  - 官方 TS SDK 1.5.1 的**类型**里没有 models（`AGENT_METHODS` 里没有 `session/set_model`），但**解析结果保留了该字段**（typed `newSession()` 实测含 `models`），且 `Connection.request(method, params)` 有**泛型重载**可直接发自定义方法 → `session/set_model` 实测返回 `{}`（Hermes `set_session_model` 已实现）。
+  - `configOptions` 是 ACP 给旋钮的正式位置，SDK 类型里带 `category: "mode" | "model" | "model_config" | "thought_level" | string`（"for UX: placement/icons"）。**Hermes 不填 category**，只给 `reasoning_effort`，所以客户端必须 category 优先 + id 兜底。
+  - **上下文上限：ACP 没有任何"设置"方法**。窗口是模型/服务端的属性，客户端能拿到的只有 `usage_update{used,size,cost}`。Hermes 侧的杠杆是"换模型"和 `/compress`（已作为斜杠命令公告）。
+- **R57 结果**（1280×900 + 390×844，真 Edge，mock 席位）
+  - 工具条：`[+][🧠 Medium ▾][⚙][🔲 Mock Fast ▾] …… [🎤][发送]` —— 与 studio 的"推理强度 / 设置 / 模型"三件套同形；设置里只剩 permission mode / read replies aloud / dictation（实测 groups 就这三个）。
+  - 模型选择：列表 3 项、当前项高亮；**切换成功**（`Mock Fast → Mock Deep`，标签即时更新，无错误横幅）。真 Hermes 席位上列表是 **501 个模型**（按钮标签直接显示 `Alibaba Coding Plan · qwen3.8-flash`），走的是同一个 UI 路径。
+  - markdown：`h3 ×1`、`ol li ×2`、嵌套 `ul li ×1`、表格 `6` 个单元格、`blockquote ×1`、**2 个带语言标签的代码块（ts/bash）+ 12 个 hljs 着色 span**、行内代码 3 处、链接 `target=_blank`。
+  - **XSS 实测**：同一回合里让 agent 原样回显 `<img src=x onerror=…>` 与 `<script>alert('xss')</script>` → 渲染出的 `.md img = 0`、`.md script = 0`、`window.__xss` 未触发（markdown-it `html:false` + DOMPurify 双保险）。
+  - 上下文上限：点用量行 → 「change window」→ 输 40000 → 行变成 `ctx 179 / 40k · 0% · 40k left (set)`（并注明"由你声明"）→ 「reset」回到 agent 报的 `200k`。ACI 说明文字也写在弹层里：ACP 改不了窗口，换模型才是真杠杆。
+  - 朗读：不再出现 "no voices"（修法见下），按钮点击后 `speechSynthesis.speaking=true`，本机 203 个语音；再点即停。
+  - 手机 390：零横向溢出，`[+][depth][⚙][model][🎤][send]` 全在一行，markdown 表格可横向滚动。
+  - CI 断言从 31 → **39**（模型列表/切换/非法模型/缺参数、上限设置/回读/非法值/清除）。
+- **"no voices" 的真因**：语音列表**不是**在模块加载时就绪的 —— Chromium 异步填充 `getVoices()`，`voiceschanged` 可能几秒后才来（甚至要等首次交互）。旧代码只读一次，于是"该浏览器没有语音"这句谎话盖在 203 个语音上。修法：读一次 + 监听 + 轮询（~10s 后停）+ 首次 `pointerdown` 再读；并且**只有真的没有 `speechSynthesis` 时才显示这句**。
+- **模拟端补了两件事**：mock 现在公告 3 个模型与带 `category` 的推理强度（离线也能走这条渲染路径）；TS SDK 路由不到 `session/set_model`，所以 mock 在 stdin 上拦截该方法自答（真 agent 用 Python SDK，有这个方法 —— 实测 Hermes 可切）。

@@ -401,6 +401,27 @@ const httpServer = createServer(async (req, res) => {
         emit({ t: "sessions", sessions: mgr.list() });
         return send(res, 200, info);
       }
+      if (req.method === "POST" && sub === "/model") {
+        const body = await readJson(req);
+        const modelId = String(body.modelId ?? "").trim();
+        if (!modelId) return send(res, 400, { error: "modelId is required" });
+        try {
+          return send(res, 200, await mgr.setModel(id, modelId));
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          // 409: the slot exists but has no live agent to switch (resume first)
+          return send(res, /not ready|resume the slot/.test(msg) ? 409 : 400, { error: msg });
+        }
+      }
+      if (req.method === "POST" && sub === "/context-limit") {
+        const body = await readJson(req);
+        const raw = body.limit;
+        const limit = raw === null || raw === "" || raw === undefined ? null : Number(raw);
+        if (limit !== null && (!Number.isFinite(limit) || limit <= 0)) {
+          return send(res, 400, { error: "limit must be a positive number of tokens (or null to clear)" });
+        }
+        return send(res, 200, mgr.setContextLimit(id, limit));
+      }
       if (req.method === "POST" && sub === "/mode") {
         const body = await readJson(req);
         await mgr.setMode(id, String(body.modeId));
@@ -505,6 +526,9 @@ wss.on("connection", (ws) => {
           break;
         case "set-config":
           await mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value);
+          break;
+        case "set-model":
+          await mgr.setModel(cmd.sessionId, cmd.modelId);
           break;
         case "respond-permission":
           mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {

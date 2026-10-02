@@ -22,6 +22,9 @@ export interface SessionRow {
    *  cold-slot resume shows the same picture (AionUi F-DISPLAY-07/10). */
   usage?: unknown;
   commands?: unknown;
+  /** Models the agent advertised (JSON) + the operator's context-window override. */
+  models?: unknown;
+  contextLimit?: number | null;
   /** The directory the cockpit works in for this slot: the file/terminal panel's
    *  root, and the cwd a cold slot is resumed with. Deliberately separate from
    *  `cwd` — a live ACP child cannot be re-cd'd (its cwd was fixed at newSession),
@@ -38,6 +41,7 @@ interface RawSessionRow {
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
   workspace?: string | null;
+  models?: string | null; context_limit?: number | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -57,6 +61,8 @@ function rowToSession(r: RawSessionRow): SessionRow {
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
     workspace: r.workspace ?? null,
+    models: parseJson(r.models),
+    contextLimit: r.context_limit ?? null,
   };
 }
 
@@ -83,9 +89,11 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands", "workspace"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
+    // integer column, so it gets its own migration (the loop above assumes text)
+    if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
   }
 
   upsertSession(s: SessionRow): void {
@@ -93,20 +101,22 @@ export class Store {
     if (exist) {
       this.#db
         .prepare(
-          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=? where id=?`,
+          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=? where id=?`,
         )
         .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
-          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []), s.id);
+          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
+          JSON.stringify(s.models ?? null), s.id);
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
-          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []));
+          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
+          JSON.stringify(s.models ?? null));
     }
   }
 
@@ -276,6 +286,14 @@ export class Store {
     const info = this.#db
       .prepare("update sessions set workspace = ? where id = ?")
       .run(workspace && workspace.length ? workspace : null, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  /** The operator's declared context window for a slot (null clears it). */
+  setContextLimit(id: string, limit: number | null): boolean {
+    const info = this.#db
+      .prepare("update sessions set context_limit = ? where id = ?")
+      .run(limit && limit > 0 ? Math.floor(limit) : null, id);
     return Number(info.changes ?? 0) > 0;
   }
 

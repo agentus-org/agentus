@@ -118,3 +118,11 @@ export const IconRefresh = (p: IconProps = {}): JSX.Element =>
 /** pick the workspace this slot works in */
 export const IconSwap = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M4 8h13l-3-3M20 16H7l3 3" /></>, p);
+
+/** pick the model this slot talks to — a chip (the studio model button's idea) */
+export const IconChip = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" /></>, p);
+
+/** thinking depth/brain, used as the reasoning-effort button icon */
+export const IconBrain = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M9.5 4a2.5 2.5 0 0 1 2.5 2.5v11a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 2.26-4.9A2.5 2.5 0 0 1 9.5 4Z" /><path d="M14.5 4A2.5 2.5 0 0 0 12 6.5v11a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-2.26-4.9A2.5 2.5 0 0 0 14.5 4Z" /></>, p);

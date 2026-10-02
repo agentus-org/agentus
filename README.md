@@ -203,6 +203,18 @@ to your production memory daemon), and `.env` copied 0600.
   preview) and a shell rooted in the slot's workspace, both killed with the socket.
   Cwd is a per-slot field: a *running* agent keeps the directory it was started in,
   the panels and the next resume follow the one you pick
+- **replies rendered as markdown** (markdown-it + highlight.js, sanitised with DOMPurify
+  and `html: false`, so an agent's `<script>` stays visible text): headings, lists,
+  tables, quotes, fenced code with a language label, copy button and syntax colouring
+- **the agent's own knobs, placed the way ACP intends**: a thinking-depth button and a
+  model button, each reading the agent's advertised options (`configOptions[].category`,
+  falling back to the option id) — and hidden when the agent offers none. Model switching
+  uses ACP `session/set_model`, which Hermes implements (the SDK in use does not type it,
+  so it goes through the generic request() overload)
+- **the context window is yours to declare**: click the usage line to set the window the
+  gauge measures against, per slot, persisted. ACP has no method to change a model's
+  window (it is the provider's property — that is what `usage_update.size` reports), so
+  this number only drives the gauge; switching models is the real lever
 - composer that reads like a chat box, not a toolbar: attachments (`+`), settings
   (permission mode · thinking depth · voice) and dictation live on one row under the
   input, the context/spend line is small type *above* it, and send turns into stop

@@ -166,6 +166,9 @@ export class SessionManager {
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
       live.info.configOptions = (res.configOptions ?? []) as ConfigOptionView[];
+      // `models` is on the wire but not in the SDK's published types (see shared/index.ts),
+      // so read it defensively instead of trusting a typed field that does not exist.
+      live.info.models = readModels(res);
       this.#updateSession(live);
       return live.info;
     } catch (err) {
@@ -208,6 +211,7 @@ export class SessionManager {
       info: {
         id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
         workspace: row.workspace ?? null,
+        contextLimit: row.contextLimit ?? null,
         status: "starting", pid: child.pid ?? null, title: row.title,
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
@@ -250,6 +254,7 @@ export class SessionManager {
       const loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: [],
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | undefined;
+      const loadedModels = readModels(loaded);
       // The agent re-announces its modes/options on load — prefer that SET (capabilities can
       // differ after an upgrade), but keep the OPERATOR's pick for any option that still
       // exists: a backend that does not restore its own session state would otherwise silently
@@ -260,6 +265,9 @@ export class SessionManager {
           .map((o) => [o.id, o.currentValue]),
       );
       if (loaded?.modes) live.info.modes = loaded.modes;
+      // the agent's model list is authoritative; the stored one is only a fallback for
+      // backends that answer loadSession without it
+      if (loadedModels) live.info.models = loadedModels;
       if (loaded?.configOptions?.length) {
         live.info.configOptions = loaded.configOptions.map((o) => (
           storedPicks.has(o.id) ? { ...o, currentValue: storedPicks.get(o.id) } : o
@@ -308,6 +316,8 @@ export class SessionManager {
       .map((r) => ({
         id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
         workspace: r.workspace ?? null,
+        models: (r.models ?? null) as SessionInfo["models"],
+        contextLimit: r.contextLimit ?? null,
         title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
         modes: (r.modes ?? null) as SessionModeState | null,
         configOptions: (r.configOptions ?? []) as ConfigOptionView[],
@@ -618,6 +628,59 @@ export class SessionManager {
     };
   }
 
+  /** Switch the model for a live session. ACP method `session/set_model` — not in the
+   *  SDK's typed surface, so it goes through the generic request() overload (verified
+   *  against hermes acp, which implements set_session_model). A cold slot has no agent
+   *  to switch: resume it first, then pick (same rule as modes). */
+  async setModel(id: string, modelId: string): Promise<SessionInfo> {
+    const s = this.#need(id);
+    if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready — resume the slot first");
+    const known = s.info.models?.availableModels ?? [];
+    if (known.length && !known.some((m) => m.modelId === modelId)) {
+      throw new Error(`unknown model: ${modelId}`);
+    }
+    await s.conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
+    if (s.info.models) s.info.models = { ...s.info.models, currentModelId: modelId };
+    this.#updateSession(s);
+    this.#emit({ t: "sessions", sessions: this.list() });
+    return s.info;
+  }
+
+  /** Declare (or clear) the context window the gauge measures against. ACP has no
+   *  method for this — a window is a property of the model/provider, reported to us via
+   *  usage_update — so this is the operator's own number, kept per slot. */
+  setContextLimit(id: string, limit: number | null): SessionInfo {
+    const clean = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
+    const live = this.#sessions.get(id);
+    if (live) {
+      live.info.contextLimit = clean;
+      this.#updateSession(live);
+    } else {
+      if (!this.#store.getSession(id)) throw new Error(`no such session: ${id}`);
+      if (!this.#store.setContextLimit(id, clean)) throw new Error(`no such session: ${id}`);
+    }
+    this.#emit({ t: "sessions", sessions: this.list() });
+    const row = live?.info ?? this.#coldInfo(id);
+    return row;
+  }
+
+  /** One cold row, in the same shape list()/archived() produce. */
+  #coldInfo(id: string): SessionInfo {
+    const r = this.#store.getSession(id);
+    if (!r) throw new Error(`no such session: ${id}`);
+    return {
+      id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
+      workspace: r.workspace ?? null, contextLimit: r.contextLimit ?? null,
+      models: (r.models ?? null) as SessionInfo["models"],
+      title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
+      modes: (r.modes ?? null) as SessionModeState | null,
+      configOptions: (r.configOptions ?? []) as ConfigOptionView[],
+      usage: (r.usage ?? null) as SessionInfo["usage"],
+      commands: normCommands(r.commands),
+      lastSeq: this.#store.maxSeq(id),
+    };
+  }
+
   hasSession(id: string): boolean {
     return this.#sessions.has(id);
   }
@@ -657,7 +720,31 @@ function sessionRow(i: SessionInfo) {
     title: i.title, status: i.status, pid: i.pid, createdAt: i.createdAt, closedAt: null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
+    models: i.models ?? null,
   };
+}
+
+/** ACP carries the session's model list as ``models`` on newSession/loadSession. The SDK
+ *  in use does not publish the type (and may drop it in a future version), so this reads
+ *  it from the loose response and normalizes it rather than trusting a shape. */
+function readModels(res: unknown): SessionInfo["models"] {
+  const m = (res as { models?: unknown } | null | undefined)?.models as
+    | { currentModelId?: unknown; availableModels?: unknown }
+    | null
+    | undefined;
+  if (!m || !Array.isArray(m.availableModels)) return null;
+  const availableModels = m.availableModels
+    .map((raw) => {
+      const o = raw as { modelId?: unknown; name?: unknown; description?: unknown };
+      return {
+        modelId: String(o.modelId ?? ""),
+        name: String(o.name ?? o.modelId ?? ""),
+        description: o.description == null ? null : String(o.description),
+      };
+    })
+    .filter((o) => o.modelId);
+  if (!availableModels.length) return null;
+  return { currentModelId: m.currentModelId == null ? null : String(m.currentModelId), availableModels };
 }
 
 /** Rows written before commands carried descriptions hold plain strings — normalize,

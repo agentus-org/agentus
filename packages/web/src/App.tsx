@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { cockpit, type MsgView, type SessionView } from "./state";
-import { MiniMarkdown } from "./MiniMarkdown";
+import { Markdown } from "./Markdown";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
@@ -9,8 +9,8 @@ import {
 } from "./voice";
 import {
   IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFile, IconFolder, IconGauge,
-  IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower, IconResume,
-  IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
+  IconBrain, IconChip, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
+  IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
 import type { ClientCommand, PromptAttachment, TurnTrace, UsageView } from "@agentslot/shared";
 
@@ -590,7 +590,7 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
         <div className="msg agent">
           <div className="role">AGENT</div>
           <div className="bubble">
-            <MiniMarkdown text={m.text} />
+            <Markdown text={m.text} />
             <div className="bubble-actions">
               <SpeakButton id={m.key} text={m.text} />
             </div>
@@ -717,11 +717,12 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
 function SpeakButton({ id, text }: { id: string; text: string }): JSX.Element | null {
   const [prefs] = useVoicePrefs();
   const spoken = useSpeaker();
-  const hasVoices = useSyncExternalStore(speaker.subscribeVoices, () => speaker.voices().length);
   if (!text.trim()) return null;
   const playing = spoken.speaking && spoken.speakingId === id;
-  if (!hasVoices && !prefs.serverTts) {
-    return <span className="bubble-note" title="this browser exposes no speech synthesis">no voices</span>;
+  // Only claim we cannot speak when the browser really has no speech synthesis at all:
+  // "no voices yet" is a loading state, not a verdict (the list arrives late in Chromium).
+  if (typeof window !== "undefined" && !("speechSynthesis" in window) && !prefs.serverTts) {
+    return <span className="bubble-note" title="this browser has no speech synthesis">no voices</span>;
   }
   return (
     <button
@@ -791,39 +792,175 @@ function humanBytes(n: number): string {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} kB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/** ACP tags config options with a `category` ("model" | "mode" | "thought_level" | …)
+ *  exactly so clients can place them. Hermes leaves it unset today, so fall back to the
+ *  option's id — and never invent an option the agent did not advertise. */
+function pickConfigOption(options: SessionView["info"]["configOptions"], kind: "effort" | "model"): SessionView["info"]["configOptions"][number] | undefined {
+  const wanted = kind === "effort" ? ["thought_level", "reasoning"] : ["model", "model_config"];
+  const idRe = kind === "effort" ? /reason|effort|think|depth/i : /model/i;
+  return options.find((o) => o.type === "select" && o.category && wanted.includes(String(o.category)))
+    ?? options.find((o) => o.type === "select" && idRe.test(o.id));
+}
+
+/** Icon + current value + chevron, opening a list: one control per concern, the way the
+ *  operator asked for (hermes-studio's toolbar: effort, settings, model). */
+function ToolbarSelect({ label, title, icon, value, children, open, onToggle, testId }: {
+  label: string;
+  title: string;
+  icon: JSX.Element;
+  value: string;
+  children: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <div className="tb-wrap">
+      <button
+        type="button"
+        className={`tb-btn ${open ? "on" : ""}`}
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
+        data-testid={testId}
+        onClick={onToggle}
+      >
+        {icon}
+        <span className="tb-label">{value || label}</span>
+        <IconChevronDown size={11} className="tb-chev" />
+      </button>
+      {open ? children : null}
+    </div>
+  );
+}
+
+/** A list of agent-advertised choices (thinking depth, model, mode). */
+function ChoiceList({ items, current, onPick, empty }: {
+  items: { value: string; name: string; hint?: string | null }[];
+  current: string | null;
+  onPick: (value: string) => void;
+  empty: string;
+}): JSX.Element {
+  if (!items.length) return <div className="tb-list"><div className="tb-empty">{empty}</div></div>;
+  return (
+    <div className="tb-list" role="listbox">
+      {items.map((it) => (
+        <button
+          key={it.value}
+          role="option"
+          aria-selected={it.value === current}
+          className={`tb-opt ${it.value === current ? "sel" : ""}`}
+          title={it.hint ? `${it.name} — ${it.hint}` : it.name}
+          onClick={() => onPick(it.value)}
+        >
+          <span className="tb-opt-name">{it.name}</span>
+          {it.hint ? <span className="tb-opt-hint">{it.hint}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Context + spend, in small type above the box (the operator's ask). The bar is
  *  the same reading the ring used to give, minus the ring's claim on the header. */
-function UsageRow({ usage, trace }: { usage?: UsageView | null; trace?: TurnTrace | null }): JSX.Element | null {
+function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
+  const usage = v.info.usage;
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const trace = v.trace;
   if (!usage || (!usage.used && !usage.size)) return null;
-  const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
+  // The window we measure against: the operator's declared one wins (ACP cannot change a
+  // model's window — it is the provider's property), else what the agent reported.
+  const limit = v.info.contextLimit && v.info.contextLimit > 0 ? v.info.contextLimit : usage.size;
+  const pct = limit > 0 ? Math.min(100, Math.round((usage.used / limit) * 100)) : 0;
   const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
   const fmt = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
-  const remaining = usage.size > 0 ? Math.max(0, usage.size - usage.used) : 0;
+  const remaining = limit > 0 ? Math.max(0, limit - usage.used) : 0;
+  const save = async (value: number | null): Promise<void> => {
+    setBusy(true);
+    setErr("");
+    try {
+      await cockpit.setContextLimit(v.info.id, value);
+      setEditing(false);
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className={`usage-row ${level}`}>
       <button className="usage-text" onClick={() => setOpen((o) => !o)} title="context window and this turn">
-        ctx {fmt(usage.used)}{usage.size > 0 ? ` / ${fmt(usage.size)}` : ""}
-        {usage.size > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
+        ctx {fmt(usage.used)}{limit > 0 ? ` / ${fmt(limit)}` : ""}
+        {limit > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
+        {v.info.contextLimit ? " (set)" : ""}
         {usage.cost != null ? ` · $${usage.cost.toFixed(4)}` : ""}
         {trace && (trace.effort || trace.mode)
           ? ` · ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(" / ")}`
           : ""}
       </button>
-      {usage.size > 0 ? (
-        <div className="usage-bar" title={`${fmt(usage.used)} of ${fmt(usage.size)} tokens`}>
+      {limit > 0 ? (
+        <div className="usage-bar" title={`${fmt(usage.used)} of ${fmt(limit)} tokens`}>
           <i style={{ width: `${pct}%` }} />
         </div>
       ) : null}
       {open ? (
         <div className="usage-detail">
-          <div>context window: {usage.used} / {usage.size || "—"} tokens ({pct}%)</div>
-          <div>remaining: {usage.size > 0 ? remaining : "unknown"} tokens</div>
+          <div>context window: {usage.used} / {limit || "—"} tokens ({pct}%)</div>
+          <div>remaining: {limit > 0 ? remaining : "unknown"} tokens</div>
+          <div>
+            window source: {v.info.contextLimit
+              ? <b>declared by you</b>
+              : usage.size > 0 ? "reported by the agent (usage_update)" : "unknown"}
+          </div>
           {usage.cost != null ? <div>session cost: ${usage.cost.toFixed(6)}</div> : null}
           {trace?.model ? <div>model: {trace.model}</div> : null}
           {trace && (trace.effort || trace.mode)
             ? <div>this turn: {[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}</div>
             : null}
+          {/* ACP has no "set the window" method: the number belongs to the model. What an
+              operator can do is declare the window the gauge should assume. */}
+          {editing ? (
+            <div className="usage-edit">
+              <input
+                autoFocus
+                value={draft}
+                inputMode="numeric"
+                aria-label="context window in tokens"
+                placeholder={String(usage.size || v.info.contextLimit || 200000)}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const n = Number(draft.replace(/[^0-9]/g, ""));
+                    if (n > 0) void save(n);
+                  }
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+              <button
+                className="usage-edit-btn"
+                disabled={busy || !Number(draft.replace(/[^0-9]/g, ""))}
+                onClick={() => void save(Number(draft.replace(/[^0-9]/g, "")))}
+              >
+                {busy ? "…" : "set"}
+              </button>
+              {v.info.contextLimit ? (
+                <button className="usage-edit-btn" disabled={busy} onClick={() => void save(null)}>reset</button>
+              ) : null}
+            </div>
+          ) : (
+            <button className="usage-edit-btn" onClick={() => { setDraft(String(limit || 200000)); setEditing(true); }}>
+              change window
+            </button>
+          )}
+          {err ? <div className="usage-edit-err">{err}</div> : null}
+          <div className="usage-note">
+            ACP has no method to change a model's window — switching the model is the real lever
+            (the model button next to the prompt). This number only drives the gauge.
+          </div>
         </div>
       ) : null}
     </div>
@@ -840,7 +977,9 @@ function SettingsPopover({ v, prefs, setPrefs, onClose }: {
 }): JSX.Element {
   const info = v.info;
   const modes = info.modes?.availableModes ?? [];
-  const cfg = info.configOptions.find((o) => o.type === "select" && /reason|effort|think/i.test(o.id));
+  // effort and model have their own toolbar buttons now; settings keeps everything else
+  const cfg = pickConfigOption(info.configOptions, "effort");
+  const modelCfg = pickConfigOption(info.configOptions, "model");
   // re-render when the browser finally publishes its voice list
   const voiceCount = useSyncExternalStore(speaker.subscribeVoices, () => speaker.voices().length);
   const voices = voiceCount ? speaker.voices() : [];
@@ -866,20 +1005,25 @@ function SettingsPopover({ v, prefs, setPrefs, onClose }: {
           ))}
         </div>
       )}
-      {cfg?.options && (
-        <div className="settings-group">
-          <div className="settings-label"><IconGauge size={13} /> thinking depth</div>
-          {cfg.options.map((o) => (
-            <button
-              key={String(o.value)}
-              className={`settings-opt ${String(cfg.currentValue ?? "") === String(o.value) ? "sel" : ""}`}
-              onClick={() => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: o.value })}
-            >
-              {o.name}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Config options the agent advertises that are NOT the effort knob (that one has
+          its own button now). Generic on purpose: a backend that adds an option gets it
+          rendered without a code change here. */}
+      {info.configOptions
+        .filter((o) => o.type === "select" && o.options && o !== cfg && o !== modelCfg)
+        .map((o) => (
+          <div className="settings-group" key={o.id}>
+            <div className="settings-label"><IconSettings size={13} /> {o.name || o.id}</div>
+            {o.options?.map((opt) => (
+              <button
+                key={String(opt.value)}
+                className={`settings-opt ${String(o.currentValue ?? "") === String(opt.value) ? "sel" : ""}`}
+                onClick={() => cockpit.send({ t: "set-config", sessionId: info.id, configId: o.id, value: opt.value })}
+              >
+                {opt.name}
+              </button>
+            ))}
+          </div>
+        ))}
       <div className="settings-group">
         <div className="settings-label"><IconVolume size={13} /> read replies aloud</div>
         <label className="settings-toggle">
@@ -959,6 +1103,10 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   const [attachErr, setAttachErr] = useState("");
   const [dragging, setDragging] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // which toolbar popover is open: "effort" | "model" | null (settings has its own flag)
+  const [pop, setPop] = useState<"effort" | "model" | null>(null);
+  const [modelQuery, setModelQuery] = useState("");
+  const [switching, setSwitching] = useState(false);
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
   const spoken = useSpeaker();
@@ -1022,6 +1170,23 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   };
 
   const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
+  // The three controls the operator sees: attachments, thinking depth, settings, model —
+  // model and depth only when the agent actually advertises them (never a dead button).
+  const effortCfg = pickConfigOption(v.info.configOptions, "effort");
+  const modelCfg = pickConfigOption(v.info.configOptions, "model");
+  const models = v.info.models?.availableModels ?? [];
+  const currentModel = v.info.models?.currentModelId ?? "";
+  const modelName = models.find((m) => m.modelId === currentModel)?.name
+    ?? (modelCfg?.options?.find((o) => String(o.value) === String(modelCfg.currentValue ?? ""))?.name)
+    ?? currentModel.split(":").pop() ?? "";
+  const effortName = effortCfg?.options?.find((o) => String(o.value) === String(effortCfg.currentValue ?? ""))?.name ?? "";
+  const shownModels = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    const list = q
+      ? models.filter((m) => `${m.modelId} ${m.name} ${m.description ?? ""}`.toLowerCase().includes(q))
+      : models;
+    return list.slice(0, 300);
+  }, [models, modelQuery]);
 
   return (
     <div
@@ -1034,7 +1199,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
         if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
       }}
     >
-      <UsageRow usage={v.info.usage} trace={v.trace} />
+      <UsageRow v={v} />
       <div className="composer-inner">
         {paletteOpen && (
           <div className="slash-palette" role="listbox" aria-label="slash commands">
@@ -1145,15 +1310,95 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             >
               <IconPlus size={16} />
             </button>
+            {effortCfg ? (
+              <ToolbarSelect
+                label="depth"
+                title={`thinking depth — currently ${effortName || "agent default"}`}
+                icon={<IconBrain size={15} />}
+                value={effortName}
+                testId="tb-effort"
+                open={pop === "effort"}
+                onToggle={() => setPop((p) => (p === "effort" ? null : "effort"))}
+              >
+                <ChoiceList
+                  items={(effortCfg.options ?? []).map((o) => ({ value: String(o.value), name: o.name }))}
+                  current={String(effortCfg.currentValue ?? "")}
+                  empty="the agent advertises no levels"
+                  onPick={(value) => {
+                    cockpit.send({ t: "set-config", sessionId: v.info.id, configId: effortCfg.id, value });
+                    setPop(null);
+                  }}
+                />
+              </ToolbarSelect>
+            ) : null}
             <button
               className={`icon-btn ${settingsOpen ? "on" : ""}`}
-              title="chat settings — mode, thinking depth, voice"
+              title="chat settings — permission mode, voice"
               aria-label="chat settings"
               aria-expanded={settingsOpen}
-              onClick={() => setSettingsOpen((o) => !o)}
+              onClick={() => { setPop(null); setSettingsOpen((o) => !o); }}
             >
               <IconSettings size={16} />
             </button>
+            {(models.length > 0 || modelCfg) ? (
+              <ToolbarSelect
+                label="model"
+                title={`model — currently ${modelName || "unknown"}`}
+                icon={<IconChip size={15} />}
+                value={switching ? `${modelName} …` : modelName}
+                testId="tb-model"
+                open={pop === "model"}
+                onToggle={() => setPop((p) => (p === "model" ? null : "model"))}
+              >
+                {models.length > 0 ? (
+                  <div className="tb-list wide">
+                    {models.length > 12 ? (
+                      <input
+                        className="tb-search"
+                        autoFocus
+                        value={modelQuery}
+                        placeholder={`filter ${models.length} models…`}
+                        aria-label="filter models"
+                        onChange={(e) => setModelQuery(e.target.value)}
+                      />
+                    ) : null}
+                    {shownModels.map((m) => (
+                      <button
+                        key={m.modelId}
+                        className={`tb-opt ${m.modelId === currentModel ? "sel" : ""}`}
+                        title={m.description ? `${m.modelId} — ${m.description}` : m.modelId}
+                        onClick={() => {
+                          setPop(null);
+                          setModelQuery("");
+                          if (m.modelId === currentModel) return;
+                          setSwitching(true);
+                          void cockpit.setModel(v.info.id, m.modelId)
+                            .catch((e) => setAttachErr(`model switch failed: ${String((e as Error)?.message ?? e)}`))
+                            .finally(() => setSwitching(false));
+                        }}
+                      >
+                        <span className="tb-opt-name">{m.name}</span>
+                        {m.description ? <span className="tb-opt-hint">{m.description}</span> : null}
+                      </button>
+                    ))}
+                    {!shownModels.length ? <div className="tb-empty">no model matches “{modelQuery}”</div> : null}
+                    {models.length > shownModels.length && shownModels.length === 300 ? (
+                      <div className="tb-empty">showing the first 300 — type to narrow</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <ChoiceList
+                    items={(modelCfg?.options ?? []).map((o) => ({ value: String(o.value), name: o.name }))}
+                    current={String(modelCfg?.currentValue ?? "")}
+                    empty="the agent lists no models"
+                    onPick={(value) => {
+                      if (modelCfg) cockpit.send({ t: "set-config", sessionId: v.info.id, configId: modelCfg.id, value });
+                      setPop(null);
+                    }}
+                  />
+                )}
+              </ToolbarSelect>
+            ) : null}
             <span className="head-spacer" />
             {spoken.speaking ? (
               <button className="icon-btn on" title="stop reading aloud" aria-label="stop reading" onClick={() => speaker.stop()}>

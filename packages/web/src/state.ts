@@ -483,6 +483,40 @@ class Cockpit {
     return await this.#req(`/api/fs/file?path=${encodeURIComponent(path)}`);
   }
 
+  /** Switch the model of a live slot (ACP `session/set_model`). */
+  async setModel(id: string, modelId: string): Promise<void> {
+    // The agent may re-init its provider client when the model changes (Hermes rebuilds
+    // the session), which takes a while — a short timeout here shows a bogus "network
+    // degraded" banner for a switch that is actually in flight. No retry: a retry would
+    // re-send the switch.
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/model`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ modelId }),
+    }, { timeoutMs: 90_000, retry: false });
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    const i = this.sessions.findIndex((s) => s.id === id);
+    if (i >= 0) this.sessions[i] = { ...this.sessions[i], ...info };
+    this.bump();
+  }
+
+  /** The operator's context-window override (null = whatever the agent reports). */
+  async setContextLimit(id: string, limit: number | null): Promise<void> {
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/context-limit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ limit }),
+    });
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    const i = this.sessions.findIndex((s) => s.id === id);
+    if (i >= 0) this.sessions[i] = { ...this.sessions[i], ...info };
+    const j = this.archived.findIndex((s) => s.id === id);
+    if (j >= 0) this.archived[j] = { ...this.archived[j], ...info };
+    this.bump();
+  }
+
   /** Point a slot at another directory. Live slot: the panels move now and the next
    *  resume starts there; the running agent keeps the cwd it was spawned with. */
   async setWorkspace(id: string, path: string): Promise<void> {
