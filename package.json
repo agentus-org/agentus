@@ -17,7 +17,8 @@
     "test": "npm run test -ws --if-present",
     "start": "bash scripts/start.sh",
     "smoke": "node scripts/smoke.mjs",
-    "auth-smoke": "node scripts/auth-smoke.mjs"
+    "auth-smoke": "node scripts/auth-smoke.mjs",
+    "workspace-smoke": "node scripts/workspace-smoke.mjs"
   },
   "engines": {
     "node": ">=22"
