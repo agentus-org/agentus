@@ -23,18 +23,20 @@ agents: open several sessions in the browser, each one backed by a real
 # Node >= 22.5 (needs node:sqlite; developed on v25)
 git clone https://github.com/agent-slot/agentslot.git
 cd agentslot
-NODE_ENV=development npm install     # NODE_ENV=production silently skips devDeps
 
 # 1) build the isolated Hermes home your test agents will use (see SECURITY note)
 python3 scripts/setup-hermes-test-home.py
 
-# 2) run it
-AGENTSLOT_PORT=8787 npm run dev -w @agentslot/server
+# 2) run it — installs if needed, builds, serves
+npm start
 # open http://localhost:8787, "+ new slot", pick a backend + working directory
 ```
 
-`npm run dev` starts the server (which also serves the built web app).
-For front-end hot reload instead, `npm run dev -w @agentslot/web` (Vite, :5173,
+`npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
+`NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
+stale, then serves. Use `AGENTSLOT_PORT=9000 npm start` to move the port.
+
+For front-end hot reload instead: `npm run dev -w @agentslot/web` (Vite on :5173,
 `host: true` so your phone can reach it over LAN).
 
 ### Backends
@@ -58,6 +60,8 @@ layer never changes.
 | `AGENTSLOT_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTSLOT_HERMES_HOME` | `~/.agentslot-test/home` | **isolated `HERMES_HOME` for the child** |
 | `AGENTSLOT_ALLOW_LIVE_HOME` | unset | `1` = allow spawning against `~/.hermes` (you almost never want this) |
+| `AGENTSLOT_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
+| `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
 
 ## Isolation (read this before pointing it at your real agent)
 
@@ -77,17 +81,26 @@ say `AGENTSLOT_ALLOW_LIVE_HOME=1`. `GET /api/backends` reports `home` / `warning
 `hindsight/config.json`'s `profile`, whose default `"hermes"` would attach a fresh home
 to your production memory daemon), and `.env` copied 0600.
 
-## What it does today (M1)
+## What it does today (M0 → M4)
 
 - multi-session rail — live slots + **cold slots** (transcripts whose process exited;
-  click to respawn + `loadSession` resume, re-applying the stored permission mode/effort)
+  click to respawn + `loadSession` resume, re-applying the stored permission mode/effort),
+  with search across both by title / backend / cwd
 - streaming render of `agent_message_chunk` / `agent_thought_chunk`, tool calls
-  (upserted by `toolCallId`, never appended), plan updates, usage
+  (upserted by `toolCallId`, never appended; expand a card for the agent's input/output),
+  plan updates, usage
+- **context-window gauge** per slot from ACP `usage_update` (warns at 65% / 85%; degrades
+  to used-only when the agent reports no window size) and a per-turn trace chip showing the
+  effort/mode a turn actually runs with
+- **slash-command palette** driven by the agent's own `available_commands_update`
+  (filter, ↑/↓, Tab to accept, Esc) — never an invented command list
 - permission cards (allow / always allow / reject / dismiss) wired to ACP's
-  server→client `requestPermission`, with a timeout so a session can't wedge
+  server→client `requestPermission`, with a pending-count chip and a timeout so a session
+  can't wedge
 - permission mode + reasoning-effort switches (`setSessionMode` / `setSessionConfigOption`),
   persisted per session
-- SQLite transcript with monotonic per-session `seq`; reconnect replays only the tail
+- SQLite transcript with monotonic per-session `seq`; reconnect replays only the tail;
+  long slots **page** backwards ("load earlier") instead of truncating
 - orphan reaping: every child is spawned detached and its pid recorded, so a crashed
   server's leftovers are killed on next boot
 - offline-tolerant: WS reconnect with an outbox (taps while disconnected are queued,
@@ -102,8 +115,10 @@ npm run typecheck
 node scripts/smoke.mjs mock "hello"      # end-to-end against the mock agent
 ```
 
-Browser QA evidence for M1 (20+ rounds, each with repro → root cause → fix → regression)
-lives in [`m1-qa-log.md`](./m1-qa-log.md).
+Browser QA evidence (28+ rounds, each with repro → root cause → fix → regression)
+lives in [`m1-qa-log.md`](./m1-qa-log.md). The `mock` backend triggers extra paths on
+demand: `[tool]` (permission flow), `[think]`, `[plan]`, `[slow]` (reconnect drills),
+`[sink]` (mid-turn child crash).
 
 ## License
 

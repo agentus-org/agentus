@@ -186,6 +186,39 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - 顺带观察：tsx 热重启后旧 live 会话被按 pid 重挂但 metadata 空（不重连 ACP 回路）——M2 若做
   服务端热升级需把 boot 路径改为真正 resume；当前 SIGTERM 语义（杀会话+回收）不受影响。
 
+## R28–R30 — AionUi 规格对齐（UI 升级 + 分页）
+
+先精读 AionUi 的 ACP 规格（`docs/prds/conversations/acp/display.md`、`permissions.md`、`Messages/acp/*.tsx`），
+挑出我们缺的四处，**自己实现**（学思想，不复制粘贴），顺手抓到并修掉一个真 bug。
+
+### R28 上下文用量 / 斜杠命令 / 工具详情 / 单回合 trace（真后端）
+- 服务端：新增 `usage_update` 处理（`usage:{used,size,cost,at}` 落库 + `usage` 事件）、
+  `available_commands_update` 保留描述、`turn-start` 带 `trace`（只用会话真知道的 effort/mode，不臆造模型名）。
+- 前端：头部用量仪表（8.4k/1000k，65%/85% 变色，只有 used 时降级显示）、斜杠面板（过滤/↑↓/Tab/Esc，
+  空态明说"此 agent 未广播命令"）、工具卡可展开 input/output、trace chip、待批计数 chip。
+- 实测（源码 hermes 测试床）：`ctx 8.4k/1000k` → 一轮后 `13k`；`/` 列出 hermes 六条真命令带描述；
+  `/mo` + ArrowDown + Tab → `/model `；Esc 清空；工具卡展开显示输出；trace 显示 `mode default`。
+- mock 也对齐：广播三条命令 + 每轮末尾发 `usage_update`（`MOCK_USAGE_SIZE` 可调），
+  这样无真后端也能回归这两条路径。
+
+### R29 手机视口（390×844，CDP 设备模拟）
+- 无横向滚动；用量仪表在窄屏正常换行；斜杠面板 `10..380px` 完全落在视口内；
+  抽屉开（left 0 + scrim）/ scrim 关闭正常。**PASS**
+- 注：抽屉首次读数 `open:false` 是 React 渲染未落 + Edge 后台动画节流的读数假象，加延迟复测即正常
+  （同 R23–25 的记录）。
+
+### R30 长会话分页 + 侧栏搜索 —— **抓到真 bug**
+- 造了 126 行的 mock 会话（6 轮），把页大小调成 5（`AGENTSLOT_HISTORY_PAGE`，便于实测）后：
+- **Bug**：首屏历史用的是 `?after=-1`，语义是"从 replay 锚点**向前**取最旧的 500 行"——
+  长会话打开时看到的是**最开头**的几轮，新的内容被静默丢弃；而客户端把响应的 `hasMore`
+  （=还有更新的）误当成"还有更旧的"，于是"load earlier"出现一次就消失。
+  根因是我们把一个 **replay 锚点接口**当成了 **分页接口**用。
+- 修复：显式 tail 契约 —— `?tail=1`（默认）取**最新**一页 + `hasOlder`；`?before=<seq>` 向上翻页；
+  `?after=<seq>` 仅作重连回放锚点。前端首屏改走 tail，`loadEarlier` 读 `hasOlder` 逐步 prepend
+  （走同一 ingest/dedup 路径，`minSeq` 按行种类跟踪，WS 回放抢跑也不会重复）。
+- 复测：25 次翻页取完全部 126 行 → 34 气泡 / 6 条用户消息 / **0 重复**，最早一轮与最新一轮同时在屏；
+  侧栏搜索"paging"只剩命中项，无命中时显示"no live slot matches that search."。**R30 PASS**
+
 ## 已知遗留（不影响"可用"，但记档）
 - 手机经局域网 **http://** 访问时浏览器不给注册 Service Worker（非安全上下文）→ 可加到主屏当快捷方式，
   离线壳要在 HTTPS 下才有；桌面 localhost 与 HTTPS 均已验证可用。
