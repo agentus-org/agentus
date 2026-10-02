@@ -1,12 +1,18 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { ToolPanel } from "./ToolPanel";
 import {
-  IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFolder, IconGauge,
-  IconHome, IconMenu, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconShield, IconStop,
+  browserDictationAvailable, dictation, loadVoiceCaps, speaker, useAutoRead, useDictation,
+  useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
+} from "./voice";
+import {
+  IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFile, IconFolder, IconGauge,
+  IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower, IconResume,
+  IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
-import type { ClientCommand, TurnTrace, UsageView } from "@agentslot/shared";
+import type { ClientCommand, PromptAttachment, TurnTrace, UsageView } from "@agentslot/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -212,6 +218,15 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
 
 function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
   const { active } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
+  // here so switching slots keeps the panel open on the new slot's workspace.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [pickWorkspace, setPickWorkspace] = useState(false);
+  // Voice capabilities are fetched once; the buttons fall back to browser-only until
+  // the answer arrives.
+  useEffect(() => { void loadVoiceCaps(); }, []);
+  useAutoRead(lastFinishedReply(active), Boolean(active && !active.busy && active.loaded));
+
   if (!active) {
     return (
       <div className="main">
@@ -228,88 +243,127 @@ function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
   }
   return (
     <div className="main">
-      <ChatHead v={active} onMenu={onMenu} />
-      <Stream v={active} />
-      <Composer v={active} />
+      <ChatHead
+        v={active}
+        onMenu={onMenu}
+        panelOpen={panelOpen}
+        onTogglePanel={() => setPanelOpen((o) => !o)}
+        onPickWorkspace={() => setPickWorkspace(true)}
+      />
+      <div className="main-body">
+        <div className="chat-col">
+          <Stream v={active} />
+          <Composer v={active} />
+        </div>
+        {panelOpen && (
+          <ToolPanel
+            v={active}
+            onClose={() => setPanelOpen(false)}
+            onPickWorkspace={() => setPickWorkspace(true)}
+          />
+        )}
+      </div>
+      {pickWorkspace && (
+        <WorkspaceModal
+          v={active}
+          onClose={() => setPickWorkspace(false)}
+        />
+      )}
     </div>
   );
 }
 
-function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.Element {
+/** The reply an auto-read should speak: the newest agent message, but only when it
+ *  just arrived (a slot opened from history must not start talking to the room). */
+function lastFinishedReply(v: SessionView | undefined): { key: string; text: string } | null {
+  if (!v || v.busy || !v.loaded) return null;
+  if (Date.now() - v.lastAt > 30_000) return null;
+  for (let i = v.msgs.length - 1; i >= 0; i -= 1) {
+    const m = v.msgs[i];
+    if (m.kind === "agent" && m.text.trim()) return { key: m.key, text: m.text };
+  }
+  return null;
+}
+
+/** Point the current slot at another directory. Same picker as "new slot" — the
+ *  difference is the consequence, and that is spelled out in the modal. */
+function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void }): JSX.Element {
+  const current = v.info.workspace || v.info.cwd;
+  const [path, setPath] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setErr("");
+    try {
+      await cockpit.setWorkspace(v.info.id, path.trim());
+      onClose();
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+        <h3>workspace</h3>
+        <div className="hint">
+          the file panel and terminal work here. A running agent keeps the directory it
+          was started in — the new one applies to this slot from the next resume.
+        </div>
+        <WorkspacePicker value={path} onChange={setPath} />
+        {err && <div className="err">{err}</div>}
+        <div className="row">
+          <button className="cancel" onClick={onClose}>cancel</button>
+          <button className="go" disabled={busy || !path.trim()} onClick={() => void save()}>
+            {busy ? "saving…" : "use this folder"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
+  v: SessionView;
+  onMenu: () => void;
+  panelOpen: boolean;
+  onTogglePanel: () => void;
+  onPickWorkspace: () => void;
+}): JSX.Element {
   const info = v.info;
-  const modes = info.modes?.availableModes ?? [];
-  const cfg = info.configOptions.find((o) => o.type === "select" && /reason|effort|think/i.test(o.id));
-  const modeName = modes.find((m) => m.id === info.modes?.currentModeId)?.name ?? info.modes?.currentModeId ?? "";
-  const effortName = cfg?.options?.find((o) => String(o.value) === String(cfg.currentValue ?? ""))?.name ?? "";
-  // the working directory is worth showing, its full path is not: badge + tooltip,
-  // same trade hermes-studio makes with its workspace badge.
-  const wsName = info.cwd.split("/").filter(Boolean).pop() ?? info.cwd;
+  const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
+  // Two controls, and only two (the operator's ask, and hermes-studio's head does the
+  // same): where this slot works, and the panel that shows it. Mode, thinking depth,
+  // context and voice all moved into the composer, where the prompt is written —
+  // a header is a place for identity, not for settings.
   return (
     <div className="chat-head">
       <button className="icon-btn menu-btn" onClick={onMenu} title="slots" aria-label="slots"><IconMenu /></button>
       <span className="title" title={info.title}>{info.title}</span>
-      <button
-        className="ws-badge"
-        title={`${info.cwd} — click to copy`}
-        onClick={() => void navigator.clipboard?.writeText(info.cwd).catch(() => {})}
-      >
-        <IconFolder size={13} />
-        <span>{wsName}</span>
-      </button>
       {v.perms.length > 0 ? (
         <span className="chip perm-chip" title="requests waiting for your approval in this slot">
           <span className="perm-pulse" />⚿ {v.perms.length}
         </span>
       ) : null}
       <span className="head-spacer" />
-      {modes.length > 0 && (
-        <label className="seg" title={`permission mode — currently ${modeName}`}>
-          <IconShield size={14} />
-          <select
-            value={info.modes?.currentModeId ?? ""}
-            onChange={(e) => cockpit.send({ t: "set-mode", sessionId: info.id, modeId: e.target.value })}
-            aria-label="permission mode"
-          >
-            {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
-          <IconChevronDown size={12} className="seg-chev" />
-        </label>
-      )}
-      {cfg && cfg.options && (
-        <label className="seg" title={`thinking depth — currently ${effortName || "unset"}`}>
-          <IconGauge size={14} />
-          <select
-            value={String(cfg.currentValue ?? "")}
-            onChange={(e) => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: e.target.value })}
-            aria-label="thinking depth"
-          >
-            {cfg.options.map((o) => <option key={o.value} value={o.value}>{o.name}</option>)}
-          </select>
-          <IconChevronDown size={12} className="seg-chev" />
-        </label>
-      )}
-      <ContextGauge usage={info.usage} trace={v.trace} />
-      {info.status === "running" ? (
-        <button
-          className="icon-btn danger"
-          title="stop this turn"
-          aria-label="stop this turn"
-          onClick={() => cockpit.send({ t: "cancel", sessionId: info.id })}
-        >
-          <IconStop size={13} />
-        </button>
-      ) : null}
       <button
         className="icon-btn"
-        title="close slot — the agent stops, the transcript stays on disk as a resumable cold slot"
-        aria-label="close slot"
-        onClick={() => {
-          if (confirm(`close slot "${info.title}"?\n\nthe agent process is killed; the transcript stays on disk as a cold slot you can resume.`)) {
-            cockpit.closeSession(info.id);
-          }
-        }}
+        title={`workspace: ${info.workspace || info.cwd}\nclick to point this slot at another directory`}
+        aria-label="workspace"
+        onClick={onPickWorkspace}
       >
-        <IconClose size={15} />
+        <IconFolder size={16} />
+      </button>
+      <button
+        className={`icon-btn ${panelOpen ? "on" : ""}`}
+        title="workspace panel — files and terminal"
+        aria-label="workspace panel"
+        aria-expanded={panelOpen}
+        onClick={onTogglePanel}
+      >
+        <IconPanel size={16} />
       </button>
     </div>
   );
@@ -513,9 +567,36 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
 function Bubble({ m }: { m: MsgView }): JSX.Element | null {
   switch (m.kind) {
     case "user":
-      return <div className="msg user"><div className="role">YOU</div><div className="bubble">{m.text}</div></div>;
+      return (
+        <div className="msg user">
+          <div className="role">YOU</div>
+          <div className="bubble">
+            {m.files.length > 0 ? (
+              <div className="bubble-files">
+                {m.files.map((f, i) => (
+                  <span key={`${f.name}-${i}`} className="bubble-file" title={f.name}>
+                    {f.kind === "image" ? <IconPaperclip size={12} /> : <IconFile size={12} />}
+                    {f.name}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {m.text}
+          </div>
+        </div>
+      );
     case "agent":
-      return <div className="msg agent"><div className="role">AGENT</div><div className="bubble"><MiniMarkdown text={m.text} /></div></div>;
+      return (
+        <div className="msg agent">
+          <div className="role">AGENT</div>
+          <div className="bubble">
+            <MiniMarkdown text={m.text} />
+            <div className="bubble-actions">
+              <SpeakButton id={m.key} text={m.text} />
+            </div>
+          </div>
+        </div>
+      );
     case "thought":
       return <Thought m={m} />;
     case "tool":
@@ -630,22 +711,301 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
   );
 }
 
+/** Read this reply aloud / stop reading. One button, because the two states are the
+ *  same affordance (hermes-studio puts play/stop in the same place for the same
+ *  reason: you click where you last clicked). */
+function SpeakButton({ id, text }: { id: string; text: string }): JSX.Element | null {
+  const [prefs] = useVoicePrefs();
+  const spoken = useSpeaker();
+  const hasVoices = useSyncExternalStore(speaker.subscribeVoices, () => speaker.voices().length);
+  if (!text.trim()) return null;
+  const playing = spoken.speaking && spoken.speakingId === id;
+  if (!hasVoices && !prefs.serverTts) {
+    return <span className="bubble-note" title="this browser exposes no speech synthesis">no voices</span>;
+  }
+  return (
+    <button
+      className={`icon-btn tiny ${playing ? "on" : ""}`}
+      title={playing ? "stop reading" : "read this reply aloud"}
+      aria-label={playing ? "stop reading" : "read aloud"}
+      onClick={() => {
+        if (playing) speaker.stop();
+        else void speaker.speak(text, id, prefs);
+      }}
+    >
+      {playing ? <IconVolumeOff size={13} /> : <IconVolume size={13} />}
+    </button>
+  );
+}
+
+/** Attachments the operator added to the next prompt. Kept client-side until send:
+ *  the bytes become ACP content blocks in the server (see PromptAttachment). */
+interface Draft {
+  id: string;
+  name: string;
+  kind: "image" | "text";
+  mimeType: string;
+  /** data: URL for the thumbnail (images only) */
+  preview?: string;
+  /** base64 payload for images, the raw text for text files */
+  payload: string;
+  bytes: number;
+}
+
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_TEXT_BYTES = 256 * 1024;
+
+function readFileAsDraft(file: File): Promise<Draft | { error: string }> {
+  const isImage = IMAGE_TYPES.includes(file.type);
+  if (isImage) {
+    if (file.size > MAX_IMAGE_BYTES) return Promise.resolve({ error: `${file.name}: image larger than 4MB` });
+    return new Promise((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const url = String(fr.result ?? "");
+        resolve({
+          id: `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name, kind: "image", mimeType: file.type,
+          preview: url, payload: url.slice(url.indexOf(",") + 1), bytes: file.size,
+        });
+      };
+      fr.onerror = () => resolve({ error: `${file.name}: could not be read` });
+      fr.readAsDataURL(file);
+    });
+  }
+  if (file.size > MAX_TEXT_BYTES) return Promise.resolve({ error: `${file.name}: larger than 256kB — attach it as a path instead` });
+  return new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve({
+      id: `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 7)}`,
+      name: file.name, kind: "text", mimeType: file.type || "text/plain",
+      payload: String(fr.result ?? ""), bytes: file.size,
+    });
+    fr.onerror = () => resolve({ error: `${file.name}: could not be read` });
+    fr.readAsText(file);
+  });
+}
+
+function humanBytes(n: number): string {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} kB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+
+/** Context + spend, in small type above the box (the operator's ask). The bar is
+ *  the same reading the ring used to give, minus the ring's claim on the header. */
+function UsageRow({ usage, trace }: { usage?: UsageView | null; trace?: TurnTrace | null }): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  if (!usage || (!usage.used && !usage.size)) return null;
+  const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
+  const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
+  const fmt = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+  const remaining = usage.size > 0 ? Math.max(0, usage.size - usage.used) : 0;
+  return (
+    <div className={`usage-row ${level}`}>
+      <button className="usage-text" onClick={() => setOpen((o) => !o)} title="context window and this turn">
+        ctx {fmt(usage.used)}{usage.size > 0 ? ` / ${fmt(usage.size)}` : ""}
+        {usage.size > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
+        {usage.cost != null ? ` · $${usage.cost.toFixed(4)}` : ""}
+        {trace && (trace.effort || trace.mode)
+          ? ` · ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(" / ")}`
+          : ""}
+      </button>
+      {usage.size > 0 ? (
+        <div className="usage-bar" title={`${fmt(usage.used)} of ${fmt(usage.size)} tokens`}>
+          <i style={{ width: `${pct}%` }} />
+        </div>
+      ) : null}
+      {open ? (
+        <div className="usage-detail">
+          <div>context window: {usage.used} / {usage.size || "—"} tokens ({pct}%)</div>
+          <div>remaining: {usage.size > 0 ? remaining : "unknown"} tokens</div>
+          {usage.cost != null ? <div>session cost: ${usage.cost.toFixed(6)}</div> : null}
+          {trace?.model ? <div>model: {trace.model}</div> : null}
+          {trace && (trace.effort || trace.mode)
+            ? <div>this turn: {[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}</div>
+            : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Everything that used to crowd the header: permission mode, thinking depth,
+ *  read-aloud, dictation engine. One popover, next to the prompt it affects. */
+function SettingsPopover({ v, prefs, setPrefs, onClose }: {
+  v: SessionView;
+  prefs: VoicePrefs;
+  setPrefs: (patch: Partial<VoicePrefs>) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const info = v.info;
+  const modes = info.modes?.availableModes ?? [];
+  const cfg = info.configOptions.find((o) => o.type === "select" && /reason|effort|think/i.test(o.id));
+  // re-render when the browser finally publishes its voice list
+  const voiceCount = useSyncExternalStore(speaker.subscribeVoices, () => speaker.voices().length);
+  const voices = voiceCount ? speaker.voices() : [];
+  const caps = voiceCaps();
+  return (
+    <div className="settings-pop" role="dialog" aria-label="chat settings">
+      <div className="settings-head">
+        <span>chat settings</span>
+        <span className="head-spacer" />
+        <button className="icon-btn" title="close" aria-label="close" onClick={onClose}><IconClose size={13} /></button>
+      </div>
+      {modes.length > 0 && (
+        <div className="settings-group">
+          <div className="settings-label"><IconShield size={13} /> permission mode</div>
+          {modes.map((m) => (
+            <button
+              key={m.id}
+              className={`settings-opt ${info.modes?.currentModeId === m.id ? "sel" : ""}`}
+              onClick={() => cockpit.send({ t: "set-mode", sessionId: info.id, modeId: m.id })}
+            >
+              {m.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {cfg?.options && (
+        <div className="settings-group">
+          <div className="settings-label"><IconGauge size={13} /> thinking depth</div>
+          {cfg.options.map((o) => (
+            <button
+              key={String(o.value)}
+              className={`settings-opt ${String(cfg.currentValue ?? "") === String(o.value) ? "sel" : ""}`}
+              onClick={() => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: o.value })}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="settings-group">
+        <div className="settings-label"><IconVolume size={13} /> read replies aloud</div>
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={prefs.autoRead}
+            onChange={(e) => setPrefs({ autoRead: e.target.checked })}
+          />
+          <span>speak every finished reply</span>
+        </label>
+        {voices.length > 0 && (
+          <select
+            className="settings-select"
+            value={prefs.voiceURI}
+            onChange={(e) => setPrefs({ voiceURI: e.target.value })}
+            aria-label="voice"
+          >
+            <option value="">auto voice ({prefs.lang})</option>
+            {voices.map((vc) => (
+              <option key={vc.voiceURI} value={vc.voiceURI}>{vc.name} — {vc.lang}</option>
+            ))}
+          </select>
+        )}
+        {voices.length === 0 ? <div className="settings-note">this browser exposes no voices</div> : null}
+        <label className="settings-range">
+          <span>speed {prefs.rate.toFixed(2)}×</span>
+          <input
+            type="range" min={0.5} max={2} step={0.05}
+            value={prefs.rate}
+            onChange={(e) => setPrefs({ rate: Number(e.target.value) })}
+          />
+        </label>
+        {caps.tts.server ? (
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={prefs.serverTts}
+              onChange={(e) => setPrefs({ serverTts: e.target.checked })}
+            />
+            <span>use the server voice ({caps.tts.model ?? "configured"})</span>
+          </label>
+        ) : null}
+      </div>
+      <div className="settings-group">
+        <div className="settings-label"><IconMic size={13} /> dictation</div>
+        <select
+          className="settings-select"
+          value={prefs.stt}
+          onChange={(e) => setPrefs({ stt: e.target.value as VoicePrefs["stt"] })}
+          aria-label="dictation engine"
+        >
+          <option value="auto">auto — browser if available</option>
+          <option value="browser">browser{!browserDictationAvailable() ? " (unavailable)" : ""}</option>
+          <option value="server">server{caps.stt.server ? ` (${caps.stt.model ?? "configured"})` : " (not configured)"}</option>
+        </select>
+        <input
+          className="settings-input"
+          value={prefs.lang}
+          onChange={(e) => setPrefs({ lang: e.target.value })}
+          placeholder="language, e.g. zh-CN"
+          aria-label="speech language"
+        />
+        <div className="settings-note">
+          browser dictation {browserDictationAvailable() ? "available" : "unavailable"} · server STT {caps.stt.server ? "configured" : "not configured"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Composer({ v }: { v: SessionView }): JSX.Element {
   const [text, setText] = useState("");
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [attachErr, setAttachErr] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [prefs, setPrefs] = useVoicePrefs();
+  const dict = useDictation();
+  const spoken = useSpeaker();
   const ta = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const addFiles = async (files: FileList | File[]): Promise<void> => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    const results = await Promise.all(list.map((f) => readFileAsDraft(f)));
+    const good: Draft[] = [];
+    const bad: string[] = [];
+    for (const r of results) {
+      if ("error" in r) bad.push(r.error);
+      else good.push(r);
+    }
+    if (good.length) setDrafts((cur) => [...cur, ...good]);
+    setAttachErr(bad.join(" · "));
+  };
+
   const send = () => {
     const t = text.trim();
-    if (!t || v.busy || v.info.status !== "ready") return;
-    cockpit.send({ t: "prompt", sessionId: v.info.id, text: t });
+    if ((!t && !drafts.length) || v.busy || v.info.status !== "ready") return;
+    const attachments: PromptAttachment[] = drafts.map((d) => (
+      d.kind === "image"
+        ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
+        : { kind: "text", name: d.name, text: d.payload }
+    ));
+    cockpit.send({ t: "prompt", sessionId: v.info.id, text: t, attachments });
     setText("");
+    setDrafts([]);
+    setAttachErr("");
     setPick(0);
     // Sending is an explicit "show me the answer": re-attach the stream even if the
     // operator had scrolled up to read something.
     streamReattach.current();
   };
+
+  // Dictation finishes into the composer: one line of plumbing, because the composer
+  // is the only place a prompt can land.
+  useEffect(() => {
+    if (dict.status !== "idle" || !dict.text) return;
+    const heard = dictation.consume();
+    if (!heard) return;
+    setText((cur) => (cur.trim() ? `${cur.trim()} ${heard}` : heard));
+    ta.current?.focus();
+  }, [dict.status, dict.text]);
 
   // Slash palette (AionUi F-DISPLAY-10): the commands are the AGENT's own
   // (available_commands_update over ACP) — we never invent a command list here.
@@ -661,8 +1021,20 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
     ta.current?.focus();
   };
 
+  const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
+
   return (
-    <div className="composer">
+    <div
+      className={`composer ${dragging ? "drop-active" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
+      }}
+    >
+      <UsageRow usage={v.info.usage} trace={v.trace} />
       <div className="composer-inner">
         {paletteOpen && (
           <div className="slash-palette" role="listbox" aria-label="slash commands">
@@ -690,40 +1062,137 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             )}
           </div>
         )}
-        <textarea
-          ref={ta}
-          rows={1}
-          value={text}
-          placeholder={v.info.status === "ready" ? placeholder : v.info.status}
-          onChange={(e) => {
-            setText(e.target.value);
-            setPick(0);
-            e.target.style.height = "42px";
-            e.target.style.height = Math.min(e.target.scrollHeight, window.innerHeight * 0.4) + "px";
-          }}
-          onKeyDown={(e) => {
-            if (paletteOpen && matches.length) {
-              if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
-              if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }
-              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                e.preventDefault();
-                accept(matches[pick].name);
-                return;
+        {settingsOpen && (
+          <SettingsPopover v={v} prefs={prefs} setPrefs={setPrefs} onClose={() => setSettingsOpen(false)} />
+        )}
+        {drafts.length > 0 && (
+          <div className="draft-row">
+            {drafts.map((d) => (
+              <span key={d.id} className={`draft ${d.kind}`} title={`${d.name} · ${humanBytes(d.bytes)}`}>
+                {d.preview ? <img src={d.preview} alt={d.name} /> : <IconFile size={13} />}
+                <span className="draft-name">{d.name}</span>
+                <button
+                  className="draft-x"
+                  aria-label={`remove ${d.name}`}
+                  onClick={() => setDrafts((cur) => cur.filter((x) => x.id !== d.id))}
+                >
+                  <IconClose size={11} />
+                </button>
+              </span>
+            ))}
+            <button className="draft-clear" onClick={() => setDrafts([])}>clear</button>
+          </div>
+        )}
+        {attachErr && <div className="composer-note err">{attachErr}</div>}
+        {listening || dict.status === "transcribing" || dict.error ? (
+          <div className={`dict-chip ${dict.error ? "err" : ""}`}>
+            <IconMic size={13} />
+            {dict.error
+              ? dict.error
+              : dict.status === "requesting"
+                ? "waiting for the microphone…"
+                : dict.status === "transcribing"
+                  ? "transcribing…"
+                  : <>{dict.text} <span className="interim">{dict.interim}</span>{dict.engine === "server" ? ` · ${dict.seconds}s` : ""}</>}
+            {listening ? (
+              <button className="dict-stop" onClick={() => dictation.stop()}>stop</button>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="composer-box">
+          <textarea
+            ref={ta}
+            rows={1}
+            value={text}
+            placeholder={v.info.status === "ready" ? placeholder : v.info.status}
+            onChange={(e) => {
+              setText(e.target.value);
+              setPick(0);
+              e.target.style.height = "42px";
+              e.target.style.height = Math.min(e.target.scrollHeight, window.innerHeight * 0.4) + "px";
+            }}
+            onKeyDown={(e) => {
+              if (paletteOpen && matches.length) {
+                if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }
+                if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                  e.preventDefault();
+                  accept(matches[pick].name);
+                  return;
+                }
+                if (e.key === "Escape") { e.preventDefault(); setText(""); return; }
               }
-              if (e.key === "Escape") { e.preventDefault(); setText(""); return; }
-            }
-            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-          }}
-        />
-        <button
-          className="send-btn"
-          onClick={send}
-          disabled={!text.trim() || v.busy || v.info.status !== "ready"}
-          title={v.busy ? "a turn is already running" : "send (Enter)"}
-          aria-label="send"
-        >
-          {v.busy ? "…" : <IconSend size={16} />}
-        </button>
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+            }}
+          />
+          <div className="composer-bar">
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              hidden
+              accept={`${IMAGE_TYPES.join(",")},.txt,.md,.json,.log,.csv,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.ini,.html,.css`}
+              onChange={(e) => {
+                if (e.target.files) void addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              className="icon-btn"
+              title="attach an image or a text file"
+              aria-label="attach"
+              onClick={() => fileRef.current?.click()}
+            >
+              <IconPlus size={16} />
+            </button>
+            <button
+              className={`icon-btn ${settingsOpen ? "on" : ""}`}
+              title="chat settings — mode, thinking depth, voice"
+              aria-label="chat settings"
+              aria-expanded={settingsOpen}
+              onClick={() => setSettingsOpen((o) => !o)}
+            >
+              <IconSettings size={16} />
+            </button>
+            <span className="head-spacer" />
+            {spoken.speaking ? (
+              <button className="icon-btn on" title="stop reading aloud" aria-label="stop reading" onClick={() => speaker.stop()}>
+                <IconPause size={14} />
+              </button>
+            ) : null}
+            <button
+              className={`icon-btn ${listening ? "on rec" : ""}`}
+              title={dict.error ? dict.error : listening ? "stop dictation" : "dictate a prompt"}
+              aria-label="dictate"
+              onClick={() => {
+                dictation.cancel();
+                void dictation.start(prefs);
+              }}
+            >
+              <IconMic size={16} />
+            </button>
+            {v.busy ? (
+              <button
+                className="send-btn stop"
+                title="stop this turn"
+                aria-label="stop this turn"
+                onClick={() => cockpit.send({ t: "cancel", sessionId: v.info.id })}
+              >
+                <IconStop size={14} />
+              </button>
+            ) : (
+              <button
+                className="send-btn"
+                onClick={send}
+                disabled={(!text.trim() && !drafts.length) || v.info.status !== "ready"}
+                title="send (Enter)"
+                aria-label="send"
+              >
+                <IconSend size={16} />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

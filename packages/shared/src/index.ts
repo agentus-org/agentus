@@ -16,6 +16,10 @@ export interface SessionInfo {
   backend: BackendId;
   acpSessionId: string | null; // agent-side id, null until newSession resolved
   cwd: string;
+  /** The directory this slot's file/terminal panels work in. Separate from `cwd`
+   *  because a live ACP child cannot be re-cd'd: re-pointing a running slot moves
+   *  the panels (and the next resume), not the running process. null = same as cwd. */
+  workspace?: string | null;
   status: SessionStatus;
   pid: number | null;
   title: string;
@@ -98,9 +102,26 @@ export interface TurnTrace {
 }
 
 // ---- WS envelope (browser -> server) ----
+/** Media the operator attaches to a prompt. Images ride ACP as base64 blocks (that
+ *  is the wire shape the protocol defines), text files are inlined as text with a
+ *  header naming the file, links pass through as resource_link. Nothing is uploaded
+ *  anywhere: an attachment is turned into a prompt block and nothing else. */
+export type PromptAttachment =
+  | { kind: "image"; mimeType: string; data: string; name?: string }
+  | { kind: "text"; name: string; text: string }
+  | { kind: "link"; uri: string; name?: string };
+
+/** What the transcript remembers about an attachment (never the bytes: a 4MB
+ *  base64 blob has no business in the message log). */
+export interface AttachmentSummary {
+  kind: PromptAttachment["kind"];
+  name?: string;
+  mimeType?: string;
+}
+
 export type ClientCommand =
   | { t: "resume"; lastSeq: Record<string, number> }
-  | { t: "prompt"; sessionId: string; text: string }
+  | { t: "prompt"; sessionId: string; text: string; attachments?: PromptAttachment[] }
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }

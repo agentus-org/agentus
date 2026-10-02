@@ -11,7 +11,7 @@ import type {
 } from "@agentslot/shared";
 
 export type MsgView =
-  | { key: string; kind: "user"; text: string }
+  | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[] }
   | { key: string; kind: "agent"; text: string; open: boolean }
   | { key: string; kind: "thought"; text: string; open: boolean }
   | {
@@ -467,6 +467,37 @@ class Cockpit {
     );
   }
 
+  /** One directory level for the workspace panel (files included). */
+  async listEntries(path: string): Promise<{
+    path: string; parent: string | null; home: string; root?: string | null;
+    entries: { name: string; path: string; kind: "dir" | "file"; size?: number }[];
+    truncated: boolean;
+  }> {
+    return await this.#req(`/api/fs/dirs?files=1&path=${encodeURIComponent(path)}`);
+  }
+
+  /** Read-only file preview for the panel. */
+  async readFile(path: string): Promise<{
+    path: string; name: string; size: number; content: string; truncated: boolean; binary: boolean;
+  }> {
+    return await this.#req(`/api/fs/file?path=${encodeURIComponent(path)}`);
+  }
+
+  /** Point a slot at another directory. Live slot: the panels move now and the next
+   *  resume starts there; the running agent keeps the cwd it was spawned with. */
+  async setWorkspace(id: string, path: string): Promise<void> {
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/workspace`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    const i = this.sessions.findIndex((s) => s.id === id);
+    if (i >= 0) this.sessions[i] = { ...this.sessions[i], ...info };
+    this.bump();
+  }
+
   async createSession(backend: string, cwd: string, title: string): Promise<string> {
     // spawning a real agent boots a python process (hermes: 10-40s) — long
     // timeout, and NO retry: a retry would spawn a second child for one click
@@ -670,7 +701,14 @@ class Cockpit {
     const last = v.msgs[v.msgs.length - 1];
     switch (m.kind) {
       case "user":
-        v.msgs.push({ key: `m${m.seq}`, kind: "user", text: String(p.text ?? "") });
+        v.msgs.push({
+          key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""),
+          // names only — the bytes were never persisted (AttachmentSummary)
+          files: Array.isArray(p.attachments)
+            ? (p.attachments as { kind?: unknown; name?: unknown }[])
+                .map((a) => ({ kind: String(a.kind ?? ""), name: String(a.name ?? "file") }))
+            : [],
+        });
         break;
       case "agent":
         if (last && last.kind === "agent" && last.open) last.text += text;

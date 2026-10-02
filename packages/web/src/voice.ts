@@ -1,0 +1,616 @@
+// Voice, browser-side: dictation into the composer and read-a-reply-aloud.
+//
+// Studio study (hermes-studio has a full provider system: local whisper, doubao,
+// edge voices, per-profile keys) told us the *idea* worth copying is the layering,
+// not the machinery: the browser can do both directions with zero configuration,
+// and a server endpoint only exists for the cases the browser cannot cover.
+//
+// So this file holds two small singletons:
+//
+//   speaker   — read text aloud. Prefers the browser's own voices (offline, free,
+//               instant, and the audio never leaves the device); can be pointed at
+//               the server's OpenAI-compatible endpoint when one is configured.
+//   dictation — turn speech into text. Prefers the browser's SpeechRecognition
+//               (live interim words); falls back to MediaRecorder + /api/stt.
+//
+// Both are module singletons subscribed with useSyncExternalStore, the same shape
+// `cockpit` uses: only one utterance can play and only one microphone can be open
+// at a time, so a per-component hook would be a lie.
+import { useEffect, useSyncExternalStore } from "react";
+
+// ---------------------------------------------------------------- preferences
+
+export interface VoicePrefs {
+  /** read a finished reply aloud without being asked */
+  autoRead: boolean;
+  /** browser voiceURI, "" = pick the best one for the language */
+  voiceURI: string;
+  rate: number;
+  /** BCP-47 for both directions, e.g. "zh-CN" */
+  lang: string;
+  /** route synthesis through the server endpoint instead of the browser */
+  serverTts: boolean;
+  /** "auto" = browser when available, else the server */
+  stt: "auto" | "browser" | "server";
+}
+
+const PREFS_KEY = "agentslot.voice";
+
+const DEFAULT_PREFS: VoicePrefs = {
+  autoRead: false,
+  voiceURI: "",
+  rate: 1,
+  // Default to the browser's own language: an operator dictating Chinese should not
+  // have to find a language setting first.
+  lang: typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US",
+  serverTts: false,
+  stt: "auto",
+};
+
+export function loadVoicePrefs(): VoicePrefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return { ...DEFAULT_PREFS };
+    const parsed = JSON.parse(raw) as Partial<VoicePrefs>;
+    const rate = Number(parsed.rate);
+    return {
+      ...DEFAULT_PREFS,
+      ...parsed,
+      rate: Number.isFinite(rate) ? Math.min(2, Math.max(0.5, rate)) : DEFAULT_PREFS.rate,
+    };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
+
+export function saveVoicePrefs(prefs: VoicePrefs): void {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* private mode: preferences just do not persist */
+  }
+}
+
+// -------------------------------------------------------------- capabilities
+
+export interface VoiceCaps {
+  tts: { server: boolean; model: string | null; voice: string | null };
+  stt: { server: boolean; model: string | null; language: string | null };
+}
+
+let caps: VoiceCaps | null = null;
+const capsListeners = new Set<() => void>();
+
+/** Fetched once per page load; the answer only changes when the server restarts. */
+export async function loadVoiceCaps(): Promise<VoiceCaps> {
+  if (caps) return caps;
+  try {
+    const res = await fetch("/api/voice", { credentials: "same-origin" });
+    if (!res.ok) throw new Error(String(res.status));
+    caps = (await res.json()) as VoiceCaps;
+  } catch {
+    // A failed probe must not break the buttons: assume browser-only.
+    caps = { tts: { server: false, model: null, voice: null }, stt: { server: false, model: null, language: null } };
+  }
+  for (const fn of capsListeners) fn();
+  return caps;
+}
+
+export function voiceCaps(): VoiceCaps {
+  return caps ?? { tts: { server: false, model: null, voice: null }, stt: { server: false, model: null, language: null } };
+}
+
+export function subscribeVoiceCaps(fn: () => void): () => void {
+  capsListeners.add(fn);
+  return () => capsListeners.delete(fn);
+}
+
+/** Text is spoken in sentence-sized pieces: one huge utterance is both unreliable
+ *  (browsers truncate) and unstoppable mid-way. */
+export function splitForSpeech(text: string, max = 220): string[] {
+  const clean = text
+    .replace(/```[\s\S]*?```/g, " code block ") // never read code aloud
+    .replace(/[*_`#>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return [];
+  const out: string[] = [];
+  let rest = clean;
+  while (rest.length > max) {
+    const window = rest.slice(0, max);
+    // prefer a sentence end, then a clause, then a space
+    const cut = Math.max(window.lastIndexOf(". "), window.lastIndexOf("。"), window.lastIndexOf("! "), window.lastIndexOf("? "));
+    const alt = Math.max(window.lastIndexOf(", "), window.lastIndexOf("; "), window.lastIndexOf("，"));
+    const at = cut > max * 0.5 ? cut + 1 : alt > max * 0.5 ? alt + 1 : window.lastIndexOf(" ");
+    const end = at > 0 ? at : max;
+    out.push(rest.slice(0, end).trim());
+    rest = rest.slice(end).trim();
+  }
+  if (rest) out.push(rest);
+  return out.filter(Boolean);
+}
+
+// ------------------------------------------------------------------- speaker
+
+interface SpeakState {
+  /** id of the message being read, or "clipboard"/null for an ad-hoc utterance */
+  speakingId: string | null;
+  speaking: boolean;
+  error: string;
+  /** server TTS is unavailable and we fell back to the browser */
+  note: string;
+}
+
+function browserSpeechAvailable(): boolean {
+  return typeof window !== "undefined" && "speechSynthesis" in window;
+}
+
+class Speaker {
+  #state: SpeakState = { speakingId: null, speaking: false, error: "", note: "" };
+  #listeners = new Set<() => void>();
+  #audio: HTMLAudioElement | null = null;
+  #abort: AbortController | null = null;
+  #voices: SpeechSynthesisVoice[] = [];
+  #voiceListeners = new Set<() => void>();
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  };
+
+  getSnapshot = (): SpeakState => this.#state;
+
+  #set(patch: Partial<SpeakState>): void {
+    this.#state = { ...this.#state, ...patch };
+    for (const fn of this.#listeners) fn();
+  }
+
+  /** Voices arrive asynchronously in Chromium; everyone who shows a picker needs
+   *  to be told when the list is real. */
+  subscribeVoices = (fn: () => void): (() => void) => {
+    this.#voiceListeners.add(fn);
+    return () => this.#voiceListeners.delete(fn);
+  };
+
+  voices = (): SpeechSynthesisVoice[] => this.#voices;
+
+  init(): void {
+    if (!browserSpeechAvailable()) return;
+    const load = (): void => {
+      this.#voices = window.speechSynthesis.getVoices();
+      if (this.#voices.length) for (const fn of this.#voiceListeners) fn();
+    };
+    load();
+    window.speechSynthesis.addEventListener("voiceschanged", load);
+  }
+
+  /** The voice to use: the operator's pick, else the first one matching the language. */
+  pickVoice(prefs: VoicePrefs): SpeechSynthesisVoice | null {
+    const list = this.#voices.length ? this.#voices : (browserSpeechAvailable() ? window.speechSynthesis.getVoices() : []);
+    if (!list.length) return null;
+    if (prefs.voiceURI) {
+      const exact = list.find((v) => v.voiceURI === prefs.voiceURI);
+      if (exact) return exact;
+    }
+    const lang = prefs.lang.toLowerCase();
+    const short = lang.split("-")[0];
+    return (
+      list.find((v) => v.lang.toLowerCase() === lang)
+      ?? list.find((v) => v.lang.toLowerCase().startsWith(short))
+      ?? list.find((v) => v.default)
+      ?? list[0]
+    );
+  }
+
+  /** Speak `text`. `id` labels the source so the UI can highlight the playing button. */
+  async speak(text: string, id: string, prefs: VoicePrefs): Promise<void> {
+    const body = String(text ?? "").trim();
+    if (!body) return;
+    this.stop();
+    const chunks = splitForSpeech(body);
+    if (!chunks.length) return;
+    this.#set({ error: "", note: "", speakingId: id, speaking: true });
+    try {
+      if (prefs.serverTts && voiceCaps().tts.server) {
+        await this.#speakServer(chunks, prefs);
+      } else {
+        await this.#speakBrowser(chunks, prefs);
+      }
+    } catch (e) {
+      // Server voice failed: the browser can still read it. Say so once, then do it.
+      if (prefs.serverTts && browserSpeechAvailable()) {
+        this.#set({ note: `server voice failed (${String((e as Error)?.message ?? e)}), using the browser voice` });
+        try {
+          await this.#speakBrowser(chunks, prefs);
+          return;
+        } catch (e2) {
+          this.#set({ error: String((e2 as Error)?.message ?? e2) });
+        }
+      } else {
+        this.#set({ error: String((e as Error)?.message ?? e) });
+      }
+    } finally {
+      this.#set({ speaking: false, speakingId: null });
+    }
+  }
+
+  async #speakBrowser(chunks: string[], prefs: VoicePrefs): Promise<void> {
+    if (!browserSpeechAvailable()) throw new Error("this browser has no speech synthesis");
+    const synth = window.speechSynthesis;
+    const voice = this.pickVoice(prefs);
+    for (const [i, chunk] of chunks.entries()) {
+      await new Promise<void>((resolve, reject) => {
+        const u = new SpeechSynthesisUtterance(chunk);
+        if (voice) { u.voice = voice; u.lang = voice.lang; } else { u.lang = prefs.lang; }
+        u.rate = prefs.rate;
+        u.onend = () => resolve();
+        u.onerror = (ev) => reject(new Error(`speech error: ${(ev as SpeechSynthesisErrorEvent).error ?? "unknown"}`));
+        synth.speak(u);
+        // Safari/Chromium pause a long queue when the tab is backgrounded; resuming
+        // here costs nothing and unsticks it.
+        if (i === 0) synth.resume();
+      });
+      if (synth.paused) synth.resume();
+    }
+  }
+
+  async #speakServer(chunks: string[], prefs: VoicePrefs): Promise<void> {
+    for (const chunk of chunks) {
+      this.#abort = new AbortController();
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        signal: this.#abort.signal,
+        body: JSON.stringify({ text: chunk, speed: prefs.rate }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string };
+        throw new Error(detail.error ?? `tts ${res.status}`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const audio = new Audio(url);
+          this.#audio = audio;
+          audio.onended = () => resolve();
+          audio.onerror = () => reject(new Error("audio playback failed"));
+          void audio.play().catch((e) => reject(new Error(String(e?.message ?? e))));
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+        this.#audio = null;
+      }
+    }
+  }
+
+  stop(): void {
+    this.#abort?.abort();
+    this.#abort = null;
+    if (this.#audio) {
+      this.#audio.pause();
+      this.#audio = null;
+    }
+    if (browserSpeechAvailable()) window.speechSynthesis.cancel();
+    if (this.#state.speaking) this.#set({ speaking: false, speakingId: null });
+  }
+}
+
+export const speaker = new Speaker();
+speaker.init();
+
+export function useSpeaker(): SpeakState {
+  return useSyncExternalStore(speaker.subscribe, speaker.getSnapshot);
+}
+
+/** Auto-read plumbing: which message id we already read aloud, so a re-render or a
+ *  history load never re-reads the same reply. */
+let lastAutoReadKey = "";
+
+export function shouldAutoRead(key: string, prefs: VoicePrefs, isNewTurn: boolean): boolean {
+  if (!prefs.autoRead || !isNewTurn) return false;
+  if (key === lastAutoReadKey) return false;
+  lastAutoReadKey = key;
+  return true;
+}
+
+// ----------------------------------------------------------------- dictation
+
+export interface DictationState {
+  /** `requesting` = we asked for the microphone and the browser has not answered yet
+   *  (its permission prompt is modal, so without this state the button looks dead). */
+  status: "idle" | "requesting" | "listening" | "recording" | "transcribing" | "error";
+  /** words the recogniser has already committed */
+  text: string;
+  /** the words it is still unsure about — shown greyed, appended on stop */
+  interim: string;
+  error: string;
+  /** which engine actually ran, for the UI's "browser / server" label */
+  engine: "browser" | "server" | null;
+  /** seconds of audio captured (server path) */
+  seconds: number;
+}
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((ev: any) => void) | null;
+  onerror: ((ev: any) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+};
+
+function recognitionCtor(): (new () => SpeechRecognitionLike) | null {
+  const w = window as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+export function browserDictationAvailable(): boolean {
+  return Boolean(recognitionCtor());
+}
+
+class Dictation {
+  #state: DictationState = { status: "idle", text: "", interim: "", error: "", engine: null, seconds: 0 };
+  #listeners = new Set<() => void>();
+  #rec: SpeechRecognitionLike | null = null;
+  #media: MediaRecorder | null = null;
+  #chunks: Blob[] = [];
+  #timer: number | null = null;
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  };
+
+  getSnapshot = (): DictationState => this.#state;
+
+  #set(patch: Partial<DictationState>): void {
+    this.#state = { ...this.#state, ...patch };
+    for (const fn of this.#listeners) fn();
+  }
+
+  /** Begin dictation. Returns false (with `error` set) when nothing can run it. */
+  async start(prefs: VoicePrefs): Promise<boolean> {
+    if (this.#state.status !== "idle" && this.#state.status !== "error") return false;
+    this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
+    const want = prefs.stt;
+    const serverOk = voiceCaps().stt.server;
+    const useBrowser = (want === "browser" || want === "auto") && browserDictationAvailable();
+    try {
+      if (useBrowser) {
+        this.#startBrowser(prefs);
+        return true;
+      }
+      if (serverOk) {
+        await this.#startServer(prefs);
+        return true;
+      }
+      this.#set({
+        status: "error",
+        engine: null,
+        error: want === "server" || serverOk
+          ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTSLOT_STT_BASE_URL)"
+          : "no dictation available in this browser — set the server STT endpoint or use Chromium/Edge",
+      });
+      return false;
+    } catch (e) {
+      this.#set({ status: "error", error: String((e as Error)?.message ?? e) });
+      return false;
+    }
+  }
+
+  #startBrowser(prefs: VoicePrefs): void {
+    const Ctor = recognitionCtor();
+    if (!Ctor) throw new Error("speech recognition unavailable");
+    const rec = new Ctor();
+    rec.lang = prefs.lang;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    let committed = "";
+    rec.onstart = () => this.#set({ status: "listening", engine: "browser", error: "" });
+    rec.onresult = (ev: any) => {
+      let interim = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+        const r = ev.results[i];
+        const alt = r[0]?.transcript ?? "";
+        if (r.isFinal) committed += alt;
+        else interim += alt;
+      }
+      this.#set({ text: committed.trim(), interim: interim.trim() });
+    };
+    rec.onerror = (ev: any) => {
+      const code = String(ev?.error ?? "unknown");
+      this.#set({
+        status: "error",
+        error: code === "not-allowed" || code === "service-not-allowed"
+          ? "microphone permission denied"
+          : code === "no-speech"
+            ? "heard nothing — try again closer to the microphone"
+            : `speech recognition failed: ${code}`,
+      });
+    };
+    rec.onend = () => {
+      // Chromium ends the session on its own after a silence; report idle so the
+      // button does not lie about being still on.
+      if (this.#state.status === "listening") this.#set({ status: "idle", interim: "" });
+      this.#rec = null;
+    };
+    this.#rec = rec;
+    // Say "requesting" before start(): the permission prompt is modal, and a button
+    // that shows nothing while it is up reads as broken.
+    this.#set({ status: "requesting", engine: "browser" });
+    try {
+      rec.start();
+    } catch (e) {
+      this.#rec = null;
+      throw new Error(String((e as Error)?.message ?? e));
+    }
+  }
+
+  async #startServer(prefs: VoicePrefs): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
+    // Ask for the microphone *after* telling the UI we are waiting: getUserMedia does
+    // not resolve until the operator answers the permission prompt, and without this
+    // the button looked dead for as long as the prompt was up (QA R53).
+    this.#set({ status: "requesting", engine: "server", error: "" });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    this.#chunks = [];
+    rec.ondataavailable = (ev) => {
+      if (ev.data.size) this.#chunks.push(ev.data);
+    };
+    rec.onstop = () => {
+      for (const track of stream.getTracks()) track.stop();
+      void this.#finishServer(prefs);
+    };
+    this.#media = rec;
+    // same reason as the browser path: getUserMedia already returned a stream here, so
+    // "recording" is true — but keep `requesting` semantics for the panel label
+    rec.start(1000); // timeslice: a long recording is sent as it goes, not only at the end
+    this.#set({ status: "recording", engine: "server", seconds: 0 });
+    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  async #finishServer(prefs: VoicePrefs): Promise<void> {
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    const blob = new Blob(this.#chunks, { type: this.#chunks[0]?.type || "audio/webm" });
+    this.#chunks = [];
+    this.#media = null;
+    if (!blob.size) {
+      // A microphone that produced no bytes is a real failure (muted device, a stream
+      // that never started). Saying nothing here would look like the feature is broken.
+      this.#set({ status: "error", error: "nothing was recorded — check the microphone" });
+      return;
+    }
+    this.#set({ status: "transcribing" });
+    try {
+      const res = await fetch(`/api/stt?language=${encodeURIComponent(prefs.lang)}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": blob.type || "audio/webm" },
+        body: blob,
+      });
+      const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+      if (!res.ok) throw new Error(data.error ?? `stt ${res.status}`);
+      this.#set({ status: "idle", text: String(data.text ?? "").trim(), interim: "" });
+    } catch (e) {
+      this.#set({ status: "error", error: String((e as Error)?.message ?? e) });
+    }
+  }
+
+  /** Stop and keep what was heard (the composer takes `text`). */
+  stop(): void {
+    // A pending permission prompt has no recording to stop: cancelling is the only
+    // honest outcome, and it drops the state back to idle.
+    if (this.#state.status === "requesting") {
+      this.cancel();
+      return;
+    }
+    if (this.#rec) {
+      try {
+        this.#rec.stop();
+      } catch {
+        /* already stopped */
+      }
+      return;
+    }
+    if (this.#media && this.#media.state !== "inactive") this.#media.stop();
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    if (this.#state.status === "listening") {
+      this.#set({ status: "idle", interim: "" });
+    }
+  }
+
+  /** Throw the recording away. */
+  cancel(): void {
+    if (this.#rec) {
+      try {
+        this.#rec.abort();
+      } catch {
+        /* noop */
+      }
+      this.#rec = null;
+    }
+    if (this.#media && this.#media.state !== "inactive") {
+      this.#media.onstop = null;
+      this.#media.stop();
+      this.#media = null;
+    }
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    this.#chunks = [];
+    this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
+  }
+
+  /** Called by the composer once it has taken `text`. */
+  consume(): string {
+    const out = this.#state.text.trim();
+    this.#set({ status: "idle", text: "", interim: "", seconds: 0 });
+    return out;
+  }
+}
+
+export const dictation = new Dictation();
+
+export function useDictation(): DictationState {
+  return useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);
+}
+
+// Preferences are a module store, not component state: the composer's settings
+// popover, the per-message read-aloud button and the auto-read effect all have to
+// agree, and three copies of the same useState would drift the moment one changes.
+let prefsState: VoicePrefs = loadVoicePrefs();
+const prefsListeners = new Set<() => void>();
+
+export function updateVoicePrefs(patch: Partial<VoicePrefs>): void {
+  const next = { ...prefsState, ...patch };
+  const rate = Number.isFinite(next.rate) ? Math.min(2, Math.max(0.5, next.rate)) : 1;
+  prefsState = { ...next, rate };
+  saveVoicePrefs(prefsState);
+  for (const fn of prefsListeners) fn();
+}
+
+export function getVoicePrefs(): VoicePrefs {
+  return prefsState;
+}
+
+export function useVoicePrefs(): [VoicePrefs, (patch: Partial<VoicePrefs>) => void] {
+  const prefs = useSyncExternalStore(
+    (fn) => {
+      prefsListeners.add(fn);
+      return () => prefsListeners.delete(fn);
+    },
+    () => prefsState,
+  );
+  return [prefs, updateVoicePrefs];
+}
+
+/** Speak a message when it lands, if the operator asked for that. `ready` is the
+ *  caller's "this reply just finished" signal — auto-read must never fire while a
+ *  turn is still streaming, and never for history that was merely loaded. */
+export function useAutoRead(target: { key: string; text: string } | null, ready: boolean): void {
+  const [prefs] = useVoicePrefs();
+  useEffect(() => {
+    if (!prefs.autoRead || !ready || !target || !target.text.trim()) return;
+    if (!shouldAutoRead(target.key, prefs, true)) return;
+    void speaker.speak(target.text, target.key, prefs);
+  }, [target?.key, ready, prefs.autoRead]);
+}

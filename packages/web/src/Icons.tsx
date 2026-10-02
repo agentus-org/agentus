@@ -74,3 +74,47 @@ export const IconResume = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v4h4" /></>, p);
 
 export const IconDot = (p: IconProps = {}): JSX.Element => svg(<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />, p);
+
+/** the workspace panel: a rectangle split by a divider (file manager / terminal) */
+export const IconPanel = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></>, p);
+
+/** one shell: a prompt inside a window */
+export const IconTerminal = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>, p);
+
+export const IconFile = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M6 2h8l4 4v16H6z" /><path d="M14 2v4h4" /></>, p);
+
+/** dictate a prompt */
+export const IconMic = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></>, p);
+
+/** read a reply aloud */
+export const IconVolume = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" /></>, p);
+
+export const IconVolumeOff = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M11 5 6 9H3v6h3l5 4z" /><path d="m16 9 5 6M21 9l-5 6" /></>, p);
+
+export const IconPause = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="7" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" /><rect x="13.5" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" /></>, p);
+
+/** attach a file to the prompt */
+export const IconPaperclip = (p: IconProps = {}): JSX.Element =>
+  svg(<path d="M20 11.5 12 19.5a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7" />, p);
+
+/** chat settings (mode, depth, voice) live behind this */
+export const IconSettings = (p: IconProps = {}): JSX.Element =>
+  svg(<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4.2V4a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11h.2a2 2 0 1 1 0 4H21z" /></>, p);
+
+/** "go up one directory" — the panel's back button */
+export const IconArrowLeft = (p: IconProps = {}): JSX.Element => svg(<path d="M19 12H5M11 6l-6 6 6 6" />, p);
+
+/** re-run / reconnect the terminal */
+export const IconRefresh = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M20 11a8 8 0 1 0-2 6" /><path d="M20 5v6h-6" /></>, p);
+
+/** pick the workspace this slot works in */
+export const IconSwap = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M4 8h13l-3-3M20 16H7l3 3" /></>, p);

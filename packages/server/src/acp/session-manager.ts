@@ -13,10 +13,12 @@ import type {
 import { BACKENDS, buildSpawnEnv } from "./backends.js";
 import type { Store } from "../store/store.js";
 import type {
+  AttachmentSummary,
   BackendId,
   ConfigOptionView,
   PermissionDecision,
   PermissionRequestView,
+  PromptAttachment,
   ServerEvent,
   SessionInfo,
   SessionModeState,
@@ -190,9 +192,12 @@ export class SessionManager {
     const spec = BACKENDS[row.backend];
     if (!spec) throw new Error(`unknown backend: ${row.backend}`);
 
+    // Resume in the operator's workspace when they picked one: that is the whole
+    // point of the workspace being a separate field (see shared/index.ts).
+    const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
     const child = spawn(spec.cmd, spec.args, {
-      cwd: row.cwd,
+      cwd: resumeCwd,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
       env: plan.env,
@@ -202,6 +207,7 @@ export class SessionManager {
     const live: LiveSession = {
       info: {
         id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
+        workspace: row.workspace ?? null,
         status: "starting", pid: child.pid ?? null, title: row.title,
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
@@ -301,6 +307,7 @@ export class SessionManager {
       .slice(0, limit)
       .map((r) => ({
         id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
+        workspace: r.workspace ?? null,
         title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
         modes: (r.modes ?? null) as SessionModeState | null,
         configOptions: (r.configOptions ?? []) as ConfigOptionView[],
@@ -310,22 +317,25 @@ export class SessionManager {
       }));
   }
 
-  async prompt(sessionId: string, text: string): Promise<void> {
+  async prompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
     if (s.busy) throw new Error("turn already running");
+    const blocks = buildPromptBlocks(text, attachments);
+    if (!blocks.length) throw new Error("empty prompt");
     s.busy = true;
     s.info.status = "running";
     this.#updateSession(s);
     this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s) });
     const msg = this.#store.appendMessage({
-      sessionId, kind: "user", payload: { text }, createdAt: Date.now(),
+      sessionId, kind: "user", payload: { text, attachments: summarize(attachments) }, createdAt: Date.now(),
     });
     this.#emit({ t: "message", message: msg });
     try {
       const res = await s.conn.prompt({
         sessionId: s.info.acpSessionId,
-        prompt: [{ type: "text", text }],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ContentBlock union, built by hand
+        prompt: blocks as any,
       });
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason });
     } catch (err) {
@@ -584,9 +594,61 @@ export class SessionManager {
     return this.#store.messagesAfter(sessionId, afterSeq, limit);
   }
 
+  /** Re-point a slot's workspace. Live slot: panels + the *next* resume move; the
+   *  running child keeps the cwd it was spawned with (ACP fixes cwd at newSession).
+   *  Cold slot: the resume will come up in the new directory. */
+  setWorkspace(id: string, workspace: string | null): SessionInfo {
+    const live = this.#sessions.get(id);
+    if (live) {
+      live.info.workspace = workspace;
+      this.#updateSession(live);
+      return live.info;
+    }
+    const row = this.#store.getSession(id);
+    if (!row) throw new Error(`no such session: ${id}`);
+    if (!this.#store.setWorkspace(id, workspace)) throw new Error(`no such session: ${id}`);
+    return {
+      id: row.id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
+      workspace, title: row.title, status: row.status, pid: null, createdAt: row.createdAt,
+      modes: (row.modes ?? null) as SessionModeState | null,
+      configOptions: (row.configOptions ?? []) as ConfigOptionView[],
+      usage: (row.usage ?? null) as SessionInfo["usage"],
+      commands: normCommands(row.commands),
+      lastSeq: this.#store.maxSeq(id),
+    };
+  }
+
   hasSession(id: string): boolean {
     return this.#sessions.has(id);
   }
+}
+
+/** ACP ContentBlock[] for a prompt: text first (the instruction), then media.
+ *  Text attachments are inlined with a filename header because that is what every
+ *  agent actually reads well; images go as protocol image blocks. */
+function buildPromptBlocks(text: string, attachments: PromptAttachment[]): unknown[] {
+  const blocks: unknown[] = [];
+  const body = text.trim();
+  if (body) blocks.push({ type: "text", text: body });
+  for (const a of attachments) {
+    if (a.kind === "image") {
+      blocks.push({ type: "image", mimeType: a.mimeType, data: a.data });
+    } else if (a.kind === "text") {
+      blocks.push({ type: "text", text: `--- attached file: ${a.name} ---\n${a.text}` });
+    } else if (a.kind === "link") {
+      blocks.push({ type: "resource_link", uri: a.uri, name: a.name });
+    }
+  }
+  return blocks;
+}
+
+/** Attachment metadata for the transcript row (names only — see AttachmentSummary). */
+function summarize(attachments: PromptAttachment[]): AttachmentSummary[] {
+  return attachments.map((a) => ({
+    kind: a.kind,
+    name: a.name,
+    mimeType: a.kind === "image" ? a.mimeType : undefined,
+  }));
 }
 
 function sessionRow(i: SessionInfo) {

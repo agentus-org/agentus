@@ -69,6 +69,9 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
 
   return (
     <div className="wp">
+      {/* One bar does the work: the typed path, "take this one", home, parent. The old
+          layout spent a whole row on a "use this folder" button plus a repeat of the
+          selected path, which is exactly the bulk this picker was told to lose. */}
       <div className="wp-bar">
         <input
           className="wp-path"
@@ -81,9 +84,17 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
               void load(typed);
             }
           }}
-          placeholder="~/project or /abs/path — Enter to browse"
+          placeholder="~/project — Enter to browse"
           aria-label="browse directory"
         />
+        <button
+          className="wp-use"
+          disabled={busy || !typed.trim()}
+          title="use the directory typed in the field"
+          onClick={() => onChange(typed.trim())}
+        >
+          use
+        </button>
         <button className="icon-btn" title="home" aria-label="home" disabled={busy} onClick={() => void load(listing?.home ?? "")}>
           <IconHome size={14} />
         </button>
@@ -98,16 +109,33 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
         </button>
       </div>
 
-      {crumbs.length > 1 && (
-        <div className="wp-crumbs">
-          {crumbs.map((c, i) => (
-            <span key={c.path}>
-              {i > 0 && <IconChevronRight size={11} />}
-              <button className="wp-crumb" onClick={() => void load(c.path)} title={c.path}>{c.label}</button>
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="wp-now">
+        {crumbs.length > 1 ? (
+          <div className="wp-crumbs">
+            {crumbs.map((c, i) => (
+              <span key={c.path}>
+                {i > 0 && <IconChevronRight size={10} />}
+                <button className="wp-crumb" onClick={() => void load(c.path)} title={c.path}>{c.label}</button>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {listing?.recent?.length ? (
+          <div className="wp-recent">
+            {listing.recent.slice(0, 4).map((r) => (
+              <button
+                key={r}
+                className={`wp-chip ${value === r ? "sel" : ""}`}
+                title={`use ${r}`}
+                onClick={() => onChange(r)}
+                onDoubleClick={() => void load(r)}
+              >
+                {r.split("/").filter(Boolean).pop() ?? r}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <div className="wp-list" role="listbox" aria-label="folders">
         {busy && !listing ? <div className="wp-note">loading…</div> : null}
@@ -134,35 +162,14 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
           </div>
         ))}
         {listing && !listing.entries.length && !err ? (
-          <div className="wp-note">no subfolders here — “use this folder” works anyway</div>
+          <div className="wp-note">no subfolders here — pick this one with “use”</div>
         ) : null}
         {listing?.truncated ? <div className="wp-note">list truncated at 300 entries</div> : null}
       </div>
 
-      {listing?.recent?.length ? (
-        <div className="wp-recent">
-          <span className="wp-recent-label">recent</span>
-          {listing.recent.slice(0, 6).map((r) => (
-            <button
-              key={r}
-              className={`wp-chip ${value === r ? "sel" : ""}`}
-              title={`use ${r}`}
-              onClick={() => onChange(r)}
-              onDoubleClick={() => void load(r)}
-            >
-              {r.split("/").filter(Boolean).pop() ?? r}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="wp-picked">
-        <button className="wp-use" disabled={!listing} onClick={() => listing && onChange(listing.path)}>
-          <IconResume size={12} /> use this folder
-        </button>
-        <span className="wp-picked-path" title={value || listing?.path}>
-          {value || listing?.path || "(none)"}
-        </span>
+      <div className="wp-picked" title={value}>
+        <IconResume size={12} />
+        <span className="wp-picked-path">{value || "(no folder chosen yet)"}</span>
       </div>
     </div>
   );

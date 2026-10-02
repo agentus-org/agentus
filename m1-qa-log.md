@@ -374,3 +374,28 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - 踩到的坑：窄屏已有规则 `.chat-head select { max-width: 45vw }`（为 44px 触控目标）与我的 `.seg select { max-width: 84px }` **特异性相同**、且它在文件后面 → 我的规则被吃掉。改成 `.chat-head .seg select`（更高特异性）才生效。教训：窄屏微调前先看同特异性后置规则。
 - 编辑器：发件按钮从"文字长条"改成 **42×46px 方形图标靶**；窄屏占位文案缩短（原长句会换行被裁一半）。
 - 复测：手机 `scrollWidth == innerWidth == 390`（零横向溢出）、行高 44px、文字框 16px（iOS 不缩放）；桌面头部 **46px 单行**、`[🛡 default][◔ medium][◎ 139/200k][✕]`。截图 `screens/13b-chat-head-crop.png`、`screens/17-mobile-chat-head.png`。
+
+**R51–R55 工作空间重建：头部两图标 / 用量下沉 / 侧栏面板 / 语音双向**
+
+读的是 **上游 v0.7.27（`ea5bcb9f`）** 而不是本地那份 v0.6.x 的 fork 快照 —— `packages/client` 目录已经改名，聊天头是两个 circle 图标按钮（`header-workspace-button` + `header-tool-toggle`），上下文用量是输入框上方的 `.context-usage-row` 小字 + `.context-bar`，输入框下排是 `.input-toolbar`（attach / reasoning-effort 滑块 / settings 下拉 / model）+ `.input-actions`（语音按钮 + 发送圆钮，运行中变停止）。我们照这个骨架重排，没有照抄任何代码。
+
+- **R51 布局**（1280×860，真 Edge）
+  - 头部：`h=46`、`children=[menu, title, spacer, icon, icon]`、`selects=0`（原来是 2 个下拉 + 环形用量 + 停止 + 关闭）。模式/深度/用量/停止全部移入输入区。
+  - 输入区：`.usage-text = "ctx 8.4k / 1000k · 1% · 992k left"` + 细条，且 `usageAboveBox=true`（用量行在输入框上方 ✓）；`.composer-bar` 按钮 = `["attach","chat settings","dictate"]` + 发送按钮，`insideBox=true`。
+  - 工作空间面板：`tabs=["files","terminal"]`、列出 11 个条目、`root=/…/worktrees/agentslot`、`noHScroll=true`；文件预览 `package.json` 867 字符。
+  - 终端：`status="shell agentslot"`，发 `echo AGENTSLOT_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
+  - 设置弹层：4 组（permission mode / thinking depth / read replies aloud / dictation），无控制台报错。
+- **R52 附件与语音（浏览器路径）**
+  - 用 CDP `DOM.setFileInputFiles` 走真实 `<input type=file>`：草稿 chip 出现（`attach-probe.txt`），发送后气泡显示附件名、草稿清空、agent 正常回复（mock 把附加文本回显出来了 → 端到端确实带着内容进了 prompt）。
+  - 朗读：`speechSynthesis` 可用，**203 个语音**；点回复上的朗读按钮 → `btnOn=true, synthSpeaking=true`（真的在念）；再点 → 停止（`false/false`）。
+  - 听写（浏览器引擎）：点麦克风后 `hasRecognition=true`，但**旧实现下界面毫无反应** —— 因为 `SpeechRecognition.start()` 触发的权限弹窗是模态的，`onstart` 在弹窗关闭前不会来。修法：加 `requesting` 状态。复测 R55：chip 显示 `waiting for the microphone…` + 按钮 `rec` 亮 → 界面不再装死。
+- **R53/R54 服务端语音**（用 `fake_voice_server.py` 冒充 OpenAI 兼容端点）
+  - `/api/voice` → `tts.server=true, stt.server=true`；`/api/tts` → `200 audio/wav 6444 bytes`，端点日志收到 `{"model":"tts-1","voice":"alloy","input":"read this aloud"}`；`/api/stt` → `{"text":"fake transcript: round trip through /api/stt"}`（multipart 转发 ✓）。
+  - 守卫：匿名 401、空文本 400、>4000 字符 400、空音频 body 400、未配置时 501 `not_configured`（不是 500）。
+  - 浏览器里服务端朗读：点回复朗读 → 端点收到合成请求、按钮 `.on`（经 `<audio>` 播放）✓。
+  - 浏览器里服务端听写：`getUserMedia` 被调用后**永远 pending**（OS 权限弹窗没人点）→ 同样靠 `requesting` 状态给出可读反馈；**另修**：录音拿到 0 字节时原来静默回 idle，现在明确报 `nothing was recorded — check the microphone`。合成麦克风（oscillator → MediaStreamDestination）能走到 `MediaRecorder` 构造 + `recording` 状态，但 Chromium 不给这种流发 `dataavailable`（探针里连 `start` 事件都没有），所以浏览器→服务端的最后一段实测由 `/api/stt` 的 HTTP 级验证补上，不当作已跑通。
+- **R55 手机（390×844）**
+  - 头部 `flexWrap=nowrap`、`h=51`、所有子元素同一行（`tops=[5,15,25,5,5]`）、3 个图标按钮（菜单 + 文件夹 + 面板）、`hScroll=390/390`。
+  - 输入区：用量行在框上方、下排 `[attach, chat settings, dictate, send]`、触摸高度 38px。
+  - 面板：全屏 sheet `width=390`、零横向溢出、文件列表正常；零控制台报错。
+  - 踩坑：新面板/输入区的**基础样式写在文件末尾**，把前面的 `@media (max-width:720px)` 覆盖掉了（同特异性、后者胜）—— 手机规则必须放到文件最后，或写在基础样式之后。

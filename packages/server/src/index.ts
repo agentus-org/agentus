@@ -10,9 +10,11 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
-import { FsError, listDirs } from "./fs.js";
+import { FsError, listDirs, readTextFile } from "./fs.js";
+import { terms } from "./term.js";
+import { VoiceError, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import * as auth from "./auth.js";
-import type { BackendId, ClientCommand, PermissionDecision, ServerEvent } from "@agentslot/shared";
+import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
 
 const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
@@ -38,6 +40,23 @@ function clientIp(req: IncomingMessage): string {
 // ---- event fan-out to all WS clients + per-client replay tracking ----
 const clients = new Map<string, { ws: WebSocket; lastSeen: Map<string, number> }>();
 
+/** `~/x` and relative paths from the UI land on absolute ones, same as the picker. */
+function expandUserPath(input: string): string {
+  const raw = input.trim();
+  if (raw === "~") return homedir();
+  if (raw.startsWith("~/")) return path.join(homedir(), raw.slice(2));
+  return path.resolve(raw);
+}
+
+/** The directory a slot's panels (files, terminal) start from: the workspace the
+ *  operator picked, falling back to the cwd the slot was spawned in. */
+function sessionRoot(sessionId: string): { path: string; workspace: string | null } | null {
+  const live = mgr.list().find((s) => s.id === sessionId);
+  const row = live ?? store.getSession(sessionId);
+  if (!row) return null;
+  return { path: row.workspace || row.cwd, workspace: row.workspace ?? null };
+}
+
 function emit(evt: ServerEvent): void {
   const wire = JSON.stringify(evt);
   for (const { ws } of clients.values()) {
@@ -53,8 +72,8 @@ const mgr = new SessionManager(store, emit);
  * "-32603 Internal error" with nothing in the server log, and it also never
  * emitted turn-end, so the bubble stayed "running" forever (QA#11).
  */
-function runPrompt(sessionId: string, text: string): void {
-  void mgr.prompt(sessionId, text).catch((e: unknown) => {
+function runPrompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
+  void mgr.prompt(sessionId, text, attachments).catch((e: unknown) => {
     const msg = String((e as Error)?.message ?? e);
     const tail = mgr.stderrTail(sessionId);
     console.error(`[agentslot] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
@@ -84,6 +103,20 @@ const killed = mgr.reclaimOrphans();
 if (killed) console.log(`[agentslot] reclaimed ${killed} orphan agent process(es)`);
 
 // ---- REST ----
+/** Raw body for uploads (audio for /api/stt). Capped: a dictation clip is small,
+ *  and an uncapped reader is a memory DoS on a public tunnel. */
+async function readBody(req: IncomingMessage, maxBytes = 25 * 1024 * 1024): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (total > maxBytes) throw new Error(`body too large (> ${Math.round(maxBytes / 1048576)}MB)`);
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
@@ -215,14 +248,74 @@ const httpServer = createServer(async (req, res) => {
     // Directory browser for the new-slot workspace picker (dirs only, one level).
     if (url.pathname === "/api/fs/dirs" && req.method === "GET") {
       try {
-        const listing = listDirs(url.searchParams.get("path"));
-        return send(res, 200, { ...listing, recent: store.recentCwds(8) });
+        // `sessionId` resolves the slot's workspace; `path` wins when both are given
+        // (clicking through the tree is not a workspace change).
+        const sessionId = url.searchParams.get("sessionId");
+        const explicit = url.searchParams.get("path");
+        const root = sessionId ? sessionRoot(sessionId) : null;
+        const listing = listDirs(explicit ?? root?.path ?? null, { includeFiles: url.searchParams.get("files") === "1" });
+        return send(res, 200, { ...listing, root: root?.path ?? null, recent: store.recentCwds(8) });
       } catch (e) {
         if (e instanceof FsError) {
           return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
         }
         throw e;
       }
+    }
+    // Read-only file preview for the workspace panel (▤ → Files).
+    if (url.pathname === "/api/fs/file" && req.method === "GET") {
+      try {
+        const req0 = url.searchParams.get("path");
+        if (!req0) return send(res, 400, { error: "path is required", code: "bad_path" });
+        const maxBytes = Number(url.searchParams.get("maxBytes") || 0) || undefined;
+        return send(res, 200, readTextFile(req0, { maxBytes }));
+      } catch (e) {
+        if (e instanceof FsError) {
+          return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
+        }
+        throw e;
+      }
+    }
+    // What the browser should offer: it can always speak/read text itself, and the
+    // server adds an OpenAI-compatible path when one is configured (voice.ts).
+    if (url.pathname === "/api/voice" && req.method === "GET") {
+      return send(res, 200, voiceCapabilities());
+    }
+    if (url.pathname === "/api/tts" && req.method === "POST") {
+      const body = await readJson(req);
+      const text = String(body.text ?? "").trim();
+      if (!text) return send(res, 400, { error: "text is required" });
+      if (text.length > 4000) return send(res, 400, { error: "text too long (4000 chars max)" });
+      try {
+        const { contentType, audio } = await synthesize(text, {
+          voice: typeof body.voice === "string" ? body.voice : undefined,
+          speed: typeof body.speed === "number" ? body.speed : undefined,
+        });
+        res.writeHead(200, { "content-type": contentType, "content-length": String(audio.length), "cache-control": "no-store" });
+        return res.end(audio);
+      } catch (e) {
+        if (e instanceof VoiceError) return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
+        throw e;
+      }
+    }
+    if (url.pathname === "/api/stt" && req.method === "POST") {
+      const audio = await readBody(req);
+      if (!audio.length) return send(res, 400, { error: "empty audio body" });
+      try {
+        const text = await transcribe(audio, String(req.headers["content-type"] ?? "audio/webm"), {
+          filename: typeof req.headers["x-agentslot-filename"] === "string" ? req.headers["x-agentslot-filename"] : undefined,
+          language: url.searchParams.get("language") || undefined,
+        });
+        return send(res, 200, { text });
+      } catch (e) {
+        if (e instanceof VoiceError) return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
+        throw e;
+      }
+    }
+    // Terminal sessions for the workspace panel: list + kill (start/IO is the WS,
+    // because a shell is a stream, not a request/response).
+    if (url.pathname === "/api/term" && req.method === "GET") {
+      return send(res, 200, { sessions: terms.list() });
     }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);
@@ -287,10 +380,26 @@ const httpServer = createServer(async (req, res) => {
       if (req.method === "POST" && sub === "/prompt") {
         const body = await readJson(req);
         const text = String(body.text ?? "").trim();
-        if (!text) return send(res, 400, { error: "empty prompt" });
+        const attachments = Array.isArray(body.attachments) ? (body.attachments as PromptAttachment[]) : [];
+        if (!text && !attachments.length) return send(res, 400, { error: "empty prompt" });
         // fire & forget: stream arrives via WS; client watches turn-start/end
-        void runPrompt(id, text);
+        void runPrompt(id, text, attachments);
         return send(res, 202, { ok: true });
+      }
+      if (req.method === "POST" && sub === "/workspace") {
+        const body = await readJson(req);
+        const raw = String(body.path ?? "").trim();
+        // Empty clears the override ("back to the cwd this slot was spawned in").
+        let workspace: string | null = null;
+        if (raw) {
+          workspace = expandUserPath(raw);
+          if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+            return send(res, 400, { error: `not a directory: ${workspace}` });
+          }
+        }
+        const info = mgr.setWorkspace(id, workspace);
+        emit({ t: "sessions", sessions: mgr.list() });
+        return send(res, 200, info);
       }
       if (req.method === "POST" && sub === "/mode") {
         const body = await readJson(req);
@@ -333,7 +442,7 @@ const httpServer = createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 httpServer.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://x");
-  if (url.pathname !== "/ws") {
+  if (url.pathname !== "/ws" && url.pathname !== "/ws/term") {
     socket.destroy();
     return;
   }
@@ -347,6 +456,10 @@ httpServer.on("upgrade", (req, socket, head) => {
   if (!auth.authenticate(req.headers, url)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
     socket.destroy();
+    return;
+  }
+  if (url.pathname === "/ws/term") {
+    termWss.handleUpgrade(req, socket, head, (ws) => termWss.emit("connection", ws, req, url));
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
@@ -382,7 +495,7 @@ wss.on("connection", (ws) => {
           break;
         }
         case "prompt":
-          void runPrompt(cmd.sessionId, cmd.text);
+          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? []);
           break;
         case "cancel":
           await mgr.cancel(cmd.sessionId);
@@ -409,11 +522,67 @@ wss.on("connection", (ws) => {
   ws.on("close", () => clients.delete(clientId));
 });
 
+// ---- the workspace panel's terminal -----------------------------------------
+// A shell is a stream, so it gets its own socket instead of riding the event bus:
+// one socket = one shell, and closing the socket (or the tab) kills the shell.
+const termWss = new WebSocketServer({ noServer: true });
+termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
+  const sessionId = url.searchParams.get("sessionId") ?? "";
+  const root = sessionRoot(sessionId);
+  if (!root) {
+    ws.send(JSON.stringify({ t: "term-error", error: `no such session: ${sessionId}` }));
+    ws.close();
+    return;
+  }
+  let term: ReturnType<typeof terms.start> | null = null;
+  try {
+    term = terms.start(root.path);
+  } catch (e) {
+    ws.send(JSON.stringify({ t: "term-error", error: String((e as Error)?.message ?? e) }));
+    ws.close();
+    return;
+  }
+  const session = term;
+  const send = (msg: unknown): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  };
+  send({ t: "term-ready", id: session.id, cwd: session.cwd, pid: session.pid });
+  const onData = (chunk: string): void => send({ t: "term-data", id: session.id, data: chunk });
+  session.subscribers.add(onData);
+  session.child.on("exit", () => send({ t: "term-exit", id: session.id }));
+  ws.on("message", (data) => {
+    let cmd: { t?: string; data?: string };
+    try {
+      cmd = JSON.parse(String(data));
+    } catch {
+      return;
+    }
+    if (cmd.t === "term-input" && typeof cmd.data === "string") {
+      try {
+        session.child.stdin.write(cmd.data);
+      } catch (e) {
+        send({ t: "term-error", error: `write failed: ${String((e as Error)?.message ?? e)}` });
+      }
+    } else if (cmd.t === "term-close") {
+      terms.kill(session.id);
+      ws.close();
+    }
+  });
+  const cleanup = (): void => {
+    session.subscribers.delete(onData);
+    terms.kill(session.id);
+  };
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
+});
+
 // ---- graceful exit: SIGTERM children before we die (design.md §8-1) ----
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     console.log(`[agentslot] ${sig}: shutting down sessions`);
     await mgr.shutdown();
+    const shells = terms.killAll();
+    if (shells) console.log(`[agentslot] killed ${shells} terminal shell(s)`);
     store.close();
     process.exit(0);
   });

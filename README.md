@@ -63,6 +63,12 @@ layer never changes.
 | `AGENTSLOT_ALLOW_LIVE_HOME` | unset | `1` = allow spawning against `~/.hermes` (you almost never want this) |
 | `AGENTSLOT_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
 | `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
+| `AGENTSLOT_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
+| `AGENTSLOT_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
+| `AGENTSLOT_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
+| `AGENTSLOT_TTS_API_KEY` / `AGENTSLOT_TTS_MODEL` / `AGENTSLOT_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
+| `AGENTSLOT_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
+| `AGENTSLOT_STT_API_KEY` / `AGENTSLOT_STT_MODEL` / `AGENTSLOT_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
 
 ## Login
 
@@ -191,12 +197,29 @@ to your production memory daemon), and `.env` copied 0600.
   not swallowed), offline app shell via service worker
 - PWA + phone layout: drawer rail, thumb-sized controls, safe-area padding,
   16px inputs (no iOS zoom), no horizontal overflow at 390px
-- icon-first chat head: mode/depth as icon+value selects, the working directory as a
-  badge (full path in the tooltip), state and actions as icon buttons with tooltips
+- a head with **two** controls: which directory this slot works in, and the workspace
+  panel. Everything that was up there moved next to the prompt where it belongs
+- **workspace panel** (head ▤): a read-only file browser (breadcrumb, sizes, text
+  preview) and a shell rooted in the slot's workspace, both killed with the socket.
+  Cwd is a per-slot field: a *running* agent keeps the directory it was started in,
+  the panels and the next resume follow the one you pick
+- composer that reads like a chat box, not a toolbar: attachments (`+`), settings
+  (permission mode · thinking depth · voice) and dictation live on one row under the
+  input, the context/spend line is small type *above* it, and send turns into stop
+  while a turn runs
+- **attachments** as real ACP content blocks: images (`type: "image"`), text files
+  inlined with a filename header, links as `resource_link`. Only file names are
+  persisted — never the bytes
+- **voice, both directions, browser-first**: read any reply aloud (per-message button
+  plus an auto-read toggle, voice picker, speed), dictate a prompt (live interim words).
+  A server endpoint is optional and only a proxy (`AGENTSLOT_TTS_BASE_URL` /
+  `AGENTSLOT_STT_BASE_URL`); with nothing configured, the browser does the work and the
+  UI says so
 - streaming that does not fight the reader: a wheel/touch gesture detaches instantly,
   new output is announced by a "jump to newest" button instead of yanking the viewport
-- new-slot workspace picker: browse the server's directories (`GET /api/fs/dirs`,
-  dirs only, one level at a time) or pick from the working directories you used before
+- workspace picker: browse the server's directories (`GET /api/fs/dirs`, one level at a
+  time) or pick from the working directories you used before; the same picker re-points
+  an existing slot
 
 ## Tests
 

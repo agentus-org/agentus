@@ -22,6 +22,13 @@ export interface SessionRow {
    *  cold-slot resume shows the same picture (AionUi F-DISPLAY-07/10). */
   usage?: unknown;
   commands?: unknown;
+  /** The directory the cockpit works in for this slot: the file/terminal panel's
+   *  root, and the cwd a cold slot is resumed with. Deliberately separate from
+   *  `cwd` — a live ACP child cannot be re-cd'd (its cwd was fixed at newSession),
+   *  so re-pointing a *running* slot changes the panels and the next resume, not
+   *  the process. hermes-studio draws the same line (session.workspace).
+   *  Empty/undefined = "same as cwd". */
+  workspace?: string | null;
 }
 
 interface RawSessionRow {
@@ -30,6 +37,7 @@ interface RawSessionRow {
   created_at: number; closed_at: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
+  workspace?: string | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -48,6 +56,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     createdAt: r.created_at, closedAt: r.closed_at,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
+    workspace: r.workspace ?? null,
   };
 }
 
@@ -74,7 +83,7 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
   }
@@ -261,4 +270,13 @@ export class Store {
   close(): void {
     this.#db.close();
   }
+  /** Re-point a slot's workspace. Not part of upsertSession: a live-status write
+   *  must never clobber a choice the operator made in the panel. */
+  setWorkspace(id: string, workspace: string | null): boolean {
+    const info = this.#db
+      .prepare("update sessions set workspace = ? where id = ?")
+      .run(workspace && workspace.length ? workspace : null, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
 }
