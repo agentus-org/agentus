@@ -225,3 +225,24 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - Hermes 自身链接的 SQLite 3.50.4 仍有 WAL-reset bug（`hermes update` 才根治），
   现在只靠 Hermes 自动降级 `journal_mode=DELETE` 顶着。
 - mini-markdown 只覆盖代码块/行内码/粗体/链接；表格、嵌套列表留给 M3。
+## R31–R33 — 新界面能力 + 手机/PWA 复验（2026-10-02）
+
+**R31 桌面新能力（真 Edge，CDP）**：上下文用量表 `ctx 161/200k`、每回合追踪行
+`effort medium · mode default`、工具卡 `🔧 Write file …` + 展开后的 input/output
+（`{"path":"./demo.txt",…}` / `wrote 24 bytes …`）、斜杠面板 `/help /mock /slow`（带描述与来源）。
+
+**R31 抓到的真 bug —— plan 只渲染 1/3 项**（不是我们的代码）：
+- 裸 JSON-RPC 探针证明 mock 线上发了 3 条 entries；经 `@agentclientprotocol/sdk@1.5.1`
+  到达服务端只剩 1 条（唯一带 `priority` 的）。
+- 根因：ACP 规范要求 `PlanEntry` 的 `content`+`priority`+`status` 全必填，SDK 对**数组项**
+  是"逐项丢弃"而非报错（其自带测试 `zPlan.parse(...)` 就是这么断言的）。我们 mock 漏了
+  `priority` → 被丢。真 hermes 合规（`acp_adapter/events.py` 固定补 `priority="medium"`）。
+- 修复：mock 三件套补齐；坑记入 `docs/refs/aionui-acp-rules.md`。
+- 复验 R32：`☑ read the failing test / ▶ patch the flaky timing assert / ☐ run full suite` 三项齐全。
+
+**R32 手机视口 390×844**：无横向溢出；侧栏默认收起、`☰` 开抽屉（left 0 + scrim）、点 scrim 关闭；
+发现顶栏下拉只有 **34px** → 低于 44px 触控标准。
+
+**R33 修复后复验**：顶栏 select 44/44、ghost 按钮 44、发送键 46、权限卡按钮 8 个全 44；
+斜杠面板移动端 44px 行 + 40vh 上限。PWA：SW `scope=http://127.0.0.1:8787/`、`active`、
+缓存 `agentslot-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。

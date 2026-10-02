@@ -252,10 +252,15 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   /* header wraps instead of squashing the title/cwd into nothing */
   .chat-head { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
   .chat-head .title { flex: 1 1 100%; order: -1; font-size: 14px; }
-  .chat-head select { max-width: 45vw; min-height: 34px; flex: 1 1 auto; }
+  /* 44px = the platform touch minimum (iOS HIG / Android 48dp): the mode + thinking-depth
+     pickers are the controls an operator hits most from a phone, so they get a full target */
+  .chat-head select {
+    max-width: 45vw; min-height: 44px; flex: 1 1 auto;
+    padding: 8px 10px; font-size: 15px;
+  }
   .chat-head .kv { flex: 1 1 100%; font-size: 11px; }
-  .chat-head .ghost-btn { min-height: 34px; padding: 4px 12px; }
-  .chat-head .menu-btn { font-size: 22px; padding: 0 10px 0 2px; }
+  .chat-head .ghost-btn { min-height: 44px; padding: 8px 14px; font-size: 14px; }
+  .chat-head .menu-btn { font-size: 22px; padding: 0 10px 0 2px; min-height: 44px; }
 
   /* composer: thumb-sized hit area + home-indicator safe area */
   .composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
@@ -263,7 +268,11 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   .send-btn { min-width: 64px; min-height: 46px; font-size: 15px; }
 
   /* permission cards must be tappable, not a thin strip */
-  .perm-card button { min-height: 40px; padding: 8px 14px; }
+  .perm-card button { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+
+  /* slash palette: full-width rows a thumb can hit while the keyboard is up */
+  .slash-palette { max-height: 40vh; }
+  .slash-item { min-height: 44px; }
 
   .msg { max-width: 100%; }
   .empty .big { font-size: 42px; }

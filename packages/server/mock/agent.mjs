@@ -118,6 +118,8 @@ const agent = () => ({
         sessionUpdate: "tool_call", toolCallId,
         title: `Write file: ./demo-${Math.floor(Math.random() * 1e4)}.txt`,
         kind: "edit", status: "pending",
+        // shaped like a real agent: input args on the call, output on the update
+        rawInput: { path: "./demo.txt", content: "hello from the mock agent" },
       });
       const mode = s.currentModeId || "default";
       if (mode !== "dont_ask" && mode !== "accept_edits") {
@@ -134,17 +136,24 @@ const agent = () => ({
         await send(agent._conn, sessionId, {
           sessionUpdate: "tool_call_update", toolCallId,
           status: chosen === "reject" ? "failed" : "completed",
+          // the output half of the card (AionUi F-DISPLAY-03 wants it viewable)
+          rawOutput: chosen === "reject"
+            ? "rejected by the operator — nothing written"
+            : `wrote 24 bytes to ./demo.txt (via ${chosen === "allow_always" ? "always-allow" : "one-shot allow"})`,
         });
       }
     }
 
     if (wantPlan) {
+      // ACP requires content+priority+status on every PlanEntry: @agentclientprotocol/sdk
+      // silently DROPS entries that fail validation (spec-conformant, but hostile — the
+      // operator would just see a shorter plan). Always send all three.
       await send(agent._conn, sessionId, {
         sessionUpdate: "plan",
         entries: [
-          { content: "read the failing test", status: "completed" },
+          { content: "read the failing test", status: "completed", priority: "medium" },
           { content: "patch the flaky timing assert", status: "in_progress", priority: "high" },
-          { content: "run full suite", status: "pending" },
+          { content: "run full suite", status: "pending", priority: "medium" },
         ],
       });
     }

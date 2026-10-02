@@ -29,3 +29,18 @@
 
 ## 版权红线
 本文件是规则提炼（思想），非逐字翻译；AgentSlot 代码不 derived 自 AionUi 源码文本，故 SPDX 头仅在未来真搬代码时添加。
+
+## 坑：SDK 会静默丢弃"不合规的嵌套条目"（2026-10-02 实测）
+
+`@agentclientprotocol/sdk@1.5.1` 的入站校验对**数组项**不是报错而是**逐项丢弃**
+（`acp.test.js`: `zPlan.parse({entries:[...]})` 只保留通过校验的项）。实测证据：
+
+- 原始线上（裸 JSON-RPC 探针）：`sessionUpdate:"plan"` 带 3 条 entries。
+- 经 SDK：只剩 1 条 —— 唯一带 `priority` 的那条。
+- 原因：ACP 规范要求 `PlanEntry` 的 `content` + `priority` + `status` **三者必填**；
+  漏 `priority` 的条目被丢。同理适用于 `tool_call.content[]`、`locations[]` 等嵌套数组。
+
+**对我们的意义**：界面侧完全看不到"丢了什么"，只会看到更短的 plan/更空的工具卡。
+所以：① 自家 mock 必须严格合规；② 接入 Qoder 等第三方 agent 时，若 plan 项/工具输出
+莫名变少，先怀疑对端字段缺失，用裸探针（`assets/raw_probe.mjs` 思路）对比线上与 SDK 侧；
+③ 真 hermes 是合规的（`acp_adapter/events.py` 固定补 `priority="medium"`）。
