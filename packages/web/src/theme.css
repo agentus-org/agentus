@@ -180,9 +180,22 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
   display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
   border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--text-dim);
 }
-.tool-card { border: 1px solid var(--line); border-left: 3px solid var(--tool); border-radius: 8px; padding: 8px 12px; background: var(--bg-panel); }
-.tool-card .t { font-family: var(--mono); font-size: 13px; }
-.tool-card .st { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+/* Tool calls are one compact line: the title ellipsises and the status is a dot — the
+   second line ("kind · status") was taking a row of vertical space per call. */
+.tool-card { border: 1px solid var(--line); border-left: 3px solid var(--tool); border-radius: 8px; padding: 3px 8px; background: var(--bg-panel); }
+.tool-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  background: transparent; border: none; padding: 2px 0; cursor: pointer;
+  color: var(--text); font-family: var(--mono); font-size: 11.5px; text-align: left;
+}
+.tool-head:hover { color: var(--accent); }
+.tool-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-chev { flex: 0 0 auto; opacity: 0.5; transition: transform 0.12s ease; }
+.tool-chev.open { transform: rotate(90deg); }
+.tool-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
+.tool-dot.running { background: var(--accent); animation: pulse 1.2s infinite; }
+.tool-dot.ok { background: var(--ok); }
+.tool-dot.err { background: var(--err); }
 .tool-card.completed { border-left-color: var(--ok); }
 .tool-card.failed { border-left-color: var(--err); }
 
@@ -190,10 +203,12 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
 .tool-card .tool-body { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 6px; }
 .tool-card .tool-body .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
 .tool-card .tool-body pre {
-  margin: 4px 0 8px; padding: 8px 10px; max-height: 260px; overflow: auto;
+  margin: 4px 0 8px; padding: 6px 9px; max-height: 260px; overflow: auto;
   background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
-  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--mono); font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
 }
+/* the full title/kind/status rows: same box, dimmer — they are context for the payloads */
+.tool-card .tool-body pre.tool-meta { color: var(--text-dim); margin-bottom: 6px; }
 
 /* context-window gauge + per-turn trace + pending-permission chip (AionUi F-DISPLAY-07/11, F-PERM-04) */
 /* context gauge as a ring: the numbers are one hover away, the tint carries the alarm */

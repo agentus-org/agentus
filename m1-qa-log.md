@@ -436,3 +436,12 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **R59 思考深度按钮再瘦身（用户：去掉图标，保留刻度）**
 - 按钮内容从 `🧠 + 7 段刻度 + chevron` 改为**纯刻度**（无图标、无文字），宽度 61px → **43px**；tooltip/`aria-label` 仍带档位名（`thinking depth — High`），列表里每档仍有名字与同色圆点。
 - 实测 390 与 320：`offscreen=[]`、`barFits=true`、发送按钮 `right=377/307` 且中心点命中自己；刻度 7 段、亮 5 段（High）、颜色 `rgb(232,132,60)`；`svgChildren=0` 确认图标已移除。截图 `33-mobile-toolbar.png`、`30-depth-picker.png`。
+
+**R60 工具卡改单行（用户：字体小点、不要两行、多了省略、点开才看详情）**
+- 改版：卡片高度 8px+两行 → **单行 28px（行高 21px）**；`🔧 + 标题 + ▸` 与第二行 `kind · status` 全部换成 `[状态圆点] 标题(省略号) [chevron]`，字体 13px → **11.5px**（等宽）；展开后才出现 4 段详情：`tool`（完整工具名）/`kind · status`/`input`/`output`（正文字体 11px）。
+- 状态圆点：`in_progress/pending` → 琥珀色呼吸、`completed` → 绿、`failed/error/cancelled` → 红、未知 → 中性灰（不谎报失败）。
+- 实测（mock `[tool]` 触发真实 tool_call + 审批 → 允许 → 完成）：
+  - 折叠：`h=28`、`headH=21`（**单行**）、`secondLine=false`（`.st` 已无）、`ellipsis=ellipsis`/`nowrap`、标题过长时 `truncated=true`（长路径确实被省略）、`dot=ok`、chevron 在；卡片容器宽度不随标题变化（实测同一盒宽）。
+  - 展开：`h=314`，labels = `tool / kind · status / input / output`，`tool` 行是完整标题，`kind · status` = `edit · completed`。
+  - 手机 390：卡片宽 350 ≤ 390、无横向溢出、单行同样成立。
+- 截图：`36-tool-card-collapsed.png`、`37-tool-card-expanded.png`、`38-mobile-tool-card.png`。

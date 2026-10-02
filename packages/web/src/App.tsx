@@ -619,23 +619,33 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
 
 /** Tool call card with viewable input/output (AionUi F-DISPLAY-03). Collapsed by
  *  default so a long transcript stays scannable; the agent's own status drives the colour. */
+/** One line, always. A tool call is a step in the transcript, not a report: the title
+ *  is truncated (the operator asked for it), the status is a dot instead of a second
+ *  line of text, and the full name/kind/status/input/output only appear once expanded. */
 function ToolCard({ m }: { m: Extract<MsgView, { kind: "tool" }> }): JSX.Element {
   const [open, setOpen] = useState(false);
   const hasBody = Boolean(m.input || m.detail);
+  const status = statusOf(m.status);
   return (
     <div className="msg">
       <div className={`tool-card ${m.status}`}>
-        <div
-          className="t"
-          style={{ cursor: hasBody ? "pointer" : "default" }}
+        <button
+          type="button"
+          className="tool-head"
           onClick={() => hasBody && setOpen((x) => !x)}
-          title={hasBody ? "show input/output" : undefined}
+          title={hasBody ? `${m.title}\nclick for the full call and its result` : m.title}
+          aria-expanded={hasBody ? open : undefined}
         >
-          🔧 {m.title} {hasBody ? (open ? "▾" : "▸") : ""}
-        </div>
-        <div className="st">{m.kind2 ? `${m.kind2} · ` : ""}{m.status}</div>
+          <span className={`tool-dot ${status}`} aria-hidden="true" />
+          <span className="tool-title">{m.title}</span>
+          {hasBody ? <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} /> : null}
+        </button>
         {open && (
           <div className="tool-body">
+            <div className="lbl">tool</div>
+            <pre className="tool-meta">{m.title}</pre>
+            <div className="lbl">kind · status</div>
+            <pre className="tool-meta">{m.kind2 ? `${m.kind2} · ` : ""}{m.status}</pre>
             {m.input ? (
               <>
                 <div className="lbl">input</div>
@@ -653,6 +663,16 @@ function ToolCard({ m }: { m: Extract<MsgView, { kind: "tool" }> }): JSX.Element
       </div>
     </div>
   );
+}
+
+/** ACP tool-call status → the dot's class. Unknown states stay neutral rather than
+ *  being reported as failures. */
+function statusOf(raw: string): "running" | "ok" | "err" | "idle" {
+  const s = String(raw || "").toLowerCase();
+  if (s === "completed" || s === "success") return "ok";
+  if (s === "failed" || s === "error" || s === "cancelled") return "err";
+  if (s === "in_progress" || s === "running" || s === "pending") return "running";
+  return "idle";
 }
 
 function Thought({ m }: { m: Extract<MsgView, { kind: "thought" }> }): JSX.Element {

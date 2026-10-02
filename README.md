@@ -177,8 +177,10 @@ to your production memory daemon), and `.env` copied 0600.
   click to respawn + `loadSession` resume, re-applying the stored permission mode/effort),
   with search across both by title / backend / cwd
 - streaming render of `agent_message_chunk` / `agent_thought_chunk`, tool calls
-  (upserted by `toolCallId`, never appended; expand a card for the agent's input/output),
-  plan updates, usage
+  (upserted by `toolCallId`, never appended), plan updates, usage. A tool call is one
+  compact line — status dot, truncated title, chevron — and shows the full name, kind,
+  status, input and output only when expanded (a transcript of twenty calls stays
+  readable)
 - **context-window gauge** per slot from ACP `usage_update` (warns at 65% / 85%; degrades
   to used-only when the agent reports no window size) and a per-turn trace chip showing the
   effort/mode a turn actually runs with
