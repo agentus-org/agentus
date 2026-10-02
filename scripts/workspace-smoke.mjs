@@ -14,7 +14,9 @@ import path from "node:path";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const PORT = 8901;
+// A random-ish scratch port: a leaked server from an earlier run must not fail the
+// suite (auth-smoke uses fixed ports and this bit us once locally).
+const PORT = 8900 + Math.floor(Math.random() * 90);
 const results = [];
 let failed = 0;
 
