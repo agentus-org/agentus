@@ -368,3 +368,9 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - 实测（`r48_picker.mjs`）：`~` 列出 18 个目录、recent chips 5 个（来自历史会话）；单击选中→picked 更新、行高亮；`›` 进入→路径/面包屑更新；点面包屑回跳；输错路径→`no such directory: …` 且列表仍可用；Home 按钮回家目录；**用选中的目录真的建出了槽位**（rail 出现 `Hermes @ Workspace`）。
 - 手机（390×844）：`scrollWidth == innerWidth == 390`（无横向溢出）、行高 44px、路径框 16px（iOS 不缩放）、弹窗完整可见。
 - 截图：`screens/15-workspace-picker.png`、`screens/16-workspace-picker-mobile.png`。
+
+**R49–R50 手机端头部与编辑器收尾**
+- 首轮手机实测头部 **149px / 3 行**（图标行 + 两个下拉 + 环形/关闭各一行）——桌面单行的设计直接换行成了三行，比原来更乱。改为**两行定版**：`[☰ 标题 工作空间徽标]` + `[🛡模式 ◔深度 ◎用量环 ✕]`（`.head-spacer` 在窄屏变成换行符），并把窄屏下拉宽度收紧到 88px → 头部 **115px / 2 行**。
+- 踩到的坑：窄屏已有规则 `.chat-head select { max-width: 45vw }`（为 44px 触控目标）与我的 `.seg select { max-width: 84px }` **特异性相同**、且它在文件后面 → 我的规则被吃掉。改成 `.chat-head .seg select`（更高特异性）才生效。教训：窄屏微调前先看同特异性后置规则。
+- 编辑器：发件按钮从"文字长条"改成 **42×46px 方形图标靶**；窄屏占位文案缩短（原长句会换行被裁一半）。
+- 复测：手机 `scrollWidth == innerWidth == 390`（零横向溢出）、行高 44px、文字框 16px（iOS 不缩放）；桌面头部 **46px 单行**、`[🛡 default][◔ medium][◎ 139/200k][✕]`。截图 `screens/13b-chat-head-crop.png`、`screens/17-mobile-chat-head.png`。

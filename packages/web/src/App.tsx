@@ -632,6 +632,8 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
 
 function Composer({ v }: { v: SessionView }): JSX.Element {
   const [text, setText] = useState("");
+  // a phone-width placeholder that wraps to a second line just looks broken
+  const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = () => {
@@ -692,7 +694,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
           ref={ta}
           rows={1}
           value={text}
-          placeholder={v.info.status === "ready" ? "message… (Enter send, Shift+Enter newline, / for commands)" : v.info.status}
+          placeholder={v.info.status === "ready" ? placeholder : v.info.status}
           onChange={(e) => {
             setText(e.target.value);
             setPick(0);
