@@ -305,3 +305,22 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - Cookie 走 HTTPS 隧道时为 `Secure: true / HttpOnly: true / SameSite: Lax` → natfrp 确实转发了 `X-Forwarded-Proto: https`，代码里的判定生效。
 
 **自动化**：`npm run auth-smoke` 扩到 **40 项**（新增 server D：Basic 开启下匿名 `/healthz`、`/`、`/api` 全 401、挑战头存在、错口令 401、对口令 200、WS 无凭据拒、WS 有凭据 `hello`）。全绿。
+
+## R45d–R45e · 基础认证改「只验密码」
+
+**动机**：HTTP Basic（RFC 7617）协议上必然带用户名，但单人服务没有用户体系 —— 每次都要填用户名是无谓摩擦。改成只验密码后用户名随便填/留空。
+
+**代码**（`auth.ts`）：`AGENTSLOT_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
+
+**配置**：口令改为 `REDACTED-PASS`（与现有 nano_ssh/openclaw 等服务的 `auth_pass` 同口令，少记一个）。
+
+**实测**
+| 场景 | 结果 |
+|---|---|
+| 本机匿名 / 错口令 | 401 / 401 |
+| 本机 `admin:REDACTED-PASS`、`:REDACTED-PASS`（空用户名）、`随便填:REDACTED-PASS` | 全 200 |
+| 隧道外匿名 / 带正确口令 | 401 / 200（返回真实 `/healthz` JSON） |
+| 隧道外 `whatever:REDACTED-PASS` | 200 |
+| 浏览器（新 origin `yd.REDACTED-TUNNEL`，用户名随便填 `admin`） | 1 次挑战 → 登录页 → 应用登录 → 驾驶舱 **`● online`**（WS 穿隧道） |
+
+**自动化**：`auth-smoke` 扩到 **48 项** —— 新增 server E（`:pass` 形式：匿名仍 401 即"没有静默关闭"、空用户名/任意用户名过、错口令 401、WS 通过）与 server F（裸 `pass` 形式）。全绿。

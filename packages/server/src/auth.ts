@@ -339,21 +339,29 @@ export const AUTH_DEFAULT_PASSWORD = DEFAULT_PASSWORD;
 
 // ---- HTTP Basic (the outer lock) --------------------------------------------
 //
-// Why this exists at all: SakuraFrp's per-tunnel `auth_pass` turned out NOT to gate
-// HTTP — measured against this account's own tunnels (openclaw, hermes_studio), an
-// anonymous `https://…/ ` returns 200. natfrp's real "访问认证" is an IP allow-list,
-// which is useless for "let me in from anywhere with a password". So the outer lock
-// lives here: a standard Basic challenge in front of everything, which any tunnel,
-// proxy or phone browser honours.
+// Why this exists at all: SakuraFrp's per-tunnel `auth_pass` turned out to gate HTTP
+// with a 200 "authorise your IP" page rather than a 401 challenge — unscriptable, and
+// invisible to curl. So the outer lock lives here: a standard Basic challenge in front
+// of everything, which any tunnel, proxy or phone browser honours.
 //
-// AGENTSLOT_BASIC_AUTH="user:pass" — unset means no Basic layer (LAN/local default).
+// AGENTSLOT_BASIC_AUTH forms:
+//   user:pass   -> both must match
+//   :pass       -> password only; ANY (or empty) username is accepted
+//   pass        -> same as ":pass"
+// Unset means no Basic layer (LAN/local default).
+//
+// The password-only form exists because HTTP Basic *always* asks for a username
+// (RFC 7617 puts "user:pass" in the header), but a single-operator service has no
+// use for one — typing any name, or leaving it blank, is friction with no security
+// value. Note the trap this replaces: a naive parser that required a non-empty
+// username would treat ":pass" as malformed and silently turn the lock OFF.
 
 export function basicAuthConfig(): { user: string; pass: string } | null {
   const raw = process.env.AGENTSLOT_BASIC_AUTH?.trim();
   if (!raw) return null;
   const idx = raw.indexOf(":");
-  if (idx < 1) return null; // malformed => treat as off rather than lock everyone out
-  return { user: raw.slice(0, idx), pass: raw.slice(idx + 1) };
+  const cfg = idx < 0 ? { user: "", pass: raw } : { user: raw.slice(0, idx), pass: raw.slice(idx + 1) };
+  return cfg.pass ? cfg : null; // a password is mandatory; an empty one locks nobody out usefully
 }
 
 export function verifyBasic(header: string | string[] | undefined): boolean {
@@ -370,8 +378,11 @@ export function verifyBasic(header: string | string[] | undefined): boolean {
   }
   const idx = decoded.indexOf(":");
   if (idx < 0) return false;
-  const userOk = safeEqual(digest(decoded.slice(0, idx)), digest(cfg.user));
-  const passOk = safeEqual(digest(decoded.slice(idx + 1)), digest(cfg.pass));
+  const givenUser = decoded.slice(0, idx);
+  const givenPass = decoded.slice(idx + 1);
+  const passOk = safeEqual(digest(givenPass), digest(cfg.pass));
+  // no username configured => username is not part of the secret
+  const userOk = cfg.user === "" ? true : safeEqual(digest(givenUser), digest(cfg.user));
   return userOk && passOk;
 }
 

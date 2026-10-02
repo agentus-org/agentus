@@ -251,5 +251,42 @@ check("basic: WS with Basic -> hello event", await (async () => {
 d.proc.kill("SIGTERM");
 await sleep(300);
 
+// ---- server E: password-only Basic (":pass" / "pass") ---------------------------
+// The whole point: a single-operator service should not force a username, and a
+// malformed-looking config must FAIL CLOSED (gate everyone) rather than silently
+// turn the lock off. That is the regression this section guards.
+const dataE = mkdtempSync(path.join(tmpdir(), "agentslot-authE-"));
+const ONLY_PW = "REDACTED-PASS";
+const e = await boot(8895, dataE, { AGENTSLOT_BASIC_AUTH: `:${ONLY_PW}`, AGENTSLOT_AUTH: "off" });
+const pw = (user) => ({ authorization: `Basic ${Buffer.from(`${user}:${ONLY_PW}`).toString("base64")}` });
+
+check("pw-only: anon still 401 (config did NOT silently disable the lock)", status(await fetch(`${e.base}/healthz`)) === 401);
+check("pw-only: blank username + password -> 200", status(await fetch(`${e.base}/healthz`, { headers: pw("") })) === 200);
+check("pw-only: any username + password -> 200", status(await fetch(`${e.base}/healthz`, { headers: pw("whatever") })) === 200);
+check("pw-only: operator-style username -> 200", status(await fetch(`${e.base}/api/sessions`, { headers: pw("admin") })) === 200);
+check("pw-only: wrong password -> 401", status(await fetch(`${e.base}/healthz`, {
+  headers: { authorization: `Basic ${Buffer.from("admin:wrong").toString("base64")}` },
+})) === 401);
+check("pw-only: WS with password-only creds -> hello", await (async () => {
+  const ws = new WebSocket("ws://127.0.0.1:8895/ws", { headers: pw("admin") });
+  return await new Promise((resolve) => {
+    const t = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 4000);
+    ws.on("message", (raw) => {
+      if (JSON.parse(String(raw)).t === "hello") { clearTimeout(t); ws.close(); resolve(true); }
+    });
+    ws.on("error", () => { clearTimeout(t); resolve(false); });
+  });
+})());
+e.proc.kill("SIGTERM");
+await sleep(300);
+
+// ---- server F: the bare "pass" form (no colon at all) ---------------------------
+const dataF = mkdtempSync(path.join(tmpdir(), "agentslot-authF-"));
+const f = await boot(8894, dataF, { AGENTSLOT_BASIC_AUTH: ONLY_PW, AGENTSLOT_AUTH: "off" });
+check("bare form: anon 401", status(await fetch(`${f.base}/healthz`)) === 401);
+check("bare form: any user + password -> 200", status(await fetch(`${f.base}/healthz`, { headers: pw("admin") })) === 200);
+f.proc.kill("SIGTERM");
+await sleep(300);
+
 console.log(`\n${failed === 0 ? "AUTH SMOKE PASS" : `AUTH SMOKE FAIL (${failed} of ${results.length})`}`);
 process.exit(failed === 0 ? 0 : 1);

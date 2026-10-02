@@ -103,14 +103,19 @@ Auth environment:
 | `AGENTSLOT_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
 | `AGENTSLOT_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
 | `AGENTSLOT_LOGIN_MAX_FAILS` / `AGENTSLOT_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
-| `AGENTSLOT_BASIC_AUTH` | — | `user:pass` → an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
+| `AGENTSLOT_BASIC_AUTH` | — | an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). `user:pass` checks both; `:pass` (or a bare `pass`) checks **only the password** and accepts any username. This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
 
 ### Exposing it publicly (tunnel / reverse proxy)
 
-Put `AGENTSLOT_BASIC_AUTH=user:pass` in the server's environment, then point the tunnel at
+Put `AGENTSLOT_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
 `<lan-ip>:8787`. That gives you two independent locks — Basic at the edge of the app, the
-operator login inside it — and scripts can still get in (`curl -u user:pass` plus the
-machine token).
+operator login inside it — and scripts can still get in (`curl -u :pass` plus the machine
+token).
+
+Password-only (`:pass`, or a bare `pass`) is the recommended form here: HTTP Basic always
+asks the browser for a username (RFC 7617 carries `user:pass`), but a single-operator
+service gains nothing from one — typing any name, or leaving it blank, works. If you do
+configure a username, it is checked too.
 
 Why app-level Basic instead of the tunnel's own access auth: relay/tunnel products often
 implement "access auth" as a **200 page that asks you to authorise your IP**, not as a
