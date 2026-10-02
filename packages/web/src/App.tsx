@@ -9,7 +9,7 @@ import {
 } from "./voice";
 import {
   IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFile, IconFolder, IconGauge,
-  IconBrain, IconChip, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
+  IconChip, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
   IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
 import type { ClientCommand, PromptAttachment, TurnTrace, UsageView } from "@agentslot/shared";
@@ -1404,7 +1404,6 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
                   data-testid="tb-effort"
                   onClick={() => setPop((p) => (p === "effort" ? null : "effort"))}
                 >
-                  <IconBrain size={15} />
                   <EffortPips level={effort.level} total={effort.total} color={effort.color} />
                   <IconChevronDown size={11} className="tb-chev" />
                 </button>

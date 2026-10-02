@@ -432,3 +432,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - **模型列表按 provider 分组、可折叠**：实测真 Hermes **501 个模型 → 6 组**（Alibaba Coding Plan 25 / DashScope 200 / DeepSeek 2 / GitHub Copilot 17 / OpenRouter 57 / Qwen Cloud 200），当前 provider 排第一并默认展开；折叠/展开、过滤（输入 `claude` → 2 组 13 项）都实测过。
   - 踩到的坑：Hermes 给当前模型附的 description 是 `Provider: Alibaba Coding Plan · current`，我的 provider 解析把 "· current" 当成了 provider 名 → **同一个 provider 被拆成两组**（25 + 1）。修法：解析时剥掉结尾的 current/active/selected/default 标记。
 - 截图：`33-mobile-toolbar.png`（390px 一行放得下）、`34-model-groups.png`（分组 + 当前高亮）、`35-model-groups-filtered.png`。
+
+**R59 思考深度按钮再瘦身（用户：去掉图标，保留刻度）**
+- 按钮内容从 `🧠 + 7 段刻度 + chevron` 改为**纯刻度**（无图标、无文字），宽度 61px → **43px**；tooltip/`aria-label` 仍带档位名（`thinking depth — High`），列表里每档仍有名字与同色圆点。
+- 实测 390 与 320：`offscreen=[]`、`barFits=true`、发送按钮 `right=377/307` 且中心点命中自己；刻度 7 段、亮 5 段（High）、颜色 `rgb(232,132,60)`；`svgChildren=0` 确认图标已移除。截图 `33-mobile-toolbar.png`、`30-depth-picker.png`。

@@ -208,8 +208,9 @@ to your production memory daemon), and `.env` copied 0600.
   tables, quotes, fenced code with a language label, copy button and syntax colouring
 - **the agent's own knobs, placed the way ACP intends**: the model button prints the
   model alone ("qwen3.8-flash"); its list is grouped by provider and collapsible (Hermes
-  offers 501 models — a flat list is unusable); thinking depth shows no label at all,
-  just its colour and a small scale, so a phone-width row still fits the send button: a thinking-depth button and a
+  offers 501 models — a flat list is unusable); thinking depth shows nothing but a small scale
+  (seven ticks, filled to the level, coloured grey→red), so a phone-width row still fits
+  the send button: a thinking-depth button and a
   model button, each reading the agent's advertised options (`configOptions[].category`,
   falling back to the option id) — and hidden when the agent offers none. Model switching
   uses ACP `session/set_model`, which Hermes implements (the SDK in use does not type it,
