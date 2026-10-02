@@ -34,7 +34,19 @@ const agent = () => ({
 
   async newSession({ cwd }) {
     const sessionId = `mock-${++seq}`;
-    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {} });
+    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0 });
+    // Announce slash commands the way a real agent does (available_commands_update),
+    // so the cockpit's palette path is exercised without a real backend.
+    setTimeout(() => {
+      void send(agent._conn, sessionId, {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "help", description: "List available commands" },
+          { name: "mock", description: "Mock-only no-op command" },
+          { name: "slow", description: "Stream slowly for reconnect drills" },
+        ],
+      }).catch(() => {});
+    }, 30);
     return {
       sessionId,
       modes: {
@@ -151,6 +163,13 @@ const agent = () => ({
     await send(agent._conn, sessionId, {
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "\n```ts\nconst slot = (x: number) => x * 2;\n```\n" },
+    });
+    // Context gauge data, shaped like a real agent's usage_update (AionUi F-DISPLAY-07).
+    s.used = (s.used || 0) + text.length + 120;
+    await send(agent._conn, sessionId, {
+      sessionUpdate: "usage_update",
+      used: s.used,
+      size: Number(process.env.MOCK_USAGE_SIZE || 200_000),
     });
     return { stopReason: "end_turn" };
   },

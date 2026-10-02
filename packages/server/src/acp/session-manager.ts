@@ -20,6 +20,7 @@ import type {
   ServerEvent,
   SessionInfo,
   SessionModeState,
+  TurnTrace,
 } from "@agentslot/shared";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
@@ -205,7 +206,10 @@ export class SessionManager {
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
         configOptions: (row.configOptions ?? []) as ConfigOptionView[],
-        commands: [],
+        // restored from disk so the gauge + slash palette are there before the agent
+        // re-announces them (and stay if the re-announce never comes)
+        usage: (row.usage ?? null) as SessionInfo["usage"],
+        commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
     };
@@ -281,7 +285,8 @@ export class SessionManager {
         title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
         modes: (r.modes ?? null) as SessionModeState | null,
         configOptions: (r.configOptions ?? []) as ConfigOptionView[],
-        commands: [],
+        usage: (r.usage ?? null) as SessionInfo["usage"],
+        commands: normCommands(r.commands),
         lastSeq: this.#store.maxSeq(r.id),
       }));
   }
@@ -293,7 +298,7 @@ export class SessionManager {
     s.busy = true;
     s.info.status = "running";
     this.#updateSession(s);
-    this.#emit({ t: "turn-start", sessionId });
+    this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s) });
     const msg = this.#store.appendMessage({
       sessionId, kind: "user", payload: { text }, createdAt: Date.now(),
     });
@@ -391,6 +396,17 @@ export class SessionManager {
 
   // ---- ACP callbacks ----
 
+  /** What this turn will actually run with. Cheap provenance for the operator's
+   *  "why did it behave differently?" question (AionUi F-DISPLAY-11): only what the
+   *  session truly knows (effort pick + mode) — never an invented model name. */
+  #turnTrace(s: LiveSession): TurnTrace {
+    const effortCfg = s.info.configOptions.find((o) => /reason|effort|think/i.test(o.id));
+    return {
+      effort: effortCfg ? String(effortCfg.currentValue ?? "") || null : null,
+      mode: s.info.modes?.currentModeId ?? null,
+    };
+  }
+
   #onSessionUpdate(live: LiveSession, params: { sessionId: string; update: Record<string, unknown> }): void {
     const kind = live.info.acpSessionId === params.sessionId ? live : null;
     void kind;
@@ -427,9 +443,27 @@ export class SessionManager {
         return;
       }
       case "available_commands_update": {
-        const c = u as { availableCommands?: { name: string }[] };
-        live.info.commands = (c.availableCommands ?? []).map((x) => x.name);
+        const c = u as { availableCommands?: { name: string; description?: string }[] };
+        live.info.commands = (c.availableCommands ?? []).map((x) => ({
+          name: x.name, description: x.description,
+        }));
         this.#updateSession(live);
+        return;
+      }
+      case "usage_update": {
+        // Context-window gauge (AionUi F-DISPLAY-07). The agent reports used/size in
+        // tokens; a backend that never reports size still gets a used-only reading.
+        const uu = u as { used?: number; size?: number; cost?: { amount?: number } | null };
+        const used = Number(uu.used ?? 0);
+        const size = Number(uu.size ?? 0);
+        live.info.usage = {
+          used: Number.isFinite(used) ? used : 0,
+          size: Number.isFinite(size) ? size : 0,
+          cost: uu.cost && typeof uu.cost.amount === "number" ? uu.cost.amount : null,
+          at: Date.now(),
+        };
+        this.#updateSession(live);
+        this.#emit({ t: "usage", sessionId: live.info.id, usage: live.info.usage });
         return;
       }
       default:
@@ -532,7 +566,17 @@ function sessionRow(i: SessionInfo) {
     id: i.id, backend: i.backend, acpSessionId: i.acpSessionId, cwd: i.cwd,
     title: i.title, status: i.status, pid: i.pid, createdAt: i.createdAt, closedAt: null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
+    usage: i.usage ?? null, commands: i.commands ?? [],
   };
+}
+
+/** Rows written before commands carried descriptions hold plain strings — normalize,
+ *  never trust the stored shape (a `c.name` on a string would render "undefined"). */
+function normCommands(raw: unknown): SessionInfo["commands"] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => (typeof c === "string" ? { name: c } : (c as { name?: unknown })))
+    .filter((c): c is { name: string; description?: string } => Boolean(c && typeof c.name === "string"));
 }
 
 function errMessage(e: unknown): string {

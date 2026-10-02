@@ -7,13 +7,20 @@ import type {
   ServerEvent,
   SessionInfo,
   StoredMessage,
+  TurnTrace,
 } from "@agentslot/shared";
 
 export type MsgView =
   | { key: string; kind: "user"; text: string }
   | { key: string; kind: "agent"; text: string; open: boolean }
   | { key: string; kind: "thought"; text: string; open: boolean }
-  | { key: string; kind: "tool"; toolCallId: string; title: string; status: string; kind2: string }
+  | {
+      key: string; kind: "tool"; toolCallId: string; title: string; status: string; kind2: string;
+      /** best-effort detail: tool output/content text (AionUi F-DISPLAY-03 wants it viewable) */
+      detail: string;
+      /** tool input as the agent reported it (rawArgs/title-adjacent metadata) */
+      input: string;
+    }
   | { key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[] }
   | { key: string; kind: "meta"; text: string };
 
@@ -25,6 +32,8 @@ export interface SessionView {
   loaded: boolean; // history fetched
   lastAt: number; // last activity timestamp (idle hint anchor)
   seen: Set<number>; // ingested seqs — dedup between REST replay & WS live (QA#3)
+  /** latest turn's provenance (model/effort/mode) — shown once per turn */
+  trace?: TurnTrace | null;
 }
 
 /** Snapshot shape handed to useSyncExternalStore. */
@@ -365,7 +374,14 @@ class Cockpit {
         const v = this.#view(e.sessionId);
         v.busy = true;
         v.lastAt = Date.now();
+        v.trace = e.trace ?? null;
         this.#endOpenBubbles(v); // new turn => fresh bubbles
+        break;
+      }
+      case "usage": {
+        const v = this.#view(e.sessionId);
+        v.info = { ...v.info, usage: e.usage };
+        v.lastAt = Date.now();
         break;
       }
       case "turn-end": {
@@ -433,15 +449,20 @@ class Cockpit {
         const existing = v.msgs.find(
           (x) => x.kind === "tool" && x.toolCallId === tcId,
         ) as Extract<MsgView, { kind: "tool" }> | undefined;
+        const detail = extractToolDetail(p);
+        const input = extractToolInput(p);
         // upsert semantics (design.md §8-5): update, never append a second bubble
         if (existing) {
           if (p.title) existing.title = String(p.title);
           if (p.status) existing.status = String(p.status);
+          // output grows across tool_call_update frames — replace, never append twice
+          if (detail) existing.detail = detail;
+          if (input) existing.input = input;
         } else {
           v.msgs.push({
             key: `tc-${tcId}`, kind: "tool", toolCallId: tcId,
             title: String(p.title ?? "tool call"), status: String(p.status ?? "pending"),
-            kind2: String(p.kind ?? ""),
+            kind2: String(p.kind ?? ""), detail, input,
           });
         }
         break;
@@ -464,6 +485,58 @@ class Cockpit {
 function extractText(payload: Record<string, unknown>): string {
   const c = payload.content as { type?: string; text?: string } | undefined;
   if (c?.type === "text" && typeof c.text === "string") return c.text;
+  return "";
+}
+
+/** Tool output as text. ACP carries it as rawOutput, or as `content` items
+ *  ({type:"content",content:{type:"text"}} / {type:"diff",path,...}); terminal-style
+ *  tools put the captured stdout there too. Capped: a cockpit bubble is not a log viewer. */
+function extractToolDetail(p: Record<string, unknown>): string {
+  const MAX = 4000;
+  const clip = (s: string): string => (s.length > MAX ? `${s.slice(0, MAX)}\n… (${s.length - MAX} more chars)` : s);
+  const raw = p.rawOutput;
+  if (typeof raw === "string" && raw.trim()) return clip(raw);
+  if (raw && typeof raw === "object") {
+    try {
+      return clip(JSON.stringify(raw, null, 1));
+    } catch {
+      /* circular / non-serialisable — fall through to content */
+    }
+  }
+  const items = p.content;
+  if (Array.isArray(items)) {
+    const parts: string[] = [];
+    for (const it of items as Record<string, unknown>[]) {
+      const t = String(it?.type ?? "");
+      if (t === "content") {
+        const c = it.content as { type?: string; text?: string } | undefined;
+        if (c?.type === "text" && c.text) parts.push(String(c.text));
+      } else if (t === "diff") {
+        // show which file changed + the new side, no full diff rendering (that's an editor's job)
+        const path = String(it.path ?? "file");
+        const next = typeof it.newText === "string" ? it.newText : "";
+        parts.push(`--- ${path}\n${next.slice(0, 1500)}`);
+      } else if (t === "terminal") {
+        const out = (it as { output?: string }).output;
+        if (out) parts.push(String(out));
+      }
+    }
+    if (parts.length) return clip(parts.join("\n"));
+  }
+  return "";
+}
+
+/** Tool input the agent reported (rawInput / locations). Display-only. */
+function extractToolInput(p: Record<string, unknown>): string {
+  const raw = p.rawInput;
+  if (typeof raw === "string" && raw.trim()) return raw.slice(0, 1200);
+  if (raw && typeof raw === "object") {
+    try {
+      return JSON.stringify(raw, null, 1).slice(0, 1200);
+    } catch {
+      return "";
+    }
+  }
   return "";
 }
 

@@ -18,6 +18,10 @@ export interface SessionRow {
    *  session (M4-lite) comes back with the operator's mode/effort intact. */
   modes?: unknown;
   configOptions?: unknown;
+  /** context-usage gauge + advertised slash commands, persisted so a reload or a
+   *  cold-slot resume shows the same picture (AionUi F-DISPLAY-07/10). */
+  usage?: unknown;
+  commands?: unknown;
 }
 
 interface RawSessionRow {
@@ -25,6 +29,7 @@ interface RawSessionRow {
   title: string; status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null;
   modes?: string | null; config_options?: string | null;
+  usage?: string | null; commands?: string | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -42,6 +47,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     title: r.title, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
+    usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
   };
 }
 
@@ -68,7 +74,7 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options"]) {
+    for (const col of ["modes", "config_options", "usage", "commands"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
   }
@@ -78,18 +84,20 @@ export class Store {
     if (exist) {
       this.#db
         .prepare(
-          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=? where id=?`,
+          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=? where id=?`,
         )
         .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt,
-          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []), s.id);
+          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
+          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []), s.id);
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options)
-           values (?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
-          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []));
+          JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
+          JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []));
     }
   }
 

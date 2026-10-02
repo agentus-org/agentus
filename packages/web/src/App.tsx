@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { MiniMarkdown } from "./MiniMarkdown";
-import type { ClientCommand } from "@agentslot/shared";
+import type { ClientCommand, UsageView } from "@agentslot/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -144,6 +144,23 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
           {cfg.options.map((o) => <option key={o.value} value={o.value}>🧠 {o.name}</option>)}
         </select>
       )}
+      <ContextGauge usage={info.usage} />
+      {/* per-turn provenance (AionUi F-DISPLAY-11): what this turn actually runs with */}
+      {v.trace && (v.trace.effort || v.trace.mode) ? (
+        <span
+          className="kv trace"
+          title="what the next turn runs with — from the agent's own announcements"
+        >
+          {v.trace.effort ? `effort ${v.trace.effort}` : ""}
+          {v.trace.effort && v.trace.mode ? " · " : ""}
+          {v.trace.mode ? `mode ${v.trace.mode}` : ""}
+        </span>
+      ) : null}
+      {v.perms.length > 0 ? (
+        <span className="kv perm-chip" title="requests waiting for your approval in this slot">
+          ⚿ {v.perms.length} pending
+        </span>
+      ) : null}
       <span className="kv" title={info.cwd}><code>{info.cwd}</code></span>
       {info.status === "running" ? (
         <button className="ghost-btn danger" onClick={() => cockpit.send({ t: "cancel", sessionId: info.id })}>
@@ -161,6 +178,33 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
         close
       </button>
     </div>
+  );
+}
+
+/** Context-window gauge from ACP usage_update (AionUi F-DISPLAY-07 lineage).
+ *  A backend that never reports `size` still gets a used-only reading — the gauge
+ *  degrades to "used N tokens" instead of inventing a window. */
+function ContextGauge({ usage }: { usage?: UsageView | null }): JSX.Element | null {
+  if (!usage || (!usage.used && !usage.size)) return null;
+  const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
+  const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
+  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
+  return (
+    <span
+      className={`kv ctx ${level}`}
+      title={
+        usage.size > 0
+          ? `context window: ${usage.used} / ${usage.size} tokens (${pct}%)`
+          : `context used: ${usage.used} tokens (window size not reported by this agent)`
+      }
+    >
+      ctx {fmt(usage.used)}
+      {usage.size > 0 ? `/${fmt(usage.size)}` : ""}
+      {usage.size > 0 ? (
+        <span className="ctx-bar" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
+      ) : null}
+      {usage.cost != null ? <span className="ctx-cost">${usage.cost.toFixed(4)}</span> : null}
+    </span>
   );
 }
 
@@ -215,14 +259,7 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
     case "thought":
       return <Thought m={m} />;
     case "tool":
-      return (
-        <div className="msg">
-          <div className={`tool-card ${m.status}`}>
-            <div className="t">🔧 {m.title}</div>
-            <div className="st">{m.kind2 ? `${m.kind2} · ` : ""}{m.status}</div>
-          </div>
-        </div>
-      );
+      return <ToolCard m={m} />;
     case "plan":
       if (!m.items.length) return null;
       return (
@@ -237,6 +274,44 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
     default:
       return null;
   }
+}
+
+/** Tool call card with viewable input/output (AionUi F-DISPLAY-03). Collapsed by
+ *  default so a long transcript stays scannable; the agent's own status drives the colour. */
+function ToolCard({ m }: { m: Extract<MsgView, { kind: "tool" }> }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const hasBody = Boolean(m.input || m.detail);
+  return (
+    <div className="msg">
+      <div className={`tool-card ${m.status}`}>
+        <div
+          className="t"
+          style={{ cursor: hasBody ? "pointer" : "default" }}
+          onClick={() => hasBody && setOpen((x) => !x)}
+          title={hasBody ? "show input/output" : undefined}
+        >
+          🔧 {m.title} {hasBody ? (open ? "▾" : "▸") : ""}
+        </div>
+        <div className="st">{m.kind2 ? `${m.kind2} · ` : ""}{m.status}</div>
+        {open && (
+          <div className="tool-body">
+            {m.input ? (
+              <>
+                <div className="lbl">input</div>
+                <pre>{m.input}</pre>
+              </>
+            ) : null}
+            {m.detail ? (
+              <>
+                <div className="lbl">output</div>
+                <pre>{m.detail}</pre>
+              </>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function Thought({ m }: { m: Extract<MsgView, { kind: "thought" }> }): JSX.Element {
@@ -297,27 +372,81 @@ function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number]
 
 function Composer({ v }: { v: SessionView }): JSX.Element {
   const [text, setText] = useState("");
+  const [pick, setPick] = useState(0); // highlighted row in the slash palette
   const ta = useRef<HTMLTextAreaElement>(null);
   const send = () => {
     const t = text.trim();
     if (!t || v.busy || v.info.status !== "ready") return;
     cockpit.send({ t: "prompt", sessionId: v.info.id, text: t });
     setText("");
+    setPick(0);
   };
+
+  // Slash palette (AionUi F-DISPLAY-10): the commands are the AGENT's own
+  // (available_commands_update over ACP) — we never invent a command list here.
+  const slashQuery = /^\/\S*$/.test(text) ? text.slice(1).toLowerCase() : null;
+  const matches = slashQuery === null ? [] : v.info.commands
+    .filter((c) => c.name.toLowerCase().includes(slashQuery))
+    .slice(0, 8);
+  const paletteOpen = slashQuery !== null && v.info.status === "ready";
+
+  const accept = (name: string) => {
+    setText(`/${name} `);
+    setPick(0);
+    ta.current?.focus();
+  };
+
   return (
     <div className="composer">
       <div className="composer-inner">
+        {paletteOpen && (
+          <div className="slash-palette" role="listbox" aria-label="slash commands">
+            {matches.length ? (
+              matches.map((c, i) => (
+                <div
+                  key={c.name}
+                  role="option"
+                  aria-selected={i === pick}
+                  className={`slash-item ${i === pick ? "sel" : ""}`}
+                  onMouseEnter={() => setPick(i)}
+                  onClick={() => accept(c.name)}
+                >
+                  <span className="cmd">/{c.name}</span>
+                  {c.description ? <span className="desc">{c.description}</span> : null}
+                  <span className="src" title="advertised by the agent over ACP">agent</span>
+                </div>
+              ))
+            ) : (
+              <div className="slash-item empty">
+                {v.info.commands.length
+                  ? `no command matches “/${slashQuery}”`
+                  : "this agent advertises no slash commands"}
+              </div>
+            )}
+          </div>
+        )}
         <textarea
           ref={ta}
           rows={1}
           value={text}
-          placeholder={v.info.status === "ready" ? "message… (Enter send, Shift+Enter newline)" : v.info.status}
+          placeholder={v.info.status === "ready" ? "message… (Enter send, Shift+Enter newline, / for commands)" : v.info.status}
           onChange={(e) => {
             setText(e.target.value);
+            setPick(0);
             e.target.style.height = "42px";
             e.target.style.height = Math.min(e.target.scrollHeight, window.innerHeight * 0.4) + "px";
           }}
           onKeyDown={(e) => {
+            if (paletteOpen && matches.length) {
+              if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                e.preventDefault();
+                accept(matches[pick].name);
+                return;
+              }
+              if (e.key === "Escape") { e.preventDefault(); setText(""); return; }
+            }
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
           }}
         />

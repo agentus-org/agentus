@@ -113,6 +113,44 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
 .tool-card.completed { border-left-color: var(--ok); }
 .tool-card.failed { border-left-color: var(--err); }
 
+/* tool input/output (collapsed by default — AionUi F-DISPLAY-03) */
+.tool-card .tool-body { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.tool-card .tool-body .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+.tool-card .tool-body pre {
+  margin: 4px 0 8px; padding: 8px 10px; max-height: 260px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+}
+
+/* context-window gauge + per-turn trace + pending-permission chip (AionUi F-DISPLAY-07/11, F-PERM-04) */
+.chat-head .ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); }
+.chat-head .ctx .ctx-bar {
+  display: inline-block; width: 54px; height: 5px; border-radius: 3px;
+  background: var(--line); overflow: hidden; vertical-align: middle;
+}
+.chat-head .ctx .ctx-bar > span { display: block; height: 100%; background: var(--ok); }
+.chat-head .ctx.warn .ctx-bar > span { background: #d9a03a; }
+.chat-head .ctx.hot .ctx-bar > span { background: var(--err); }
+.chat-head .ctx.warn { color: #d9a03a; }
+.chat-head .ctx.hot { color: var(--err); }
+.chat-head .ctx .ctx-cost { color: var(--text-dim); }
+.chat-head .trace { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.chat-head .perm-chip { color: var(--warn, #d9a03a); font-size: 11.5px; }
+
+/* slash-command palette (AionUi F-DISPLAY-10): the agent's own commands */
+.slash-palette {
+  position: absolute; bottom: calc(100% + 6px); left: 0; right: 0;
+  max-height: 260px; overflow: auto; background: var(--bg-panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: 4px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .35); z-index: 5;
+}
+.slash-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 6px; cursor: pointer; }
+.slash-item.sel { background: rgba(255, 255, 255, .06); }
+.slash-item .cmd { font-family: var(--mono); font-size: 12.5px; color: var(--accent); }
+.slash-item .desc { font-size: 11.5px; color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slash-item .src { font-size: 10px; color: var(--text-dim); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.slash-item.empty { color: var(--text-dim); font-size: 12px; cursor: default; }
+
 .perm-card { border: 1px solid var(--accent-dim); border-radius: 10px; padding: 12px 14px; background: rgba(255, 180, 84, 0.05); }
 .perm-card .q { font-size: 13.5px; margin-bottom: 4px; }
 .perm-card .tc { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); margin-bottom: 10px; overflow-wrap: anywhere; }
@@ -127,7 +165,7 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
 .perm-card.resolved .picked { font-size: 12px; color: var(--accent); margin-top: 8px; }
 
 .composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
-.composer-inner { max-width: 780px; margin: 0 auto; display: flex; gap: 10px; }
+.composer-inner { max-width: 780px; margin: 0 auto; display: flex; gap: 10px; position: relative; }
 .composer textarea {
   flex: 1; resize: none; background: var(--bg-raised); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;

@@ -22,10 +22,24 @@ export interface SessionInfo {
   createdAt: number;
   modes: SessionModeState | null;
   configOptions: ConfigOptionView[];
-  commands: string[]; // available slash commands advertised by agent
+  commands: AvailableCommandView[]; // slash commands advertised by the agent
+  /** context-window gauge, from ACP usage_update (AionUi F-DISPLAY-07 lineage) */
+  usage?: UsageView | null;
   lastError?: string;
   /** highest persisted seq (resume anchor hint) */
   lastSeq?: number;
+}
+
+export interface AvailableCommandView {
+  name: string;
+  description?: string;
+}
+
+export interface UsageView {
+  used: number;
+  size: number;
+  cost?: number | null;
+  at: number;
 }
 
 export interface SessionModeState {
@@ -69,8 +83,19 @@ export type ServerEvent =
   | { t: "permission"; request: PermissionRequestView }
   | { t: "permission-resolved"; requestId: string; decision: PermissionDecision }
   | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string }
-  | { t: "turn-start"; sessionId: string }
+  /** per-turn trace: what model/effort/mode this turn is actually running with
+   *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
+  | { t: "turn-start"; sessionId: string; trace?: TurnTrace }
+  /** context-window usage for a slot (ACP usage_update) */
+  | { t: "usage"; sessionId: string; usage: UsageView }
   | { t: "error"; error: string };
+
+export interface TurnTrace {
+  model?: string;
+  provider?: string;
+  effort?: string | null;
+  mode?: string | null;
+}
 
 // ---- WS envelope (browser -> server) ----
 export type ClientCommand =
