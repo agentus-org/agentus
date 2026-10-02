@@ -345,3 +345,26 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 截图：`screens/11-sakura-auth-page.png`（樱花认证页）、`screens/12-tunnel-via-sakura-auth.png`（隧道内的驾驶舱，页脚 `● online · REDACTED-TUNNEL`）。
 
 **副作用记录**：`launch.py` 里 `env.pop` 之后，本地开发若想再开 Basic 只需取消 `basic_auth.txt` 注释里的那行；`auth-smoke` 的 48 项里 server D/E/F 用显式环境变量自起服务器，不受本次关闭影响（仍全绿）。
+
+## R47–R48 · 产品化打磨（用户三条反馈）
+
+**R47 聊天头图标化（对标 hermes-studio 的头部语言）**
+- studio 的做法：左＝小圆形图标按钮 + 会话标题 + **工作空间徽标**（文件夹图标 + 末级目录名，完整路径放 tooltip）；右＝一串圆形图标按钮，每个都套 tooltip；图标全是内联 SVG（16px/1.5 stroke），没有图标库、没有大块文字控件。
+- 我方改造：新增 `Icons.tsx`（16 个内联图标）→ 头部变成 `[☰][标题][📁 工作空间徽标][⚿ 待批徽标][spacer][🛡 模式][◔ 思考深度][◎ 用量环][■ 停止][✕ 关闭]`；模式/深度仍是原生 `select`（可访问性/手机原生选择器），但包在 `.seg` 里只显示「图标 + 当前值」，无边框、透明背景；原先占一行的 `effort · mode` trace 芯片**删掉**（两个下拉已经显示），信息并入用量环 tooltip；cwd 40 字符路径 → 末级目录徽标（点击复制）；`stop`/`close` 文字按钮 → 图标按钮 + tooltip；发件按钮 `⇥` → 图标。
+- 实测（截 `screens/13-chat-head.png`）：头部高度 **46px**、单行不换行、只有 2 个文字控件（两个 select 的当前值）。
+
+**R47b–R47e 滚动不再抢用户**（真 bug，非打磨）
+- 现象：模型流式输出时手动上滑仍被拽回底部。根因两条：
+  1. 判定阈值只有 **48px** —— 稍一上滑仍在窗口内，下一个 chunk 就把视图拉回底部；
+  2. 只看**位置**不看**意图**：流式期间最新内容恰好长在视口下沿，位置判定永远"贴底"。
+- 修法（studio 的 `userDetachedFromBottom` 思路）：`wheel`/`touchmove`/`PageUp` 等**手势即脱开**（不看位置）；贴底阈值放宽到 **140px**；脱开后**完全不再动视口**；出现「↓ 回到底部」圆形按钮，且脱开期间有新内容时亮新内容点；发送提示词会**主动重新跟随**（并保持 1.5s）；`load earlier` 前置分页时按高度差**保住阅读位置**（原来会整页跳动）。另删掉 `scroll-behavior: smooth`（流式时每次动画都在和读者抢）。
+- 顺带修根因：store 追加/upsert 消息是**原地改数组**，引用不变 → 我依赖 `msgs` 的 effect 永不触发（"新内容点"不亮）。给 `SessionView` 加了 **`rev` 计数器**（每 ingeste 一行 +1），effect 改依赖 `v.rev`。
+- 实测（`r47e_scroll.mjs`，11 轮内堆积出 2039px 溢出的长会话 + 慢速流式）：脱开后 10 次采样 **scrollTop 死钉 1974、gap 恒定 260**，期间**文本长度 2872→2931 字符持续到达**（确有新输出），按钮与新内容点都在；点击回底 → gap 0，2 秒后仍为 0（持续跟随）。**PASS**。
+- 反例记录：早期两次"FAIL"其实是**测试设计错**：内容仅溢出 34px（我"上滑后离底 34px"仍在 140px 跟随区内，合理重新跟随）、以及用 `scrollHeight` 当增长指标（短词只加宽不加行）。改用文本长度 + 长会话后才测到真行为。
+
+**R48 新建会话的工作空间选择器**（对标 studio 的 `FolderPicker` + `/api/hermes/workspace/folders`）
+- 服务端新增 `GET /api/fs/dirs?path=`（`src/fs.ts`）：`~`/相对/绝对都归一到绝对路径；**只列目录**、跳过隐藏项、`stat` 跟随符号链接（断链跳过）、按名排序、300 条上限并回报 `truncated`；错路径 404 / 文件 400 均带明确 code。`recent` 列表来自 **sessions 表按 cwd 分组取最近**（不新建表）。该接口在 `/api` 下 → 同样受登录保护（实测匿名 401）。
+- 前端 `WorkspacePicker.tsx`：路径输入（Enter 浏览）+ 面包屑（末尾 4 段 + 根）+ 文件夹列表（**单击＝选中**，行尾 `›` ＝进入）+ 最近使用 chips + 「use this folder」+ 当前选中路径回显。
+- 实测（`r48_picker.mjs`）：`~` 列出 18 个目录、recent chips 5 个（来自历史会话）；单击选中→picked 更新、行高亮；`›` 进入→路径/面包屑更新；点面包屑回跳；输错路径→`no such directory: …` 且列表仍可用；Home 按钮回家目录；**用选中的目录真的建出了槽位**（rail 出现 `Hermes @ Workspace`）。
+- 手机（390×844）：`scrollWidth == innerWidth == 390`（无横向溢出）、行高 44px、路径框 16px（iOS 不缩放）、弹窗完整可见。
+- 截图：`screens/15-workspace-picker.png`、`screens/16-workspace-picker-mobile.png`。

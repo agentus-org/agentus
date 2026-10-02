@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
+import { FsError, listDirs } from "./fs.js";
 import * as auth from "./auth.js";
 import type { BackendId, ClientCommand, PermissionDecision, ServerEvent } from "@agentslot/shared";
 
@@ -210,6 +211,18 @@ const httpServer = createServer(async (req, res) => {
     }
     if (url.pathname === "/api/sessions" && req.method === "GET") {
       return send(res, 200, { live: mgr.list(), archived: mgr.archived() });
+    }
+    // Directory browser for the new-slot workspace picker (dirs only, one level).
+    if (url.pathname === "/api/fs/dirs" && req.method === "GET") {
+      try {
+        const listing = listDirs(url.searchParams.get("path"));
+        return send(res, 200, { ...listing, recent: store.recentCwds(8) });
+      } catch (e) {
+        if (e instanceof FsError) {
+          return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
+        }
+        throw e;
+      }
     }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);

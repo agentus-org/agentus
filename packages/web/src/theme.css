@@ -86,16 +86,58 @@ button { font: inherit; }
 
 /* ---- main ---- */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* Chat head: icon-first, one row, no big text controls (hermes-studio lineage).
+   Everything secondary lives in a tooltip; the working directory is a badge with
+   the basename, not a 40-character path in the middle of the toolbar. */
 .chat-head {
-  padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex;
-  align-items: center; gap: 10px; flex-wrap: wrap; background: var(--bg-panel);
+  padding: 7px 10px; border-bottom: 1px solid var(--line); display: flex;
+  align-items: center; gap: 6px; flex-wrap: nowrap; background: var(--bg-panel);
+  min-height: 46px;
 }
-.chat-head .title { font-weight: 600; font-size: 15px; flex: 1; min-width: 120px; }
-.chat-head select, .chat-head .kv {
-  background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
-  border-radius: 6px; padding: 4px 8px; font-size: 12.5px;
+.chat-head .title {
+  font-weight: 600; font-size: 14px; flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chat-head .kv code { color: var(--accent); font-family: var(--mono); font-size: 11.5px; }
+.head-spacer { flex: 1 1 auto; min-width: 4px; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text-dim); cursor: pointer;
+}
+.icon-btn:hover { background: var(--bg-raised); border-color: var(--line); color: var(--text); }
+.icon-btn.danger:hover { color: var(--err); border-color: var(--err); }
+.ws-badge {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  max-width: 170px; padding: 3px 8px; border-radius: 999px; cursor: pointer;
+  background: var(--bg-raised); border: 1px solid var(--line);
+  color: var(--text-dim); font-size: 11.5px; font-family: var(--mono);
+}
+.ws-badge:hover { color: var(--text); border-color: var(--text-dim); }
+.ws-badge > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a select that reads as an icon + value, not as a form control */
+.seg {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  padding: 2px 6px 2px 8px; border-radius: 999px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text-dim);
+}
+.seg:hover { background: var(--bg-raised); border-color: var(--line); color: var(--text); }
+.seg select {
+  appearance: none; -webkit-appearance: none; background: transparent; border: none;
+  color: var(--text); font-size: 12.5px; padding: 2px 0; max-width: 110px;
+  font-family: inherit; cursor: pointer;
+}
+.seg select:focus { outline: none; }
+.seg .seg-chev { opacity: 0.55; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  font-size: 11px; padding: 2px 7px; border-radius: 999px;
+}
+.perm-chip { border: 1px solid var(--accent-dim); color: var(--accent); }
+.perm-pulse {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.2s infinite;
+}
 .ghost-btn {
   background: transparent; border: 1px solid var(--line); color: var(--text-dim);
   border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12.5px;
@@ -103,7 +145,36 @@ button { font: inherit; }
 .ghost-btn:hover { color: var(--text); border-color: var(--text-dim); }
 .ghost-btn.danger:hover { color: var(--err); border-color: var(--err); }
 
-.stream { flex: 1; overflow-y: auto; padding: 18px 0; scroll-behavior: smooth; }
+.stream-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
+/* NO global scroll-behavior: smooth — with streaming output it fights the reader
+   (every chunk animates the viewport). Scroll we do ourselves, instantly. */
+.stream { flex: 1; overflow-y: auto; padding: 18px 0; overscroll-behavior: contain; }
+.stream:focus { outline: none; }
+.stream-hint { color: var(--text-dim); font-size: 12.5px; }
+/* "there is newer output below" — appears only when the reader scrolled away */
+.jump-latest {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-raised); border: 1px solid var(--line); color: var(--text-dim);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.jump-latest:hover { color: var(--text); border-color: var(--text-dim); }
+.jump-latest.has-new { color: var(--accent); border-color: var(--accent-dim); }
+.jump-dot {
+  position: absolute; top: 3px; right: 3px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent); animation: pulse 1.2s infinite;
+}
+.rail-search-wrap { position: relative; margin: 0 8px 6px; display: flex; align-items: center; }
+.rail-search-wrap > svg { position: absolute; left: 9px; color: var(--text-dim); pointer-events: none; }
+.rail-search-wrap .rail-search { margin: 0; padding-left: 27px; width: 100%; }
+.cold-resume {
+  background: transparent; border: 1px solid transparent; color: var(--text-dim);
+  padding: 2px 4px; border-radius: 5px; cursor: pointer; line-height: 1;
+  display: inline-flex; align-items: center;
+}
+.session-item.cold:hover .cold-resume { border-color: var(--line); color: var(--ok); }
+
 .stream-inner { max-width: 780px; margin: 0 auto; padding: 0 20px; }
 .msg { margin-bottom: 14px; }
 .msg .role { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; letter-spacing: 0.4px; }
@@ -138,19 +209,11 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
 }
 
 /* context-window gauge + per-turn trace + pending-permission chip (AionUi F-DISPLAY-07/11, F-PERM-04) */
-.chat-head .ctx { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); }
-.chat-head .ctx .ctx-bar {
-  display: inline-block; width: 54px; height: 5px; border-radius: 3px;
-  background: var(--line); overflow: hidden; vertical-align: middle;
-}
-.chat-head .ctx .ctx-bar > span { display: block; height: 100%; background: var(--ok); }
-.chat-head .ctx.warn .ctx-bar > span { background: #d9a03a; }
-.chat-head .ctx.hot .ctx-bar > span { background: var(--err); }
-.chat-head .ctx.warn { color: #d9a03a; }
-.chat-head .ctx.hot { color: var(--err); }
-.chat-head .ctx .ctx-cost { color: var(--text-dim); }
-.chat-head .trace { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-.chat-head .perm-chip { color: var(--warn, #d9a03a); font-size: 11.5px; }
+/* context gauge as a ring: the numbers are one hover away, the tint carries the alarm */
+.ctx { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--ok); }
+.ctx.warn { color: #d9a03a; }
+.ctx.hot { color: var(--err); }
+.ctx .ctx-text { font-size: 11px; font-family: var(--mono); color: var(--text-dim); }
 
 /* slash-command palette (AionUi F-DISPLAY-10): the agent's own commands */
 .slash-palette {
@@ -322,4 +385,68 @@ code.inline { font-family: var(--mono); background: #0a0f14; padding: 1px 5px; b
 @media (max-width: 480px) {
   .auth-card { padding: 20px 16px 16px; }
   .sidebar footer .logout-btn { min-height: 44px; padding: 2px 12px; }
+}
+
+/* ---- workspace picker (new slot) ---- */
+.wp { display: flex; flex-direction: column; gap: 6px; }
+.wp-bar { display: flex; align-items: center; gap: 6px; }
+.wp-bar > svg { color: var(--text-dim); flex: 0 0 auto; }
+.wp-path {
+  flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
+  font-family: var(--mono);
+}
+.wp-path:focus { outline: none; border-color: var(--accent-dim); }
+.wp-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 11.5px; }
+.wp-crumbs > span { display: inline-flex; align-items: center; color: var(--text-dim); }
+.wp-crumb {
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  padding: 2px 4px; border-radius: 5px; font-size: 11.5px;
+}
+.wp-crumb:hover { color: var(--accent); background: var(--bg-raised); }
+.wp-list {
+  max-height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18); padding: 3px;
+}
+.wp-row {
+  display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 6px;
+  cursor: pointer; font-size: 13px; color: var(--text);
+}
+.wp-row > svg { color: var(--text-dim); flex: 0 0 auto; }
+.wp-row:hover { background: var(--bg-raised); }
+.wp-row.sel { background: rgba(255, 180, 84, 0.10); outline: 1px solid var(--accent-dim); }
+.wp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wp-enter {
+  background: transparent; border: 1px solid transparent; border-radius: 5px;
+  color: var(--text-dim); cursor: pointer; padding: 1px 3px; display: inline-flex;
+}
+.wp-enter:hover { color: var(--accent); border-color: var(--line); }
+.wp-note { padding: 10px; font-size: 12px; color: var(--text-dim); text-align: center; }
+.wp-note.err { color: var(--err); }
+.wp-recent { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.wp-recent-label { font-size: 11px; color: var(--text-dim); }
+.wp-chip {
+  border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-dim);
+  border-radius: 999px; padding: 3px 9px; font-size: 11.5px; cursor: pointer;
+  font-family: var(--mono);
+}
+.wp-chip:hover { color: var(--text); border-color: var(--text-dim); }
+.wp-chip.sel { color: var(--accent); border-color: var(--accent-dim); }
+.wp-picked { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wp-use {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  border-radius: 7px; padding: 5px 9px; font-size: 12px; cursor: pointer;
+}
+.wp-use:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); }
+.wp-use:disabled { opacity: 0.5; cursor: default; }
+.wp-picked-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11.5px; color: var(--accent);
+}
+@media (max-width: 480px) {
+  .wp-row { min-height: 44px; }
+  .wp-chip { min-height: 32px; }
+  /* 16px stops iOS Safari zooming the page when the path field takes focus */
+  .wp-path { font-size: 16px; }
 }

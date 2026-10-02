@@ -191,6 +191,12 @@ to your production memory daemon), and `.env` copied 0600.
   not swallowed), offline app shell via service worker
 - PWA + phone layout: drawer rail, thumb-sized controls, safe-area padding,
   16px inputs (no iOS zoom), no horizontal overflow at 390px
+- icon-first chat head: mode/depth as icon+value selects, the working directory as a
+  badge (full path in the tooltip), state and actions as icon buttons with tooltips
+- streaming that does not fight the reader: a wheel/touch gesture detaches instantly,
+  new output is announced by a "jump to newest" button instead of yanking the viewport
+- new-slot workspace picker: browse the server's directories (`GET /api/fs/dirs`,
+  dirs only, one level at a time) or pick from the working directories you used before
 
 ## Tests
 

@@ -36,6 +36,11 @@ export interface SessionView {
   /** lowest seq currently held — the backwards-paging anchor */
   minSeq: number | null;
   lastAt: number; // last activity timestamp (idle hint anchor)
+  /** bumps on every ingested row. Messages are aggregated in place (chunks merge into
+   *  the bubble above them), so the array identity never changes — anything that needs
+   *  to react to "new output arrived" (the auto-follow effect, the unseen badge) must
+   *  key off this instead. Without it a streamed chunk could land with nobody noticing. */
+  rev: number;
   seen: Set<number>; // ingested seqs — dedup between REST replay & WS live (QA#3)
   /** latest turn's provenance (model/effort/mode) — shown once per turn */
   trace?: TurnTrace | null;
@@ -535,7 +540,7 @@ class Cockpit {
       v = {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
         msgs: [], perms: [], busy: false, loaded: false, hasOlder: false, loadingOlder: false,
-        minSeq: null, lastAt: Date.now(), seen: new Set(),
+        minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(),
       };
       this.byId.set(id, v);
     }
@@ -710,6 +715,8 @@ class Cockpit {
         break;
     }
     this.lastSeq[v.info.id] = Math.max(this.lastSeq[v.info.id] ?? 0, m.seq);
+    v.rev += 1;
+    v.lastAt = Date.now();
   }
 }
 

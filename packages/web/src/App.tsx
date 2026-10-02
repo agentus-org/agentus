@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { MiniMarkdown } from "./MiniMarkdown";
-import type { ClientCommand, UsageView } from "@agentslot/shared";
+import { WorkspacePicker } from "./WorkspacePicker";
+import {
+  IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFolder, IconGauge,
+  IconHome, IconMenu, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconShield, IconStop,
+} from "./Icons";
+import type { ClientCommand, TurnTrace, UsageView } from "@agentslot/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -111,14 +116,19 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
           <button onClick={() => location.reload()}>reload</button>
         </div>
       ) : null}
-      <button className="new-btn" onClick={onNew}>+ new slot</button>
-      <input
-        className="rail-search"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="search slots… (title / backend / cwd)"
-        aria-label="search sessions"
-      />
+      <button className="new-btn" onClick={onNew} title="new slot (pick a backend + working directory)">
+        <IconPlus size={14} /> new slot
+      </button>
+      <div className="rail-search-wrap">
+        <IconSearch size={13} />
+        <input
+          className="rail-search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="search slots…"
+          aria-label="search sessions"
+        />
+      </div>
       <div className="session-list">
         {live.map((s) => (
           <div
@@ -151,12 +161,19 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
               </span>
             </div>
             {cold.map((s) => (
-              <div key={s.id} className="session-item cold" onClick={() => void cockpit.resume(s.id)}>
+              <div key={s.id} className="session-item cold" title="resume this cold slot" onClick={() => void cockpit.resume(s.id)}>
                 <div className="title">{s.title}</div>
                 <div className="meta">
                   <span className="dot cold" />
                   <span>{s.backend}</span>
-                  <span className="hint">resume ⟲</span>
+                  <button
+                    className="cold-resume"
+                    title="resume this cold slot (respawn the agent and reload its transcript)"
+                    aria-label={`resume cold slot ${s.title}`}
+                    onClick={(e) => { e.stopPropagation(); void cockpit.resume(s.id); }}
+                  >
+                    <IconResume size={13} />
+                  </button>
                   <button
                     className="cold-purge"
                     title="delete this cold slot and its transcript for good"
@@ -168,7 +185,7 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
                       }
                     }}
                   >
-                    ✕
+                    <IconClose size={12} />
                   </button>
                 </div>
               </div>
@@ -186,7 +203,7 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
           aria-label="sign out"
           onClick={() => void cockpit.logout()}
         >
-          ⏻
+          <IconPower size={14} />
         </button>
       </footer>
     </aside>
@@ -199,7 +216,7 @@ function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
     return (
       <div className="main">
         <div className="chat-head">
-          <button className="menu-btn" onClick={onMenu}>☰</button>
+          <button className="icon-btn menu-btn" onClick={onMenu} title="slots" aria-label="slots"><IconMenu /></button>
           <span className="title">AgentSlot</span>
         </div>
         <div className="empty">
@@ -222,114 +239,235 @@ function ChatHead({ v, onMenu }: { v: SessionView; onMenu: () => void }): JSX.El
   const info = v.info;
   const modes = info.modes?.availableModes ?? [];
   const cfg = info.configOptions.find((o) => o.type === "select" && /reason|effort|think/i.test(o.id));
+  const modeName = modes.find((m) => m.id === info.modes?.currentModeId)?.name ?? info.modes?.currentModeId ?? "";
+  const effortName = cfg?.options?.find((o) => String(o.value) === String(cfg.currentValue ?? ""))?.name ?? "";
+  // the working directory is worth showing, its full path is not: badge + tooltip,
+  // same trade hermes-studio makes with its workspace badge.
+  const wsName = info.cwd.split("/").filter(Boolean).pop() ?? info.cwd;
   return (
     <div className="chat-head">
-      <button className="menu-btn" onClick={onMenu}>☰</button>
-      <span className="title">{info.title}</span>
+      <button className="icon-btn menu-btn" onClick={onMenu} title="slots" aria-label="slots"><IconMenu /></button>
+      <span className="title" title={info.title}>{info.title}</span>
+      <button
+        className="ws-badge"
+        title={`${info.cwd} — click to copy`}
+        onClick={() => void navigator.clipboard?.writeText(info.cwd).catch(() => {})}
+      >
+        <IconFolder size={13} />
+        <span>{wsName}</span>
+      </button>
+      {v.perms.length > 0 ? (
+        <span className="chip perm-chip" title="requests waiting for your approval in this slot">
+          <span className="perm-pulse" />⚿ {v.perms.length}
+        </span>
+      ) : null}
+      <span className="head-spacer" />
       {modes.length > 0 && (
-        <select
-          value={info.modes?.currentModeId ?? ""}
-          onChange={(e) => cockpit.send({ t: "set-mode", sessionId: info.id, modeId: e.target.value })}
-          title="permission mode"
-          aria-label="permission mode"
-        >
-          {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </select>
+        <label className="seg" title={`permission mode — currently ${modeName}`}>
+          <IconShield size={14} />
+          <select
+            value={info.modes?.currentModeId ?? ""}
+            onChange={(e) => cockpit.send({ t: "set-mode", sessionId: info.id, modeId: e.target.value })}
+            aria-label="permission mode"
+          >
+            {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <IconChevronDown size={12} className="seg-chev" />
+        </label>
       )}
       {cfg && cfg.options && (
-        <select
-          value={String(cfg.currentValue ?? "")}
-          onChange={(e) => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: e.target.value })}
-          title="reasoning effort"
-          aria-label="reasoning effort"
-        >
-          {cfg.options.map((o) => <option key={o.value} value={o.value}>🧠 {o.name}</option>)}
-        </select>
+        <label className="seg" title={`thinking depth — currently ${effortName || "unset"}`}>
+          <IconGauge size={14} />
+          <select
+            value={String(cfg.currentValue ?? "")}
+            onChange={(e) => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: e.target.value })}
+            aria-label="thinking depth"
+          >
+            {cfg.options.map((o) => <option key={o.value} value={o.value}>{o.name}</option>)}
+          </select>
+          <IconChevronDown size={12} className="seg-chev" />
+        </label>
       )}
-      <ContextGauge usage={info.usage} />
-      {/* per-turn provenance (AionUi F-DISPLAY-11): what this turn actually runs with */}
-      {v.trace && (v.trace.effort || v.trace.mode) ? (
-        <span
-          className="kv trace"
-          title="what the next turn runs with — from the agent's own announcements"
-        >
-          {v.trace.effort ? `effort ${v.trace.effort}` : ""}
-          {v.trace.effort && v.trace.mode ? " · " : ""}
-          {v.trace.mode ? `mode ${v.trace.mode}` : ""}
-        </span>
-      ) : null}
-      {v.perms.length > 0 ? (
-        <span className="kv perm-chip" title="requests waiting for your approval in this slot">
-          ⚿ {v.perms.length} pending
-        </span>
-      ) : null}
-      <span className="kv" title={info.cwd}><code>{info.cwd}</code></span>
+      <ContextGauge usage={info.usage} trace={v.trace} />
       {info.status === "running" ? (
-        <button className="ghost-btn danger" onClick={() => cockpit.send({ t: "cancel", sessionId: info.id })}>
-          ■ stop
+        <button
+          className="icon-btn danger"
+          title="stop this turn"
+          aria-label="stop this turn"
+          onClick={() => cockpit.send({ t: "cancel", sessionId: info.id })}
+        >
+          <IconStop size={13} />
         </button>
       ) : null}
       <button
-        className="ghost-btn danger"
+        className="icon-btn"
+        title="close slot — the agent stops, the transcript stays on disk as a resumable cold slot"
+        aria-label="close slot"
         onClick={() => {
           if (confirm(`close slot "${info.title}"?\n\nthe agent process is killed; the transcript stays on disk as a cold slot you can resume.`)) {
             cockpit.closeSession(info.id);
           }
         }}
       >
-        close
+        <IconClose size={15} />
       </button>
     </div>
   );
 }
 
 /** Context-window gauge from ACP usage_update (AionUi F-DISPLAY-07 lineage).
- *  A backend that never reports `size` still gets a used-only reading — the gauge
- *  degrades to "used N tokens" instead of inventing a window. */
-function ContextGauge({ usage }: { usage?: UsageView | null }): JSX.Element | null {
+ *  Icon-first like the rest of the head: a ring that fills, the numbers in the
+ *  tooltip — plus the per-turn trace, which no longer needs its own chip because the
+ *  two selects already show mode and depth (AionUi F-DISPLAY-11). */
+function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: TurnTrace | null }): JSX.Element | null {
   if (!usage || (!usage.used && !usage.size)) return null;
   const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
   const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
+  const R = 7;
+  const C = 2 * Math.PI * R;
+  const traceText = trace && (trace.effort || trace.mode)
+    ? ` · this turn: ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}`
+    : "";
   return (
     <span
-      className={`kv ctx ${level}`}
+      className={`ctx ${level}`}
       title={
-        usage.size > 0
+        (usage.size > 0
           ? `context window: ${usage.used} / ${usage.size} tokens (${pct}%)`
-          : `context used: ${usage.used} tokens (window size not reported by this agent)`
+          : `context used: ${usage.used} tokens (this agent reports no window size)`)
+        + (usage.cost != null ? `, cost $${usage.cost.toFixed(4)}` : "")
+        + traceText
       }
     >
-      ctx {fmt(usage.used)}
-      {usage.size > 0 ? `/${fmt(usage.size)}` : ""}
-      {usage.size > 0 ? (
-        <span className="ctx-bar" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
-      ) : null}
-      {usage.cost != null ? <span className="ctx-cost">${usage.cost.toFixed(4)}</span> : null}
+      <svg width={18} height={18} viewBox="0 0 18 18" aria-hidden="true">
+        <circle cx="9" cy="9" r={R} fill="none" stroke="currentColor" strokeOpacity={0.22} strokeWidth={2} />
+        {usage.size > 0 ? (
+          <circle
+            cx="9" cy="9" r={R} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"
+            strokeDasharray={`${(C * pct) / 100} ${C}`}
+            transform="rotate(-90 9 9)"
+          />
+        ) : null}
+      </svg>
+      <span className="ctx-text">
+        {fmt(usage.used)}{usage.size > 0 ? `/${fmt(usage.size)}` : ""}
+      </span>
     </span>
   );
 }
 
+/** Imperative "follow the stream again" hook, so the composer can re-attach the
+ *  view when the operator sends. Module-level on purpose: the two components have
+ *  no shared parent state and threading a ref through the tree for this would be
+ *  more code than the behaviour is worth. */
+const streamReattach: { current: () => void } = { current: () => {} };
+
 function Stream({ v }: { v: SessionView }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const programmatic = useRef(false);
+  const keepUntil = useRef(0);
+  const [follow, setFollow] = useState(true);
+  const [unseen, setUnseen] = useState(false);
   const [, force] = useState(0);
 
-  // stick-to-bottom (hermes-studio rule): follow only if user hasn't scrolled up
+  // How close to the bottom still counts as "following". Generous on purpose: a
+  // 48px blind spot meant the smallest scroll-up got yanked back by the next
+  // streamed chunk (the reported bug).
+  const NEAR = 140;
+
+  const isNear = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+
+  const scrollNow = (): void => {
+    const el = ref.current;
+    if (!el) return;
+    programmatic.current = true; // our own scroll must not count as "user scrolled away"
+    el.scrollTop = el.scrollHeight;
+  };
+
+  streamReattach.current = () => {
+    stick.current = true;
+    keepUntil.current = Date.now() + 1500; // keep following briefly after a send
+    setFollow(true);
+    setUnseen(false);
+    scrollNow();
+  };
+
+  // ---- user intent beats scroll position -------------------------------------
+  // Position alone is not enough: while a turn streams, the newest chunk is added
+  // right under the viewport, so a wheel/touch/key gesture has to detach *now*,
+  // not after we happen to fall more than NEAR behind.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const onScroll = () => {
-      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    const detach = (): void => {
+      programmatic.current = false;
+      stick.current = false;
+      setFollow(false);
+    };
+    const onScroll = (): void => {
+      if (programmatic.current) {
+        programmatic.current = false;
+        return;
+      }
+      const near = isNear(el);
+      stick.current = near;
+      setFollow(near);
+      if (near) setUnseen(false);
+    };
+    const onWheel = (e: WheelEvent): void => { if (e.deltaY < 0) detach(); };
+    let touchY = 0;
+    const onTouchStart = (e: TouchEvent): void => { touchY = e.touches[0]?.clientY ?? 0; };
+    // dragging the finger DOWN scrolls back toward older content => detach
+    const onTouchMove = (e: TouchEvent): void => {
+      const y = e.touches[0]?.clientY ?? 0;
+      if (y > touchY + 4) detach();
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") detach();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("keydown", onKey);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("keydown", onKey);
+    };
   }, []);
 
+  // Follow only while following: no scroll is forced on a reader who scrolled away.
   useEffect(() => {
+    if (stick.current || Date.now() < keepUntil.current) {
+      scrollNow();
+      return;
+    }
+    if (v.msgs.length) setUnseen(true); // output arrived off-screen: say so on the button
+    // v.rev, not v.msgs: chunks merge into the bubble above, so the array identity is
+    // stable and this effect would never run on new output.
+  }, [v.rev, v.busy, v.perms.length]);
+
+  // Keep the reader's place when an older page is prepended (paging used to shove
+  // the viewport by a whole page, so "load earlier" felt like a jump to nowhere).
+  const loadEarlier = async (): Promise<void> => {
     const el = ref.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  });
+    const beforeH = el?.scrollHeight ?? 0;
+    const beforeT = el?.scrollTop ?? 0;
+    stick.current = false;
+    setFollow(false);
+    await cockpit.loadEarlier(v.info.id);
+    requestAnimationFrame(() => {
+      const after = ref.current;
+      if (!after) return;
+      programmatic.current = true;
+      after.scrollTop = after.scrollHeight - beforeH + beforeT;
+    });
+  };
 
   // idle hint: running but silent for >3min => "still waiting" (AionUi F-RELIABILITY-02 lite)
   useEffect(() => {
@@ -341,24 +479,33 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
   const showWait = v.busy && Date.now() - v.lastAt > 175_000;
 
   return (
-    <div className="stream" ref={ref}>
-      <div className="stream-inner">
-        {v.hasOlder && (
-          <div className="load-earlier">
-            <button
-              className="ghost-btn"
-              disabled={v.loadingOlder}
-              onClick={() => void cockpit.loadEarlier(v.info.id)}
-            >
-              {v.loadingOlder ? "loading…" : "↑ load earlier messages"}
-            </button>
-          </div>
-        )}
-        {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
-        {v.msgs.map((m) => <Bubble key={m.key} m={m} />)}
-        {v.busy && <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>▸ turn in progress…</div>}
-        {showWait && <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>⏳ still waiting for the agent…</div>}
+    <div className="stream-wrap">
+      <div className="stream" ref={ref} tabIndex={0}>
+        <div className="stream-inner">
+          {v.hasOlder && (
+            <div className="load-earlier">
+              <button className="ghost-btn" disabled={v.loadingOlder} onClick={() => void loadEarlier()}>
+                {v.loadingOlder ? "loading…" : "↑ load earlier messages"}
+              </button>
+            </div>
+          )}
+          {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
+          {v.msgs.map((m) => <Bubble key={m.key} m={m} />)}
+          {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
+          {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
+        </div>
       </div>
+      {!follow && (
+        <button
+          className={`jump-latest ${unseen ? "has-new" : ""}`}
+          onClick={() => streamReattach.current()}
+          title={unseen ? "new output — jump to the newest" : "jump to the newest"}
+          aria-label="jump to newest output"
+        >
+          <IconArrowDown size={14} />
+          {unseen ? <span className="jump-dot" aria-hidden="true" /> : null}
+        </button>
+      )}
     </div>
   );
 }
@@ -493,6 +640,9 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
     cockpit.send({ t: "prompt", sessionId: v.info.id, text: t });
     setText("");
     setPick(0);
+    // Sending is an explicit "show me the answer": re-attach the stream even if the
+    // operator had scrolled up to read something.
+    streamReattach.current();
   };
 
   // Slash palette (AionUi F-DISPLAY-10): the commands are the AGENT's own
@@ -563,8 +713,14 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
           }}
         />
-        <button className="send-btn" onClick={send} disabled={!text.trim() || v.busy || v.info.status !== "ready"}>
-          {v.busy ? "…" : "⇥"}
+        <button
+          className="send-btn"
+          onClick={send}
+          disabled={!text.trim() || v.busy || v.info.status !== "ready"}
+          title={v.busy ? "a turn is already running" : "send (Enter)"}
+          aria-label="send"
+        >
+          {v.busy ? "…" : <IconSend size={16} />}
         </button>
       </div>
     </div>
@@ -634,8 +790,8 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
         {backends.find((b) => b.id === backend)?.home && (
           <div className="hint">isolated home: {backends.find((b) => b.id === backend)!.home}</div>
         )}
-        <label>working directory (abs path)</label>
-        <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="/Users/me/project" />
+        <label>working directory</label>
+        <WorkspacePicker value={cwd} onChange={setCwd} />
         <label>title (optional)</label>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. fix flaky tests" />
         {err && <div className="err">{err}</div>}

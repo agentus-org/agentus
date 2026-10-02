@@ -109,6 +109,19 @@ export class Store {
     return rows.map(rowToSession);
   }
 
+  /** Distinct working directories the operator has used, most recent first. Feeds the
+   *  "recent" list in the new-slot picker — no new table: every slot row already
+   *  remembers where it ran. */
+  recentCwds(limit = 8): string[] {
+    const rows = this.#db
+      .prepare(
+        `select cwd, max(coalesce(closed_at, created_at)) as at from sessions
+         where cwd is not null and cwd <> '' group by cwd order by at desc limit ?`,
+      )
+      .all(limit) as unknown as { cwd: string }[];
+    return rows.map((r) => r.cwd);
+  }
+
   getSession(id: string): SessionRow | undefined {
     const r = this.#db.prepare("select * from sessions where id = ?").get(id) as
       | RawSessionRow
