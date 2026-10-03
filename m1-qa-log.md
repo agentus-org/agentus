@@ -610,3 +610,12 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - **测试**：`auth-smoke` 76 → **98 项**（新增：两次登录=两行且只有一行 current、匿名 401、撤自己 400、未知 jti 404、撤别的设备后该 cookie 在所有受保护路由 401 且 `/api/auth/me` 报匿名、调用者不受影响、注册表 0600 且不含 token、全部登出计数、**重启后仍列出且被撤的仍是死的**、锁定 IP 出现在列表且返回 429、解锁后能登录、解锁未知 IP 404、全部解锁计数）。浏览器 E2E（新 `m_account_panels_e2e.mjs`，临时实例 :8901）**24/24**：四张卡的顺序、会话卡两行且标"当前"、点撤销后另一台设备真的匿名（用**独立 browser context**造的第二台设备）、5 次失败→卡上出现"已锁定 30 秒"→点解锁→列表清空→能登录、改用户名弹窗、改密码弹窗（三个密码框 + 眼睛真的把字段切成 text）、两次不一致被拦、成功后新口令可登录旧口令 401、本机仍在线。
 - 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
 - 我踩的坑（已入 lessons）：① **同一浏览器 profile 的两个标签页共享 cookie jar**，用它模拟"两台设备"永远是错的（后登录的覆盖前一个 cookie），所以第一轮 E2E 误判"撤销没生效"——真要多设备必须 `Target.createBrowserContext` 开独立上下文；② 点击后立刻读 DOM 拿到的是旧值（React 异步更新，眼睛切换那次又栽了一次）。
+
+**R88b 手机上的账号卡有个"洞"（flex-basis 在列向变成高度）**
+
+R88 的截图只看了桌面；补拍手机（390×844）时发现账号卡里"当前账号"标签和「panel-user 改用户名 改密码」之间有一大片空白（约 400px）。
+
+- 真因：`.set-pair { flex: 1 1 320px }` 与 `.set-row > label { flex: 0 0 84px }` 是**桌面横向**下的宽度语义；手机媒体查询把 `.set-row` 改成 `flex-direction: column` 后，这两个 flex-basis 就变成了**高度**，于是标签自己撑成 84px、按钮组撑成 320px。
+- 修：手机查询里补 `.set-row .set-pair { flex: 0 0 auto; }` 与 `.set-row > label { flex: 0 0 auto; }`（先修了前者，量出还剩 ~90px 才找到后者——两个都要显式复位）。
+- 验收：手机整页截图里账号卡已紧凑（标签紧贴用户名+按钮）；E2E 仍 **24/24**；同一段覆盖在文件末尾，桌面不受影响（桌面截图复核）。
+- 沉淀：lessons 补一条——**横向 flex 的 `flex-basis` 在列向布局里会变成高度，手机覆盖要显式 `flex: 0 0 auto`**。

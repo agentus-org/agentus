@@ -1084,4 +1084,11 @@ code.inline {
   .pw-eye { width: 34px; height: 34px; }
   .acct-row { padding: 10px; }
   .acct-row .set-mini { min-height: 34px; }
+  /* .set-row turns into a column on a phone, and .set-pair's desktop flex-basis
+     (320px, meant as a width) becomes a HEIGHT there: the account card grew a ~400px
+     hole between its label and its buttons. Measured on a 390px viewport. */
+  .set-row .set-pair { flex: 0 0 auto; }
+  /* same trap for the label column: flex-basis 84px was a width on desktop and becomes a
+     84px-tall hole once .set-row stacks vertically */
+  .set-row > label { flex: 0 0 auto; }
 }
