@@ -97,6 +97,20 @@ check("the menu carries rename/fork/workspace/export/id/archive",
   JSON.stringify(menu.items));
 check("the menu hugs its content (no wide-plank floor; head row is its widest line)",
   menu.w <= 320 && menu.w >= 150, `w=${menu.w}`);
+// the reported bug: the menu must follow the ROW it belongs to, not sit in a screen corner
+const anchored = await ev(`(() => {
+  const row = document.querySelector('.session-item');
+  const rb = row.getBoundingClientRect();
+  const m = document.querySelector('.sess-menu');
+  const mr = m.getBoundingClientRect();
+  return { rowBottom: Math.round(rb.bottom), rowLeft: Math.round(rb.left), rowRight: Math.round(rb.right),
+    menuTop: Math.round(mr.top), menuLeft: Math.round(mr.left), menuRight: Math.round(mr.right),
+    vh: innerHeight, vw: innerWidth };
+})()`);
+check("the menu is anchored to its own row (not the screen corner)",
+  Math.abs(anchored.menuTop - anchored.rowBottom) <= 150
+  && anchored.menuLeft >= anchored.rowLeft - 20 && anchored.menuLeft <= anchored.rowRight,
+  JSON.stringify(anchored));
 
 // --- right-click opens the same menu at the pointer
 await ev(`(() => { const r = document.querySelectorAll('.session-item')[1]; const b = r.getBoundingClientRect();
@@ -158,6 +172,12 @@ const sheet = await ev(`(() => { const m=document.querySelector('.sess-menu'); i
 check("a 500ms long-press on a row opens the menu on a phone", sheet.open === true, JSON.stringify(longPress));
 check("on a phone the menu is laid out as a sheet inside the viewport", Boolean(sheet.inside), JSON.stringify(sheet));
 check("the phone menu has thumb-sized rows (>= 34px)", (sheet.itemHeight ?? 0) >= 34, `itemHeight=${sheet.itemHeight}`);
+// regression guard: with `width:max-content` on the base rule, the sheet shrank to its
+// content and pinned itself to the bottom-LEFT corner ("不跟会话" — operator report).
+const sheetW = await ev(`(() => { const m=document.querySelector('.sess-menu'); const r=m.getBoundingClientRect();
+  return { w: Math.round(r.width), x: Math.round(r.x), vw: innerWidth, bottom: Math.round(r.bottom), vh: innerHeight }; })()`);
+check("the phone sheet stretches across the screen (no content-width left-hug)",
+  sheetW.w >= sheetW.vw - 24 && sheetW.x <= 12, JSON.stringify(sheetW));
 await ev(`document.querySelectorAll('.session-item')[0].dispatchEvent((() => { const e=new Event('touchend',{bubbles:true}); e.changedTouches=[{clientX:0,clientY:0}]; return e; })())`);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-session-menu.png`, Buffer.from(shot2.data, "base64"));

@@ -341,11 +341,18 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
     setMenu({ id, x, y, trigger });
   };
   /** Open from a button/row: the pointer's own coordinates when we have them, else the
-   *  row's box (a keyboard or programmatic click carries no point). */
-  const openFrom = (id: string, e: { clientX?: number; clientY?: number }): void => {
+   *  anchor's box. A keyboard/programmatic click carries (0,0) — that must not fling the
+   *  menu into the corner, so an all-zero point is treated as "no point" and the menu
+   *  lands under the element that was activated (the row's ⋯ button). */
+  const openFrom = (id: string, e: { clientX?: number; clientY?: number }, anchorEl?: HTMLElement | null): void => {
     const row = rows.current.get(id);
-    const box = row?.getBoundingClientRect();
-    openMenu(id, e.clientX ?? (box ? box.left + 24 : 12), e.clientY ?? (box ? box.top + box.height : 12), row ?? null);
+    const anchor = anchorEl ?? row ?? null;
+    const box = anchor?.getBoundingClientRect();
+    const hasPoint = Number.isFinite(e.clientX) && Number.isFinite(e.clientY)
+      && (e.clientX !== 0 || e.clientY !== 0);
+    const x = hasPoint ? Number(e.clientX) : (box ? box.right - 6 : 12);
+    const y = hasPoint ? Number(e.clientY) : (box ? box.bottom + 4 : 12);
+    openMenu(id, x, y, anchor);
   };
   const startRename = (s: SessionInfo): void => { setMenu(null); setDraft(s.title); setEditing(s.id); };
   const commitRename = async (id: string): Promise<void> => {
@@ -507,11 +514,11 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
                       <button
                         type="button"
                         className="item-btn row-menu"
-                        title="会话设置：重命名 / fork / 工作目录 / 删除"
+                        title="会话设置：重命名 / fork / 工作目录 / 导出 / 归档"
                         aria-label={`${s.title} 的会话设置`}
                         aria-haspopup="menu"
                         aria-expanded={menu?.id === s.id}
-                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); openFrom(s.id, e); }}
+                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); openFrom(s.id, e, e.currentTarget); }}
                       >
                         <IconDotsV size={14} />
                       </button>

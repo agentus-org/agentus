@@ -1201,6 +1201,10 @@ code.inline {
   .sess-menu {
     left: 8px !important; right: 8px; top: auto !important;
     bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    /* width:auto is load-bearing: the base rule is `width:max-content`, which beats a
+       left+right stretch — without this the sheet shrinks to its content and pins itself
+       to the bottom-LEFT corner (reported by the operator as "不跟会话"). */
+    width: auto !important;
     max-width: none; min-width: 0;
   }
   .sess-menu-item { padding: 11px 10px; font-size: 14px; }
