@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -26,8 +27,36 @@ function check(name, ok, detail = "") {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Ask the OS for a port that is actually free. A guessed/fixed range collides with a server
+ *  leaked by an earlier crashed run: the stale listener answers /healthz instantly, so the
+ *  suite silently talks to the WRONG process and dies with something cryptic ("no machine
+ *  token"). We also kill every child on exit, so we never become the leaker ourselves. */
+async function freePort() {
+  return new Promise((res, rej) => {
+    const s = createTcp();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
+  });
+}
+async function freePorts(n) { const out = new Set(); while (out.size < n) out.add(await freePort()); return [...out]; }
+function portInUse(port) {
+  return new Promise((res) => {
+    const s = createTcp();
+    s.once("error", () => res(true));
+    s.once("listening", () => s.close(() => res(false)));
+    s.listen(port, "127.0.0.1");
+  });
+}
+const CHILDREN = new Set();
+process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+
+
 /** Boot a server on PORT with DATA; resolves once /healthz answers (or rejects). */
 async function boot(port, dataDir, extraEnv = {}) {
+  if (await portInUse(port)) {
+    throw new Error(`port ${port} is already in use — a leaked server from an earlier run? `
+      + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
+  }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     cwd: ROOT,
     env: {
@@ -43,6 +72,7 @@ async function boot(port, dataDir, extraEnv = {}) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  CHILDREN.add(proc);
   let log = "";
   proc.stdout.on("data", (d) => { log += String(d); });
   proc.stderr.on("data", (d) => { log += String(d); });

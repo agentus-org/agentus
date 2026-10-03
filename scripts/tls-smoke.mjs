@@ -11,12 +11,12 @@ import fs from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const NAME = "agentslot-smoke.test";
-const PLAIN = 9100 + Math.floor(Math.random() * 40);
-const TLS = PLAIN + 40;
+const [PLAIN, TLS, PLAIN_OFF, TLS_OFF] = await freePorts(4);
 const USER = "smoke-op", PASS = "smoke-pass-1";
 let failed = 0;
 const check = (name, ok, detail = "") => {
@@ -25,7 +25,35 @@ const check = (name, ok, detail = "") => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Ask the OS for a port that is actually free. A guessed/fixed range collides with a server
+ *  leaked by an earlier crashed run: the stale listener answers /healthz instantly, so the
+ *  suite silently talks to the WRONG process and dies with something cryptic ("no machine
+ *  token"). We also kill every child on exit, so we never become the leaker ourselves. */
+async function freePort() {
+  return new Promise((res, rej) => {
+    const s = createTcp();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
+  });
+}
+async function freePorts(n) { const out = new Set(); while (out.size < n) out.add(await freePort()); return [...out]; }
+function portInUse(port) {
+  return new Promise((res) => {
+    const s = createTcp();
+    s.once("error", () => res(true));
+    s.once("listening", () => s.close(() => res(false)));
+    s.listen(port, "127.0.0.1");
+  });
+}
+const CHILDREN = new Set();
+process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+
+
 async function boot(dataDir, extraEnv = {}) {
+  if (await portInUse(PLAIN)) {
+    throw new Error(`port ${PLAIN} is already in use — a leaked server from an earlier run? `
+      + `(lsof -nP -iTCP:${PLAIN} -sTCP:LISTEN)`);
+  }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     cwd: ROOT,
     env: {
@@ -37,6 +65,7 @@ async function boot(dataDir, extraEnv = {}) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  CHILDREN.add(proc);
   let log = "";
   proc.stdout.on("data", (d) => { log += d; });
   proc.stderr.on("data", (d) => { log += d; });
@@ -100,6 +129,17 @@ try {
   });
   check("wss://…/ws completes the handshake and sends hello", wsResult === "hello", wsResult);
 
+  // 4b) the cert is downloadable — that is how a phone installs the self-signed issuer
+  const dl = await fetch(`https://127.0.0.1:${TLS}/cert.crt`);
+  const dlBytes = Buffer.from(await dl.arrayBuffer());
+  check("GET /cert.crt serves the exact cert, with a type Apple's installer claims",
+    dl.status === 200
+      && dl.headers.get("content-type") === "application/x-x509-ca-cert"
+      && dlBytes.equals(fs.readFileSync(certPath)),
+    `status=${dl.status} type=${dl.headers.get("content-type")} bytes=${dlBytes.length}`);
+  const viaPlain = await fetch(`http://127.0.0.1:${PLAIN}/cert.crt`);
+  check("the LAN port serves the same cert (install from inside too)", viaPlain.status === 200);
+
   // 5) the two listeners stay distinct: the LAN port is plain and NOT TLS
   const lan = await fetch(`http://127.0.0.1:${PLAIN}/healthz`).then((r) => r.json()).catch(() => null);
   check("the LAN port still serves plain HTTP", lan?.ok === true);
@@ -109,20 +149,24 @@ try {
 
   // 6) turning it off is honoured
   const dir2 = mkdtempSync(path.join(tmpdir(), "agentslot-tls-off-"));
+  if (await portInUse(PLAIN_OFF)) throw new Error(`port ${PLAIN_OFF} in use — leaked server?`);
   const off = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(PLAIN + 1), AGENTSLOT_TLS_PORT: String(TLS + 1),
+    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(PLAIN_OFF), AGENTSLOT_TLS_PORT: String(TLS_OFF),
       AGENTSLOT_DATA: dir2, HOME: path.join(dir2, "home") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let offLog = "";
+  CHILDREN.add(off);
   off.stdout.on("data", (d) => { offLog += d; }); off.stderr.on("data", (d) => { offLog += d; });
-  for (let i = 0; i < 60; i++) { await sleep(150); try { if ((await fetch(`http://127.0.0.1:${PLAIN + 1}/healthz`)).ok) break; } catch {} }
+  for (let i = 0; i < 60; i++) { await sleep(150); try { if ((await fetch(`http://127.0.0.1:${PLAIN_OFF}/healthz`)).ok) break; } catch {} }
   await sleep(400);
   let offListening = true;
-  try { await fetch(`https://127.0.0.1:${TLS + 1}/healthz`); } catch (e) { offListening = !/ECONNREFUSED/.test(String(e?.cause?.code ?? e)); }
+  try { await fetch(`https://127.0.0.1:${TLS_OFF}/healthz`); } catch (e) { offListening = !/ECONNREFUSED/.test(String(e?.cause?.code ?? e)); }
   check("no cert ⇒ no TLS listener, and the boot log says so",
     offLog.includes("tls off") && !offListening, offLog.includes("tls off") ? "" : offLog.slice(-200));
+  const offCert = await fetch(`http://127.0.0.1:${PLAIN_OFF}/cert.crt`);
+  check("no cert ⇒ /cert.crt is a plain 404, not an empty file", offCert.status === 404, `status=${offCert.status}`);
   off.kill("SIGKILL");
 } finally {
   srv.kill("SIGKILL");

@@ -204,6 +204,19 @@ alternatives: turning the single port into HTTPS would put a cert warning in fro
 own LAN usage (and break `curl` scripts), while sniffing the first byte on one port to
 serve both hides whether a given visit was really encrypted.
 
+**Retiring the warning on your devices.** With TLS on, the listener serves its own
+certificate at `/cert.crt`:
+
+```bash
+https://<your-name>:<tls-port>/cert.crt     # iOS: opens the profile installer directly
+                                            # Android: downloads it → Settings → Security → CA certificate
+curl --cacert <AGENTSLOT_DATA>/tls/cert.pem https://<your-name>:<tls-port>/healthz   # scripts, no -k
+```
+
+Installed as a trusted root (iOS also needs *About → Certificate Trust Settings → enable*),
+the browser stops asking and the address bar is clean. It is public material — the private
+key never leaves `<AGENTSLOT_DATA>/tls/`.
+
 The cert is **self-signed on purpose** — no CA issues for an unregistered domain or a bare
 IP, so the browser shows "not private → proceed" once per device. Keep the SAN to the name
 you type (**the DDNS name**, not the public IP: a dynamic IP would need re-issuing, and a

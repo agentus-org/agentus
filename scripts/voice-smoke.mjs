@@ -12,10 +12,11 @@ import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const PORT = 9000 + Math.floor(Math.random() * 90);
+const PORT = await freePort();   // never a guessed port: see freePort() above
 const results = [];
 let failed = 0;
 
@@ -26,6 +27,30 @@ function check(name, ok, detail = "") {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Ask the OS for a port that is actually free. A guessed/fixed range collides with a server
+ *  leaked by an earlier crashed run: the stale listener answers /healthz instantly, so the
+ *  suite silently talks to the WRONG process and dies with something cryptic ("no machine
+ *  token"). We also kill every child on exit, so we never become the leaker ourselves. */
+async function freePort() {
+  return new Promise((res, rej) => {
+    const s = createTcp();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
+  });
+}
+async function freePorts(n) { const out = new Set(); while (out.size < n) out.add(await freePort()); return [...out]; }
+function portInUse(port) {
+  return new Promise((res) => {
+    const s = createTcp();
+    s.once("error", () => res(true));
+    s.once("listening", () => s.close(() => res(false)));
+    s.listen(port, "127.0.0.1");
+  });
+}
+const CHILDREN = new Set();
+process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+
 
 // ---- the stand-in provider -------------------------------------------------
 // Two of the three routes are OpenAI-compatible; /models is what fills the settings
@@ -105,6 +130,10 @@ const procs = [];
  *  a test that inherits the operator's real home is not a test of the empty case. */
 async function boot(dataDir, extraEnv = {}, home = "") {
   const port = Number(extraEnv.AGENTSLOT_PORT ?? PORT);
+  if (await portInUse(port)) {
+    throw new Error(`port ${port} is already in use — a leaked server from an earlier run? `
+      + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
+  }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     cwd: ROOT,
     env: {
@@ -114,10 +143,18 @@ async function boot(dataDir, extraEnv = {}, home = "") {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  CHILDREN.add(proc);
   let log = "";
   procs.push(proc);
   proc.stdout.on("data", (d) => { log += String(d); });
   proc.stderr.on("data", (d) => { log += String(d); });
+  // Wait for THIS child to own the port (its own boot line). Probing the port instead is
+  // what made the leaked-server collision look like a credential bug: a stale listener
+  // answers /healthz, and the suite then reads its own empty data dir.
+  for (let i = 0; i < 80 && !log.includes(`0.0.0.0:${port}`); i++) {
+    if (proc.exitCode !== null) throw new Error(`server exited (${proc.exitCode}) before listening on ${port}:\n${log}`);
+    await sleep(150);
+  }
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 60; i++) {
     try {
@@ -256,7 +293,7 @@ try {
   fs.mkdirSync(path.join(home2, ".hermes"), { recursive: true });
   fs.writeFileSync(path.join(home2, ".hermes", ".env"), `DASHSCOPE_API_KEY=sk-env-abcdef123\nDASHSCOPE_BASE_URL=http://127.0.0.1:${providerPort}/\n`);
   const dataDir2 = mkdtempSync(path.join(tmpdir(), "agentslot-voice-env-"));
-  const second = await boot(dataDir2, { AGENTSLOT_PORT: String(PORT + 1) }, home2);
+  const second = await boot(dataDir2, { AGENTSLOT_PORT: String(await freePort()) }, home2);
   const base2 = second.base;
   const token2 = tokenFor(dataDir2);
   const H2 = { ...H, authorization: `Bea${"rer"} ${token2}` };

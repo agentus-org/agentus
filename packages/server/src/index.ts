@@ -29,6 +29,15 @@ const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
 const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.resolve(HERE, "../.data");
 const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
+// Optional second listener, TLS (see the block right before listen). Declared up here
+// because the request handler also serves the public cert — a phone that has to trust a
+// self-signed issuer needs to fetch the cert from somewhere, and that somewhere should
+// not require already trusting it.
+//   AGENTSLOT_TLS_PORT=0  -> off;  no cert on disk -> off (the LAN listener is unaffected).
+const TLS_PORT = Number(process.env.AGENTSLOT_TLS_PORT ?? 8443);
+const TLS_CERT = process.env.AGENTSLOT_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
+const TLS_KEY = process.env.AGENTSLOT_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
+const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const store = new Store(path.join(DATA_DIR, "agentslot.sqlite"));
@@ -187,6 +196,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (!auth.verifyBasic(req.headers.authorization)) {
       res.writeHead(401, auth.basicChallenge());
       return res.end("AgentSlot: authentication required\n");
+    }
+
+    // GET /cert.crt — the TLS listener's certificate, for installing the self-signed
+    // issuer into a phone's trust store (the "proceed anyway" click once per device is the
+    // whole cost of TOFU; this makes it a download instead of a manual export).
+    // PUBLIC material only: the key never leaves <DATA>/tls/.
+    if (url.pathname === "/cert.crt") {
+      if (!TLS_READY) return send(res, 404, { error: "tls is off on this server" });
+      const der = fs.readFileSync(TLS_CERT);
+      res.writeHead(200, {
+        // Apple's installer claims this type and opens the profile flow directly;
+        // Android/Chrome just downloads the file.
+        "content-type": "application/x-x509-ca-cert",
+        "content-disposition": 'attachment; filename="agentslot.crt"',
+        "content-length": String(der.length),
+      });
+      return res.end(der);
     }
 
     // ---- auth gate. Everything under /api except the login/me endpoints is
@@ -876,13 +902,10 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 });
 // ---- optional TLS listener (self-signed) ----
 // A tunnel that terminates on the public internet must NOT be plain HTTP: the login
-// password and the session cookie would cross it in the clear. This listener is kept
-// SEPARATE from PORT on purpose, so the LAN path stays plain HTTP — no cert warning in
-// the house, curl/scripts unchanged. Off when AGENTSLOT_TLS_PORT=0 or the cert is absent.
-const TLS_PORT = Number(process.env.AGENTSLOT_TLS_PORT ?? 8443);
-const TLS_CERT = process.env.AGENTSLOT_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
-const TLS_KEY = process.env.AGENTSLOT_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
-if (TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+// password and the session cookie would cross it in the clear. SEPARATE from PORT on
+// purpose, so the LAN path stays plain HTTP — no cert warning in the house, curl
+// unchanged. (Config constants live at the top, next to the other paths.)
+if (TLS_READY) {
   const httpsServer = createHttpsServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handleRequest);
   httpsServer.on("upgrade", handleUpgrade);
   httpsServer.listen(TLS_PORT, "0.0.0.0", () => {
