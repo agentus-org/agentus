@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
@@ -29,6 +30,7 @@ export function App(): JSX.Element {
   // unauthenticated upgrade is refused with 401.
   useEffect(() => { void cockpit.checkAuth(); }, []);
   useEffect(() => { setDrawer(false); }, [snap.activeId]);
+  useEscape(drawer, () => setDrawer(false));
   // The server's palette is the source of truth; the localStorage copy only made the
   // first frame right. Adopted once the operator is in (the endpoint needs a session).
   useEffect(() => { if (snap.auth === "in") void loadServerTheme(); }, [snap.auth]);
@@ -394,6 +396,7 @@ function lastFinishedReply(v: SessionView | undefined): { key: string; text: str
 /** Point the current slot at another directory. Same picker as "new slot" — the
  *  difference is the consequence, and that is spelled out in the modal. */
 function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void }): JSX.Element {
+  useEscape(true, onClose);
   const current = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(current);
   const [busy, setBusy] = useState(false);
@@ -994,8 +997,12 @@ function ToolbarSelect({ label, title, icon, value, children, open, onToggle, te
   onToggle: () => void;
   testId?: string;
 }): JSX.Element {
+  // the wrap holds the trigger AND the list, so a pointerdown here is "inside"
+  // (re-clicking the trigger keeps toggling, anything else puts the list away)
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useDismiss(open, [wrapRef], onToggle);
   return (
-    <div className="tb-wrap">
+    <div className="tb-wrap" ref={wrapRef}>
       <button
         type="button"
         className={`tb-btn ${open ? "on" : ""}`}
@@ -1058,12 +1065,15 @@ function ChoiceList({ items, current, onPick, empty }: {
 function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const usage = v.info.usage;
   const [open, setOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const trace = v.trace;
+  // clicking a message, another session, or empty space puts the popover away
+  useDismiss(open, [rowRef], () => { setOpen(false); setEditing(false); });
   if (!usage || (!usage.used && !usage.size)) return null;
 
   const declared = v.info.contextLimit && v.info.contextLimit > 0 ? v.info.contextLimit : null;
@@ -1100,7 +1110,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   };
 
   return (
-    <div className={`usage-row ${level}`}>
+    <div className={`usage-row ${level}`} ref={rowRef}>
       <button className="usage-text" onClick={() => setOpen((o) => !o)} title="context window and this turn">
         ctx {fmt(usage.used)}{limit > 0 ? ` / ${fmt(limit)}` : ""}
         {limit > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
@@ -1152,7 +1162,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                     const n = Number(draft.replace(/[^0-9]/g, ""));
                     if (n > 0) void apply(n, { remember });
                   }
-                  if (e.key === "Escape") setEditing(false);
+                  if (e.key === "Escape") { e.stopPropagation(); setEditing(false); }
                 }}
               />
               <button
@@ -1207,11 +1217,12 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
 
 /** Everything that used to crowd the header: permission mode, thinking depth,
  *  read-aloud, dictation engine. One popover, next to the prompt it affects. */
-function SettingsPopover({ v, prefs, setPrefs, onClose }: {
+function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
   v: SessionView;
   prefs: VoicePrefs;
   setPrefs: (patch: Partial<VoicePrefs>) => void;
   onClose: () => void;
+  panelRef: React.RefObject<HTMLDivElement>;
 }): JSX.Element {
   const info = v.info;
   const modes = info.modes?.availableModes ?? [];
@@ -1223,7 +1234,7 @@ function SettingsPopover({ v, prefs, setPrefs, onClose }: {
   const voices = voiceCount ? speaker.voices() : [];
   const caps = voiceCaps();
   return (
-    <div className="settings-pop" role="dialog" aria-label="chat settings">
+    <div className="settings-pop" role="dialog" aria-label="chat settings" ref={panelRef}>
       <div className="settings-head">
         <span>chat settings</span>
         <span className="head-spacer" />
@@ -1339,6 +1350,11 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
+  // clicking outside hides the palette without eating the "/..." the operator typed
+  const [paletteHidden, setPaletteHidden] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [attachErr, setAttachErr] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -1401,7 +1417,16 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   const matches = slashQuery === null ? [] : v.info.commands
     .filter((c) => c.name.toLowerCase().includes(slashQuery))
     .slice(0, 8);
-  const paletteOpen = slashQuery !== null && v.info.status === "ready";
+  const paletteOpen = slashQuery !== null && v.info.status === "ready" && !paletteHidden;
+
+  // every popover in here goes away when the pointer leaves it or Escape is pressed
+  useDismiss(paletteOpen, [composerRef], () => setPaletteHidden(true));
+  // the toolbar counts as "inside" (its triggers own their own lists); the settings
+  // panel is the other inside region. Anything else — a message, empty space, another
+  // session — dismisses whatever is open.
+  useDismiss(settingsOpen || pop !== null, [popRef, barRef], () => { setPop(null); setSettingsOpen(false); });
+  // switching sessions must not carry an open menu across
+  useEffect(() => { setPop(null); setSettingsOpen(false); setPaletteHidden(false); }, [v.info.id]);
 
   const accept = (name: string) => {
     setText(`/${name} `);
@@ -1463,7 +1488,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
       }}
     >
       <UsageRow v={v} />
-      <div className="composer-inner">
+      <div className="composer-inner" ref={composerRef}>
         {paletteOpen && (
           <div className="slash-palette" role="listbox" aria-label="slash commands">
             {matches.length ? (
@@ -1491,7 +1516,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
           </div>
         )}
         {settingsOpen && (
-          <SettingsPopover v={v} prefs={prefs} setPrefs={setPrefs} onClose={() => setSettingsOpen(false)} />
+          <SettingsPopover v={v} prefs={prefs} setPrefs={setPrefs} onClose={() => setSettingsOpen(false)} panelRef={popRef} />
         )}
         {drafts.length > 0 && (
           <div className="draft-row">
@@ -1538,9 +1563,11 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             ref={ta}
             rows={1}
             value={text}
+            onFocus={() => setPaletteHidden(false)}
             placeholder={v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
+              setPaletteHidden(false);
               setPick(0);
               e.target.style.height = "42px";
               e.target.style.height = Math.min(e.target.scrollHeight, window.innerHeight * 0.4) + "px";
@@ -1559,7 +1586,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
           />
-          <div className="composer-bar">
+          <div className="composer-bar" ref={barRef}>
             <input
               ref={fileRef}
               type="file"
@@ -1591,7 +1618,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
                   aria-label={`thinking depth: ${effortName || "agent default"}`}
                   aria-expanded={pop === "effort"}
                   data-testid="tb-effort"
-                  onClick={() => setPop((p) => (p === "effort" ? null : "effort"))}
+                  onClick={() => { setSettingsOpen(false); setPop((p) => (p === "effort" ? null : "effort")); }}
                 >
                   <EffortPips level={effort.level} total={effort.total} color={effort.color} />
                   <IconChevronDown size={11} className="tb-chev" />
@@ -1631,7 +1658,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
                 value={switching ? `${modelName} …` : modelName}
                 testId="tb-model"
                 open={pop === "model"}
-                onToggle={() => setPop((p) => (p === "model" ? null : "model"))}
+                onToggle={() => { setSettingsOpen(false); setPop((p) => (p === "model" ? null : "model")); }}
               >
                 {models.length > 0 ? (
                   <div className="tb-list wide">
@@ -1751,6 +1778,7 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
 type BackendRow = { id: string; label: string; home?: string | null; blocked?: string | null };
 
 function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
+  useEscape(true, onClose);
   const [backend, setBackend] = useState("");
   const [cwd, setCwd] = useState("");
   const [title, setTitle] = useState("");

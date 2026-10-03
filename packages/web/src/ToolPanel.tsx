@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionView } from "./state";
 import { cockpit } from "./state";
+import { useEscape } from "./useDismiss";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
   IconPlus, IconRefresh, IconSwap, IconTerminal,
@@ -67,6 +68,8 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
   onClose: () => void;
   onPickWorkspace: () => void;
 }): JSX.Element {
+  // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
+  useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
   const [tab, setTab] = useState<"files" | "terminal">("files");
   const root = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(root);

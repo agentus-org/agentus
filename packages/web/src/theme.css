@@ -1034,3 +1034,17 @@ code.inline {
 .usage-actions { display: flex; gap: 6px; margin: 6px 0 2px; flex-wrap: wrap; }
 .usage-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); }
 .usage-note code { background: var(--chip-bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+/* ---- touch targets (last, so it wins: several .tb-btn / .set-* rules are declared above) ----
+   Measured at 390x844 before this: ctx readout 260x17, depth button 23x30, a session's fork
+   button 22x20, an accent swatch 22x22 — all below a comfortable thumb. Padding grows the hit
+   box while the negative margin keeps the layout box (and the row height) unchanged. */
+@media (max-width: 720px) {
+  .usage-text { padding: 9px 2px; margin: -9px -2px; }
+  .tb-btn, .tb-effort { min-width: 40px; }
+  .item-btn { min-width: 34px; min-height: 32px; }
+  .set-swatch { width: 32px; height: 32px; }
+  .set-color { width: 36px; height: 32px; }
+  .set-seg button { padding: 8px 12px; }
+  .usage-act { padding: 5px 9px; }
+}

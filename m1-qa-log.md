@@ -563,3 +563,23 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   3. 手机 390 宽下，模型/深度选择面板 anchored `left:0` + `width:min(86vw,420px)` 会挂出屏幕右侧（实测 134..469）→ 手机媒体查询里把 `.tb-list` 钉到视口（`position:fixed; left/right:8px; bottom:76px`）。
 - 验收（`scripts/qa/popover-sweep.mjs`，需真浏览器，不进 CI）：**4 个浮层 × 2 个视口 = 8/8 在屏内**（修前 4/8：ctx 两个尺寸都 OUTSIDE，手机两个选择面板 OUTSIDE）；`offsetParent` 从 `BODY` 变为 `DIV.usage-row`；手机/桌面截图肉眼确认（`screens/phone-ctx-popover-open.png`、`screens/desktop-ctx-popover-open.png`）。
 - 回归：typecheck 0 错误、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
+
+**R86 浮层"点外面不关"全套修复 + 手机触控目标审计**
+
+用户："这些设置啊啥的体验不是很好啊，比如上下文设置中，为啥点击别处不会退出设置页呢……你再看看其他还有没有类似问题"。
+
+- 现状盘点（动手前）：全站 **没有任何** "点外部关闭" 逻辑（`grep` 无 `document.addEventListener` 级别的关闭）；浮层只能靠再点一次触发器或内部 × 关掉。表格：
+  | 浮层 | 点外部 | Esc |
+  |---|---|---|
+  | 上下文浮层 `.usage-detail` | ✗ | ✗（只在编辑态退编辑） |
+  | 聊天设置 `.settings-pop` | ✗ | ✗ |
+  | 模型/深度面板 `.tb-list` | ✗ | ✗ |
+  | 斜杠命令面板 `.slash-palette` | ✗ | 部分（Esc 清空输入） |
+  | 新建会话 / 工作区弹窗 | ✓（遮罩） | ✗ |
+  | 手机抽屉 `.scrim` | ✓（遮罩） | ✗ |
+  | 工具面板（手机整屏 sheet） | n/a | ✗ |
+- 实现：新增 `packages/web/src/useDismiss.ts` —— `useDismiss(open, refs, onClose)`（**pointerdown + capture** 关外部；**Escape 走冒泡**，让内层控件先处理，例如上下文编辑器先退编辑态）+ `useEscape(active, onClose)`。接到：上下文浮层、聊天设置、模型/深度（`ToolbarSelect` 自持 wrap ref，触发器算"内部"所以再点仍是 toggle）、斜杠面板（点外部只隐藏面板、不吃掉输入的 `/…`，回到输入框自动再出现）、两个弹窗（Esc）、手机抽屉（Esc）、工具面板 sheet（Esc）。顺带：开一个浮层会关掉另一个；切会话自动关。
+- 验收（新增 `scripts/qa/dismiss-sweep.mjs`，真浏览器手动跑）：**手机 33/33、桌面 27/27**，含每个浮层的"开 → 点内部不关 → 点外部关 → Esc 关 → 触发器仍 toggle"。
+- 顺带做的触控审计（新增 `scripts/qa/touch-audit.mjs`，390×844）：修前 —— 上下文读数命中区 **260×17**、深度按钮 **23×30**、会话 fork **22×20**、主题色板 **22×22**；修后 **264×35 / 40×30 / 34×32 / 32×32**（`padding` 扩命中区 + 负 `margin` 保持布局不变）。设置页无横向溢出（`scrollWidth == innerWidth == 390`）。
+- 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS；浮层几何扫描 8/8 仍在屏内；上下文设置写回（r83）仍 `contextLimit=72000` 落库。
+- 踩到的坑（已入 lessons）：① CSS 里 `.tb-btn { min-width: 0 }` 出现在手机媒体查询**之后**，把我在前面写的 `min-width:40px` 盖掉了 → 手机覆盖必须写在文件最后；② `while (el) el.click()` 等 React 重渲染会把页面 JS 卡死（我卡死过一个标签页）。
