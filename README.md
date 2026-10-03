@@ -98,6 +98,26 @@ the file wins from then on (the same "settings file > env" order voice and theme
 password-only change pins today's password as a hash, so an env value can never quietly
 come back into play. Delete `credentials.json` to fall back to the environment.
 
+Account management lives in Settings → 账号 (the same shape as hermes-studio's
+AccountSettings, minus the multi-user parts — this cockpit is one operator):
+
+| card | what it does |
+|---|---|
+| **账号** | change the username or the password (each in a small modal, current password required) |
+| **登录会话** | every browser and script holding a session: client, IP, last seen, expiry. Revoke one, or log out everywhere else. Changing the password does the same for the others at once. |
+| **登录失败锁定** | the login limiter, visible: which IPs are locked, for how long, with unlock / unlock all — so locking yourself out of your own cockpit is a 1-click problem, not a restart |
+
+Sessions are stateless cookies, so the server keeps an index of them at
+`<DATA_DIR>/sessions.json` (0600). It is advisory for display but authoritative for
+existence: a cookie that is not in the index, or that was revoked, is refused — that is what
+makes revocation and "log out everywhere" real, and it survives a restart. An upgrade from
+an older build adopts the cookies that already exist once instead of logging every device
+out.
+
+Endpoints behind the login: `POST /api/auth/credentials`, `GET /api/auth/sessions`,
+`POST /api/auth/sessions/revoke`, `POST /api/auth/sessions/revoke-others`,
+`GET|DELETE /api/auth/locked-ips`.
+
 Two credentials exist, deliberately:
 
 | credential | how it travels | who uses it |

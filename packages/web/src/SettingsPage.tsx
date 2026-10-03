@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconArrowLeft, IconClose, IconMic, IconRefresh, IconSettings, IconStop, IconVolume } from "./Icons";
 import { pushTheme, useTheme, type ThemeConfig } from "./theme";
+import { AccountPanels, type AccountInfo } from "./Account";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -85,12 +86,6 @@ function draftOf(v: SettingsView): Draft {
 
 const sameDraft = (a: Draft, b: Draft): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-interface AccountInfo {
-  configuredUsername: string;
-  credentialSource: "saved" | "env" | "default";
-  minPasswordLen: number;
-  usingDefaultPassword: boolean;
-}
 
 export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sessionId?: string }): JSX.Element {
   const theme = useTheme();
@@ -105,17 +100,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [ttsText, setTtsText] = useState("AgentSlot 语音合成自测：龙安欢音色。");
-  // account (username / password): its own endpoint, its own save button — the page's
-  // dirty/save pair is about voice+theme, and mixing them would make the header button
-  // mean two different things.
+  // account, sessions and login locks live in Account.tsx (their own endpoints, their own
+  // loading); this page only carries the identity the 账号 card prints.
   const [acc, setAcc] = useState<AccountInfo | null>(null);
-  const [accUser, setAccUser] = useState("");
-  const [accPass, setAccPass] = useState("");
-  const [accAgain, setAccAgain] = useState("");
-  const [accCurrent, setAccCurrent] = useState("");
-  const [accBusy, setAccBusy] = useState(false);
-  const [accMsg, setAccMsg] = useState("");
-  const [accErr, setAccErr] = useState("");
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
 
@@ -127,8 +114,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         const a = (await who.json().catch(() => ({}))) as Partial<AccountInfo>;
         if (a.configuredUsername) {
           setAcc({ configuredUsername: a.configuredUsername, credentialSource: a.credentialSource ?? "default",
-                   minPasswordLen: a.minPasswordLen ?? 4, usingDefaultPassword: Boolean(a.usingDefaultPassword) });
-          setAccUser((cur) => cur || a.configuredUsername || "");
+                   minPasswordLen: a.minPasswordLen ?? 6, usingDefaultPassword: Boolean(a.usingDefaultPassword) });
         }
       }
       const res = await fetch("/api/settings", { credentials: "same-origin" });
@@ -194,48 +180,6 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       return false;
     } finally {
       setBusy("");
-    }
-  };
-
-  const saveAccount = async (): Promise<void> => {
-    setAccErr("");
-    setAccMsg("");
-    if (!acc) return;
-    const user = accUser.trim();
-    const patch: Record<string, string> = { currentPassword: accCurrent };
-    if (user && user !== acc.configuredUsername) patch.username = user;
-    if (accPass) {
-      if (accPass !== accAgain) { setAccErr("两次输入的新密码不一致"); return; }
-      if (accPass.length < acc.minPasswordLen) { setAccErr(`密码至少 ${acc.minPasswordLen} 位`); return; }
-      patch.newPassword = accPass;
-    }
-    if (!patch.username && !patch.newPassword) { setAccErr("没有要改的内容"); return; }
-    setAccBusy(true);
-    try {
-      const res = await fetch("/api/auth/credentials", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const data = (await res.json().catch(() => ({}))) as Partial<AccountInfo> & { error?: string; username?: string };
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setAcc({
-        configuredUsername: data.username ?? user,
-        credentialSource: data.credentialSource ?? "saved",
-        minPasswordLen: acc.minPasswordLen,
-        usingDefaultPassword: Boolean(data.usingDefaultPassword),
-      });
-      setAccUser(data.username ?? user);
-      setAccPass("");
-      setAccAgain("");
-      setAccCurrent("");
-      setAccMsg("已更新；其他设备需重新登录");
-      window.setTimeout(() => setAccMsg(""), 4000);
-    } catch (e) {
-      setAccErr(String((e as Error)?.message ?? e));
-    } finally {
-      setAccBusy(false);
     }
   };
 
@@ -319,77 +263,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
         ) : null}
 
-        {/* ---------- 账号 ---------- */}
-        <section className="set-card">
-          <h3>账号</h3>
-          <p className="set-hint">
-            {acc?.credentialSource === "default" ? (
-              <>现在是<b>内置默认口令</b>（<code>admin / 123456</code>），对公网开放时务必改掉。</>
-            ) : acc?.credentialSource === "env" ? (
-              <>当前口令来自环境变量（<code>AGENTSLOT_USERNAME</code> / <code>AGENTSLOT_PASSWORD</code>）；
-                在这里保存后以本页为准，环境变量只当引导。</>
-            ) : (
-              <>当前口令存在数据目录的 <code>credentials.json</code>（0600，scrypt 哈希，明文不落盘）。</>
-            )}
-            {" "}改完立即生效，不需要重启；其余设备会被登出（本机自动续上）。
-          </p>
-          <div className="set-row">
-            <label>用户名</label>
-            <input
-              className="set-input"
-              value={accUser}
-              autoComplete="username"
-              aria-label="username"
-              onChange={(e) => setAccUser(e.target.value)}
-            />
-          </div>
-          <div className="set-row">
-            <label>新密码</label>
-            <input
-              className="set-input"
-              type="password"
-              value={accPass}
-              autoComplete="new-password"
-              aria-label="new password"
-              placeholder={`留空不改（至少 ${acc?.minPasswordLen ?? 4} 位）`}
-              onChange={(e) => setAccPass(e.target.value)}
-            />
-          </div>
-          <div className="set-row">
-            <label>再输一次</label>
-            <input
-              className="set-input"
-              type="password"
-              value={accAgain}
-              autoComplete="new-password"
-              aria-label="repeat new password"
-              onChange={(e) => setAccAgain(e.target.value)}
-            />
-          </div>
-          <div className="set-row">
-            <label>当前密码</label>
-            <input
-              className="set-input"
-              type="password"
-              value={accCurrent}
-              autoComplete="current-password"
-              aria-label="current password"
-              placeholder="改之前先证明是你"
-              onChange={(e) => setAccCurrent(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void saveAccount(); }}
-            />
-          </div>
-          <div className="set-row">
-            <label />
-            <div className="set-pair">
-              <button className="set-mini" onClick={() => void saveAccount()} disabled={accBusy || !accCurrent}>
-                {accBusy ? "保存中…" : "更新账号"}
-              </button>
-              {accMsg ? <span className="set-toast">{accMsg}</span> : null}
-              {accErr ? <span className="set-inline-err">{accErr}</span> : null}
-            </div>
-          </div>
-        </section>
+        {/* ---------- 账号 / 登录会话 / 登录失败锁定 ---------- */}
+        <AccountPanels
+          account={acc}
+          onChanged={(next) => setAcc((cur) => (cur ? { ...cur, ...next } : cur))}
+        />
 
         {/* ---------- 主题 ---------- */}
         <section className="set-card">

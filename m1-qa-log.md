@@ -596,3 +596,17 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - 线上实例实测：`GET /api/auth/me` → `configuredUsername: admin, credentialSource: default, usingDefaultPassword: true` —— 也就是你现在打开设置页，第一张卡会直接告诉你"现在是内置默认口令，对公网开放时务必改掉"。
 - 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
 - 我踩的坑（已入 lessons）：改了前端**忘了 `npm run build`** 就去跑浏览器 QA —— 服务端发的是 `dist/`，源码改了不生效，E2E 第一轮直接找不到账号卡；另外判"是否仍登录"不能读 `document.cookie`（会话 cookie 是 HttpOnly，永远读不到），要问 `/api/auth/me`。
+
+**R88 账户管理做完整（照 hermes-studio 的 AccountSettings 补）**
+
+用户："你可以参考下 hermes studio 吗，完整实现下账户管理"。
+
+先读参考（`~/.hermes/cache/studio-ref` @ `ea5bcb9f`）：studio 的账户面 = `AccountSettings.vue`（头像上传/随机/重置 + 改用户名 + 改密码，两个弹窗，当前密码必填）+ `UserManagementSettings.vue`（多用户，super admin）+ **锁定 IP 列表 + 单个/全部解锁**（`GET|DELETE /api/auth/locked-ips`，限流器 `recordPasswordFailure` 的可见面）。多用户与 AgentSlot 的"单操作员、一台机器一个驾驶舱"定位冲突，不做；其余全部补齐，并加一样 studio 没有但本产品必须要的东西。
+
+- **会话注册表（新）**：会话是无状态签名 cookie，因此"谁登录着"原本答不出来、偷来的 cookie 也撤不掉。现在登录即登记 `<DATA_DIR>/sessions.json`（0600）：`jti / username / ip / ua / iat / exp / lastSeen`。接口：`GET /api/auth/sessions`（带 `current` 标记）、`POST /api/auth/sessions/revoke {jti}`（撤自己返回 400 并提示"这是登出"）、`POST /api/auth/sessions/revoke-others`。注册表对读取是"提示"、对存在性是"权威"：不在表里的 cookie 一律拒绝 —— 这才让撤销与"全部登出"是真的，并且**重启后依然成立**。升级路径：首次启动若注册表文件不存在，则把仍然签名有效的旧 cookie 一次性接管，避免升级即全员掉线。
+- **锁定 IP 可见可解（新）**：`GET /api/auth/locked-ips` → `{locks:[{ip,fails,locked,retryAfterMs}], maxFails, lockMs}`；`DELETE /api/auth/locked-ips?ip=` 解一个、不带 ip 解全部（对齐 studio 的形状）。把自己锁在门外从"等 30 秒或重启"变成"点一下解锁"。
+- **改用户名 / 改密码改成弹窗**（studio 形状）：每行密码框带"眼睛"显隐；两次不一致、太短、没填当前密码都在前端先拦；口径对齐 studio（用户名 ≥2、密码 ≥6）。
+- **前端新增两张卡**：登录会话（设备/浏览器、IP、最近活跃、到期、"当前"徽章、撤销 / 登出其他设备 / 刷新；超过 8 条折叠成"还有 N 个"）与 登录失败锁定（IP、失败次数或剩余锁定时间、解锁 / 全部解锁 / 刷新 + 空状态）。解析 UA 成"Chrome · macOS"，时间显示成"3 秒前 / 7 天"。
+- **测试**：`auth-smoke` 76 → **98 项**（新增：两次登录=两行且只有一行 current、匿名 401、撤自己 400、未知 jti 404、撤别的设备后该 cookie 在所有受保护路由 401 且 `/api/auth/me` 报匿名、调用者不受影响、注册表 0600 且不含 token、全部登出计数、**重启后仍列出且被撤的仍是死的**、锁定 IP 出现在列表且返回 429、解锁后能登录、解锁未知 IP 404、全部解锁计数）。浏览器 E2E（新 `m_account_panels_e2e.mjs`，临时实例 :8901）**24/24**：四张卡的顺序、会话卡两行且标"当前"、点撤销后另一台设备真的匿名（用**独立 browser context**造的第二台设备）、5 次失败→卡上出现"已锁定 30 秒"→点解锁→列表清空→能登录、改用户名弹窗、改密码弹窗（三个密码框 + 眼睛真的把字段切成 text）、两次不一致被拦、成功后新口令可登录旧口令 401、本机仍在线。
+- 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
+- 我踩的坑（已入 lessons）：① **同一浏览器 profile 的两个标签页共享 cookie jar**，用它模拟"两台设备"永远是错的（后登录的覆盖前一个 cookie），所以第一轮 E2E 误判"撤销没生效"——真要多设备必须 `Target.createBrowserContext` 开独立上下文；② 点击后立刻读 DOM 拿到的是旧值（React 异步更新，眼睛切换那次又栽了一次）。

@@ -233,7 +233,7 @@ const httpServer = createServer(async (req, res) => {
       }
       auth.recordLoginSuccess(ip);
       const st = auth.status();
-      const { value, expiresAt } = auth.issueSession(st.username);
+      const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip, ua: String(req.headers["user-agent"] ?? "") });
       console.log(`[agentslot] login ok: ${st.username} from ${ip}`);
       res.writeHead(200, {
         "content-type": "application/json",
@@ -255,7 +255,7 @@ const httpServer = createServer(async (req, res) => {
       console.log(`[agentslot] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
       // every older cookie is dead now (the epoch moved) — hand this caller a fresh one
       const st = auth.status();
-      const { value, expiresAt } = auth.issueSession(st.username);
+      const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip: clientIp(req), ua: String(req.headers["user-agent"] ?? "") });
       res.writeHead(200, {
         "content-type": "application/json",
         "set-cookie": auth.sessionCookie(value, Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)), auth.isSecureRequest(req.headers)),
@@ -267,6 +267,47 @@ const httpServer = createServer(async (req, res) => {
         usingDefaultPassword: st.usingDefaultPassword,
         expiresAt,
       }));
+    }
+    if (url.pathname === "/api/auth/sessions" && req.method === "GET") {
+      const who = (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal;
+      return send(res, 200, {
+        sessions: auth.listSessions(who?.jti),
+        ttlMs: auth.sessionTtlMs(),
+      });
+    }
+    if (url.pathname === "/api/auth/sessions/revoke" && req.method === "POST") {
+      const body = await readJson(req);
+      const jti = String(body.jti ?? "");
+      const who = (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal;
+      if (jti && jti === who?.jti) {
+        // revoking yourself is "log out", not "kick this device" — say so instead of
+        // silently leaving the browser holding a dead cookie
+        return send(res, 400, { error: "that is this session — use log out" });
+      }
+      if (!auth.revokeSessionById(jti)) return send(res, 404, { error: "no such session" });
+      console.log(`[agentslot] session revoked: ${jti} from ${clientIp(req)}`);
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === "/api/auth/sessions/revoke-others" && req.method === "POST") {
+      const who = (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal;
+      const count = auth.revokeOtherSessions(who?.jti);
+      console.log(`[agentslot] logged out ${count} other session(s), asked by ${clientIp(req)}`);
+      return send(res, 200, { ok: true, count });
+    }
+    if (url.pathname === "/api/auth/locked-ips" && req.method === "GET") {
+      return send(res, 200, { locks: auth.listIpLocks(), maxFails: auth.loginLimits().maxFails, lockMs: auth.loginLimits().lockMs });
+    }
+    if (url.pathname === "/api/auth/locked-ips" && req.method === "DELETE") {
+      const ip = String(url.searchParams.get("ip") ?? "").trim();
+      if (ip) {
+        const known = auth.unlockIp(ip);
+        if (!known) return send(res, 404, { error: "that IP is not locked" });
+        console.log(`[agentslot] lock lifted for ${ip} (asked by ${clientIp(req)})`);
+        return send(res, 200, { ok: true, ip });
+      }
+      const count = auth.unlockAllIps();
+      console.log(`[agentslot] all login locks lifted (${count}) by ${clientIp(req)}`);
+      return send(res, 200, { ok: true, count });
     }
     if (url.pathname === "/api/auth/logout" && req.method === "POST") {
       // Revoke, don't just clear: see auth.revokeSession

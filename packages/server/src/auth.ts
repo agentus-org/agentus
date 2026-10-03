@@ -29,6 +29,8 @@ export interface AuthPrincipal {
   kind: "session" | "token";
   username: string;
   expiresAt: number | null;
+  /** session id — lets the sessions list mark which row is the caller */
+  jti?: string;
 }
 
 export interface AuthStatus {
@@ -37,6 +39,8 @@ export interface AuthStatus {
   usingDefaultPassword: boolean;
   /** where the username/password in play came from */
   source: "saved" | "env" | "default";
+  /** live sessions in the registry (advisory count for the boot log) */
+  sessions: number;
   /** ISO path of the machine token, so the boot log can point scripts at it */
   tokenFile: string | null;
   sessionTtlMs: number;
@@ -91,7 +95,8 @@ export function hashPassword(password: string): string {
   return `scrypt:${salt}:${scryptSync(password, salt, 32).toString("hex")}`;
 }
 
-export const MIN_PASSWORD_LEN = 4;
+export const MIN_PASSWORD_LEN = 6;
+export const MIN_USERNAME_LEN = 2;
 
 interface StoredCreds {
   username: string;
@@ -135,8 +140,8 @@ export function changeCredentials(input: { currentPassword: string; username?: s
     return { ok: false, status: 400, error: "nothing to change" };
   }
   const nextUser = input.username === undefined ? configuredUsername() : String(input.username).trim();
-  if (!nextUser || nextUser.length > 32 || /\s/.test(nextUser)) {
-    return { ok: false, status: 400, error: "username must be 1-32 characters with no spaces" };
+  if (nextUser.length < MIN_USERNAME_LEN || nextUser.length > 32 || /\s/.test(nextUser)) {
+    return { ok: false, status: 400, error: `username must be ${MIN_USERNAME_LEN}-32 characters with no spaces` };
   }
   const newPass = input.newPassword === undefined ? null : String(input.newPassword);
   if (newPass !== null && newPass.length < MIN_PASSWORD_LEN) {
@@ -190,6 +195,9 @@ export function initAuth(dataDir: string): AuthStatus {
   // stays the bootstrap, exactly like voice/theme settings (settings.json > .env).
   credsFile = path.join(dataDir, "credentials.json");
   stored = readStored(credsFile);
+  sessionsFile = path.join(dataDir, "sessions.json");
+  adoptingLegacy = !fs.existsSync(sessionsFile);
+  records = readRecords(sessionsFile);
   const secretRaw = process.env.AGENTSLOT_AUTH_SECRET?.trim() || readOrCreate(path.join(dataDir, "auth.secret"), 32);
   secret = Buffer.from(secretRaw, "utf8");
   // Exported so WS-upgrade code (a different module, same process) can verify too.
@@ -210,6 +218,7 @@ export function status(): AuthStatus {
     username: configuredUsername(),
     usingDefaultPassword: usesDefaultPassword(),
     source: credentialSource(),
+    sessions: records.length,
     tokenFile,
     sessionTtlMs: sessionTtlMs(),
   };
@@ -269,7 +278,11 @@ interface SessionBody {
 const revoked = new Set<string>();
 const REVOKED_CAP = 1000;
 
-export function issueSession(username: string, now = Date.now()): { value: string; expiresAt: number } {
+export function issueSession(
+  username: string,
+  now = Date.now(),
+  origin: { ip?: string; ua?: string } = {},
+): { value: string; expiresAt: number; jti: string } {
   const exp = now + sessionTtlMs();
   const payload: SessionBody = {
     u: username,
@@ -279,7 +292,19 @@ export function issueSession(username: string, now = Date.now()): { value: strin
     jti: randomBytes(8).toString("hex"),
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return { value: `${SESSION_VERSION}.${body}.${hmac(body)}`, expiresAt: exp };
+  // Recorded so the operator can SEE the devices holding a session and kick one. The
+  // index is advisory for reads but authoritative for existence: a token whose jti is
+  // not in the registry is refused (that is what makes "log out everywhere" real).
+  rememberSession({
+    jti: payload.jti,
+    username,
+    ip: String(origin.ip ?? ""),
+    ua: String(origin.ua ?? "").slice(0, 240),
+    iat: now,
+    exp,
+    lastSeen: now,
+  });
+  return { value: `${SESSION_VERSION}.${body}.${hmac(body)}`, expiresAt: exp, jti: payload.jti };
 }
 
 /** signature + expiry, ignoring revocation (revoke itself has to be able to parse) */
@@ -304,7 +329,17 @@ function parseSession(value: string | undefined | null, now = Date.now()): Sessi
 export function verifySessionValue(value: string | undefined | null, now = Date.now()): SessionBody | null {
   const body = parseSession(value, now);
   if (!body) return null;
-  return revoked.has(body.jti) ? null : body;
+  if (revoked.has(body.jti)) return null;
+  if (!sessionKnown(body.jti)) {
+    // First boot after this feature shipped: the registry did not exist yet, so a cookie
+    // that still passes signature+expiry is adopted instead of logging every device out.
+    if (!adoptingLegacy) return null;
+    rememberSession({ jti: body.jti, username: body.u, ip: "", ua: "", iat: body.iat * 1000, exp: body.exp * 1000, lastSeen: now });
+    adoptingLegacy = false;
+  } else {
+    noteSessionSeen(body.jti, now);
+  }
+  return body;
 }
 
 /** Logout with teeth: without this the stateless cookie would keep working until exp,
@@ -312,13 +347,166 @@ export function verifySessionValue(value: string | undefined | null, now = Date.
 export function revokeSession(value: string | undefined | null, now = Date.now()): boolean {
   const body = parseSession(value, now);
   if (!body) return false;
-  revoked.add(body.jti);
-  // unbounded growth in a long-lived process is a slow leak; keep the recent tail
+  forgetSession(body.jti);
+  rememberRevoked(body.jti);
+  return true;
+}
+
+/** unbounded growth in a long-lived process is a slow leak; keep the recent tail */
+function rememberRevoked(jti: string): void {
+  revoked.add(jti);
   if (revoked.size > REVOKED_CAP) {
     const first = revoked.values().next().value;
     if (first) revoked.delete(first);
   }
+}
+
+// ---- the session registry: who is signed in, and from where ------------------
+//
+// Sessions are stateless (HMAC + expiry), which is exactly why they are invisible: a
+// stolen cookie or a phone left logged in on a train cannot be seen, let alone revoked.
+// This registry is the index the operator looks at and kicks from. It is advisory for
+// reads, authoritative for existence — a valid-looking cookie whose jti is absent is
+// refused, so "log out everywhere" survives a restart.
+//
+// Left over from hermes-studio (studied, not copied): their AccountSettings lists locked
+// IPs and hands you an unlock button. We have had a login limiter since M1 with no way to
+// look at it — same gap, same fix.
+
+interface SessionRecord {
+  jti: string;
+  username: string;
+  ip: string;
+  ua: string;
+  iat: number;
+  exp: number;
+  lastSeen: number;
+}
+
+let sessionsFile: string | null = null;
+let records: SessionRecord[] = [];
+/** true only until the registry exists on disk: valid cookies from before the upgrade
+ *  are adopted once instead of logging every device out. */
+let adoptingLegacy = true;
+let lastFlush = 0;
+
+function readRecords(file: string): SessionRecord[] {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as SessionRecord[];
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((r) => r && typeof r.jti === "string" && Number(r.exp) > 0);
+  } catch { return []; }
+}
+
+function flushSessions(force = false): void {
+  if (!sessionsFile) return;
+  const now = Date.now();
+  if (!force && now - lastFlush < 20000) return; // lastSeen ticks are not worth a write each
+  lastFlush = now;
+  records = records.filter((r) => r.exp > now);
+  fs.mkdirSync(path.dirname(sessionsFile), { recursive: true });
+  fs.writeFileSync(sessionsFile, `${JSON.stringify(records)}
+`, { mode: 0o600 });
+  adoptingLegacy = false;
+}
+
+function rememberSession(r: SessionRecord): void {
+  records = records.filter((x) => x.jti !== r.jti);
+  records.push(r);
+  flushSessions(true);
+}
+
+function sessionKnown(jti: string): boolean {
+  return records.some((r) => r.jti === jti);
+}
+
+function noteSessionSeen(jti: string, now: number): void {
+  const r = records.find((x) => x.jti === jti);
+  if (!r) return;
+  r.lastSeen = now;
+  flushSessions();
+}
+
+function forgetSession(jti: string): void {
+  const before = records.length;
+  records = records.filter((r) => r.jti !== jti);
+  if (records.length !== before) flushSessions(true);
+}
+
+export interface SessionView {
+  jti: string;
+  username: string;
+  ip: string;
+  ua: string;
+  issuedAt: number;
+  expiresAt: number;
+  lastSeen: number;
+  current: boolean;
+}
+
+export function listSessions(currentJti?: string, now = Date.now()): SessionView[] {
+  return records
+    .filter((r) => r.exp > now && !revoked.has(r.jti))
+    .map((r) => ({
+      jti: r.jti,
+      username: r.username,
+      ip: r.ip,
+      ua: r.ua,
+      issuedAt: r.iat,
+      expiresAt: r.exp,
+      lastSeen: r.lastSeen,
+      current: Boolean(currentJti) && r.jti === currentJti,
+    }))
+    .sort((a, b) => Number(b.current) - Number(a.current) || b.lastSeen - a.lastSeen);
+}
+
+/** Kill one device's session. Returns false when the id is not a live session. */
+export function revokeSessionById(jti: string): boolean {
+  if (!jti || !sessionKnown(jti)) return false;
+  forgetSession(jti);
+  rememberRevoked(jti);
   return true;
+}
+
+/** Log out everywhere except the caller. Returns how many sessions were dropped. */
+export function revokeOtherSessions(keepJti: string | undefined): number {
+  const now = Date.now();
+  const victims = records.filter((r) => r.jti !== keepJti && r.exp > now);
+  for (const v of victims) {
+    forgetSession(v.jti);
+    rememberRevoked(v.jti);
+  }
+  return victims.length;
+}
+
+// ---- login-failure locks, visible and liftable ------------------------------
+
+export interface IpLockView {
+  ip: string;
+  fails: number;
+  locked: boolean;
+  retryAfterMs: number;
+}
+
+export function listIpLocks(now = Date.now()): IpLockView[] {
+  const out: IpLockView[] = [];
+  for (const [ip, e] of limiter) {
+    const locked = e.lockedUntil > now;
+    if (!locked && e.fails === 0) continue;
+    out.push({ ip, fails: e.fails, locked, retryAfterMs: locked ? e.lockedUntil - now : 0 });
+  }
+  return out.sort((a, b) => Number(b.locked) - Number(a.locked) || b.fails - a.fails);
+}
+
+/** Lift a lock (or clear a half-spent failure count). False when the IP was not known. */
+export function unlockIp(ip: string): boolean {
+  return limiter.delete(ip);
+}
+
+export function unlockAllIps(): number {
+  const n = limiter.size;
+  limiter.clear();
+  return n;
 }
 
 export function verifyMachineToken(value: string | undefined | null): boolean {
@@ -362,7 +550,7 @@ export function authenticate(
   if (verifyMachineToken(token)) return { kind: "token", username: st.username, expiresAt: null };
 
   const session = verifySessionValue(parseCookies(String(headers.cookie ?? ""))[COOKIE_NAME], now);
-  if (session) return { kind: "session", username: session.u, expiresAt: session.exp * 1000 };
+  if (session) return { kind: "session", username: session.u, expiresAt: session.exp * 1000, jti: session.jti };
 
   return null;
 }

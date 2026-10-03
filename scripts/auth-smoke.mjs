@@ -365,5 +365,71 @@ check("creds: after a restart the env password is gone", (await jsonLogin(g2.bas
 g2.proc.kill("SIGTERM");
 await sleep(300);
 
+
+// ---- server H: the session registry + login locks -------------------------------
+// Sessions are stateless cookies, so without a registry "who is signed in" is unanswerable
+// and a stolen cookie cannot be revoked. This guards the registry (list / revoke one / log
+// out everywhere / survive a restart) and the visible login limiter (locked IP can be seen
+// and lifted) — the two account-management pieces hermes-studio's AccountSettings has.
+const dataH = mkdtempSync(path.join(tmpdir(), "agentslot-authH-"));
+const h = await boot(8892, dataH);
+const hLogin = async () => cookieOf(await jsonLogin(h.base, USER, PASSWORD));
+const ckA = await hLogin();
+const ckB = await hLogin();
+check("sessions: two logins -> two sessions, exactly one marked current", await (async () => {
+  const r = await fetch(`${h.base}/api/auth/sessions`, { headers: { cookie: ckA } });
+  const b = await r.json();
+  return r.status === 200 && b.sessions.length === 2 && b.sessions.filter((x) => x.current).length === 1
+    && b.sessions.every((x) => x.username === USER && x.ua.length > 0);
+})());
+check("sessions: anonymous -> 401", status(await fetch(`${h.base}/api/auth/sessions`)) === 401);
+const rowsH = (await (await fetch(`${h.base}/api/auth/sessions`, { headers: { cookie: ckA } })).json()).sessions;
+const mineH = rowsH.find((x) => x.current).jti;
+const otherH = rowsH.find((x) => !x.current).jti;
+check("sessions: revoking yourself is refused (that is log out)", status(await fetch(`${h.base}/api/auth/sessions/revoke`, {
+  method: "POST", headers: { "content-type": "application/json", cookie: ckA }, body: JSON.stringify({ jti: mineH }),
+})) === 400);
+check("sessions: unknown id -> 404", status(await fetch(`${h.base}/api/auth/sessions/revoke`, {
+  method: "POST", headers: { "content-type": "application/json", cookie: ckA }, body: JSON.stringify({ jti: "nope" }),
+})) === 404);
+check("sessions: revoke the other device -> 200", status(await fetch(`${h.base}/api/auth/sessions/revoke`, {
+  method: "POST", headers: { "content-type": "application/json", cookie: ckA }, body: JSON.stringify({ jti: otherH }),
+})) === 200);
+check("sessions: the revoked cookie is dead on a gated route", status(await fetch(`${h.base}/api/sessions`, { headers: { cookie: ckB } })) === 401);
+check("sessions: the revoked cookie is dead (me reports anonymous)",
+  (await (await fetch(`${h.base}/api/auth/me`, { headers: { cookie: ckB } })).json()).authenticated === false);
+check("sessions: the caller is untouched", status(await fetch(`${h.base}/api/sessions`, { headers: { cookie: ckA } })) === 200);
+const registry = path.join(dataH, "sessions.json");
+check("sessions: registry file is 0600", fs.existsSync(registry) && (fs.statSync(registry).mode & 0o777) === 0o600);
+check("sessions: registry holds no token material", fs.existsSync(registry) && !fs.readFileSync(registry, "utf8").includes("agentslot_session"));
+
+// log out everywhere
+await hLogin();
+await hLogin();
+const hAll = await fetch(`${h.base}/api/auth/sessions/revoke-others`, { method: "POST", headers: { cookie: ckA } });
+const hAllBody = await hAll.json();
+check("sessions: log out everywhere drops the others", hAll.status === 200 && hAllBody.count === 2, JSON.stringify(hAllBody));
+check("sessions: only the caller is left", (await (await fetch(`${h.base}/api/auth/sessions`, { headers: { cookie: ckA } })).json()).sessions.length === 1);
+
+// restart: the registry is the source of truth
+h.proc.kill("SIGTERM");
+await sleep(600);
+const h2 = await boot(8892, dataH);
+check("sessions: still listed after a restart", (await (await fetch(`${h2.base}/api/auth/sessions`, { headers: { cookie: ckA } })).json()).sessions.length === 1);
+check("sessions: a revoked cookie stays dead after a restart", status(await fetch(`${h2.base}/api/sessions`, { headers: { cookie: ckB } })) === 401);
+
+// login locks: visible and liftable
+check("locks: anonymous -> 401", status(await fetch(`${h2.base}/api/auth/locked-ips`)) === 401);
+for (let i = 0; i < 3; i++) await jsonLogin(h2.base, USER, "wrong-one");
+const lockList = await (await fetch(`${h2.base}/api/auth/locked-ips`, { headers: { cookie: ckA } })).json();
+check("locks: the locked IP is listed", lockList.locks.some((l) => l.locked && l.ip === "127.0.0.1"), JSON.stringify(lockList.locks));
+check("locks: a locked IP gets 429", status(await jsonLogin(h2.base, USER, PASSWORD)) === 429);
+check("locks: unlock one -> 200", status(await fetch(`${h2.base}/api/auth/locked-ips?ip=127.0.0.1`, { method: "DELETE", headers: { cookie: ckA } })) === 200);
+check("locks: login works again after the unlock", status(await jsonLogin(h2.base, USER, PASSWORD)) === 200);
+check("locks: unlocking an unknown IP -> 404", status(await fetch(`${h2.base}/api/auth/locked-ips?ip=10.9.9.9`, { method: "DELETE", headers: { cookie: ckA } })) === 404);
+check("locks: clear all -> count", (await (await fetch(`${h2.base}/api/auth/locked-ips`, { method: "DELETE", headers: { cookie: ckA } })).json()).count === 0);
+h2.proc.kill("SIGTERM");
+await sleep(300);
+
 console.log(`\n${failed === 0 ? "AUTH SMOKE PASS" : `AUTH SMOKE FAIL (${failed} of ${results.length})`}`);
 process.exit(failed === 0 ? 0 : 1);

@@ -130,3 +130,18 @@ export const IconBrain = (p: IconProps = {}): JSX.Element =>
 /** fork a session: the branch glyph */
 export const IconFork = (p: IconProps = {}): JSX.Element =>
   svg(<><circle cx="7" cy="5" r="2" /><circle cx="7" cy="19" r="2" /><circle cx="17" cy="9" r="2" /><path d="M7 7v10M17 11c0 3-3 4-6 4H9" /></>, p);
+
+/** password reveal — an eye; the slash variant is "hide" */
+export const IconEye = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z" /><circle cx="12" cy="12" r="2.6" /></>, p);
+
+export const IconEyeOff = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M3 3l18 18" /><path d="M10.6 6.2A9.9 9.9 0 0 1 12 6c6.4 0 10 6 10 6a17 17 0 0 1-2.8 3.3" /><path d="M6.3 7.9A16.5 16.5 0 0 0 2 12s3.6 6 10 6c1.5 0 2.8-.3 4-.8" /></>, p);
+
+/** devices signed in — a monitor-ish badge, used by the sessions card */
+export const IconDevice = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>, p);
+
+/** a lock: the login-lockout card */
+export const IconLock = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>, p);
