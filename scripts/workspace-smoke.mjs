@@ -157,6 +157,39 @@ try {
   }));
   check("workspace can be pointed at another directory", setWs.workspace === root, String(setWs.workspace));
   check("the running session keeps its spawn cwd", setWs.cwd === ROOT, `${setWs.cwd} vs ${ROOT}`);
+
+  // ---- rename: display state, reversible, never the agent's business ----------------
+  const auto = created.title;
+  const renamed = await j(await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ title: "  重构 · 会话列表  " }),
+  }));
+  check("rename trims and takes the operator's name", renamed.title === "重构 · 会话列表", String(renamed.title));
+  const listAfter = await j(await fetch(`${base}/api/sessions`, { headers: H }));
+  // a freshly created mock session is LIVE, a restarted one lands in `archived` — check both
+  const afterRename = [...listAfter.live, ...listAfter.archived].find((x) => x.id === created.id);
+  check("the new name is persisted, not just echoed", afterRename?.title === "重构 · 会话列表", String(afterRename?.title));
+  const clearedTitle = await j(await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: "   " }),
+  }));
+  check("clearing a rename falls back to the generated name", clearedTitle.title === auto, `${clearedTitle.title} (auto was ${auto})`);
+  const ctrl = await j(await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: "a\nb\tc" }),
+  }));
+  check("control characters fold to spaces (the rail is one line)", ctrl.title === "a b c", JSON.stringify(ctrl.title));
+  const long = await j(await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: "x".repeat(300) }),
+  }));
+  check("an absurd name is capped", long.title.length === 120, `len=${long.title.length}`);
+  await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: null }),
+  });
+  check("rename refuses an unknown session", (await fetch(`${base}/api/sessions/nope-rename/rename`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: "x" }),
+  })).status === 404);
+  check("rename needs credentials", (await fetch(`${base}/api/sessions/${created.id}/rename`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "x" }),
+  })).status === 401);
   const rooted = await j(await fetch(`${base}/api/fs/dirs?sessionId=${created.id}`, { headers: H }));
   check("fs/dirs?sessionId= resolves the session workspace", rooted.path === root, rooted.path);
   check("the workspace survives a re-read of the session list",

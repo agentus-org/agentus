@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
@@ -11,9 +12,10 @@ import {
   useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
-  IconArrowDown, IconChevronDown, IconChevronRight, IconClose, IconFile, IconFolder, IconGauge,
-  IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip, IconPause, IconPlus, IconPower,
-  IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff,
+  IconArrowDown, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconFile,
+  IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
+  IconPause, IconPencil, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconSettings, IconShield,
+  IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
 import type { ClientCommand, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
 
@@ -121,6 +123,178 @@ function AuthScreen(): JSX.Element {
  *  is in the tooltip), and a group collapses, so twenty sessions across four projects stay
  *  readable. Live and cold sessions live in the same group: they belong to the same work,
  *  and splitting them by process state was a machine's view, not the operator's. */
+/** Copy text. `navigator.clipboard` only exists in a SECURE CONTEXT, and the cockpit's LAN
+ *  entry is plain `http://<lan-ip>:8787` — so the execCommand path is load-bearing here, not
+ *  a legacy courtesy (measured: on that origin navigator.clipboard is undefined while the
+ *  https entry has it). Returns whether the text actually made it. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through to the textarea path */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** One-click copy for a message (studio puts this on every bubble, AionUi on every turn). */
+function CopyButton({ text, what = "消息" }: { text: string; what?: string }): JSX.Element {
+  const [state, setState] = useState<"" | "ok" | "no">("");
+  const timer = useRef<number | null>(null);
+  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
+  const title = state === "ok" ? "已复制" : state === "no" ? "复制失败（浏览器拒绝）" : `复制${what}`;
+  return (
+    <button
+      type="button"
+      className={`bubble-btn copy ${state}`}
+      title={title}
+      aria-label={title}
+      data-copy-state={state}
+      onClick={async (e) => {
+        e.stopPropagation();
+        const ok = await copyText(text);
+        setState(ok ? "ok" : "no");
+        if (timer.current) window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setState(""), 1500);
+      }}
+    >
+      {state === "ok" ? <IconCheck size={13} /> : <IconCopy size={13} />}
+    </button>
+  );
+}
+
+/** Fork from the tail of the conversation (studio shows this on the LAST message only:
+ *  a fork is "continue this work as a new session", and that only makes sense at the end
+ *  of what the agent currently holds). The agent does the copying — ACP `session/fork`. */
+function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
+  const [state, setState] = useState<"idle" | "working" | "failed">("idle");
+  const [err, setErr] = useState("");
+  return (
+    <button
+      type="button"
+      className={`bubble-btn fork ${state}`}
+      disabled={busy || state === "working"}
+      title={err || "从这里 fork —— agent 把这段上下文复制到一个新会话"}
+      aria-label="fork from this message"
+      onClick={async (e) => {
+        e.stopPropagation();
+        setState("working");
+        setErr("");
+        try {
+          await cockpit.fork(sid);
+          setState("idle");
+        } catch (er) {
+          setErr(String((er as Error)?.message ?? er));
+          setState("failed");
+        }
+      }}
+    >
+      <IconFork size={13} /> {state === "working" ? "forking…" : state === "failed" ? "fork 失败" : "fork"}
+    </button>
+  );
+}
+
+/** The agent's mark: a monogram on a per-backend tone. Studio ships real logos for its
+ *  coding agents; we have no artwork for these two CLIs, and a made-up logo is worse than
+ *  a stable monogram — the letter+tone is what the eye picks up when scanning the rail. */
+const BACKEND_TONE: Record<string, { letter: string; label: string }> = {
+  hermes: { letter: "H", label: "Hermes" },
+  qoder: { letter: "Q", label: "Qoder" },
+  mock: { letter: "M", label: "Mock" },
+};
+
+function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
+  const mark = BACKEND_TONE[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
+  return (
+    <span
+      className={`be-avatar be-${backend} ${cold ? "cold" : ""}`}
+      data-backend={backend}
+      title={`${mark.label} · ${cold ? "已关闭（冷会话）" : status}`}
+      aria-hidden="true"
+    >
+      {mark.letter}
+      {!cold ? <span className={`be-dot ${status}`} /> : null}
+    </span>
+  );
+}
+
+/** Everything that acts on a SESSION, in one menu: rename, fork, workspace, id, resume,
+ *  delete. It replaces the row of tiny buttons that used to live on every session row —
+ *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
+ *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
+function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onFork, onWorkspace, onResume, onCloseSession, onDelete }: {
+  x: number; y: number; trigger: HTMLElement | null;
+  info: SessionInfo; cold: boolean; canFork: boolean;
+  onDismiss: () => void; onRename: () => void; onFork: () => void; onWorkspace: () => void;
+  onResume: () => void; onCloseSession: () => void; onDelete: () => void;
+}): JSX.Element {
+  const panel = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(trigger);
+  triggerRef.current = trigger;
+  useDismiss(true, [panel, triggerRef], onDismiss);
+  // Two passes: render, MEASURE, then clamp into the viewport. Trusting the click point was
+  // how a menu ended up hanging off the bottom of a short screen (a popover at y<0 is
+  // present in the DOM and invisible on it — a bug this repo has already paid for once).
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useEffect(() => {
+    const el = panel.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(6, Math.min(x, window.innerWidth - r.width - 6)),
+      top: Math.max(6, Math.min(y, window.innerHeight - r.height - 6)),
+    });
+  }, [x, y]);
+
+  const item = (label: string, icon: JSX.Element, onClick: () => void, danger = false): JSX.Element => (
+    <button
+      type="button"
+      role="menuitem"
+      className={`sess-menu-item ${danger ? "danger" : ""}`}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+
+  return (
+    <div
+      ref={panel}
+      className="sess-menu"
+      role="menu"
+      aria-label={`会话设置：${info.title}`}
+      style={pos ? { left: pos.left, top: pos.top } : { left: x, top: y, visibility: "hidden" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="sess-menu-head">
+        <BackendAvatar backend={info.backend} cold={cold} status={info.status} />
+        <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
+      </div>
+      {item("重命名", <IconPencil size={14} />, onRename)}
+      {canFork ? item(cold ? "fork 会话（先恢复）" : "fork 会话", <IconFork size={14} />, onFork) : null}
+      {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
+      {item("复制会话 ID", <IconCopy size={14} />, () => { void copyText(info.id); })}
+      {cold ? item("恢复会话", <IconResume size={14} />, onResume) : null}
+      {cold
+        ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true)
+        : item("关闭会话（保留记录）", <IconClose size={14} />, onCloseSession, true)}
+    </div>
+  );
+}
+
 function Sidebar({ open, onNew, onSettings, settingsOpen }: {
   open: boolean;
   onNew: () => void;
@@ -132,6 +306,54 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState("");
+  // ---- row menus + inline rename ------------------------------------------------
+  // One menu per row, opened three ways (studio parity): right-click, the ⋯ button, and a
+  // phone long-press. The LONG PRESS is a plain timer, not a hook per row — only one press
+  // can be in flight, and a per-row hook would be a hooks-order trap inside the map below.
+  const rows = useRef<Map<string, HTMLElement>>(new Map());
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number; trigger: HTMLElement | null } | null>(null);
+  const [editing, setEditing] = useState("");
+  const [draft, setDraft] = useState("");
+  const [pickFor, setPickFor] = useState("");
+  const pressTimer = useRef<number | null>(null);
+  const pressFired = useRef(false);
+  const pressClear = (): void => { if (pressTimer.current) { window.clearTimeout(pressTimer.current); pressTimer.current = null; } };
+  useEffect(() => pressClear, []);
+  // A long press must also swallow the click that follows it, or the menu opens AND the
+  // session switches underneath it.
+  const pressStart = (id: string, x: number, y: number): void => {
+    pressFired.current = false;
+    pressClear();
+    pressTimer.current = window.setTimeout(() => {
+      pressFired.current = true;
+      openMenu(id, x, y, rows.current.get(id) ?? null);
+    }, 500);
+  };
+  const openMenu = (id: string, x: number, y: number, trigger: HTMLElement | null): void => {
+    setMenu({ id, x, y, trigger });
+  };
+  /** Open from a button/row: the pointer's own coordinates when we have them, else the
+   *  row's box (a keyboard or programmatic click carries no point). */
+  const openFrom = (id: string, e: { clientX?: number; clientY?: number }): void => {
+    const row = rows.current.get(id);
+    const box = row?.getBoundingClientRect();
+    openMenu(id, e.clientX ?? (box ? box.left + 24 : 12), e.clientY ?? (box ? box.top + box.height : 12), row ?? null);
+  };
+  const startRename = (s: SessionInfo): void => { setMenu(null); setDraft(s.title); setEditing(s.id); };
+  const commitRename = async (id: string): Promise<void> => {
+    const next = draft.trim();
+    setEditing("");
+    const cur = sessions.find((x) => x.id === id) ?? archived.find((x) => x.id === id);
+    if (!cur || next === cur.title) return;   // nothing to do (also covers "opened, typed nothing")
+    setErr("");
+    try {
+      await cockpit.rename(id, next.length ? next : null);
+    } catch (e) {
+      setErr(`改名失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+  const menuInfo = menu ? (sessions.find((x) => x.id === menu.id) ?? archived.find((x) => x.id === menu.id) ?? null) : null;
+  const menuCold = menu ? !sessions.some((x) => x.id === menu.id) : false;
   const needle = q.trim().toLowerCase();
   const match = (s: { title: string; backend: string; cwd: string; workspace?: string | null }) =>
     !needle || `${s.title} ${s.backend} ${s.workspace || s.cwd}`.toLowerCase().includes(needle);
@@ -237,57 +459,54 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
                   {g.items.map(({ s, cold }) => (
                     <div
                       key={s.id}
-                      className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""}`}
-                      title={cold ? "resume this session" : s.title}
-                      onClick={() => (cold ? void cockpit.resume(s.id) : cockpit.setActive(s.id))}
+                      ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
+                      className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
+                      data-session={s.id}
+                      title={cold ? `${s.title} — 已关闭，点一下恢复` : s.title}
+                      onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
+                      onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
+                      onTouchEnd={pressClear}
+                      onTouchMove={pressClear}
+                      onTouchCancel={pressClear}
+                      onClick={(e) => {
+                        if (pressFired.current) { pressFired.current = false; e.preventDefault(); return; }
+                        if (editing === s.id) return;
+                        if (cold) void cockpit.resume(s.id); else cockpit.setActive(s.id);
+                      }}
                     >
-                      <div className="title">{s.title}</div>
-                      <div className="meta">
-                        <span className={`dot ${cold ? "cold" : s.status}`} />
-                        <span>{s.backend}</span>
-                        {!cold ? <span>{s.status}</span> : null}
-                        {cockpit.byId.get(s.id)?.perms.length ? (
-                          <span className="badge perm">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
-                        ) : null}
-                        <span className="item-actions">
-                          {s.acpSessionId ? (
-                            <button
-                              className="item-btn"
-                              title="fork this session — the agent copies its context into a new session"
-                              aria-label={`fork ${s.title}`}
-                              disabled={busyId === s.id}
-                              onClick={(e) => { e.stopPropagation(); void onFork(s.id); }}
-                            >
-                              {busyId === s.id ? "…" : <IconFork size={12} />}
-                            </button>
-                          ) : null}
-                          {cold ? (
-                            <>
-                              <button
-                                className="item-btn"
-                                title="resume this session (respawn the agent and reload its transcript)"
-                                aria-label={`resume ${s.title}`}
-                                onClick={(e) => { e.stopPropagation(); void cockpit.resume(s.id); }}
-                              >
-                                <IconResume size={12} />
-                              </button>
-                              <button
-                                className="item-btn danger"
-                                title="delete this session and its transcript for good"
-                                aria-label={`delete ${s.title}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (confirm(`delete "${s.title}"?\n\nthe transcript is removed from disk — this cannot be undone.`)) {
-                                    cockpit.purgeCold(s.id);
-                                  }
-                                }}
-                              >
-                                <IconClose size={12} />
-                              </button>
-                            </>
-                          ) : null}
-                        </span>
-                      </div>
+                      <BackendAvatar backend={s.backend} cold={cold} status={s.status} />
+                      {editing === s.id ? (
+                        <input
+                          className="title-input"
+                          value={draft}
+                          autoFocus
+                          aria-label={`重命名 ${s.title}`}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onBlur={() => void commitRename(s.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); void commitRename(s.id); }
+                            else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(""); }
+                          }}
+                        />
+                      ) : (
+                        <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>{s.title}</span>
+                      )}
+                      {cockpit.byId.get(s.id)?.perms.length ? (
+                        <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="item-btn row-menu"
+                        title="会话设置：重命名 / fork / 工作目录 / 删除"
+                        aria-label={`${s.title} 的会话设置`}
+                        aria-haspopup="menu"
+                        aria-expanded={menu?.id === s.id}
+                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); openFrom(s.id, e); }}
+                      >
+                        <IconDotsV size={14} />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -301,6 +520,38 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
           </div>
         )}
       </div>
+      {menu && menuInfo ? createPortal(<SessionMenu
+          x={menu.x} y={menu.y} trigger={menu.trigger}
+          info={menuInfo} cold={menuCold} canFork={Boolean(menuInfo.acpSessionId) || menuCold}
+          onDismiss={() => setMenu(null)}
+          onRename={() => startRename(menuInfo)}
+          onFork={() => { setMenu(null); void onFork(menuInfo.id); }}
+          onWorkspace={() => { setMenu(null); setPickFor(menuInfo.id); }}
+          onResume={() => { setMenu(null); void cockpit.resume(menuInfo.id); }}
+          onCloseSession={() => {
+            setMenu(null);
+            if (confirm(`关闭“${menuInfo.title}”？\n\nagent 进程会退出，记录仍留在磁盘上（之后可恢复）。`)) cockpit.closeSession(menuInfo.id);
+          }}
+          onDelete={() => {
+            setMenu(null);
+            if (confirm(`删除“${menuInfo.title}”？\n\n记录会从磁盘上移除，无法撤销。`)) cockpit.purgeCold(menuInfo.id);
+          }}
+        />, document.body) : null}
+      {pickFor ? createPortal(
+        <div className="modal-bg" onClick={() => setPickFor("")}>
+          <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+            <h3>工作目录</h3>
+            <div className="hint">
+              文件面板与终端以它为根。运行中的 agent 仍留在启动时的目录 —— 新目录对下一次恢复生效。
+            </div>
+            <WorkspacePicker
+              value={(sessions.find((x) => x.id === pickFor) ?? archived.find((x) => x.id === pickFor))?.workspace
+                ?? (sessions.find((x) => x.id === pickFor) ?? archived.find((x) => x.id === pickFor))?.cwd ?? ""}
+              onChange={(path) => { const id = pickFor; setPickFor(""); void cockpit.setWorkspace(id, path); }}
+            />
+            <div className="row"><button className="cancel" onClick={() => setPickFor("")}>取消</button></div>
+          </div>
+        </div>, document.body) : null}
       <footer>
         <span className={`conn ${conn}`}>{conn === "online" ? "● online" : conn}</span>
         {authInfo ? <span className="who" title={`signed in as ${authInfo.username ?? "?"}`}>{authInfo.username}</span> : null}
@@ -653,7 +904,9 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             </div>
           )}
           {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
-          {v.msgs.map((m) => <Bubble key={m.key} m={m} />)}
+          {v.msgs.map((m, i) => (
+            <Bubble key={m.key} m={m} sid={v.info.id} busy={v.busy} last={i === v.msgs.length - 1} />
+          ))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
         </div>
@@ -673,7 +926,10 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
   );
 }
 
-function Bubble({ m }: { m: MsgView }): JSX.Element | null {
+/** One message. `last` marks the transcript tail — that is where the fork action lives
+ *  (a fork means "carry this work on as a new session", which only makes sense from the
+ *  end of what the agent currently holds), and copy is on every message. */
+function Bubble({ m, sid, last, busy }: { m: MsgView; sid: string; last: boolean; busy: boolean }): JSX.Element | null {
   switch (m.kind) {
     case "user":
       return (
@@ -691,6 +947,9 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
               </div>
             ) : null}
             {m.text}
+            <div className="bubble-actions">
+              <CopyButton text={m.text} what="这条消息" />
+            </div>
           </div>
         </div>
       );
@@ -701,7 +960,9 @@ function Bubble({ m }: { m: MsgView }): JSX.Element | null {
           <div className="bubble">
             <Markdown text={m.text} />
             <div className="bubble-actions">
+              <CopyButton text={m.text} what="这条回复" />
               <SpeakButton id={m.key} text={m.text} />
+              {last && !busy ? <ForkHere sid={sid} busy={busy} /> : null}
             </div>
           </div>
         </div>
@@ -796,7 +1057,14 @@ function Thought({ m }: { m: Extract<MsgView, { kind: "thought" }> }): JSX.Eleme
       >
         💭 thinking {open ? "▾" : "▸"}
       </div>
-      {open && <div className="bubble">{m.text}</div>}
+      {open && (
+        <div className="bubble">
+          {m.text}
+          <div className="bubble-actions">
+            <CopyButton text={m.text} what="这段思考" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

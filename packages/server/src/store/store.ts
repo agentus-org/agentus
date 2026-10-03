@@ -95,9 +95,12 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
+    // `title` is the DISPLAY title (the operator's name once they rename it);
+    // `auto_title` keeps the generated one so a rename can be cleared back to it.
+    this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
   }
@@ -107,22 +110,22 @@ export class Store {
     if (exist) {
       this.#db
         .prepare(
-          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=? where id=?`,
+          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=?, auto_title=coalesce(auto_title, ?) where id=?`,
         )
         .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null), s.id);
+          JSON.stringify(s.models ?? null), s.title, s.id);
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null));
+          JSON.stringify(s.models ?? null), s.title);
     }
   }
 
@@ -292,6 +295,20 @@ export class Store {
     const info = this.#db
       .prepare("update sessions set workspace = ? where id = ?")
       .run(workspace && workspace.length ? workspace : null, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  /** Rename a slot: `title` = the operator's name, `null` = back to the generated one.
+   *  Only `title` changes — `auto_title` is what the generated name survives in, so a
+   *  rename is always reversible (studio keeps the two apart the same way: a null title
+   *  falls back to the first-message preview). Returns false when the id is unknown. */
+  renameSession(id: string, title: string | null): boolean {
+    const row = this.#db.prepare("select title, auto_title from sessions where id = ?").get(id) as
+      | { title: string; auto_title: string | null }
+      | undefined;
+    if (!row) return false;
+    const next = title == null || !title.length ? (row.auto_title ?? row.title) : title;
+    const info = this.#db.prepare("update sessions set title = ? where id = ?").run(next, id);
     return Number(info.changes ?? 0) > 0;
   }
 

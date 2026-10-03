@@ -31,6 +31,21 @@ function svg(path: JSX.Element, { size = 16, className }: IconProps): JSX.Elemen
 
 export const IconMenu = (p: IconProps = {}): JSX.Element => svg(<><path d="M3 6h18M3 12h18M3 18h18" /></>, p);
 
+/** row overflow — the per-session settings menu (studio's "outline" affordance) */
+export const IconDotsV = (p: IconProps = {}): JSX.Element =>
+  svg(<><circle cx="12" cy="5" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="12" cy="19" r="1.4" /></>, p);
+
+/** rename — pencil on a line */
+export const IconPencil = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4z" /></>, p);
+
+/** copy-to-clipboard — two sheets (same shape studio uses on a message bubble) */
+export const IconCopy = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>, p);
+
+/** copied */
+export const IconCheck = (p: IconProps = {}): JSX.Element => svg(<path d="m4 12.5 5 5L20 6.5" />, p);
+
 export const IconFolder = (p: IconProps = {}): JSX.Element =>
   svg(<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />, p);
 

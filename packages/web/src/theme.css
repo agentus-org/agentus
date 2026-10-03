@@ -1092,3 +1092,112 @@ code.inline {
      84px-tall hole once .set-row stacks vertically */
   .set-row > label { flex: 0 0 auto; }
 }
+
+/* ---- session rows: one line, avatar first ------------------------------------------
+   The rail is for FINDING work; acting on a session moved into its settings menu (the row
+   used to carry up to three icon buttons plus a metadata line — with twenty sessions that
+   is twenty rows of chrome). Palette-wise this is a flex row: avatar · title · ⋯ . */
+.session-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; min-height: 30px;
+}
+.session-item .title { flex: 1 1 auto; min-width: 0; }
+.session-item .badge.perm { flex: 0 0 auto; }
+
+/* The agent's monogram. Studio ships logos; we have none for these CLIs, so the mark is a
+   letter on a per-backend tone — the thing the eye actually uses when scanning a list. */
+.be-avatar {
+  position: relative; flex: 0 0 auto;
+  width: 20px; height: 20px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.2px;
+  color: var(--be-tone, var(--text-dim));
+  background: color-mix(in srgb, var(--be-tone, var(--text-dim)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--be-tone, var(--text-dim)) 40%, transparent);
+}
+.be-avatar.be-hermes { --be-tone: #a98bff; }
+.be-avatar.be-qoder  { --be-tone: #4f9bf5; }
+.be-avatar.be-mock   { --be-tone: #94a3b8; }
+.be-avatar.cold { opacity: 0.55; }
+.be-avatar .be-dot {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1px solid var(--bg); background: var(--text-dim);
+}
+.be-avatar .be-dot.running { background: var(--ok); }
+.be-avatar .be-dot.starting { background: var(--accent); }
+.be-avatar .be-dot.error { background: var(--err); }
+.be-avatar .be-dot.closed { background: var(--text-dim); }
+
+/* rename happens in place: the row becomes an input, the input keeps the row's height */
+.title-input {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-size: 13.5px; color: var(--text);
+  background: var(--bg-panel); border: 1px solid var(--accent-dim);
+  border-radius: 6px; padding: 2px 6px;
+}
+.title-input:focus { outline: none; border-color: var(--accent); }
+
+/* the ⋯ button belongs to the row, but must not add chrome when the row is idle */
+.row-menu { flex: 0 0 auto; opacity: 0; transition: opacity 0.12s; }
+.session-item:hover .row-menu, .session-item.active .row-menu, .session-item:focus-within .row-menu { opacity: 1; }
+@media (hover: none) { .row-menu { opacity: 0.7; } }
+
+/* ---- per-session settings menu (⋯ / right-click / phone long-press) ---------------- */
+.sess-menu {
+  position: fixed; z-index: 40;
+  min-width: 212px; max-width: 320px;
+  background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: var(--shadow);
+  padding: 5px; display: flex; flex-direction: column; gap: 1px;
+}
+.sess-menu-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 7px 8px; margin-bottom: 3px;
+  border-bottom: 1px solid var(--line);
+}
+.sess-menu-title {
+  font-size: 12.5px; color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sess-menu-item {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; padding: 7px 8px; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+}
+.sess-menu-item:hover { background: var(--bg-raised); border-color: var(--line); }
+.sess-menu-item.danger { color: var(--err); }
+.sess-menu-item.danger:hover { border-color: var(--err); background: rgba(var(--err-rgb), 0.08); }
+.sess-menu-item svg { flex: 0 0 auto; color: var(--text-dim); }
+.sess-menu-item.danger svg { color: var(--err); }
+
+/* ---- message actions: copy on every bubble, fork on the tail ---------------------- */
+.bubble-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px; padding: 0 6px;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer;
+}
+.bubble-btn:hover { background: var(--bg-panel); border-color: var(--line); color: var(--text); }
+.bubble-btn.copy.ok { color: var(--ok); border-color: var(--ok); }
+.bubble-btn.copy.no { color: var(--err); border-color: var(--err); }
+.bubble-btn.fork { border-color: var(--line); }
+.bubble-btn.fork:hover { color: var(--accent-text); border-color: var(--accent-dim); }
+.bubble-btn.fork.failed { color: var(--err); border-color: var(--err); }
+.bubble-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ---- phone: the same menu becomes a bottom sheet (thumb-reachable) ---------------- */
+@media (max-width: 720px) {
+  /* inline left/top from the click point must lose to the sheet layout */
+  .sess-menu {
+    left: 8px !important; right: 8px; top: auto !important;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    max-width: none; min-width: 0;
+  }
+  .sess-menu-item { padding: 11px 10px; font-size: 14px; }
+  .session-item { min-height: 36px; }
+  /* message actions without a hover state need a real hit box (measured 27x22 before) */
+  .bubble-btn { min-width: 34px; min-height: 30px; }
+  .bubble-btn.fork { padding: 0 10px; }
+}

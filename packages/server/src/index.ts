@@ -576,6 +576,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         emit({ t: "sessions", sessions: mgr.list() });
         return send(res, 200, info);
       }
+      if (req.method === "POST" && sub === "/rename") {
+        const body = await readJson(req);
+        const raw = body.title;
+        // absent/null or an all-blank string = clear back to the generated title
+        const title = raw == null ? null : String(raw);
+        try {
+          const info = mgr.rename(id, title);
+          emit({ t: "sessions", sessions: mgr.list() });
+          return send(res, 200, info);
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          return send(res, /no such session/.test(msg) ? 404 : 400, { error: msg });
+        }
+      }
       if (req.method === "POST" && sub === "/fork") {
         try {
           // forking a cold session resumes it first (the call has to reach a live agent)

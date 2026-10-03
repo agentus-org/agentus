@@ -577,6 +577,25 @@ class Cockpit {
   }
 
   /** Wake a cold slot: respawn its agent + loadSession, then focus it. */
+  /** Rename a slot. Display state only — the agent is never told, and a COLD slot can be
+   *  renamed without waking it up (why the server keeps the generated title aside).
+   *  `null` clears back to that generated name. */
+  async rename(id: string, title: string | null): Promise<SessionInfo> {
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/rename`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    for (const list of [this.sessions, this.archived]) {
+      const i = list.findIndex((s) => s.id === id);
+      if (i >= 0) list[i] = { ...list[i], ...info };
+    }
+    this.bump();
+    return info;
+  }
+
   async resume(id: string): Promise<void> {
     try {
       const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });

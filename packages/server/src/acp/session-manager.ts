@@ -633,6 +633,38 @@ export class SessionManager {
     };
   }
 
+  /** Rename a slot. A title is DISPLAY state, not agent state: a cold slot must be
+   *  renamable without waking it up (the agent never hears about this). `null`/blank
+   *  clears back to the generated title; control characters fold to spaces and the
+   *  result is capped, because this string is rendered in a single-line row. */
+  rename(id: string, title: string | null): SessionInfo {
+    const clean = title == null ? null : title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 120).trim();
+    if (!this.#store.renameSession(id, clean && clean.length ? clean : null)) {
+      throw new Error(`no such session: ${id}`);
+    }
+    const live = this.#sessions.get(id);
+    if (live) {
+      live.info.title = this.#store.getSession(id)?.title ?? live.info.title;
+      this.#updateSession(live);
+      this.#emit({ t: "session", session: live.info });
+      return live.info;
+    }
+    const row = this.#store.getSession(id);
+    if (!row) throw new Error(`no such session: ${id}`);
+    return {
+      id: row.id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
+      workspace: row.workspace ?? null,
+      models: (row.models ?? null) as SessionInfo["models"],
+      contextLimit: row.contextLimit ?? null,
+      title: row.title, status: row.status, pid: null, createdAt: row.createdAt,
+      modes: (row.modes ?? null) as SessionModeState | null,
+      configOptions: (row.configOptions ?? []) as ConfigOptionView[],
+      usage: (row.usage ?? null) as SessionInfo["usage"],
+      commands: normCommands(row.commands),
+      lastSeq: this.#store.maxSeq(id),
+    };
+  }
+
   /** Switch the model for a live session. ACP method `session/set_model` — not in the
    *  SDK's typed surface, so it goes through the generic request() overload (verified
    *  against hermes acp, which implements set_session_model). A cold slot has no agent
