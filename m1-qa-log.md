@@ -583,3 +583,16 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - 顺带做的触控审计（新增 `scripts/qa/touch-audit.mjs`，390×844）：修前 —— 上下文读数命中区 **260×17**、深度按钮 **23×30**、会话 fork **22×20**、主题色板 **22×22**；修后 **264×35 / 40×30 / 34×32 / 32×32**（`padding` 扩命中区 + 负 `margin` 保持布局不变）。设置页无横向溢出（`scrollWidth == innerWidth == 390`）。
 - 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS；浮层几何扫描 8/8 仍在屏内；上下文设置写回（r83）仍 `contextLimit=72000` 落库。
 - 踩到的坑（已入 lessons）：① CSS 里 `.tb-btn { min-width: 0 }` 出现在手机媒体查询**之后**，把我在前面写的 `min-width:40px` 盖掉了 → 手机覆盖必须写在文件最后；② `while (el) el.click()` 等 React 重渲染会把页面 JS 卡死（我卡死过一个标签页）。
+
+**R87 改用户名/密码：从"只能改环境变量 + 重启"变成设置页里改，立即生效**
+
+用户："支持改用户名和密码吗现在"。查下来：**不支持** —— 凭据只有一条链路 `AGENTSLOT_USERNAME / AGENTSLOT_PASSWORD(或 _HASH)`，改完必须重启；`usingDefaultPassword` 还是开机快照。已做成功能。
+
+- 服务端（`auth.ts`）：凭据读取链变成 **`<DATA_DIR>/credentials.json`（0600、`scrypt:<salt>:<hex>`）> 环境变量 > 内置默认**，与 voice/theme 的"设置文件 > env"同一形状；`changeCredentials()` 要求**当前密码**，校验用户名（1–32、无空格）与密码下限（4 位）；只改用户名时会把当前密码钉成哈希，防 env 值悄悄回潮。会话载荷里加了**凭据版本号（epoch）**：改一次所有旧 cookie 立刻失效。
+- API：`POST /api/auth/credentials`（在需要登录的那半边），成功后给调用者**重签一张新 cookie**（本机不掉线，其他设备被登出）；`/api/auth/me` 改成实时状态并新增 `configuredUsername / credentialSource(saved|env|default) / minPasswordLen`。
+- 前端（`SettingsPage.tsx`）：设置页第一张卡就是**账号**（用户名 / 新密码 / 再输一次 / 当前密码 + 更新账号），提示随来源变化：内置默认（`admin / 123456`，劝你改）／环境变量／已存 `credentials.json`；两次不一致、过短、没填当前密码都在前端先拦下。
+- 测试：`scripts/auth-smoke.mjs` 48 → **76 项**（新增 28 项：匿名 401 / 当前密码错 401 / 过短 400 / 用户名带空格 400 / 什么都没改 400 / 失败时旧口令仍可登录 / 成功后旧口令 401、旧用户名 401、新对 200 / **另一台设备的 cookie 立刻 401**、调用者的新 cookie 仍 200 / `credentials.json` 0600 且只有哈希无明文 / `/api/auth/me` 来源翻成 `saved`、默认口令标记消失 / 只改密码时用户名不变 / 机器 token 不受影响 / **重启后以文件为准**）。
+- 浏览器 E2E（新脚本 `m_account_e2e.mjs`，跑在**临时实例** :8901 + 独立数据目录，绝不碰线上账号）：14/14 —— 账号卡存在且是首张、四个字段齐、提示提到环境变量、两次不一致被拦、保存后 toast "已更新；其他设备需重新登录"、提示翻成 `credentials.json`、表单清空、**旧账号密码 401 / 新账号密码 200**、本机仍在线且 `/api/auth/me` 报 `operator` + `saved`（侧栏底部也变成了 "online operator"）。
+- 线上实例实测：`GET /api/auth/me` → `configuredUsername: admin, credentialSource: default, usingDefaultPassword: true` —— 也就是你现在打开设置页，第一张卡会直接告诉你"现在是内置默认口令，对公网开放时务必改掉"。
+- 回归：typecheck 0 错、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
+- 我踩的坑（已入 lessons）：改了前端**忘了 `npm run build`** 就去跑浏览器 QA —— 服务端发的是 `dist/`，源码改了不生效，E2E 第一轮直接找不到账号卡；另外判"是否仍登录"不能读 `document.cookie`（会话 cookie 是 HttpOnly，永远读不到），要问 `/api/auth/me`。

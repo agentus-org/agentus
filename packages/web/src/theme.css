@@ -1016,6 +1016,7 @@ code.inline {
   font-size: 12.5px; color: var(--err); background: var(--bg-panel);
   border: 1px solid var(--err); border-radius: 10px; padding: 9px 12px;
 }
+.set-inline-err { color: var(--err); font-size: 12px; }
 .set-actions { display: flex; gap: 10px; align-items: center; max-width: 900px; width: 100%; align-self: center; padding-bottom: 8px; }
 @media (max-width: 720px) {
   .set-row { flex-direction: column; gap: 6px; }

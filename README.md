@@ -86,9 +86,17 @@ username: admin
 password: 123456     (default — change it)
 ```
 
-Change it with `AGENTSLOT_PASSWORD` (or `AGENTSLOT_PASSWORD_HASH` holding
-`scrypt:<salt>:<hex>`, so no plaintext sits in your env), then restart. The server
-warns on every boot while the default is still in use, and the login card says so too.
+Change it **in the app**: Settings → 账号 (the first card) takes a new username and/or a
+new password, applies immediately, and writes `<DATA_DIR>/credentials.json` (0600, scrypt
+hash — no plaintext on disk). Changing the password invalidates every other session; the
+device that made the change is handed a fresh cookie, so it stays signed in. The current
+password is required for any change, including a username-only one.
+
+`AGENTSLOT_USERNAME` / `AGENTSLOT_PASSWORD` / `AGENTSLOT_PASSWORD_HASH` still work as the
+bootstrap: they are what the app starts from, and once you save something in the 账号 card
+the file wins from then on (the same "settings file > env" order voice and theme use). A
+password-only change pins today's password as a hash, so an env value can never quietly
+come back into play. Delete `credentials.json` to fall back to the environment.
 
 Two credentials exist, deliberately:
 

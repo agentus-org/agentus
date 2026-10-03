@@ -35,6 +35,8 @@ export interface AuthStatus {
   enabled: boolean;
   username: string;
   usingDefaultPassword: boolean;
+  /** where the username/password in play came from */
+  source: "saved" | "env" | "default";
   /** ISO path of the machine token, so the boot log can point scripts at it */
   tokenFile: string | null;
   sessionTtlMs: number;
@@ -59,7 +61,7 @@ export function authEnabled(): boolean {
 }
 
 export function configuredUsername(): string {
-  return String(process.env.AGENTSLOT_USERNAME ?? DEFAULT_USERNAME).trim() || DEFAULT_USERNAME;
+  return stored?.username ?? (String(process.env.AGENTSLOT_USERNAME ?? DEFAULT_USERNAME).trim() || DEFAULT_USERNAME);
 }
 
 function configuredPassword(): string {
@@ -67,7 +69,92 @@ function configuredPassword(): string {
 }
 
 function usesDefaultPassword(): boolean {
-  return !process.env.AGENTSLOT_PASSWORD && !process.env.AGENTSLOT_PASSWORD_HASH;
+  return !stored && !process.env.AGENTSLOT_PASSWORD && !process.env.AGENTSLOT_PASSWORD_HASH;
+}
+
+/** Where the credentials in play come from — the settings page names the source, the
+ *  same way the context-window popover names where its number came from. */
+export function credentialSource(): "saved" | "env" | "default" {
+  if (stored) return "saved";
+  return process.env.AGENTSLOT_PASSWORD || process.env.AGENTSLOT_PASSWORD_HASH ? "env" : "default";
+}
+
+/** Bumped on every credential change and carried in the session payload, so a password
+ *  change invalidates every cookie that was minted before it. */
+export function credentialEpoch(): number {
+  return stored?.epoch ?? 0;
+}
+
+/** scrypt:<salt>:<hex> — the shape hermes-studio writes, and what AGENTSLOT_PASSWORD_HASH takes. */
+export function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString("hex");
+  return `scrypt:${salt}:${scryptSync(password, salt, 32).toString("hex")}`;
+}
+
+export const MIN_PASSWORD_LEN = 4;
+
+interface StoredCreds {
+  username: string;
+  /** scrypt:<salt>:<hex> — never the password itself */
+  hash: string;
+  epoch: number;
+  updatedAt: number;
+}
+
+let stored: StoredCreds | null = null;
+let credsFile: string | null = null;
+
+function readStored(file: string): StoredCreds | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<StoredCreds>;
+    if (!raw.username || !raw.hash || !String(raw.hash).startsWith("scrypt:")) return null;
+    return {
+      username: String(raw.username).trim(),
+      hash: String(raw.hash),
+      epoch: Number(raw.epoch ?? 1) || 1,
+      updatedAt: Number(raw.updatedAt ?? 0),
+    };
+  } catch { return null; }
+}
+
+export type CredentialResult =
+  | { ok: true; username: string; epoch: number }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Change the operator's credentials. The current password is required even though the
+ * caller already holds a session: a session can be stolen, and this is the one action
+ * that hands the whole cockpit over. On success every existing cookie stops validating
+ * (the epoch moves) — the caller gets a fresh one from the endpoint.
+ */
+export function changeCredentials(input: { currentPassword: string; username?: string; newPassword?: string }): CredentialResult {
+  if (!verifyCredentials(configuredUsername(), String(input.currentPassword ?? ""))) {
+    return { ok: false, status: 401, error: "current password is not right" };
+  }
+  if (input.username === undefined && input.newPassword === undefined) {
+    return { ok: false, status: 400, error: "nothing to change" };
+  }
+  const nextUser = input.username === undefined ? configuredUsername() : String(input.username).trim();
+  if (!nextUser || nextUser.length > 32 || /\s/.test(nextUser)) {
+    return { ok: false, status: 400, error: "username must be 1-32 characters with no spaces" };
+  }
+  const newPass = input.newPassword === undefined ? null : String(input.newPassword);
+  if (newPass !== null && newPass.length < MIN_PASSWORD_LEN) {
+    return { ok: false, status: 400, error: `password must be at least ${MIN_PASSWORD_LEN} characters` };
+  }
+  if (!credsFile) return { ok: false, status: 500, error: "credentials are not initialised" };
+  const next: StoredCreds = {
+    username: nextUser,
+    // a username-only change has to pin today's password as a hash, or the env value
+    // would silently come back into play
+    hash: newPass === null ? (stored?.hash ?? hashPassword(configuredPassword())) : hashPassword(newPass),
+    epoch: (stored?.epoch ?? 0) + 1,
+    updatedAt: Date.now(),
+  };
+  fs.mkdirSync(path.dirname(credsFile), { recursive: true });
+  fs.writeFileSync(credsFile, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  stored = next;
+  return { ok: true, username: next.username, epoch: next.epoch };
 }
 
 export function sessionTtlMs(): number {
@@ -99,6 +186,10 @@ function readOrCreate(file: string, bytes: number): string {
  * token stays stable for scripts.
  */
 export function initAuth(dataDir: string): AuthStatus {
+  // Credentials the operator changed in the UI win over the environment; the env pair
+  // stays the bootstrap, exactly like voice/theme settings (settings.json > .env).
+  credsFile = path.join(dataDir, "credentials.json");
+  stored = readStored(credsFile);
   const secretRaw = process.env.AGENTSLOT_AUTH_SECRET?.trim() || readOrCreate(path.join(dataDir, "auth.secret"), 32);
   secret = Buffer.from(secretRaw, "utf8");
   // Exported so WS-upgrade code (a different module, same process) can verify too.
@@ -118,6 +209,7 @@ export function status(): AuthStatus {
     enabled: authEnabled(),
     username: configuredUsername(),
     usingDefaultPassword: usesDefaultPassword(),
+    source: credentialSource(),
     tokenFile,
     sessionTtlMs: sessionTtlMs(),
   };
@@ -150,8 +242,10 @@ export function verifyCredentials(username: string, password: string): boolean {
     createHash("sha256").update(String(username)).digest("hex"),
     createHash("sha256").update(configuredUsername()).digest("hex"),
   );
+  // saved (UI-set) > AGENTSLOT_PASSWORD_HASH > AGENTSLOT_PASSWORD > built-in default
   const hashEnv = process.env.AGENTSLOT_PASSWORD_HASH?.trim();
-  const passOk = hashEnv ? verifyScrypt(String(password), hashEnv) : safeEqual(
+  const hash = stored?.hash ?? hashEnv;
+  const passOk = hash ? verifyScrypt(String(password), hash) : safeEqual(
     createHash("sha256").update(String(password)).digest("hex"),
     createHash("sha256").update(configuredPassword()).digest("hex"),
   );
@@ -164,6 +258,8 @@ interface SessionBody {
   u: string;
   iat: number;
   exp: number;
+  /** credential epoch: a password change moves it, so old cookies stop validating */
+  e: number;
   /** session id — needed so "log out" can actually revoke, not just clear the cookie */
   jti: string;
 }
@@ -179,6 +275,7 @@ export function issueSession(username: string, now = Date.now()): { value: strin
     u: username,
     iat: Math.floor(now / 1000),
     exp: Math.floor(exp / 1000),
+    e: credentialEpoch(),
     jti: randomBytes(8).toString("hex"),
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -197,6 +294,7 @@ function parseSession(value: string | undefined | null, now = Date.now()): Sessi
     if (!parsed.u || !parsed.exp || !parsed.jti) return null;
     if (Math.floor(now / 1000) >= parsed.exp) return null;
     if (!safeEqual(String(parsed.u), configuredUsername())) return null; // username changed => old cookie dies
+    if (Number(parsed.e ?? 0) !== credentialEpoch()) return null;          // password changed => same
     return parsed as SessionBody;
   } catch {
     return null;

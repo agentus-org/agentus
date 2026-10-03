@@ -288,5 +288,82 @@ check("bare form: any user + password -> 200", status(await fetch(`${f.base}/hea
 f.proc.kill("SIGTERM");
 await sleep(300);
 
+
+// ---- server G: changing the username / password from the app --------------------
+// Credentials used to be env-only (edit + restart). They are now editable in the settings
+// page and take effect immediately. This guards the whole contract: the current password is
+// required, short passwords and broken usernames are refused, the file is 0600 and holds a
+// scrypt hash (never the password), every older cookie dies, the caller keeps working, and
+// the change survives a restart.
+const dataG = mkdtempSync(path.join(tmpdir(), "agentslot-authG-"));
+const g = await boot(8893, dataG);
+const jsonLogin = (base, username, password) => fetch(`${base}/api/auth/login`, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, password }),
+});
+const cookieOf = (res) => (res.headers.get("set-cookie") ?? "").split(";")[0];
+const change = (base, cookie, body) => fetch(`${base}/api/auth/credentials`, {
+  method: "POST",
+  headers: cookie ? { "content-type": "application/json", cookie } : { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+const gLogin = await jsonLogin(g.base, USER, PASSWORD);
+const callerCookie = cookieOf(gLogin);
+const otherLogin = await jsonLogin(g.base, USER, PASSWORD);
+const otherCookie = cookieOf(otherLogin);
+check("creds: two sessions to start with", callerCookie.startsWith("agentslot_session=") && otherCookie.startsWith("agentslot_session=") && otherCookie !== callerCookie);
+
+check("creds: anonymous -> 401", (await change(g.base, "", { currentPassword: PASSWORD, newPassword: "brand-new-pass" })).status === 401);
+check("creds: wrong current password -> 401", (await change(g.base, callerCookie, { currentPassword: "not-it", newPassword: "brand-new-pass" })).status === 401);
+check("creds: short password -> 400", (await change(g.base, callerCookie, { currentPassword: PASSWORD, newPassword: "abc" })).status === 400);
+check("creds: username with a space -> 400", (await change(g.base, callerCookie, { currentPassword: PASSWORD, username: "a b" })).status === 400);
+check("creds: nothing to change -> 400", (await change(g.base, callerCookie, { currentPassword: PASSWORD })).status === 400);
+check("creds: still nothing applied (old password logs in)", (await jsonLogin(g.base, USER, PASSWORD)).status === 200);
+
+const okChange = await change(g.base, callerCookie, { currentPassword: PASSWORD, username: "operator", newPassword: "long-enough-pass" });
+check("creds: change accepted -> 200", okChange.status === 200, `got ${okChange.status}`);
+const freshCookie = cookieOf(okChange);
+check("creds: caller is handed a fresh cookie", freshCookie.startsWith("agentslot_session=") && freshCookie !== callerCookie);
+
+const credFile = path.join(dataG, "credentials.json");
+check("creds: credentials.json written", fs.existsSync(credFile));
+check("creds: credentials.json is 0600", fs.existsSync(credFile) && (fs.statSync(credFile).mode & 0o777) === 0o600,
+  fs.existsSync(credFile) ? `mode ${(fs.statSync(credFile).mode & 0o777).toString(8)}` : "missing");
+const credRaw = fs.existsSync(credFile) ? fs.readFileSync(credFile, "utf8") : "";
+check("creds: stores a scrypt hash, never the password", credRaw.includes("scrypt:") && !credRaw.includes("long-enough-pass"));
+
+check("creds: old password -> 401", (await jsonLogin(g.base, USER, PASSWORD)).status === 401);
+check("creds: old username + new password -> 401", (await jsonLogin(g.base, USER, "long-enough-pass")).status === 401);
+check("creds: new username + new password -> 200", (await jsonLogin(g.base, "operator", "long-enough-pass")).status === 200);
+
+check("creds: the other session's cookie is dead -> 401",
+  (await fetch(`${g.base}/api/sessions`, { headers: { cookie: otherCookie } })).status === 401);
+check("creds: the caller's re-issued cookie still works",
+  (await fetch(`${g.base}/api/sessions`, { headers: { cookie: freshCookie } })).status === 200);
+
+const meBody = await (await fetch(`${g.base}/api/auth/me`, { headers: { cookie: freshCookie } })).json();
+check("creds: /api/auth/me names the source + drops the default-password flag",
+  meBody.credentialSource === "saved" && meBody.usingDefaultPassword === false && meBody.configuredUsername === "operator",
+  JSON.stringify({ source: meBody.credentialSource, def: meBody.usingDefaultPassword, user: meBody.configuredUsername }));
+
+const pwOnly = await change(g.base, freshCookie, { currentPassword: "long-enough-pass", newPassword: "another-pass" });
+check("creds: password-only change -> 200", pwOnly.status === 200);
+const pwOnlyCookie = cookieOf(pwOnly);
+check("creds: username survived a password-only change",
+  (await (await fetch(`${g.base}/api/auth/me`, { headers: { cookie: pwOnlyCookie } })).json()).configuredUsername === "operator");
+
+const gt = fs.readFileSync(path.join(dataG, "auth.token"), "utf8").trim();
+check("creds: the machine token still works after a change",
+  (await fetch(`${g.base}/api/sessions`, { headers: { authorization: `Bearer ${gt}` } })).status === 200);
+
+// survives a restart: the file, not the process, is the source of truth
+g.proc.kill("SIGTERM");
+await sleep(600);
+const g2 = await boot(8893, dataG);
+check("creds: after a restart the saved password logs in", (await jsonLogin(g2.base, "operator", "another-pass")).status === 200);
+check("creds: after a restart the env password is gone", (await jsonLogin(g2.base, USER, PASSWORD)).status === 401);
+g2.proc.kill("SIGTERM");
+await sleep(300);
+
 console.log(`\n${failed === 0 ? "AUTH SMOKE PASS" : `AUTH SMOKE FAIL (${failed} of ${results.length})`}`);
 process.exit(failed === 0 ? 0 : 1);

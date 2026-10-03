@@ -198,13 +198,18 @@ const httpServer = createServer(async (req, res) => {
 
     if (url.pathname === "/api/auth/me" && req.method === "GET") {
       const who = auth.authenticate(req.headers, url);
+      const st = auth.status(); // live: the operator can change these while the app is up
       return send(res, 200, {
-        authEnabled: authStatus.enabled,
+        authEnabled: st.enabled,
         authenticated: Boolean(who),
         kind: who?.kind ?? null,
         username: who?.username ?? null,
+        // the account the cockpit would accept right now (what the settings page shows)
+        configuredUsername: st.username,
+        credentialSource: st.source,
+        minPasswordLen: auth.MIN_PASSWORD_LEN,
         expiresAt: who?.expiresAt ?? null,
-        usingDefaultPassword: authStatus.usingDefaultPassword,
+        usingDefaultPassword: st.usingDefaultPassword,
       });
     }
     if (url.pathname === "/api/auth/login" && req.method === "POST") {
@@ -227,13 +232,41 @@ const httpServer = createServer(async (req, res) => {
         return send(res, 401, { error: "bad_credentials", hint: `username/password rejected (limit ${left} tries per IP)` });
       }
       auth.recordLoginSuccess(ip);
-      const { value, expiresAt } = auth.issueSession(authStatus.username);
-      console.log(`[agentslot] login ok: ${authStatus.username} from ${ip}`);
+      const st = auth.status();
+      const { value, expiresAt } = auth.issueSession(st.username);
+      console.log(`[agentslot] login ok: ${st.username} from ${ip}`);
       res.writeHead(200, {
         "content-type": "application/json",
-        "set-cookie": auth.sessionCookie(value, Math.floor(authStatus.sessionTtlMs / 1000), secure),
+        "set-cookie": auth.sessionCookie(value, Math.floor(st.sessionTtlMs / 1000), secure),
       });
-      return res.end(JSON.stringify({ username: authStatus.username, expiresAt, usingDefaultPassword: authStatus.usingDefaultPassword }));
+      return res.end(JSON.stringify({ username: st.username, expiresAt, usingDefaultPassword: st.usingDefaultPassword }));
+    }
+    if (url.pathname === "/api/auth/credentials" && req.method === "POST") {
+      // Behind the same gate as the rest of /api (it is not in PUBLIC_API), so a caller
+      // here already holds a session or the machine token — yet the change still demands
+      // the current password: handing the cockpit over deserves a second proof.
+      const body = await readJson(req);
+      const out = auth.changeCredentials({
+        currentPassword: String(body.currentPassword ?? ""),
+        username: body.username === undefined ? undefined : String(body.username),
+        newPassword: body.newPassword === undefined || body.newPassword === null ? undefined : String(body.newPassword),
+      });
+      if (!out.ok) return send(res, out.status, { error: out.error });
+      console.log(`[agentslot] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
+      // every older cookie is dead now (the epoch moved) — hand this caller a fresh one
+      const st = auth.status();
+      const { value, expiresAt } = auth.issueSession(st.username);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": auth.sessionCookie(value, Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)), auth.isSecureRequest(req.headers)),
+      });
+      return res.end(JSON.stringify({
+        ok: true,
+        username: st.username,
+        credentialSource: st.source,
+        usingDefaultPassword: st.usingDefaultPassword,
+        expiresAt,
+      }));
     }
     if (url.pathname === "/api/auth/logout" && req.method === "POST") {
       // Revoke, don't just clear: see auth.revokeSession
