@@ -12,7 +12,7 @@ import {
   useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
-  IconArrowDown, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconFile,
+  IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff,
@@ -206,25 +206,31 @@ function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
   );
 }
 
-/** The agent's mark: a monogram on a per-backend tone. Studio ships real logos for its
- *  coding agents; we have no artwork for these two CLIs, and a made-up logo is worse than
- *  a stable monogram — the letter+tone is what the eye picks up when scanning the rail. */
-const BACKEND_TONE: Record<string, { letter: string; label: string }> = {
-  hermes: { letter: "H", label: "Hermes" },
-  qoder: { letter: "Q", label: "Qoder" },
+/** The agent's mark. Hermes and Qoder ship real brand icons (hermes.png from the
+ *  hermes-studio assets, qoder's favIcon from qoder.com) — use them wherever a backend
+ *  has official artwork. The monogram stays as the fallback path (mock agent, missing
+ *  asset, broken img) so a row ALWAYS renders something identifiable. */
+const BACKEND_MARK: Record<string, { letter: string; label: string; icon?: string }> = {
+  hermes: { letter: "H", label: "Hermes", icon: "/coding-agents/hermes.png" },
+  qoder: { letter: "Q", label: "Qoder", icon: "/coding-agents/qoder.svg" },
   mock: { letter: "M", label: "Mock" },
 };
 
 function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
-  const mark = BACKEND_TONE[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
+  const mark = BACKEND_MARK[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
+  const [broken, setBroken] = useState(false);
+  const useIcon = mark.icon && !broken;
   return (
     <span
       className={`be-avatar be-${backend} ${cold ? "cold" : ""}`}
       data-backend={backend}
-      title={`${mark.label} · ${cold ? "已关闭（冷会话）" : status}`}
+      data-letter={mark.letter}
+      title={`${mark.label} · ${cold ? "已归档（冷会话）" : status}`}
       aria-hidden="true"
     >
-      {mark.letter}
+      {useIcon
+        ? <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
+        : mark.letter}
       {!cold ? <span className={`be-dot ${status}`} /> : null}
     </span>
   );
@@ -234,10 +240,11 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onFork, onWorkspace, onResume, onCloseSession, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onFork, onWorkspace, onExport, onResume, onCloseSession, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; canFork: boolean;
   onDismiss: () => void; onRename: () => void; onFork: () => void; onWorkspace: () => void;
+  onExport: () => void;
   onResume: () => void; onCloseSession: () => void; onDelete: () => void;
 }): JSX.Element {
   const panel = useRef<HTMLDivElement>(null);
@@ -286,11 +293,12 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
       {item("重命名", <IconPencil size={14} />, onRename)}
       {canFork ? item(cold ? "fork 会话（先恢复）" : "fork 会话", <IconFork size={14} />, onFork) : null}
       {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
+      {item("导出会话（Markdown）", <IconDownload size={14} />, onExport)}
       {item("复制会话 ID", <IconCopy size={14} />, () => { void copyText(info.id); })}
-      {cold ? item("恢复会话", <IconResume size={14} />, onResume) : null}
+      {cold ? item("取消归档并恢复", <IconResume size={14} />, onResume) : null}
       {cold
         ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true)
-        : item("关闭会话（保留记录）", <IconClose size={14} />, onCloseSession, true)}
+        : item("归档会话", <IconArchive size={14} />, onCloseSession)}
     </div>
   );
 }
@@ -462,7 +470,7 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
                       ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
                       className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
                       data-session={s.id}
-                      title={cold ? `${s.title} — 已关闭，点一下恢复` : s.title}
+                      title={cold ? `${s.title} — 已归档，点一下取消归档并恢复` : s.title}
                       onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
                       onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
                       onTouchEnd={pressClear}
@@ -527,10 +535,19 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
           onRename={() => startRename(menuInfo)}
           onFork={() => { setMenu(null); void onFork(menuInfo.id); }}
           onWorkspace={() => { setMenu(null); setPickFor(menuInfo.id); }}
+          onExport={() => {
+            setMenu(null);
+            // cookie-auth'd GET with Content-Disposition: attachment — the browser saves it.
+            // Works for archived sessions too: the export renders from our own rows, not the agent.
+            const a = document.createElement("a");
+            a.href = `/api/sessions/${menuInfo.id}/export?format=md`;
+            a.download = "";
+            document.body.appendChild(a); a.click(); a.remove();
+          }}
           onResume={() => { setMenu(null); void cockpit.resume(menuInfo.id); }}
           onCloseSession={() => {
             setMenu(null);
-            if (confirm(`关闭“${menuInfo.title}”？\n\nagent 进程会退出，记录仍留在磁盘上（之后可恢复）。`)) cockpit.closeSession(menuInfo.id);
+            if (confirm(`归档“${menuInfo.title}”？\n\nagent 进程会退出，记录保留在归档里（随时可取消归档并恢复）。`)) cockpit.closeSession(menuInfo.id);
           }}
           onDelete={() => {
             setMenu(null);

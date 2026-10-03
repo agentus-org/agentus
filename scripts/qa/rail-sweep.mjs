@@ -52,7 +52,7 @@ const rail = await ev(`(() => {
     metas: document.querySelectorAll('.session-item .meta').length,
     heights: rows.map((r) => Math.round(r.getBoundingClientRect().height)),
     avatars: rows.map((r) => r.querySelector('.be-avatar')?.dataset.backend ?? null),
-    letters: [...document.querySelectorAll('.session-item .be-avatar')].map((a) => a.textContent.trim()),
+    letters: [...document.querySelectorAll('.session-item .be-avatar')].map((a) => a.dataset.letter ?? a.textContent.trim()),
     menuButtons: document.querySelectorAll('.row-menu').length,
   };
 })()`);
@@ -61,6 +61,16 @@ check("the two-line metadata block is gone from the rows", rail.metas === 0, `me
 check("a row is one line tall (<= 36px)", Math.max(...rail.heights) <= 36, `heights=${JSON.stringify(rail.heights)}`);
 check("every row carries an agent avatar with its backend", rail.avatars.length === rail.rows && rail.avatars.every(Boolean), JSON.stringify(rail.avatars));
 check("avatar shows the backend's monogram", rail.letters.every((l) => ["H", "Q", "M"].includes(l)), JSON.stringify(rail.letters));
+const brand = await ev(`(() => { const imgs=[...document.querySelectorAll('.be-avatar img')];
+  return { n: imgs.length, complete: imgs.every((i)=>i.complete && i.naturalWidth>0),
+    src: imgs.map((i)=>i.getAttribute('src')) }; })()`);
+check("every live row shows its brand icon (or a monogram fallback), and it actually loaded",
+  brand.n === 0 || brand.complete, JSON.stringify(brand));
+const assets = await ev(`(async () => { const r = {};
+  for (const p of ['/coding-agents/hermes.png', '/coding-agents/qoder.svg']) {
+    const resp = await fetch(p); r[p] = resp.status + ' ' + (resp.headers.get('content-type') || '');
+  } return r; })()`);
+check("both brand icons are served", Object.values(assets).every((s) => s.startsWith("200")), JSON.stringify(assets));
 check("every row has a settings (⋯) button", rail.menuButtons === rail.rows, `buttons=${rail.menuButtons}`);
 
 // --- ⋯ opens the menu, and it lands INSIDE the viewport (geometry, not presence)
@@ -81,10 +91,12 @@ const menu = await ev(`(() => {
 check("the ⋯ button opens the per-session menu", menu.open === true);
 check("the menu is inside the viewport", Boolean(menu.inside), JSON.stringify({ x: menu.x, y: menu.y, w: menu.w, h: menu.h }));
 check("the menu shows which session it belongs to", Boolean(menu.head), `avatar=${menu.head}`);
-check("the menu carries rename/fork/workspace/id/close",
-  ["重命名", "工作目录…", "复制会话 ID"].every((n) => menu.items.includes(n))
-  && menu.items.some((i) => i.includes("fork")) && menu.items.some((i) => i.includes("关闭会话")),
+check("the menu carries rename/fork/workspace/export/id/archive",
+  ["重命名", "工作目录…", "导出会话（Markdown）", "复制会话 ID"].every((n) => menu.items.includes(n))
+  && menu.items.some((i) => i.includes("fork")) && menu.items.some((i) => i.includes("归档会话")),
   JSON.stringify(menu.items));
+check("the menu hugs its content (no wide-plank floor; head row is its widest line)",
+  menu.w <= 320 && menu.w >= 150, `w=${menu.w}`);
 
 // --- right-click opens the same menu at the pointer
 await ev(`(() => { const r = document.querySelectorAll('.session-item')[1]; const b = r.getBoundingClientRect();

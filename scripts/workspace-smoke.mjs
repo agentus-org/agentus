@@ -336,6 +336,29 @@ try {
   check("the turn completed", seen.some((e) => e.t === "turn-end"), seen.map((e) => e.t).join(","));
   live.close();
   await fetch(`${base}/api/sessions/${created.id}`, { method: "DELETE", headers: H });
+  // ---- export: rendered from OUR rows (ACP has no export; AionUi does the same) ------
+  // Runs AFTER the DELETE above on purpose: export reads our persisted rows, so it works
+  // on an ARCHIVED session with no live agent to wake — that is the whole design point.
+  const mdResp = await fetch(`${base}/api/sessions/${created.id}/export`, { headers: H });
+  const mdText = await mdResp.text();
+  check("export returns markdown as an attachment",
+    mdResp.status === 200 && (mdResp.headers.get("content-type") || "").includes("text/markdown")
+    && (mdResp.headers.get("content-disposition") || "").includes("attachment"),
+    mdResp.headers.get("content-disposition"));
+  check("the markdown export carries the header and both sides of the transcript",
+    mdText.includes("# ") && mdText.includes("### User") && mdText.includes("attachment probe")
+    && mdText.includes("### Agent"), mdText.slice(0, 80));
+  check("the markdown export folds streamed agent chunks into ONE section (no 200-row dump)",
+    (mdText.match(/### Agent/g) || []).length <= 3, String((mdText.match(/### Agent/g) || []).length));
+  const jsonExport = await j(await fetch(`${base}/api/sessions/${created.id}/export?format=json`, { headers: H }));
+  check("the json export is the lossless row dump",
+    jsonExport.format === "agentslot-session/1" && Array.isArray(jsonExport.messages)
+    && jsonExport.messages.length >= 3 && jsonExport.messages.every((m) => m.payload && m.seq > 0),
+    `rows=${jsonExport.messages?.length}`);
+  check("export refuses an unknown session",
+    (await fetch(`${base}/api/sessions/nope-export/export`, { headers: H })).status === 404);
+  check("export needs credentials",
+    (await fetch(`${base}/api/sessions/${created.id}/export`)).status === 401);
 
   // ---- voice endpoints -----------------------------------------------------------
   const caps = await j(await fetch(`${base}/api/voice`, { headers: H }));

@@ -43,6 +43,14 @@ export const IconPencil = (p: IconProps = {}): JSX.Element =>
 export const IconCopy = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>, p);
 
+/** export a session — arrow into a tray */
+export const IconDownload = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M12 3v11" /><path d="M7 10l5 5 5-5" /><path d="M4 20h16" /></>, p);
+
+/** archive — a box with a lid line (the close action's real meaning: keep the record) */
+export const IconArchive = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="7" width="18" height="13" rx="2" /><path d="M3 11h18" /><path d="M9 3h6" /></>, p);
+
 /** copied */
 export const IconCheck = (p: IconProps = {}): JSX.Element => svg(<path d="m4 12.5 5 5L20 6.5" />, p);
 

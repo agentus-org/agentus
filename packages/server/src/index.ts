@@ -10,6 +10,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
+import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
 import { FsError, listDirs, readTextFile } from "./fs.js";
@@ -575,6 +576,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const info = mgr.setWorkspace(id, workspace);
         emit({ t: "sessions", sessions: mgr.list() });
         return send(res, 200, info);
+      }
+      if (req.method === "GET" && sub === "/export") {
+        // ACP has no "export" (the protocol only carries the stream; AionUi does this over
+        // its own storage too) — we render from OUR persisted rows. `?format=json` is the
+        // lossless dump, markdown is the readable transcript. Works for cold sessions
+        // without waking the agent: no live process needed, just the DB.
+        const row = store.getSession(id);
+        if (!row) return send(res, 404, { error: `no such session: ${id}` });
+        const format = url.searchParams.get("format") === "json" ? "json" : "md";
+        const header: ExportSessionHeader = {
+          id: row.id, title: row.title, backend: row.backend, cwd: row.cwd,
+          workspace: row.workspace ?? null, acpSessionId: row.acpSessionId,
+          createdAt: row.createdAt,
+        };
+        const all = store.messagesTail(id, Number.MAX_SAFE_INTEGER).messages;
+        const body = format === "json" ? renderJson(header, all) : renderMarkdown(header, all);
+        res.writeHead(200, {
+          "content-type": format === "json" ? "application/json; charset=utf-8" : "text/markdown; charset=utf-8",
+          "content-disposition": `attachment; filename="${exportFilename(row.title, format === "json" ? "json" : "md").replace(/[^\x20-\x7e]/g, "_")}"`,
+        });
+        res.end(body);
+        return undefined;
       }
       if (req.method === "POST" && sub === "/rename") {
         const body = await readJson(req);

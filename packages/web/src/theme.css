@@ -1118,6 +1118,11 @@ code.inline {
 .be-avatar.be-hermes { --be-tone: #a98bff; }
 .be-avatar.be-qoder  { --be-tone: #4f9bf5; }
 .be-avatar.be-mock   { --be-tone: #94a3b8; }
+/* brand artwork (hermes.png / qoder.svg) fills the same square the monogram occupies;
+   the border-radius clips the squircle sources into the rail's round token */
+.be-avatar img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block;
+}
 .be-avatar.cold { opacity: 0.55; }
 .be-avatar .be-dot {
   position: absolute; right: -2px; bottom: -2px;
@@ -1146,7 +1151,10 @@ code.inline {
 /* ---- per-session settings menu (⋯ / right-click / phone long-press) ---------------- */
 .sess-menu {
   position: fixed; z-index: 40;
-  min-width: 212px; max-width: 320px;
+  /* width follows the CONTENT (studio's context menu does the same): a hard 212px floor
+     read as a wide plank for rows like "归档会话". Cap only — never floor — so long
+     session titles in the head stay on one ellipsized line. */
+  width: max-content; max-width: min(320px, calc(100vw - 12px));
   background: var(--bg-panel); border: 1px solid var(--line);
   border-radius: 10px; box-shadow: var(--shadow);
   padding: 5px; display: flex; flex-direction: column; gap: 1px;

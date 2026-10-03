@@ -351,6 +351,13 @@ The UI says **session** everywhere (the rail, the empty state, the dialogs). "Sl
 only the project's name — the concept an operator works with is a session, and the
 product may well be renamed; nothing in the interface leans on the metaphor.
 
+Session actions live on a per-session menu (⋯ / right-click / phone long-press):
+rename (in place, reversible), fork, workspace, **export**
+(`GET /api/sessions/:id/export?format=md|json` — rendered from our own persisted
+transcript, so an archived session exports without waking the agent; ACP itself has
+no export concept), copy id, archive (= close: process exits, record kept) and,
+for archived slots, resume or delete.
+
 ## Tests
 
 ```bash
