@@ -37,6 +37,9 @@ const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web
 const TLS_PORT = Number(process.env.AGENTSLOT_TLS_PORT ?? 8443);
 const TLS_CERT = process.env.AGENTSLOT_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
 const TLS_KEY = process.env.AGENTSLOT_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
+// The issuer a device installs once (make-cert.sh: long-lived root + short-lived leaf).
+// Falls back to the leaf itself for a single self-signed cert from an older setup.
+const TLS_CA = process.env.AGENTSLOT_TLS_CA ?? path.join(DATA_DIR, "tls", "ca.pem");
 const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -198,13 +201,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return res.end("AgentSlot: authentication required\n");
     }
 
-    // GET /cert.crt — the TLS listener's certificate, for installing the self-signed
-    // issuer into a phone's trust store (the "proceed anyway" click once per device is the
-    // whole cost of TOFU; this makes it a download instead of a manual export).
+    // GET /cert.crt — the ISSUER to install into a phone's trust store (the "proceed
+    // anyway" click, once per device, is the whole cost of TOFU; this makes it a download).
+    // With make-cert.sh's root+leaf setup this is the root, so the leaf can be rotated
+    // yearly without every device having to re-install.
     // PUBLIC material only: the key never leaves <DATA>/tls/.
     if (url.pathname === "/cert.crt") {
       if (!TLS_READY) return send(res, 404, { error: "tls is off on this server" });
-      const der = fs.readFileSync(TLS_CERT);
+      const der = fs.readFileSync(fs.existsSync(TLS_CA) ? TLS_CA : TLS_CERT);
       res.writeHead(200, {
         // Apple's installer claims this type and opens the profile flow directly;
         // Android/Chrome just downloads the file.

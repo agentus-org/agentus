@@ -218,12 +218,21 @@ the browser stops asking and the address bar is clean. It is public material —
 key never leaves `<AGENTSLOT_DATA>/tls/`.
 
 The cert is **self-signed on purpose** — no CA issues for an unregistered domain or a bare
-IP, so the browser shows "not private → proceed" once per device. Keep the SAN to the name
-you type (**the DDNS name**, not the public IP: a dynamic IP would need re-issuing, and a
-mismatch adds a second warning). `scripts/qa/tls-smoke.mjs` verifies the real sockets:
-a verifying client must be *rejected* (that is what proves the port is actually TLS), the
-API login must work over it, and `wss://…/ws` must complete its handshake — the upgrade
-handler is bound to both listeners, which is the easy thing to forget.
+IP, so the browser shows "not private → proceed" once per device, and installing the issuer
+(`/cert.crt`, above) retires even that. Keep the SAN to the name you type (**the DDNS name**,
+not the public IP: a dynamic IP would need re-issuing, and a mismatch adds a second warning).
+
+`make-cert.sh` issues **two** certs on purpose: a 10-year root (`ca.pem`, what devices
+install) and a 390-day leaf (`cert.pem`, what the listener serves). Apple caps *server
+certificate* validity at 398 days — a 10-year self-signed leaf is precisely what iOS refuses
+*after* the user has been through the install dance. A root is not a server cert, so it can
+live long; rotating the leaf (`--leaf-only`) never touches an installed device.
+
+`npm run tls-smoke` (in CI, real sockets) guards all of it: a verifying client must be
+*rejected* (that is what proves the port is actually TLS), the leaf must chain to the root
+`/cert.crt` hands out and stay under the 398-day cap, the API login and `wss://…/ws` handshake
+must work over TLS (the upgrade handler is bound to both listeners — the easy thing to
+forget), and the LAN port must stay plain.
 
 Logout revokes the session id server-side, so "sign out" ends the session instead of
 just hiding the UI — the cookie stops working immediately.

@@ -83,14 +83,15 @@ function makeCert(dir) {
   execFileSync(path.join(ROOT, "scripts/make-cert.sh"), [NAME], {
     cwd: ROOT, env: { ...process.env, AGENTSLOT_TLS_DIR: dir }, stdio: "pipe",
   });
-  return path.join(dir, "cert.pem");
+  // root + leaf: the root is what a device installs, the leaf is what the listener serves.
+  return { ca: path.join(dir, "ca.pem"), leaf: path.join(dir, "cert.pem") };
 }
 
 const tlsFetch = (url, init) => fetch(url, { ...init, dispatcher: undefined });
 
 // ---------------------------------------------------------------- with a cert
 const dir1 = mkdtempSync(path.join(tmpdir(), "agentslot-tls-"));
-const certPath = makeCert(path.join(dir1, "tls"));
+const { ca: caPath, leaf: certPath } = makeCert(path.join(dir1, "tls"));
 const { proc: srv, log } = await boot(dir1);
 try {
   await sleep(500); // let the TLS listener finish binding
@@ -100,6 +101,18 @@ try {
   const san = (txt.match(/Subject Alternative Name:\s*\n\s*(.+)/) ?? [])[1]?.trim() ?? "";
   check("cert SAN carries the typed name", san.includes(`DNS:${NAME}`), san);
   check("no dynamic public IP in the SAN", !/IP Address:(?!127\.0\.0\.1)\d/.test(san), san);
+
+  // 1b) the leaf is signed by the root a device installs, and stays inside Apple's cap for
+  //     server certificates (398 days) — a 10-year leaf is the shape iOS refuses AFTER the
+  //     user has been through the whole install dance.
+  execFileSync("openssl", ["verify", "-CAfile", caPath, certPath], { stdio: "pipe" });
+  check("the leaf verifies against the root that /cert.crt hands out", true);
+  const dates = execFileSync("openssl", ["x509", "-in", certPath, "-noout", "-dates"], { encoding: "utf8" });
+  const day = (tag) => Date.parse(dates.match(new RegExp(`${tag}=(.*)`))[1].replace(" GMT", " UTC"));
+  const days = Math.round((day("notAfter") - day("notBefore")) / 86_400_000);
+  check("the leaf's validity is under Apple's 398-day cap", days <= 398, `${days} days`);
+  const issuer = execFileSync("openssl", ["x509", "-in", certPath, "-noout", "-issuer"], { encoding: "utf8" });
+  check("the leaf is issued by the root, not self-signed", /AgentSlot self-signed root/.test(issuer), issuer.trim());
 
   // 2) the TLS port really is TLS: a verifying client must be refused
   let strictFailed = false;
@@ -132,10 +145,10 @@ try {
   // 4b) the cert is downloadable — that is how a phone installs the self-signed issuer
   const dl = await fetch(`https://127.0.0.1:${TLS}/cert.crt`);
   const dlBytes = Buffer.from(await dl.arrayBuffer());
-  check("GET /cert.crt serves the exact cert, with a type Apple's installer claims",
+  check("GET /cert.crt serves the ROOT (what a device installs), with Apple's install type",
     dl.status === 200
       && dl.headers.get("content-type") === "application/x-x509-ca-cert"
-      && dlBytes.equals(fs.readFileSync(certPath)),
+      && dlBytes.equals(fs.readFileSync(caPath)),
     `status=${dl.status} type=${dl.headers.get("content-type")} bytes=${dlBytes.length}`);
   const viaPlain = await fetch(`http://127.0.0.1:${PLAIN}/cert.crt`);
   check("the LAN port serves the same cert (install from inside too)", viaPlain.status === 200);
