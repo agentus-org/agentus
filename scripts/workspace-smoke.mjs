@@ -179,6 +179,46 @@ try {
   }));
   check("context-limit can be cleared (back to what the agent reports)", cleared.contextLimit === null, String(cleared.contextLimit));
 
+  // ---- the window remembered PER MODEL (studio keeps one per provider+model) -------
+  const model = withLimit.models?.currentModelId ?? "";
+  check("the session advertises a current model to key the memory on", Boolean(model), String(model));
+  const remembered = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ limit: 128000, remember: true }),
+  }));
+  check("a declared window can be remembered for the model", remembered.contextLimit === 128000 && remembered.modelContextLimit === 128000,
+    JSON.stringify({ session: remembered.contextLimit, model: remembered.modelContextLimit }));
+  check("the remembered map is readable", (await j(await fetch(`${base}/api/context-limits`, { headers: H })))
+    .limits.some((l) => l.modelId === model && l.limit === 128000));
+  const sessionOnly = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ limit: null }),
+  }));
+  check("resetting the session keeps the model's memory", sessionOnly.contextLimit === null && sessionOnly.modelContextLimit === 128000,
+    JSON.stringify({ session: sessionOnly.contextLimit, model: sessionOnly.modelContextLimit }));
+  const other = (remembered.models?.availableModels ?? []).map((m) => m.modelId).find((m) => m !== model);
+  if (other) {
+    await fetch(`${base}/api/sessions/${created.id}/model`, {
+      method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ modelId: other }),
+    });
+    const switched = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+      method: "POST", headers: { "content-type": "application/json", ...H },
+      body: JSON.stringify({ limit: 32000, remember: true }),
+    }));
+    check("a second model keeps its own window", switched.modelContextLimit === 32000, String(switched.modelContextLimit));
+    await fetch(`${base}/api/sessions/${created.id}/model`, {
+      method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ modelId: model }),
+    });
+    const back = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+      method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ limit: null, forgetModel: false }),
+    }));
+    check("switching back adopts that model's remembered window", back.modelContextLimit === 128000, String(back.modelContextLimit));
+  }
+  const forgot = await j(await fetch(`${base}/api/sessions/${created.id}/context-limit`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ limit: null, forgetModel: true }),
+  }));
+  check("forgetting drops only the current model's memory", forgot.modelContextLimit === null, String(forgot.modelContextLimit));
+  check("the model window is a declaration, never sent to the agent", !JSON.stringify(forgot).includes("set_context"));
+
   // ---- terminal ------------------------------------------------------------------
   const term = new WebSocket(`ws://127.0.0.1:${PORT}/ws/term?sessionId=${created.id}&token=${token}`);
   const termOut = [];

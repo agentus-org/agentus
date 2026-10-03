@@ -575,6 +575,9 @@ export class SessionManager {
   }
 
   #updateSession(s: LiveSession): void {
+    // The remembered window follows the model, so it has to be refreshed whenever the
+    // model (or anything else) changes — this is the one place every mutation passes.
+    s.info.modelContextLimit = this.#store.getModelLimit(s.info.models?.currentModelId ?? null);
     this.#emit({ t: "session", session: s.info });
     const row = this.#store.getSession(s.info.id);
     if (row) {
@@ -651,14 +654,25 @@ export class SessionManager {
   /** Declare (or clear) the context window the gauge measures against. ACP has no
    *  method for this — a window is a property of the model/provider, reported to us via
    *  usage_update — so this is the operator's own number, kept per slot. */
-  setContextLimit(id: string, limit: number | null): SessionInfo {
+  setContextLimit(
+    id: string,
+    limit: number | null,
+    opts: { remember?: boolean; forgetModel?: boolean } = {},
+  ): SessionInfo {
     const clean = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
     const live = this.#sessions.get(id);
+    if (!live && !this.#store.getSession(id)) throw new Error(`no such session: ${id}`);
+    const info = live?.info ?? this.#coldInfo(id);
+    const modelId = info.models?.currentModelId ?? null;
+    // Studio's shape: the number belongs to the MODEL, and a session may deviate. "reset"
+    // therefore clears only this session's deviation — forgetting the model is a separate,
+    // deliberate act.
+    if (opts.forgetModel) this.#store.setModelLimit(modelId ?? "", null);
+    if (modelId && clean != null && opts.remember === true) this.#store.setModelLimit(modelId, clean);
     if (live) {
       live.info.contextLimit = clean;
       this.#updateSession(live);
     } else {
-      if (!this.#store.getSession(id)) throw new Error(`no such session: ${id}`);
       if (!this.#store.setContextLimit(id, clean)) throw new Error(`no such session: ${id}`);
     }
     this.#emit({ t: "sessions", sessions: this.list() });
@@ -673,6 +687,7 @@ export class SessionManager {
     return {
       id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
       workspace: r.workspace ?? null, contextLimit: r.contextLimit ?? null,
+      modelContextLimit: this.#store.getModelLimit(((r.models ?? null) as SessionInfo["models"])?.currentModelId ?? null),
       models: (r.models ?? null) as SessionInfo["models"],
       title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
       modes: (r.modes ?? null) as SessionModeState | null,

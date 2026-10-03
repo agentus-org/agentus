@@ -299,6 +299,10 @@ const httpServer = createServer(async (req, res) => {
         throw e;
       }
     }
+    // The windows remembered per model (the settings page and scripts read this).
+    if (url.pathname === "/api/context-limits" && req.method === "GET") {
+      return send(res, 200, { limits: store.listModelLimits() });
+    }
     // Operator settings: the page reads and writes this. Secrets only ever leave
     // through a mask (publicSettings) — an unchanged mask round-trips as "keep".
     if (url.pathname === "/api/settings" && req.method === "GET") {
@@ -494,7 +498,10 @@ const httpServer = createServer(async (req, res) => {
         if (limit !== null && (!Number.isFinite(limit) || limit <= 0)) {
           return send(res, 400, { error: "limit must be a positive number of tokens (or null to clear)" });
         }
-        return send(res, 200, mgr.setContextLimit(id, limit));
+        return send(res, 200, mgr.setContextLimit(id, limit, {
+          remember: body.remember === true,
+          forgetModel: body.forgetModel === true,
+        }));
       }
       if (req.method === "POST" && sub === "/mode") {
         const body = await readJson(req);

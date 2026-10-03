@@ -41,6 +41,10 @@ export interface SessionInfo {
    *  what the agent reports via usage_update or this — the operator's declared window.
    *  null = use whatever the agent reports. */
   contextLimit?: number | null;
+  /** The window the operator declared for the CURRENT model (remembered per model, the way
+   *  hermes-studio stores a context length per provider+model). Precedence for the gauge:
+   *  contextLimit (this session) → this → the agent's own usage_update.size. */
+  modelContextLimit?: number | null;
   commands: AvailableCommandView[]; // slash commands advertised by the agent
   /** context-window gauge, from ACP usage_update (AionUi F-DISPLAY-07 lineage) */
   usage?: UsageView | null;

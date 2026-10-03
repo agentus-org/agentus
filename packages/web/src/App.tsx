@@ -1044,47 +1044,83 @@ function ChoiceList({ items, current, onPick, empty }: {
   );
 }
 
-/** Context + spend, in small type above the box (the operator's ask). The bar is
- *  the same reading the ring used to give, minus the ring's claim on the header. */
+/** Context + spend, in small type above the box (the operator's ask). The bar is the same
+ *  reading the ring used to give, minus the ring's claim on the header.
+ *
+ *  The window number has three possible sources, and the popover names the one in play:
+ *  this session's declaration → the declaration remembered for this MODEL (studio's shape:
+ *  it keeps a context length per provider+model) → the agent's own `usage_update.size`.
+ *  ACP has no method to set a window (the SDK routes none, and `session/set_context`
+ *  answers "Method not found" — probed against Hermes), so this number is the budget the
+ *  gauge measures against. What actually moves context is the agent's own `/compress`
+ *  (advertised over ACP, so the button only appears when this agent really has it) and
+ *  switching to a model with a longer window. */
 function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const usage = v.info.usage;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(true);
+  const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const trace = v.trace;
   if (!usage || (!usage.used && !usage.size)) return null;
-  // The window we measure against: the operator's declared one wins (ACP cannot change a
-  // model's window — it is the provider's property), else what the agent reported.
-  const limit = v.info.contextLimit && v.info.contextLimit > 0 ? v.info.contextLimit : usage.size;
+
+  const declared = v.info.contextLimit && v.info.contextLimit > 0 ? v.info.contextLimit : null;
+  const remembered = v.info.modelContextLimit && v.info.modelContextLimit > 0 ? v.info.modelContextLimit : null;
+  const source: "session" | "model" | "agent" = declared ? "session" : remembered ? "model" : "agent";
+  const limit = declared ?? remembered ?? usage.size;
   const pct = limit > 0 ? Math.min(100, Math.round((usage.used / limit) * 100)) : 0;
   const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
   const fmt = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
   const remaining = limit > 0 ? Math.max(0, limit - usage.used) : 0;
-  const save = async (value: number | null): Promise<void> => {
-    setBusy(true);
+  const commands = v.info.commands ?? [];
+  const has = (name: string): boolean => commands.some((c) => c.name === name);
+  const sourceLabel = source === "session"
+    ? "你为本会话声明"
+    : source === "model" ? "你为这个模型记下的" : "agent 上报（usage_update）";
+
+  const apply = async (value: number | null, opts: { remember?: boolean; forgetModel?: boolean } = {}): Promise<void> => {
+    setBusy(opts.forgetModel ? "forget" : "save");
     setErr("");
     try {
-      await cockpit.setContextLimit(v.info.id, value);
+      await cockpit.setContextLimit(v.info.id, value, opts);
       setEditing(false);
     } catch (e) {
       setErr(String((e as Error)?.message ?? e));
     } finally {
-      setBusy(false);
+      setBusy("");
     }
   };
+
+  /** Send one of the agent's OWN commands (they arrive over ACP as available commands). */
+  const runCommand = (name: string): void => {
+    cockpit.send({ t: "prompt", sessionId: v.info.id, text: `/${name}` });
+    setOpen(false);
+  };
+
   return (
     <div className={`usage-row ${level}`}>
       <button className="usage-text" onClick={() => setOpen((o) => !o)} title="context window and this turn">
         ctx {fmt(usage.used)}{limit > 0 ? ` / ${fmt(limit)}` : ""}
         {limit > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
-        {v.info.contextLimit ? " (set)" : ""}
+        {source === "session" ? " (本会话声明)" : source === "model" ? " (模型记录)" : ""}
         {usage.cost != null ? ` · $${usage.cost.toFixed(4)}` : ""}
         {trace && (trace.effort || trace.mode)
           ? ` · ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(" / ")}`
           : ""}
       </button>
+      {/* A nearly-full window gets the useful action in place, using the command this agent
+          advertised — never a button for a command it does not have. */}
+      {level === "hot" && has("compress") && !v.busy ? (
+        <button
+          className="usage-act"
+          onClick={() => runCommand("compress")}
+          title="发送 /compress：让 agent 压缩上下文（这是它自己公告的命令）"
+        >
+          <IconChip size={11} /> 压缩上下文
+        </button>
+      ) : null}
       {limit > 0 ? (
         <div className="usage-bar" title={`${fmt(usage.used)} of ${fmt(limit)} tokens`}>
           <i style={{ width: `${pct}%` }} />
@@ -1094,18 +1130,14 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
         <div className="usage-detail">
           <div>context window: {usage.used} / {limit || "—"} tokens ({pct}%)</div>
           <div>remaining: {limit > 0 ? remaining : "unknown"} tokens</div>
-          <div>
-            window source: {v.info.contextLimit
-              ? <b>declared by you</b>
-              : usage.size > 0 ? "reported by the agent (usage_update)" : "unknown"}
-          </div>
+          <div>window source: <b>{sourceLabel}</b></div>
+          {usage.size > 0 && source !== "agent" ? <div>agent reports: {fmt(usage.size)} tokens (usage_update)</div> : null}
+          {remembered && source === "session" ? <div>remembered for this model: {fmt(remembered)} tokens</div> : null}
           {usage.cost != null ? <div>session cost: ${usage.cost.toFixed(6)}</div> : null}
           {trace?.model ? <div>model: {trace.model}</div> : null}
           {trace && (trace.effort || trace.mode)
             ? <div>this turn: {[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}</div>
             : null}
-          {/* ACP has no "set the window" method: the number belongs to the model. What an
-              operator can do is declare the window the gauge should assume. */}
           {editing ? (
             <div className="usage-edit">
               <input
@@ -1118,31 +1150,54 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     const n = Number(draft.replace(/[^0-9]/g, ""));
-                    if (n > 0) void save(n);
+                    if (n > 0) void apply(n, { remember });
                   }
                   if (e.key === "Escape") setEditing(false);
                 }}
               />
               <button
                 className="usage-edit-btn"
-                disabled={busy || !Number(draft.replace(/[^0-9]/g, ""))}
-                onClick={() => void save(Number(draft.replace(/[^0-9]/g, "")))}
+                disabled={busy !== "" || !Number(draft.replace(/[^0-9]/g, ""))}
+                onClick={() => void apply(Number(draft.replace(/[^0-9]/g, "")), { remember })}
               >
-                {busy ? "…" : "set"}
+                {busy === "save" ? "…" : "set"}
               </button>
-              {v.info.contextLimit ? (
-                <button className="usage-edit-btn" disabled={busy} onClick={() => void save(null)}>reset</button>
+              <label className="usage-check" title="像 studio 那样按模型记住：下次用这个模型自动带回来">
+                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                记到本模型
+              </label>
+              {declared ? (
+                <button className="usage-edit-btn" disabled={busy !== ""} onClick={() => void apply(null, { remember })}>reset</button>
+              ) : null}
+              {remembered ? (
+                <button
+                  className="usage-edit-btn"
+                  disabled={busy !== ""}
+                  onClick={() => void apply(null, { forgetModel: true })}
+                >
+                  {busy === "forget" ? "…" : "忘掉本模型记录"}
+                </button>
               ) : null}
             </div>
           ) : (
             <button className="usage-edit-btn" onClick={() => { setDraft(String(limit || 200000)); setEditing(true); }}>
-              change window
+              设置窗口长度
             </button>
           )}
+          {has("compress") || has("context") ? (
+            <div className="usage-actions">
+              {has("compress") ? (
+                <button className="usage-act" onClick={() => runCommand("compress")} title="让 agent 压缩上下文（/compress，它自己公告的命令）">压缩上下文</button>
+              ) : null}
+              {has("context") ? (
+                <button className="usage-act" onClick={() => runCommand("context")} title="看消息按角色分布（/context）">消息分布</button>
+              ) : null}
+            </div>
+          ) : null}
           {err ? <div className="usage-edit-err">{err}</div> : null}
           <div className="usage-note">
-            ACP has no method to change a model's window — switching the model is the real lever
-            (the model button next to the prompt). This number only drives the gauge.
+            ACP 没有"设置窗口"的方法（实测 <code>session/set_context</code> → Method not found），所以这个数字是仪表盘的预算；
+            声明按模型记住。真正改变上下文的是上面两个命令与换模型。
           </div>
         </div>
       ) : null}

@@ -84,6 +84,12 @@ export class Store {
         primary key (session_id, seq)
       );
       create index if not exists idx_messages_ts on messages (session_id, seq);
+      -- the operator's declared window per MODEL (studio keeps one per provider+model; the
+      -- model id already carries the provider here). ACP has no setter, so this is a
+      -- remembered declaration, not a request to the agent.
+      create table if not exists model_context (
+        model_id text primary key, context_limit integer not null, updated_at integer not null
+      );
     `);
     // additive migration: mode/config persistence for resume (M4-lite)
     const cols = new Set(
@@ -287,6 +293,35 @@ export class Store {
       .prepare("update sessions set workspace = ? where id = ?")
       .run(workspace && workspace.length ? workspace : null, id);
     return Number(info.changes ?? 0) > 0;
+  }
+
+  /** Window declared for a model (null = nothing remembered). */
+  getModelLimit(modelId: string | null | undefined): number | null {
+    if (!modelId) return null;
+    const row = this.#db
+      .prepare("select context_limit from model_context where model_id = ?")
+      .get(modelId) as { context_limit?: number } | undefined;
+    return row?.context_limit ?? null;
+  }
+
+  setModelLimit(modelId: string, limit: number | null): void {
+    if (!modelId) return;
+    if (limit && limit > 0) {
+      this.#db
+        .prepare(
+          `insert into model_context (model_id, context_limit, updated_at) values (?, ?, ?)
+           on conflict(model_id) do update set context_limit = excluded.context_limit, updated_at = excluded.updated_at`,
+        )
+        .run(modelId, Math.floor(limit), Date.now());
+    } else {
+      this.#db.prepare("delete from model_context where model_id = ?").run(modelId);
+    }
+  }
+
+  listModelLimits(): { modelId: string; limit: number }[] {
+    return this.#db
+      .prepare("select model_id as modelId, context_limit as \"limit\" from model_context order by updated_at desc")
+      .all() as { modelId: string; limit: number }[];
   }
 
   /** The operator's declared context window for a slot (null clears it). */

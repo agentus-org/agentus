@@ -530,3 +530,23 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 主题对比度全扫（含合成出来的离线横幅/meta 提示）：亮暗两档 **0 项**不达标 ✅
 - **永久化**：mock 的 markdown 样例里加了一行"单换行 → 应当换行"的段落（`A single newline here → / and the next line follows it.`），以后任何浏览器自测都会覆盖软换行这条。
 - 截图：`56-md-before.png`（修前，48 行）、`58-md-fixed.png` / `60-markdown-fixed.png`（修后，25–31 行）。
+
+**R79–R84 上下文长度：ACP 到底能做什么（用户问"实现了吗，参考 studio 但要用 acp"）**
+
+- **先说结论**：显示与点击设置**上一批就已经实现**（输入框上方那行 `ctx 13k / 1000k · 1%`，点击开面板可改）；但"按 studio 的做法、且走 ACP"还差两块，这次补齐：**按模型记住** + **把 ACP 提供的上下文动作做成按钮**。
+- **ACP 实测（r79：SDK 类型 + 对真 Hermes 开一条会话）**：
+  - SDK 的路由方法只有 `session/{new,load,prompt,cancel,set_mode,set_config_option,list,delete,fork,resume,close,update,request_permission}` —— **没有**任何设置窗口/压缩的方法。
+  - 会话里直接试：`session/set_context` / `session/compact` / `session/set_context_window` / `session/set_thought_level` → 四个全是 **Method not found**。
+  - schema 里 `SessionConfigOption` 是**选择器**（select/boolean），`SessionConfigOptionCategory` 只允许 `mode|model|model_config|thought_level`（或自定义 `_x`）——**没有地方放一个整数窗口**。
+  - `models.availableModels[]` 每条只有 `{modelId, name, description}`（实测 513 条），**不带窗口大小**。
+  - **ACP 确实给的**：① `usage_update{used, size}` —— 真实一轮报 `{used:8403→12541, size:1000000}`（1M 是 agent 自己的值，权威）② `available_commands_update` 公告的命令里有 **`context`**（按角色统计消息数）与 **`compress`**（压缩上下文），因为命令就是 prompt，所以"用 ACP 动上下文"的正道是把它们做成按钮。
+- **studio 的做法（读了 v0.7.27 的 ChatInput.vue / stores）**：`fetchContextLength(profile, provider, model)` + `setModelContext(...)`，数字**按 provider+model 存在服务端**；实时会话有用量时**优先用会话自己的数字**（`if (showSessionUsage.value) return`），配置值只是兜底；UI 是点击数字 → 弹窗 → 保存（校验 >0）。
+- **本次实现（对齐 studio 的语义，机制走 ACP）**：
+  1. 数字来源三级，UI 明说哪一级：**本会话声明 → 本模型记住的 → agent 的 `usage_update.size`**；`(本会话声明)` / `(模型记录)` 标在读数上。
+  2. **按模型记住**：新表 `model_context(model_id, context_limit, updated_at)`；设置时勾"记到本模型"（默认勾，同 studio）；`reset` 只清本会话的偏差、**保留**模型记忆；另有"忘掉本模型记录"。切模型时 `#updateSession` 会刷新 `modelContextLimit`，所以换回来自动带回。
+  3. **ACP 动作做成按钮**：`/compress`、`/context` 只在 **agent 自己公告过** 时才渲染（和思考深度/模型按钮同一纪律：不做假控件）；窗口 ≥85% 时读数旁边直接出现"压缩上下文"。
+- **实测**：
+  - mock（r82/r83）：声明 → 读数变 `(本会话声明)`、服务端行 `contextLimit=72000`、`/api/context-limits` 有记录；reset → 变 `(模型记录)`（记忆保留）；点"压缩上下文" → 最后一条用户消息是 **`/compress`**，agent 报告的占用 **140 → 28**。
+  - **真 Hermes（r84）**：读数 `ctx 13k / 1000k · 1% · 987k left`（1M 来自它的 `usage_update`），面板 `window source: agent 上报（usage_update）`、`context window: 12539 / 1000000`，按钮就是它公告的 `压缩上下文 / 消息分布`（它公告 help,model,tools,context,reset,compress,steer,queue,version）。
+  - CI：`workspace-smoke` 45 → **53 项**（按模型记忆的存取/切换带回/只忘当前模型/校验等）。
+- **诚实记录（我自己的坑，两处）**：① 第一版脚本用 `.backend-pick button` 匹配后端时**漏了正则 `i` 标记**——"Mock Agent" 不匹配 `/mock/`，点击被静默跳过，于是"新建会话"根本没建，测试跑在旧会话上还一度看起来通过；② 同一 tick 里"合成 input 事件 → 立刻 click"会与 React 重渲染竞争，`set` 偶发不生效（人打字再点是两个事件，不受影响）。脚本改成：先等状态、再断言服务端真的变了，并打印尝试次数。

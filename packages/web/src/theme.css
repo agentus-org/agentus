@@ -1009,3 +1009,15 @@ code.inline {
   .set-row > label { padding-top: 0; }
   .set-body { padding: 10px; }
 }
+
+/* ---- the context-window popover's actions (ACP commands + per-model memory) ---- */
+.usage-row .usage-act {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  font-size: 10.5px; padding: 2px 7px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-dim);
+}
+.usage-row.hot .usage-act { border-color: rgba(var(--err-rgb), 0.5); color: var(--err); }
+.usage-row .usage-act:hover { color: var(--text); border-color: var(--accent-dim); }
+.usage-actions { display: flex; gap: 6px; margin: 6px 0 2px; flex-wrap: wrap; }
+.usage-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); }
+.usage-note code { background: var(--chip-bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }

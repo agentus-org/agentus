@@ -110,6 +110,10 @@ const agent = () => ({
         sessionUpdate: "available_commands_update",
         availableCommands: [
           { name: "help", description: "List available commands" },
+          // The two context commands Hermes advertises (probed 2026-10-03): the cockpit
+          // offers them next to the gauge, and they must be testable without a real agent.
+          { name: "context", description: "Show conversation message counts by role" },
+          { name: "compress", description: "Compress conversation context" },
           { name: "mock", description: "Mock-only no-op command" },
           { name: "slow", description: "Stream slowly for reconnect drills" },
         ],
@@ -267,7 +271,10 @@ const agent = () => ({
       content: { type: "text", text: MOCK_MARKDOWN },
     });
     // Context gauge data, shaped like a real agent's usage_update (AionUi F-DISPLAY-07).
-    s.used = (s.used || 0) + text.length + 120;
+    // `/compress` is the agent's own command for this: honour it by actually lowering the
+    // reported context, so "the button did something" is a measurable claim.
+    const compress = /^\/compress\b/.test(text.trim());
+    s.used = compress ? Math.ceil((s.used || 4000) / 5) : (s.used || 0) + text.length + 120;
     await send(agent._conn, sessionId, {
       sessionUpdate: "usage_update",
       used: s.used,

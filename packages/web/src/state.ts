@@ -514,11 +514,15 @@ class Cockpit {
   }
 
   /** The operator's context-window override (null = whatever the agent reports). */
-  async setContextLimit(id: string, limit: number | null): Promise<void> {
+  async setContextLimit(
+    id: string,
+    limit: number | null,
+    opts: { remember?: boolean; forgetModel?: boolean } = {},
+  ): Promise<void> {
     const info = await this.#req<SessionInfo>(`/api/sessions/${id}/context-limit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ limit }),
+      body: JSON.stringify({ limit, ...opts }),
     });
     const view = this.byId.get(id);
     if (view) view.info = { ...view.info, ...info };
