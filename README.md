@@ -65,6 +65,8 @@ layer never changes.
 | `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
 | `AGENTSLOT_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
 | `AGENTSLOT_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
+| `AGENTSLOT_TLS_PORT` | `8443` when a cert exists, else off | **second listener, TLS** — the one a public tunnel points at (`0` disables it) |
+| `AGENTSLOT_TLS_CERT` / `AGENTSLOT_TLS_KEY` | `<AGENTSLOT_DATA>/tls/{cert,key}.pem` | cert material for that listener (see `scripts/make-cert.sh`) |
 | `AGENTSLOT_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
 | `AGENTSLOT_TTS_API_KEY` / `AGENTSLOT_TTS_MODEL` / `AGENTSLOT_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
 | `AGENTSLOT_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
@@ -180,9 +182,35 @@ Two things to know about a tunnel in front of this app:
   the session cookie is issued `Secure` automatically (verified through that same tunnel),
   so no config needed. The last hop inside your LAN stays plain HTTP.
 
-What this is *not*: TLS by itself. A bare LAN IP cannot carry a trusted certificate, so
-the password crosses your own network in clear text. Put it behind a TLS proxy if you
-expose it beyond your LAN.
+#### TLS: a second listener, on purpose
+
+A plain TCP tunnel (SakuraFrp, safe-nat, `ssh -L`, most frp setups) forwards bytes — it
+does **not** terminate TLS for you. Point one at `:8787` and the operator's password and
+session cookie cross the internet in clear text. So the server can speak TLS itself:
+
+```bash
+scripts/make-cert.sh                    # self-signed, SAN = the name you actually type
+# -> packages/server/.data/tls/{cert.pem,key.pem} (0600, git-ignored)
+# boot log then says: https://0.0.0.0:8443 (self-signed …) ; point a tunnel at THIS port
+```
+
+| port | speaks | for |
+|---|---|---|
+| `AGENTSLOT_PORT` (8787) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
+| `AGENTSLOT_TLS_PORT` (8443) | HTTPS (self-signed) | **the tunnel** — encrypts the public hop |
+
+Same handler, same routes, same auth; only the socket differs. Two listeners beat both
+alternatives: turning the single port into HTTPS would put a cert warning in front of your
+own LAN usage (and break `curl` scripts), while sniffing the first byte on one port to
+serve both hides whether a given visit was really encrypted.
+
+The cert is **self-signed on purpose** — no CA issues for an unregistered domain or a bare
+IP, so the browser shows "not private → proceed" once per device. Keep the SAN to the name
+you type (**the DDNS name**, not the public IP: a dynamic IP would need re-issuing, and a
+mismatch adds a second warning). `scripts/qa/tls-smoke.mjs` verifies the real sockets:
+a verifying client must be *rejected* (that is what proves the port is actually TLS), the
+API login must work over it, and `wss://…/ws` must complete its handshake — the upgrade
+handler is bound to both listeners, which is the easy thing to forget.
 
 Logout revokes the session id server-side, so "sign out" ends the session instead of
 just hiding the UI — the cookie stops working immediately.

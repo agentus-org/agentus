@@ -1,6 +1,8 @@
 // AgentSlot server entry: HTTP (REST + static web build) + WebSocket relay.
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import type { Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -173,7 +175,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   fs.createReadStream(file).pipe(res);
 }
 
-const httpServer = createServer(async (req, res) => {
+// One request handler, two listeners: plain HTTP on PORT (LAN, loopback, curl/scripts)
+// and TLS on TLS_PORT (the port a public tunnel points at). Shared on purpose — auth,
+// routes and static serving must not drift between the two.
+const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", "http://x");
   try {
     // ---- outer lock: optional HTTP Basic, in front of EVERYTHING (static, /healthz,
@@ -609,14 +614,18 @@ const httpServer = createServer(async (req, res) => {
     const code = /no such session|no pending permission/.test(msg) ? 404 : 500;
     return send(res, code, { error: msg });
   }
-});
+};
+
+const httpServer = createServer(handleRequest);
 
 // ---- WebSocket ----
 // noServer + a manual upgrade hook: the handshake must be authenticated *before*
 // it becomes a socket. A browser cannot set headers on a WS handshake, so auth
 // rides on the cookie (sent automatically, same-origin) — or ?token= for scripts.
 const wss = new WebSocketServer({ noServer: true });
-httpServer.on("upgrade", (req, socket, head) => {
+// Bound to BOTH listeners (see the TLS block before listen): a browser on the TLS port
+// needs its wss sockets too, and this handler reads the cookie / ?token=, never the scheme.
+const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   const url = new URL(req.url ?? "/", "http://x");
   if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr") {
     socket.destroy();
@@ -643,7 +652,8 @@ httpServer.on("upgrade", (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-});
+};
+httpServer.on("upgrade", handleUpgrade);
 wss.on("connection", (ws) => {
   const clientId = randomUUID().slice(0, 8);
   clients.set(clientId, { ws, lastSeen: new Map() });
@@ -864,6 +874,28 @@ httpServer.listen(PORT, "0.0.0.0", () => {
     );
   }
 });
+// ---- optional TLS listener (self-signed) ----
+// A tunnel that terminates on the public internet must NOT be plain HTTP: the login
+// password and the session cookie would cross it in the clear. This listener is kept
+// SEPARATE from PORT on purpose, so the LAN path stays plain HTTP — no cert warning in
+// the house, curl/scripts unchanged. Off when AGENTSLOT_TLS_PORT=0 or the cert is absent.
+const TLS_PORT = Number(process.env.AGENTSLOT_TLS_PORT ?? 8443);
+const TLS_CERT = process.env.AGENTSLOT_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
+const TLS_KEY = process.env.AGENTSLOT_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
+if (TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+  const httpsServer = createHttpsServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handleRequest);
+  httpsServer.on("upgrade", handleUpgrade);
+  httpsServer.listen(TLS_PORT, "0.0.0.0", () => {
+    console.log(`[agentslot-server] https://0.0.0.0:${TLS_PORT} (self-signed, SAN ${TLS_CERT} — point a public tunnel at THIS port; ${PORT} stays for the LAN)`);
+  });
+  // A busy TLS port must not take the LAN listener down with it: log, keep serving.
+  httpsServer.on("error", (err) => {
+    console.error(`[agentslot-server] tls listener failed on ${TLS_PORT}: ${(err as Error).message}`);
+  });
+} else if (TLS_PORT > 0) {
+  console.log(`[agentslot-server] tls off: no cert at ${TLS_CERT} (create it with scripts/make-cert.sh, or set AGENTSLOT_TLS_PORT=0)`);
+}
+
 httpServer.on("error", (err) => {
   console.error(`[agentslot] cannot listen on ${PORT}: ${(err as Error).message}`);
   process.exit(1); // fail fast: never linger as a listener-less zombie
