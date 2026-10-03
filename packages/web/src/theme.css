@@ -366,7 +366,11 @@ code.inline {
 .send-btn.stop { background: var(--err); color: #180e0e; }
 .send-btn:disabled { opacity: 0.4; cursor: default; }
 /* ---- context/spend line: small type, right above the box ---- */
-.usage-row { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
+/* position: relative is load-bearing: .usage-detail is absolutely positioned and its
+   `bottom: calc(100% + 8px)` needs THIS row as the containing block. Without it the
+   containing block is the initial one, so the popover was laid out above the document
+   (measured y = -178 on a 390x844 viewport) — invisible on every screen size. */
+.usage-row { display: flex; align-items: center; gap: 8px; padding: 0 2px; position: relative; }
 .usage-text {
   background: transparent; border: none; padding: 0; cursor: pointer;
   font-size: 11px; color: var(--text-dim); font-family: var(--mono);
@@ -383,7 +387,9 @@ code.inline {
 .usage-row.warn .usage-bar > i { background: var(--accent); }
 .usage-row.hot .usage-bar > i { background: var(--err); }
 .usage-detail {
-  position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 12;
+  position: absolute; left: 0; right: auto; width: min(560px, 100%);
+  bottom: calc(100% + 8px); z-index: 12;
+  max-height: min(60vh, 420px); overflow-y: auto;
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 10px; font-size: 11.5px; color: var(--text-dim);
   font-family: var(--mono); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
@@ -730,6 +736,13 @@ code.inline {
   .composer-bar .icon-btn { width: 38px; height: 38px; }
   .send-btn { width: 46px; height: 38px; }
   .usage-row .usage-bar { max-width: 90px; }
+  /* The pickers are anchored to their trigger button, which sits mid-toolbar on a phone:
+     `left: 0` + `width: min(86vw, 420px)` then hangs off the right edge (measured 134..469
+     on a 390px viewport). Pin them to the viewport instead so they always fit. */
+  .tb-list, .tb-list.wide {
+    position: fixed; left: 8px; right: 8px; width: auto; max-width: none;
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px)); max-height: 52vh;
+  }
   .settings-pop { width: min(340px, 94vw); bottom: calc(100% + 6px); }
   /* the panel is a full-screen sheet on a phone, like the slot rail */
   .tool-panel {

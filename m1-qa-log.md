@@ -550,3 +550,16 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - **真 Hermes（r84）**：读数 `ctx 13k / 1000k · 1% · 987k left`（1M 来自它的 `usage_update`），面板 `window source: agent 上报（usage_update）`、`context window: 12539 / 1000000`，按钮就是它公告的 `压缩上下文 / 消息分布`（它公告 help,model,tools,context,reset,compress,steer,queue,version）。
   - CI：`workspace-smoke` 45 → **53 项**（按模型记忆的存取/切换带回/只忘当前模型/校验等）。
 - **诚实记录（我自己的坑，两处）**：① 第一版脚本用 `.backend-pick button` 匹配后端时**漏了正则 `i` 标记**——"Mock Agent" 不匹配 `/mock/`，点击被静默跳过，于是"新建会话"根本没建，测试跑在旧会话上还一度看起来通过；② 同一 tick 里"合成 input 事件 → 立刻 click"会与 React 重渲染竞争，`set` 偶发不生效（人打字再点是两个事件，不受影响）。脚本改成：先等状态、再断言服务端真的变了，并打印尝试次数。
+
+**R85 手机上点不开上下文浮层：它其实从来没显示过（根因 = 没有定位祖先）**
+
+- 报告："上下文修改页支持了？为啥我手机上点击没显示出来啊"。先排除旧构建：`:8787` 与公网入口发的都是最新 dist（`index-BuIMbQsY.js`）。
+- 复现（CDP 模拟 iPhone 390×844 + 触控）：`.usage-detail` **在 DOM 里**、`display:block`、`z-index:12`、文字全对 —— 但 `getBoundingClientRect()` = `[0, -178, 390, 170]`：整个浮层在**视口上方之外**，`elementFromPoint` 命中不到它。桌面 1440×900 同样 `y = -146`。**也就是说这个浮层在任何尺寸下都没显示过。**
+- 根因：`.usage-detail { position:absolute; bottom: calc(100% + 8px) }` 的祖先链里**没有定位元素**（`.usage-row`、`.composer` 都是 static）→ 包含块退化成初始包含块 → `bottom:100%` 把它推到文档顶部之上。实测 `offsetParent === BODY`。
+- 为什么 R82/R83 三轮"验证"没抓到：那几轮读的是 `textContent`、并用 JS `.click()` 点它里面的按钮 —— DOM 在、状态对、服务端行也对，只有**几何**没人看；截图也拍了，但我没看图、没量坐标（与 lessons 里"整页不滚 ≠ 控件在屏内"是同一类错误的变体）。
+- 修（1 行真因 + 2 处同族）：
+  1. `.usage-row { position: relative }` —— 让它成为浮层的包含块。
+  2. `.usage-detail { width: min(560px, 100%); max-height: min(60vh, 420px); overflow-y: auto }` —— 桌面不再横向撑满，手机上不会超出屏高。
+  3. 手机 390 宽下，模型/深度选择面板 anchored `left:0` + `width:min(86vw,420px)` 会挂出屏幕右侧（实测 134..469）→ 手机媒体查询里把 `.tb-list` 钉到视口（`position:fixed; left/right:8px; bottom:76px`）。
+- 验收（`scripts/qa/popover-sweep.mjs`，需真浏览器，不进 CI）：**4 个浮层 × 2 个视口 = 8/8 在屏内**（修前 4/8：ctx 两个尺寸都 OUTSIDE，手机两个选择面板 OUTSIDE）；`offsetParent` 从 `BODY` 变为 `DIV.usage-row`；手机/桌面截图肉眼确认（`screens/phone-ctx-popover-open.png`、`screens/desktop-ctx-popover-open.png`）。
+- 回归：typecheck 0 错误、auth-smoke PASS、workspace-smoke 53/53、voice-smoke 47/47、smoke PASS。
