@@ -63,7 +63,11 @@ const md: MarkdownItInstance = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: true,
-  highlight(code, lang) {
+  highlight(rawCode, lang) {
+    // A fence's content always ends with a newline; keeping it renders a trailing empty
+    // line inside the block (measured: a 3-line fence drew 4 line boxes). Inner blank
+    // lines are preserved — only the final break goes.
+    const code = rawCode.replace(/\n$/, "");
     const name = (lang || "").trim().toLowerCase();
     if (name && hljs.getLanguage(name)) {
       try {

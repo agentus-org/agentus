@@ -509,3 +509,24 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 修前：设置页亮色 **14 项**不达标（最差 4.09，全是 `--text-dim` 系）、转录亮色 4 项（链接 2.73、代码块语言标签 3.34）、深色下选中分段按钮 **1.34**。
   - 修后：设置页/转录/整个应用（聊天+侧栏、工作空间面板、设置页、工具条弹层、登录卡）**亮暗两档全部 0 项**不达标 → `CONTRAST CLEAN`。
   - 截图：`52-settings-light-fixed.png` / `53-settings-dark-fixed.png` / `54-login-light.png` / `55-login-dark.png`，像素均值两两不同（`#f4f5f7` vs `#161e24` vs `#f3f4f6` vs `#0f1417`）。
+
+**R73–R78 聊天页"换行太多"：真因是 CSS，不是 markdown 配置（用户报）**
+
+- **用户现象**：聊天页感觉换行很多，"真实 markdown 真的换这么多行吗"，让对比 studio。
+- **取证（先量再改）**：对渲染后的第一个 markdown 块量几何 + 数"幽灵行"：
+  - 修前：`.md` 的 `white-space` = **pre-wrap**（从 `.msg .bubble` 继承），块与块之间的间距是 **39/33/33/35/35/35px**（行高只有 21px），`.md` 内有 **7 个纯空白文本节点**；总高 1003px = **48 视觉行**。
+  - 修后：间距回到纯 margin（12/6/6/8/8/8），总高 652px = **31 视觉行**。**同样的内容少 17 行（-35%）**。
+- **根因**：`.msg .bubble { white-space: pre-wrap }` 是为**纯文本**气泡（用户输入、meta 行）加的，但 markdown 气泡也继承到了。markdown-it 输出的 HTML 是**带换行排版**的（`</p>\n<p>`），在 pre-wrap 下每个块标签间的换行都变成一个**独立行盒**，于是每个段落边界凭空多一行。而且 `breaks:true` 已经把源换行变成 `<br>`，再保留换行字符就是双份。
+- **studio 对比（说明不是"markdown-it 配置不同"）**：studio 的 `MarkdownRenderer.vue` 用的是**同样的 `breaks: true` + `linkify`**（外加 typographer/katex），它的 markdown 容器**不设 pre-wrap**（只在行内 `code` 上设），所以 studio 没有这个毛病。结论：**是我们的 CSS，不是渲染器配置**。
+- **修法**：`.md { white-space: normal }`（代码块靠 `pre` 自己的 `white-space: pre`），`pre-wrap` 只留给没有 `.md` 子节点的气泡。
+- **附带修掉的两个同类问题**：
+  1. 围栏代码块末尾的换行会在块内渲染出一个**多余空行**（3 行代码画 4 个行盒的估算里其实一半是我把 padding 算进去了；改成直接数 DOM 行数后确认：trim 前 `rawLines=4`，trim 后 `rawLines=3 = boxLines=3`）。
+  2. 侧栏"离线横幅"最后一块硬编码的深色主题颜色：`#ffb3a0` 压白底 **1.72:1**（顺手做主题对比度全扫时抓到）。改用 `--err` / `--err-rgb` 分主题取值。
+  3. 冷会话整体 `opacity: 0.72` 会把标题/后端徽章压到 **3.26:1**；改为"只把标题调成次要色 + 虚线边框表示非活跃"，不透明度不再承担可读性。
+- **回归验证（四个必须仍然成立的行为）**：
+  - 软换行：一个 `<p>`、有 1 个 `<br>`、高 42px = **2 行** ✅（`breaks:true` 仍然生效）
+  - 围栏代码：`white-space: pre`，3 行代码 → 3 个行盒 ✅
+  - 纯文本气泡：用户 3 行输入仍是 3 行（`white-space: pre-wrap`，无 `.md` 子节点）✅
+  - 主题对比度全扫（含合成出来的离线横幅/meta 提示）：亮暗两档 **0 项**不达标 ✅
+- **永久化**：mock 的 markdown 样例里加了一行"单换行 → 应当换行"的段落（`A single newline here → / and the next line follows it.`），以后任何浏览器自测都会覆盖软换行这条。
+- 截图：`56-md-before.png`（修前，48 行）、`58-md-fixed.png` / `60-markdown-fixed.png`（修后，25–31 行）。

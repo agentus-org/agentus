@@ -38,6 +38,12 @@ const MOCK_MARKDOWN = [
   "",
   "> a blockquote, as agents write when they cite something",
   "",
+  // A soft break: one newline in the source, one <br> on screen (breaks: true). The
+  // cockpit's markdown container must not ALSO preserve the newline character — that is
+  // the difference between one line and two, and it is worth a permanent test fixture.
+  "A single newline here \u2192",
+  "and the next line follows it.",
+  "",
   "```ts",
   "// highlighting is only visible if this is colourful",
   "const slot = (x: number) => x * 2;",
