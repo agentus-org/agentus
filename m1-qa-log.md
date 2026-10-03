@@ -472,6 +472,8 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - **主题**（在活的 DOM 上量，不靠眼睛）：`data-theme=system` 时亮色系统 → `--bg=#f4f6f9`、`body` 背景 `rgb(244,246,249)`；切 `light`/`dark` → `#f4f6f9` / `#0c1116`，`color-scheme` 跟着变；换强调色 → `--accent-rgb` 从 `255, 180, 84` → `78, 201, 160`。
   - **流式听写（页面自己的代码路径）**：在页面里开 `/ws/asr` 送真音频 → `ready`（流式模型）→ 3 个 partial → `final: 使用阿里云。` → `done`，并带回 12 个热词；`resampleToPcm16(4800@48k → 1600@16k)` 比例正确（peak 32719）。
   - 返回聊天页正常，控制台错误 0。
+  - 截图：`42-settings-page.png`、`43-settings-light.png`、`44-settings-accent.png`、`45-settings-hotwords.png`、`46-settings-tts.png`、`47-accent-violet.png`、`48-tts-result.png`、`49-tts-trusted-click.png`。
+    - **补拍**：42/43 两张"亮/暗对照"其实都是亮的（这台 Mac 的系统就是亮色，"跟随系统"= 亮）——看起来一样的截图不算证据。补 `50-settings-dark.png` / `51-settings-light.png`，并用像素均值核对：`#161d24` vs `#f3f4f6`（**截图也要用数字验，肉眼读缩略图在这件事上不可靠**）。
 
 **R64–R65 强调色与两条探针教训**
 
