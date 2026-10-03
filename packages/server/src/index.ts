@@ -12,7 +12,10 @@ import { SessionManager } from "./acp/session-manager.js";
 import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
 import { FsError, listDirs, readTextFile } from "./fs.js";
 import { terms } from "./term.js";
-import { VoiceError, synthesize, transcribe, voiceCapabilities } from "./voice.js";
+import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
+import { hotwordsFor, vocabularyOf } from "./hotwords.js";
+import { openDashscopeStream } from "./dashscope.js";
+import { initSettings, publicSettings, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
 
@@ -65,6 +68,26 @@ function emit(evt: ServerEvent): void {
 }
 
 const mgr = new SessionManager(store, emit);
+
+// Operator settings (voice, theme) live in a 0600 JSON next to the store: the settings
+// page owns them and env only bootstraps them (settings.ts). Read before anything asks.
+initSettings(DATA_DIR);
+// Dynamic hotwords are mined from the transcript — the store's business, not voice.ts's,
+// so the lookup is injected rather than imported.
+setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word));
+
+/** The tail of the session being dictated into, for DashScope's context enhancement
+ *  ("根据上下文"): user/assistant turns only, capped at 5 by the API. */
+function dictationContext(sessionId?: string): { role: "user" | "assistant"; text: string }[] {
+  if (!sessionId) return [];
+  const out: { role: "user" | "assistant"; text: string }[] = [];
+  for (const row of store.messagesTail(sessionId, 8).messages) {
+    if (row.kind !== "user" && row.kind !== "agent") continue;
+    const text = String((row.payload as { text?: string })?.text ?? "").trim().slice(0, 200);
+    if (text) out.push({ role: row.kind === "user" ? "user" : "assistant", text });
+  }
+  return out.slice(-5);
+}
 
 /**
  * Single prompt entry point (REST + WS both use it).
@@ -276,8 +299,45 @@ const httpServer = createServer(async (req, res) => {
         throw e;
       }
     }
+    // Operator settings: the page reads and writes this. Secrets only ever leave
+    // through a mask (publicSettings) — an unchanged mask round-trips as "keep".
+    if (url.pathname === "/api/settings" && req.method === "GET") {
+      return send(res, 200, publicSettings());
+    }
+    if (url.pathname === "/api/settings" && (req.method === "PUT" || req.method === "POST")) {
+      const body = await readJson(req);
+      try {
+        if (body.voice && typeof body.voice === "object") saveSettings(body.voice as Record<string, unknown>);
+        if (body.theme && typeof body.theme === "object") saveTheme(body.theme as Record<string, unknown>);
+        if (!body.voice && !body.theme) saveSettings(body);
+        return send(res, 200, publicSettings());
+      } catch (e) {
+        return send(res, 400, { error: String((e as Error)?.message ?? e) });
+      }
+    }
+    // The model ids the configured endpoint really serves, for the settings dropdowns
+    // ("其它的也可选"): ask the endpoint instead of shipping a catalogue.
+    if (url.pathname === "/api/voice/models" && req.method === "GET") {
+      try {
+        return send(res, 200, await listVoiceModels());
+      } catch (e) {
+        const code = e instanceof VoiceError && e.code === "not_configured" ? 501 : 502;
+        return send(res, code, { error: String((e as Error)?.message ?? e) });
+      }
+    }
+    // Which hotwords the next recognition would carry, and where each came from: the
+    // settings page shows this instead of asking the operator to trust a textarea.
+    if (url.pathname === "/api/voice/hotwords" && req.method === "GET") {
+      const sid = url.searchParams.get("sessionId") || undefined;
+      const words = hotwordsFor(store, sid);
+      return send(res, 200, {
+        words: words.map((h) => ({ word: h.word, weight: h.weight, origin: h.origin })),
+        fixed: words.filter((h) => h.origin === "fixed").length,
+        dynamic: words.filter((h) => h.origin === "dynamic").length,
+      });
+    }
     // What the browser should offer: it can always speak/read text itself, and the
-    // server adds an OpenAI-compatible path when one is configured (voice.ts).
+    // server adds a configured provider (voice.ts) — 百炼 or any OpenAI-compatible one.
     if (url.pathname === "/api/voice" && req.method === "GET") {
       return send(res, 200, voiceCapabilities());
     }
@@ -305,6 +365,8 @@ const httpServer = createServer(async (req, res) => {
         const text = await transcribe(audio, String(req.headers["content-type"] ?? "audio/webm"), {
           filename: typeof req.headers["x-agentslot-filename"] === "string" ? req.headers["x-agentslot-filename"] : undefined,
           language: url.searchParams.get("language") || undefined,
+          // the session tells the recogniser what this conversation is about (hotwords)
+          sessionId: url.searchParams.get("sessionId") || undefined,
         });
         return send(res, 200, { text });
       } catch (e) {
@@ -475,7 +537,7 @@ const httpServer = createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 httpServer.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://x");
-  if (url.pathname !== "/ws" && url.pathname !== "/ws/term") {
+  if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr") {
     socket.destroy();
     return;
   }
@@ -493,6 +555,10 @@ httpServer.on("upgrade", (req, socket, head) => {
   }
   if (url.pathname === "/ws/term") {
     termWss.handleUpgrade(req, socket, head, (ws) => termWss.emit("connection", ws, req, url));
+    return;
+  }
+  if (url.pathname === "/ws/asr") {
+    asrWss.handleUpgrade(req, socket, head, (ws) => asrWss.emit("connection", ws, req, url));
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
@@ -610,6 +676,68 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   };
   ws.on("close", cleanup);
   ws.on("error", cleanup);
+});
+
+// ---- dictation: the streaming ASR path ---------------------------------------
+// DashScope's streaming recogniser is a WebSocket that authenticates with a header,
+// which a browser cannot set on a handshake — and the key must not leave the server
+// anyway. So the browser streams 16 kHz mono PCM to us and we own the upstream socket.
+// One socket = one utterance; closing it finalises the task.
+const asrWss = new WebSocketServer({ noServer: true });
+asrWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
+  const reply = (m: unknown): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+  };
+  const caps = voiceCapabilities().stt as { server?: boolean; streaming?: boolean; model?: string | null };
+  if (!caps.streaming) {
+    reply({ t: "asr-error", error: "streaming ASR is off (settings: provider \u767e\u70bc + a streaming model)" });
+    ws.close();
+    return;
+  }
+  const sessionId = url.searchParams.get("sessionId") || undefined;
+  const words = hotwordsFor(store, sessionId);
+  let live: ReturnType<typeof openDashscopeStream>;
+  try {
+    live = openDashscopeStream({
+      vocabulary: vocabularyOf(words),
+      context: dictationContext(sessionId),
+      onPartial: (text) => reply({ t: "asr-partial", text }),
+      onFinal: (text) => reply({ t: "asr-final", text }),
+      onError: (error) => reply({ t: "asr-error", error }),
+      onClose: () => {
+        reply({ t: "asr-done" });
+        // one socket = one utterance: end it here so the browser's next dictation starts
+        // from a clean run-task instead of reusing a finished task id.
+        setTimeout(() => { try { ws.close(); } catch { /* already gone */ } }, 120);
+      },
+    });
+  } catch (e) {
+    reply({ t: "asr-error", error: String((e as Error)?.message ?? e) });
+    ws.close();
+    return;
+  }
+  const stream = live;
+  void stream.started
+    .then(() => reply({
+      t: "asr-ready",
+      model: caps.model ?? null,
+      hotwords: words.slice(0, 12).map((h) => h.word),
+      hotwordCount: words.length,
+    }))
+    .catch((e: unknown) => reply({ t: "asr-error", error: String((e as Error)?.message ?? e) }));
+  ws.on("message", (data: Buffer, isBinary: boolean) => {
+    if (isBinary) {
+      stream.sendAudio(Buffer.isBuffer(data) ? data : Buffer.from(data));
+      return;
+    }
+    try {
+      const cmd = JSON.parse(String(data)) as { t?: string };
+      if (cmd.t === "asr-stop") stream.stop();
+    } catch { /* malformed control frame: ignore */ }
+  });
+  const done = (): void => { try { stream.stop(); } catch { /* already closed */ } };
+  ws.on("close", done);
+  ws.on("error", done);
 });
 
 // ---- graceful exit: SIGTERM children before we die (design.md §8-1) ----

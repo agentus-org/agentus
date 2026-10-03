@@ -28,10 +28,15 @@ function check(name, ok, detail = "") {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** An empty HOME: the server's settings bootstrap also reads `~/.hermes/.env`, so a suite
+ *  that inherits the operator's home is not testing an unconfigured install (this bit us:
+ *  the voice guards below returned 200 with real audio instead of 501). */
+const EMPTY_HOME = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
+
 async function boot(port, dataDir) {
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir },
+    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir, HOME: EMPTY_HOME },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";

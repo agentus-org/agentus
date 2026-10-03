@@ -458,3 +458,36 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - CI 断言 39 → **45**（fork 返回新会话/新 agent 侧 id/继承工作空间/标题含 fork/出现在列表里/未知会话 404）。
   - 踩坑：mock 的 `loadSession` 对不认识的 sessionId 原来会**另起一个新 id**（真 agent 是从库里恢复同一个 id），于是"resume 一个 mock 会话后再 fork 它"报 `no such session: mock-N` —— 测试替身必须模拟"持久化恢复同一个 id"，否则假失败。
 - 截图：`39-rail-groups.png`、`40-panel-workspace.png`、`41-fork.png`。
+
+**R63 夜间批次：设置页 + 主题可配置 + 百炼语音（真 key 全链路）**
+
+- **服务端（先测后再进 UI）**：
+  - `settings.ts`（0600 JSON，密钥只以 `••••xxxx` 出行）/ `dashscope.ts`（TTS `SpeechSynthesizer` → 服务端取回 OSS 音频；批量 ASR 走 OpenAI 兼容 chat；流式 ASR 走 `api-ws/v1/inference` duplex）/ `hotwords.ts`（固定+动态热词）/ `voice.ts`（provider 路由：`dashscope | openai | browser`）。
+  - REST：`GET/PUT /api/settings`、`GET /api/voice/models`（**问操作员自己的端点要型号表**，实测 261 个、识别类 6 个）、`GET /api/voice/hotwords`（热词预览）；WS `/ws/asr`（浏览器送 16k 单声道 PCM，服务端持有上游 socket）。
+  - 实测（真 key，用 `.env` 里的 `DASHSCOPE_API_KEY` + `DASHSCOPE_BASE_URL`）：`/api/tts` → 200 `audio/x-wav` 165KB（RIFF）；把这段音频再喂 `/api/stt` → `"Agent Slot语音合成自测，龙安欢音色。"`（**TTS→ASR 往返**）；`welcome.mp3` → `"欢迎使用阿里云。"`。
+  - `/ws/asr` 中继实测（`probe_asr_ws.mjs`，真音频 54336B PCM，17 帧）：`asr-ready{model:qwen-audio-3.1-asr-flash-streaming, hotwords:14}` → 3 个 partial（`换` → `欢迎于使用` → `欢迎于使用里云音`）→ `asr-final 欢迎使用阿里云。` → `asr-done`，全程 2.9s。
+    - **踩到的真 bug**：`closing=true` 把上游 socket 的 close 也吞掉了 → 浏览器永远等不到 `asr-done`（脚本 40s 超时）。改成"done 只发一次，且不依赖谁关的 socket"（`task-finished` 或 close 都触发）。
+  - **模型名事实**：用户给的 `qwen-audio-3.1-asr-flash-stream`（百炼 404 Model not exist）真实 id 是 `qwen-audio-3.1-asr-flash-streaming`；`qwen-audio-3.0-tts-flash` 默认音色 `longanhuan_v3.6` = 龙安欢。
+- **浏览器实测（R63）**：齿轮打开设置页，5 个分区 `主题 / 语音识别（ASR）/ 热词 / 语音合成（TTS）/ 这个浏览器`；密钥显示 `已保存 ••••bd56（留空不改）`；模型表 261（识别类 6）；热词 15 个（固定 3 + 动态 12，动态那批是从本会话自己的历史里抽出来的 `read_file / execute_code / hermes_tools …`）。
+  - **主题**（在活的 DOM 上量，不靠眼睛）：`data-theme=system` 时亮色系统 → `--bg=#f4f6f9`、`body` 背景 `rgb(244,246,249)`；切 `light`/`dark` → `#f4f6f9` / `#0c1116`，`color-scheme` 跟着变；换强调色 → `--accent-rgb` 从 `255, 180, 84` → `78, 201, 160`。
+  - **流式听写（页面自己的代码路径）**：在页面里开 `/ws/asr` 送真音频 → `ready`（流式模型）→ 3 个 partial → `final: 使用阿里云。` → `done`，并带回 12 个热词；`resampleToPcm16(4800@48k → 1600@16k)` 比例正确（peak 32719）。
+  - 返回聊天页正常，控制台错误 0。
+
+**R64–R65 强调色与两条探针教训**
+
+- 强调色要在**真实消费者**上量：设成紫色后侧栏 logo 计算色 `rgb(143, 123, 215)`、齿轮同色，恢复默认后回到 `rgb(255, 180, 84)`。第一次量错了对象（量的是禁用状态的保存按钮 → `rgba(0,0,0,0)`），**"量了个会变灰的控件"等于没量**。
+- **TTS 试听按钮的探针写错了**：我轮询 `.set-mini` 的第一个（其实是"重新读取"，永远不会 disabled）→ 立刻返回、读到空 toast，看起来像 TTS 失败。改成轮询该行为特有的信号（toast / 错误条）并给足时间。
+- 另：CDP 的 `Runtime.evaluate` **没有超时**，页面卡住脚本就永远挂着（第一版跑到 4 分钟没输出）。所有 evaluate 都套 `Promise.race` 30s。
+
+**R66–R67 服务端 TTS 播放：一个真 bug + 一次诚实的失败**
+
+- **真 bug（已修）**：`play() failed because the user didn't interact with the document first.` —— 浏览器只允许在用户手势（及其后很短的窗口）内开始播放，而百炼合成往返常常超过这个窗口。于是**真实用户点了按钮也听不到**，而合成其实成功。修法：点击时先 `AudioContext.resume()` 解锁，再用同一个 context 播（`decodeAudioData` + `BufferSource`），`<audio>` 元素只作兜底；朗读（speaker）的服务端路径也改走同一个播放器。
+- **诚实记录**：R66 想用**可信点击**（`Input.dispatchMouseEvent`）验证"点了真的出声"，但 Edge 在这个 CDP 配置下**根本不派发合成输入**——`elementFromPoint` 命中按钮、坐标在视口内，而页面里的 click 监听器一个事件都没收到（`window.__clicks=[]`）。三次尝试（补 `buttons` / `scrollIntoView` / `Page.bringToFront`）都没用。**结论：浏览器内的"点击→出声"这一段没有实测**，改用能拿到的证据：
+  - R67：页面里 `fetch('/api/tts')` → `decodeAudioData` 成功，**5.92s、48kHz 单声道、peak 0.54**（即浏览器确实拿到了可解码可播放的音频）；落盘的 `/tmp/agentslot-tts-自测.wav` 由 `ffprobe` 校验为 `pcm_s16le / 24kHz / mono / 3.44s`。
+  - 服务端往返、剧本、解锁设计三点都有证据；"人点按钮能听到声音"这一条留给用户自己点一下确认。
+
+**R68 CI：`voice-smoke`（47 项）**
+
+- 自带一个**替身端点**（同时会说 OpenAI 兼容 `/v1/*` 与百炼原生 `SpeechSynthesizer` + `compatible-mode/v1/*`），两个 `HOME` 各起一个服务：空 `HOME`（真的"未配置"）与带 `~/.hermes/.env` 的 `HOME`（**env 引导路径**）。
+- 覆盖：设置默认值/主题校验（非法 mode、非法 accent 均 400）/密钥掩码（响应体里不出现 `sk-`）/provider 非法 400/未配置时 `/api/tts` 501/`/api/voice/models` 分类/热词权重与上限/`.env` 引导（provider=dashscope + 来源路径）/百炼 TTS 请求体（model+voice+format）/**ASR 请求体带 `input_audio` data URL 与热词实体词表**/端点不可达 502/`settings.json` 0600。
+- 这套断言**抓出两个真 bug**：① `listVoiceModels()` 只看 env 引导、忽略设置页刚存的端点 → 页面会报"未配置"（而同一页的 TTS 明明是通的）；② 不可达端点的 fetch 失败没被包装 → 报 500（我们的 bug）而不是 502（上游的问题）。两个都已修并回归。

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
+import { SettingsPage } from "./SettingsPage";
+import { loadServerTheme } from "./theme";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
@@ -18,20 +20,35 @@ export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState(false);
+  // Settings is a view, not a modal: it replaces the chat area (hermes-studio's shape),
+  // so a half-read conversation is still there when the operator comes back.
+  const [settings, setSettings] = useState(false);
 
   // Who are we? Asked before anything else: /api/auth/me decides between the login
   // view and the cockpit. Dialling the socket first would be wasted — an
   // unauthenticated upgrade is refused with 401.
   useEffect(() => { void cockpit.checkAuth(); }, []);
   useEffect(() => { setDrawer(false); }, [snap.activeId]);
+  // The server's palette is the source of truth; the localStorage copy only made the
+  // first frame right. Adopted once the operator is in (the endpoint needs a session).
+  useEffect(() => { if (snap.auth === "in") void loadServerTheme(); }, [snap.auth]);
 
   if (snap.auth !== "in") return <AuthScreen />;
 
   return (
     <div className="app">
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
-      <Sidebar open={drawer} onNew={() => setModal(true)} />
-      <Main onMenu={() => setDrawer(true)} />
+      <Sidebar
+        open={drawer}
+        onNew={() => setModal(true)}
+        onSettings={() => { setSettings(true); setDrawer(false); }}
+        settingsOpen={settings}
+      />
+      <Main
+        onMenu={() => setDrawer(true)}
+        settingsOpen={settings}
+        onCloseSettings={() => setSettings(false)}
+      />
       {modal && <NewSessionModal onClose={() => setModal(false)} />}
     </div>
   );
@@ -102,7 +119,12 @@ function AuthScreen(): JSX.Element {
  *  is in the tooltip), and a group collapses, so twenty sessions across four projects stay
  *  readable. Live and cold sessions live in the same group: they belong to the same work,
  *  and splitting them by process state was a machine's view, not the operator's. */
-function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Element {
+function Sidebar({ open, onNew, onSettings, settingsOpen }: {
+  open: boolean;
+  onNew: () => void;
+  onSettings: () => void;
+  settingsOpen: boolean;
+}): JSX.Element {
   const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [q, setQ] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
@@ -150,6 +172,15 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
       <header>
         <span className="logo">⛟ AgentSlot</span>
         <span className="tagline">keep your agents on the track</span>
+        <button
+          className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
+          title="设置 — 主题、语音识别、语音合成、热词"
+          aria-label="settings"
+          aria-pressed={settingsOpen}
+          onClick={onSettings}
+        >
+          <IconSettings size={15} />
+        </button>
       </header>
       {net === "degraded" || conn === "offline" ? (
         <div className="net-banner" title={netError}>
@@ -284,7 +315,11 @@ function Sidebar({ open, onNew }: { open: boolean; onNew: () => void }): JSX.Ele
   );
 }
 
-function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
+function Main({ onMenu, settingsOpen, onCloseSettings }: {
+  onMenu: () => void;
+  settingsOpen: boolean;
+  onCloseSettings: () => void;
+}): JSX.Element {
   const { active } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
   // here so switching slots keeps the panel open on the new slot's workspace.
@@ -295,6 +330,9 @@ function Main({ onMenu }: { onMenu: () => void }): JSX.Element {
   useEffect(() => { void loadVoiceCaps(); }, []);
   useAutoRead(lastFinishedReply(active), Boolean(active && !active.busy && active.loaded));
 
+  if (settingsOpen) {
+    return <SettingsPage onClose={onCloseSettings} sessionId={active?.info.id} />;
+  }
   if (!active) {
     return (
       <div className="main">
@@ -1220,9 +1258,10 @@ function SettingsPopover({ v, prefs, setPrefs, onClose }: {
           onChange={(e) => setPrefs({ stt: e.target.value as VoicePrefs["stt"] })}
           aria-label="dictation engine"
         >
-          <option value="auto">auto — browser if available</option>
+          <option value="auto">auto — 服务端流式 &gt; 浏览器 &gt; 批量</option>
+          <option value="stream">stream{caps.stt.streaming ? ` (${caps.stt.model ?? "百炼"})` : " (not configured)"}</option>
           <option value="browser">browser{!browserDictationAvailable() ? " (unavailable)" : ""}</option>
-          <option value="server">server{caps.stt.server ? ` (${caps.stt.model ?? "configured"})` : " (not configured)"}</option>
+          <option value="server">server{caps.stt.server ? ` (${caps.stt.batchModel ?? "configured"})` : " (not configured)"}</option>
         </select>
         <input
           className="settings-input"
@@ -1232,7 +1271,8 @@ function SettingsPopover({ v, prefs, setPrefs, onClose }: {
           aria-label="speech language"
         />
         <div className="settings-note">
-          browser dictation {browserDictationAvailable() ? "available" : "unavailable"} · server STT {caps.stt.server ? "configured" : "not configured"}
+          browser dictation {browserDictationAvailable() ? "available" : "unavailable"} · {caps.provider} STT{" "}
+          {caps.stt.streaming ? "streaming" : caps.stt.server ? "batch" : "not configured"}
         </div>
       </div>
     </div>
@@ -1426,7 +1466,13 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
                 ? "waiting for the microphone…"
                 : dict.status === "transcribing"
                   ? "transcribing…"
-                  : <>{dict.text} <span className="interim">{dict.interim}</span>{dict.engine === "server" ? ` · ${dict.seconds}s` : ""}</>}
+                  : (
+                    <>
+                      {dict.text} <span className="interim">{dict.interim}</span>
+                      {dict.engine === "stream" ? " · 流式" : ""}
+                      {dict.engine === "server" ? ` · ${dict.seconds}s` : ""}
+                    </>
+                  )}
             {listening ? (
               <button className="dict-stop" onClick={() => dictation.stop()}>stop</button>
             ) : null}
@@ -1614,7 +1660,8 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
               aria-label="dictate"
               onClick={() => {
                 dictation.cancel();
-                void dictation.start(prefs);
+                // the session is what lets the recogniser carry this conversation's hotwords
+                void dictation.start(prefs, v.info.id);
               }}
             >
               <IconMic size={16} />

@@ -30,8 +30,9 @@ export interface VoicePrefs {
   lang: string;
   /** route synthesis through the server endpoint instead of the browser */
   serverTts: boolean;
-  /** "auto" = browser when available, else the server */
-  stt: "auto" | "browser" | "server";
+  /** "auto" = the configured streaming endpoint when there is one (it is the thing the
+   *  operator paid for and configured hotwords on), else the browser, else batch upload */
+  stt: "auto" | "browser" | "stream" | "server";
 }
 
 const PREFS_KEY = "agentslot.voice";
@@ -74,30 +75,54 @@ export function saveVoicePrefs(prefs: VoicePrefs): void {
 // -------------------------------------------------------------- capabilities
 
 export interface VoiceCaps {
+  /** who would answer right now: 百炼 (dashscope) / any OpenAI-compatible endpoint /
+   *  browser-only. The settings page shows this so "configured" is never a guess. */
+  provider: "dashscope" | "openai" | "browser";
   tts: { server: boolean; model: string | null; voice: string | null };
-  stt: { server: boolean; model: string | null; language: string | null };
+  stt: {
+    server: boolean;
+    /** the server can relay a live PCM stream (/ws/asr) — live partials, hotwords */
+    streaming: boolean;
+    model: string | null;
+    batchModel: string | null;
+    language: string | null;
+  };
+  hotwords: { fixed: number; dynamic: boolean; limit: number };
 }
+
+export const NO_CAPS: VoiceCaps = {
+  provider: "browser",
+  tts: { server: false, model: null, voice: null },
+  stt: { server: false, streaming: false, model: null, batchModel: null, language: null },
+  hotwords: { fixed: 0, dynamic: false, limit: 0 },
+};
 
 let caps: VoiceCaps | null = null;
 const capsListeners = new Set<() => void>();
 
-/** Fetched once per page load; the answer only changes when the server restarts. */
-export async function loadVoiceCaps(): Promise<VoiceCaps> {
-  if (caps) return caps;
+/** Fetched once per page load; the answer changes when the server restarts — or when the
+ *  settings page saves a new provider, which is what `force` is for. */
+export async function loadVoiceCaps(force = false): Promise<VoiceCaps> {
+  if (caps && !force) return caps;
   try {
     const res = await fetch("/api/voice", { credentials: "same-origin" });
     if (!res.ok) throw new Error(String(res.status));
     caps = (await res.json()) as VoiceCaps;
   } catch {
     // A failed probe must not break the buttons: assume browser-only.
-    caps = { tts: { server: false, model: null, voice: null }, stt: { server: false, model: null, language: null } };
+    caps = NO_CAPS;
   }
   for (const fn of capsListeners) fn();
   return caps;
 }
 
 export function voiceCaps(): VoiceCaps {
-  return caps ?? { tts: { server: false, model: null, voice: null }, stt: { server: false, model: null, language: null } };
+  return caps ?? NO_CAPS;
+}
+
+/** Streaming dictation is available when the server says it is. */
+export function streamingDictationAvailable(): boolean {
+  return Boolean(voiceCaps().stt.streaming);
 }
 
 export function subscribeVoiceCaps(fn: () => void): () => void {
@@ -130,6 +155,77 @@ export function splitForSpeech(text: string, max = 220): string[] {
   return out.filter(Boolean);
 }
 
+// ------------------------------------------------------------------- playback
+
+/** One AudioContext for the whole page, created/resumed on a REAL user gesture.
+ *  Why this exists: Chromium only allows playback inside (or shortly after) a gesture,
+ *  and a synthesis round trip easily outlives that window — the operator clicks
+ *  "合成并播放", waits two seconds for 百炼, and `audio.play()` is refused with "the user
+ *  didn't interact with the document first". A context that was resumed by the click
+ *  stays usable, so the audio still plays.
+ */
+let audioCtx: AudioContext | null = null;
+
+function audioContextCtor(): typeof AudioContext | null {
+  return (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) ?? null;
+}
+
+/** Call from the click handler itself (not after an await). */
+export async function unlockAudio(): Promise<boolean> {
+  const Ctor = audioContextCtor();
+  if (!Ctor) return false;
+  try {
+    audioCtx = audioCtx ?? new Ctor();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    return audioCtx.state === "running";
+  } catch {
+    return false;
+  }
+}
+
+/** Play a synthesized clip. Web Audio first (it survives the activation window), the
+ *  <audio> element as the fallback for formats decodeAudioData cannot take. */
+export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> {
+  const Ctor = audioContextCtor();
+  if (Ctor) {
+    try {
+      audioCtx = audioCtx ?? new Ctor();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      const buf = await audioCtx.decodeAudioData(await blob.arrayBuffer());
+      await new Promise<void>((resolve, reject) => {
+        const src = audioCtx!.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx!.destination);
+        src.onended = () => resolve();
+        const abort = (): void => {
+          try { src.stop(); } catch { /* already stopped */ }
+          reject(new Error("stopped"));
+        };
+        if (signal) {
+          if (signal.aborted) return abort();
+          signal.addEventListener("abort", abort, { once: true });
+        }
+        src.start();
+      });
+      return;
+    } catch (e) {
+      if (signal?.aborted) throw new Error("stopped");
+      // fall through to the element: a format the encoder produced but the decoder cannot take
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const audio = new Audio(url);
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error("audio playback failed"));
+      void audio.play().catch((e) => reject(new Error(String((e as Error)?.message ?? e))));
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 // ------------------------------------------------------------------- speaker
 
 interface SpeakState {
@@ -148,7 +244,6 @@ function browserSpeechAvailable(): boolean {
 class Speaker {
   #state: SpeakState = { speakingId: null, speaking: false, error: "", note: "" };
   #listeners = new Set<() => void>();
-  #audio: HTMLAudioElement | null = null;
   #abort: AbortController | null = null;
   #voices: SpeechSynthesisVoice[] = [];
   #voiceListeners = new Set<() => void>();
@@ -283,29 +378,15 @@ class Speaker {
         const detail = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string };
         throw new Error(detail.error ?? `tts ${res.status}`);
       }
-      const url = URL.createObjectURL(await res.blob());
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const audio = new Audio(url);
-          this.#audio = audio;
-          audio.onended = () => resolve();
-          audio.onerror = () => reject(new Error("audio playback failed"));
-          void audio.play().catch((e) => reject(new Error(String(e?.message ?? e))));
-        });
-      } finally {
-        URL.revokeObjectURL(url);
-        this.#audio = null;
-      }
+      await playBlob(await res.blob(), this.#abort.signal);
     }
   }
 
   stop(): void {
     this.#abort?.abort();
     this.#abort = null;
-    if (this.#audio) {
-      this.#audio.pause();
-      this.#audio = null;
-    }
+    // Web Audio playback stops through the abort signal above; the browser voice needs
+    // its own cancel.
     if (browserSpeechAvailable()) window.speechSynthesis.cancel();
     if (this.#state.speaking) this.#set({ speaking: false, speakingId: null });
   }
@@ -340,8 +421,8 @@ export interface DictationState {
   /** the words it is still unsure about — shown greyed, appended on stop */
   interim: string;
   error: string;
-  /** which engine actually ran, for the UI's "browser / server" label */
-  engine: "browser" | "server" | null;
+  /** which engine actually ran, for the UI's "browser / stream / server" label */
+  engine: "browser" | "stream" | "server" | null;
   /** seconds of audio captured (server path) */
   seconds: number;
 }
@@ -379,6 +460,12 @@ class Dictation {
   #media: MediaRecorder | null = null;
   #chunks: Blob[] = [];
   #timer: number | null = null;
+  // streaming path (/ws/asr): a PCM capture graph plus the relay socket
+  #ws: WebSocket | null = null;
+  #ctx: AudioContext | null = null;
+  #proc: ScriptProcessorNode | null = null;
+  #mic: MediaStream | null = null;
+  #committed = "";
 
   subscribe = (fn: () => void): (() => void) => {
     this.#listeners.add(fn);
@@ -392,14 +479,24 @@ class Dictation {
     for (const fn of this.#listeners) fn();
   }
 
-  /** Begin dictation. Returns false (with `error` set) when nothing can run it. */
-  async start(prefs: VoicePrefs): Promise<boolean> {
+  /** Begin dictation. Returns false (with `error` set) when nothing can run it.
+   *  `sessionId` is what lets the recogniser carry this conversation's hotwords. */
+  async start(prefs: VoicePrefs, sessionId?: string): Promise<boolean> {
     if (this.#state.status !== "idle" && this.#state.status !== "error") return false;
     this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
+    this.#committed = "";
     const want = prefs.stt;
     const serverOk = voiceCaps().stt.server;
+    const streamOk = voiceCaps().stt.streaming;
     const useBrowser = (want === "browser" || want === "auto") && browserDictationAvailable();
     try {
+      // "auto" prefers the configured stream: the operator picked those models, wrote
+      // the key and the hotword list — the browser engine knows none of that.
+      if (want === "stream" || (want === "auto" && streamOk)) {
+        if (!streamOk) throw new Error("streaming STT is not configured on the server (settings → 语音)");
+        await this.#startStream(prefs, sessionId);
+        return true;
+      }
       if (useBrowser) {
         this.#startBrowser(prefs);
         return true;
@@ -469,6 +566,120 @@ class Dictation {
       this.#rec = null;
       throw new Error(String((e as Error)?.message ?? e));
     }
+  }
+
+  /** Live streaming recognition through the cockpit's own relay (/ws/asr). Unlike the
+   *  browser engine, the same connection carries the operator's hotwords and the model
+   *  they configured — and unlike the batch path, words appear as they are spoken. */
+  async #startStream(prefs: VoicePrefs, sessionId?: string): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
+    const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+    if (!Ctor) throw new Error("this browser cannot process audio");
+    // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
+    this.#set({ status: "requesting", engine: "stream", error: "" });
+    const mic = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    this.#mic = mic;
+    // 16 kHz mono s16le is what the model takes. Ask the context for 16 kHz (Chromium
+    // honours it) and resample when the browser insists on 44.1/48 kHz (Safari).
+    const ctx = new Ctor({ sampleRate: 16000 });
+    this.#ctx = ctx;
+    const q = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/asr${q}`);
+    ws.binaryType = "arraybuffer";
+    this.#ws = ws;
+    const pending: ArrayBuffer[] = [];
+    ws.onopen = () => {
+      for (const buf of pending) ws.send(buf);
+      pending.length = 0;
+      this.#set({ status: "listening", engine: "stream" });
+    };
+    ws.onmessage = (ev: MessageEvent) => {
+      let msg: { t?: string; text?: string; error?: string };
+      try {
+        msg = JSON.parse(String(ev.data)) as typeof msg;
+      } catch {
+        return;
+      }
+      if (msg.t === "asr-partial") this.#set({ interim: String(msg.text ?? "") });
+      else if (msg.t === "asr-final") {
+        this.#committed = `${this.#committed}${msg.text ?? ""}`.replace(/\s+/g, " ").trim();
+        this.#set({ text: this.#committed, interim: "" });
+      } else if (msg.t === "asr-error") {
+        this.#set({ status: "error", error: String(msg.error ?? "streaming asr failed") });
+      } else if (msg.t === "asr-done") {
+        this.#finishStream();
+      }
+    };
+    ws.onerror = () => {
+      if (this.#state.status !== "idle" && this.#state.status !== "error") {
+        this.#set({ status: "error", error: "the streaming socket failed — is the server up?" });
+      }
+    };
+    ws.onclose = () => {
+      if (this.#ws === ws) this.#ws = null;
+    };
+    const src = ctx.createMediaStreamSource(mic);
+    // ScriptProcessor is deprecated but universally available, which matters more here
+    // than the AudioWorklet's tidier lifecycle: this runs for one utterance.
+    const proc = ctx.createScriptProcessor(2048, 1, 1);
+    const mute = ctx.createGain();
+    mute.gain.value = 0; // keeps the graph pulled without echoing the mic to the speakers
+    this.#proc = proc;
+    proc.onaudioprocess = (ev: AudioProcessingEvent) => {
+      const pcm = resampleToPcm16(ev.inputBuffer.getChannelData(0), ctx.sampleRate, 16000);
+      if (!pcm.length) return;
+      // typed arrays are generic over ArrayBufferLike in TS; a fresh Int16Array's buffer
+      // is always a plain ArrayBuffer
+      const frame = pcm.buffer as ArrayBuffer;
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      else if (ws.readyState === WebSocket.CONNECTING && pending.length < 300) pending.push(frame);
+    };
+    src.connect(proc);
+    proc.connect(mute);
+    mute.connect(ctx.destination);
+    this.#set({ status: "listening", engine: "stream", seconds: 0 });
+    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  /** Tears the capture graph + socket down. Idempotent. */
+  #closeStream(): void {
+    const ws = this.#ws;
+    this.#ws = null;
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+    }
+    if (this.#proc) {
+      this.#proc.onaudioprocess = null;
+      try {
+        this.#proc.disconnect();
+      } catch {
+        /* noop */
+      }
+      this.#proc = null;
+    }
+    if (this.#ctx) {
+      void this.#ctx.close().catch(() => undefined);
+      this.#ctx = null;
+    }
+    if (this.#mic) {
+      for (const t of this.#mic.getTracks()) t.stop();
+      this.#mic = null;
+    }
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+  }
+
+  #finishStream(): void {
+    this.#closeStream();
+    this.#set({ status: "idle", interim: "" });
   }
 
   async #startServer(prefs: VoicePrefs): Promise<void> {
@@ -542,6 +753,21 @@ class Dictation {
       }
       return;
     }
+    // streaming: ask the recogniser to finalise and wait for its last sentence; the
+    // server closes the socket after asr-done, so nothing to tear down by hand.
+    if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+      this.#set({ status: "transcribing" });
+      try {
+        this.#ws.send(JSON.stringify({ t: "asr-stop" }));
+      } catch {
+        this.#finishStream();
+        return;
+      }
+      window.setTimeout(() => {
+        if (this.#state.status === "transcribing") this.#finishStream();
+      }, 8000);
+      return;
+    }
     if (this.#media && this.#media.state !== "inactive") this.#media.stop();
     if (this.#timer) {
       window.clearInterval(this.#timer);
@@ -571,6 +797,8 @@ class Dictation {
       window.clearInterval(this.#timer);
       this.#timer = null;
     }
+    this.#closeStream();
+    this.#committed = "";
     this.#chunks = [];
     this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
   }
@@ -581,6 +809,32 @@ class Dictation {
     this.#set({ status: "idle", text: "", interim: "", seconds: 0 });
     return out;
   }
+}
+
+/** Float32 [-1,1] at `from` Hz -> Int16 PCM at `to` Hz (linear interpolation).
+ *  The streaming API takes 16 kHz mono s16le and nothing else. */
+export function resampleToPcm16(input: Float32Array, from: number, to: number): Int16Array {
+  if (from === to) {
+    const same = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i += 1) same[i] = clampPcm(input[i]);
+    return same;
+  }
+  const ratio = from / to;
+  const len = Math.max(0, Math.floor(input.length / ratio));
+  const out = new Int16Array(len);
+  for (let i = 0; i < len; i += 1) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const frac = pos - i0;
+    out[i] = clampPcm(input[i0] * (1 - frac) + input[i1] * frac);
+  }
+  return out;
+}
+
+function clampPcm(v: number): number {
+  const n = Math.round((Number.isFinite(v) ? v : 0) * 32767);
+  return n > 32767 ? 32767 : n < -32768 ? -32768 : n;
 }
 
 export const dictation = new Dictation();

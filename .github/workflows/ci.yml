@@ -21,3 +21,4 @@ jobs:
       # so no service is needed
       - run: npm run auth-smoke
       - run: npm run workspace-smoke
+      - run: npm run voice-smoke

@@ -69,6 +69,12 @@ layer never changes.
 | `AGENTSLOT_TTS_API_KEY` / `AGENTSLOT_TTS_MODEL` / `AGENTSLOT_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
 | `AGENTSLOT_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
 | `AGENTSLOT_STT_API_KEY` / `AGENTSLOT_STT_MODEL` / `AGENTSLOT_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
+| `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) credentials. Read from the process env **and** from `~/.hermes/.env`, because the server is usually started from a plain shell |
+
+The voice/theme variables are a **bootstrap only**: the settings page (⚙ in the rail)
+owns the provider, endpoint, key, models, hotword list and the palette, and stores them
+in `<AGENTSLOT_DATA>/settings.json` (0600, key never sent back to the browser). What the
+page says wins; the env is what makes a fresh checkout work before anyone opens it.
 
 ## Login
 
@@ -237,6 +243,24 @@ to your production memory daemon), and `.env` copied 0600.
   A server endpoint is optional and only a proxy (`AGENTSLOT_TTS_BASE_URL` /
   `AGENTSLOT_STT_BASE_URL`); with nothing configured, the browser does the work and the
   UI says so
+- **settings page** (⚙ in the rail): theme (light / dark / follow-the-OS, plus an accent
+  colour that retints the whole cockpit), the speech provider, endpoint and key, the
+  models (picked from the endpoint's own list), the hotword list, and a test button for
+  each direction. Server side it is one JSON file; the theme also caches in the browser so
+  the first frame is already right
+- **百炼 (DashScope) speech, first-class**: streaming recognition over its inference
+  WebSocket (`qwen-audio-3.1-asr-flash-streaming` — words appear as they are spoken),
+  batch recognition over the OpenAI-compatible chat route (`qwen3-asr-flash`), synthesis
+  via `SpeechSynthesizer` (`qwen-audio-3.0-tts-flash`, voices such as `longanhuan_v3.6`).
+  The browser cannot open that socket (the handshake needs an auth header) and the key
+  must not leave the server, so the cockpit owns the upstream connection and the browser
+  relays PCM through `/ws/asr`
+- **hotwords, fixed and dynamic**: a fixed list (`词=权重`, `50` = super-hotword) that goes
+  into the recogniser's instant vocabulary, plus entity terms mined from this session's
+  own transcript and its neighbours — merged, deduped, capped, and previewable on the
+  settings page
+- a session's dictation carries **that session's context** (its last few turns) as the
+  recogniser's bias, which is what keeps product names and identifiers intact
 - streaming that does not fight the reader: a wheel/touch gesture detaches instantly,
   new output is announced by a "jump to newest" button instead of yanking the viewport
 - workspace picker: browse the server's directories (`GET /api/fs/dirs`, one level at a
@@ -253,16 +277,24 @@ product may well be renamed; nothing in the interface leans on the metaphor.
 
 ```bash
 npm run typecheck
-npm run auth-smoke                        # 30 assertions: the lock, both credentials
-node scripts/smoke.mjs mock "hello"      # end-to-end against the mock agent
+npm run auth-smoke                        # 48 assertions: the lock, both credentials
+npm run workspace-smoke                   # 45: workspace field, file API, shell, attachments
+npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
+node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent
 ```
 
-`auth-smoke` boots its own servers on scratch ports with throwaway data dirs, so it
-runs anywhere (CI included) and covers: anonymous REST/WS refusal, brute-force
-lockout, cookie signing and tamper detection, expiry, WS-via-cookie, the machine
-token, logout revocation, and the `AGENTSLOT_AUTH=off` escape hatch.
+Every suite boots its own server on a scratch port with a throwaway data dir, so they run
+anywhere (CI included):
 
-Browser QA evidence (44 rounds, each with repro → root cause → fix → regression)
+- `auth-smoke` — anonymous REST/WS refusal, brute-force lockout, cookie signing and tamper
+  detection, expiry, WS-via-cookie, the machine token, logout revocation, `AGENTSLOT_AUTH=off`.
+- `workspace-smoke` — the per-session workspace, the read-only file API, the PTY shell,
+  attachments on a prompt, the voice endpoint guards.
+- `voice-smoke` — the settings/theme contract (validation, masking, 0600 file), the voice
+  router against a stand-in endpoint (OpenAI-compatible **and** 百炼's native shapes),
+  hotword merging and capping, and the `.env` bootstrap with an empty `$HOME`.
+
+Browser QA evidence (63 rounds, each with repro → root cause → fix → regression)
 lives in [`m1-qa-log.md`](./m1-qa-log.md). The `mock` backend triggers extra paths on
 demand: `[tool]` (permission flow), `[think]`, `[plan]`, `[slow]` (reconnect drills),
 `[sink]` (mid-turn child crash).
