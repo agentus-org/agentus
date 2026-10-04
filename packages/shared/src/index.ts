@@ -31,6 +31,11 @@ export interface SessionInfo {
   status: SessionStatus;
   pid: number | null;
   title: string;
+  /** The GENERATED name (what the agent announced via ACP `session_info_update`, or our
+   *  own derivation from the first prompt). `title` is what the rail shows — normally the
+   *  same string, but the operator's rename lives only in `title`, so a hand-written name
+   *  is never overwritten by a later automatic one and can always be cleared back. */
+  autoTitle?: string | null;
   createdAt: number;
   modes: SessionModeState | null;
   configOptions: ConfigOptionView[];

@@ -596,6 +596,26 @@ class Cockpit {
     return info;
   }
 
+  /** Ask for a fresh name derived from the CURRENT conversation. The server summarises via a
+   *  throwaway fork of the session when the agent supports it (`via: "agent"`), and otherwise
+   *  names it after the latest prompt (`via: "derived"`) — either way the row updates here.
+   *  Unlike rename() this WINS over a hand-written name: the operator asked for a new one. */
+  async regenerateTitle(id: string): Promise<{ info: SessionInfo; via: "agent" | "derived" }> {
+    const res = await this.#req<{ info: SessionInfo; via: "agent" | "derived" }>(
+      `/api/sessions/${id}/title/regenerate`,
+      { method: "POST" },
+    );
+    const info = res.info;
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    for (const list of [this.sessions, this.archived]) {
+      const i = list.findIndex((s) => s.id === id);
+      if (i >= 0) list[i] = { ...list[i], ...info };
+    }
+    this.bump();
+    return res;
+  }
+
   async resume(id: string): Promise<void> {
     try {
       const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });

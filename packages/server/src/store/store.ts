@@ -10,6 +10,9 @@ export interface SessionRow {
   acpSessionId: string | null;
   cwd: string;
   title: string;
+  /** the generated name, kept aside so a rename is reversible and an automatic title can
+   *  never stomp the operator's own (see the interface comment in @agentslot/shared) */
+  autoTitle?: string | null;
   status: SessionStatus;
   pid: number | null;
   createdAt: number;
@@ -36,7 +39,7 @@ export interface SessionRow {
 
 interface RawSessionRow {
   id: string; backend: BackendId; acp_session_id: string | null; cwd: string;
-  title: string; status: SessionStatus; pid: number | null;
+  title: string; auto_title?: string | null; status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
@@ -56,7 +59,7 @@ function parseJson(v: string | null | undefined): unknown {
 function rowToSession(r: RawSessionRow): SessionRow {
   return {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
-    title: r.title, status: r.status, pid: r.pid,
+    title: r.title, autoTitle: r.auto_title ?? null, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
@@ -310,6 +313,30 @@ export class Store {
     const next = title == null || !title.length ? (row.auto_title ?? row.title) : title;
     const info = this.#db.prepare("update sessions set title = ? where id = ?").run(next, id);
     return Number(info.changes ?? 0) > 0;
+  }
+
+  /** Record a GENERATED name.
+   *
+   *  Two writes, one rule: `auto_title` always takes it (so the generated name is the one a
+   *  cleared rename falls back to), while the DISPLAY title only moves when the operator has
+   *  not named this session themselves — i.e. while `title` still equals `auto_title`. That
+   *  is what makes an automatic title safe to fire at any time: after a rename it updates
+   *  the fallback and leaves the visible row alone. `force` is for the operator asking for a
+   *  new name on purpose (the rail's 重新生成), where the new title is the point.
+   *  Returns the row it ended up with, so callers can broadcast exactly what changed. */
+  setAutoTitle(id: string, title: string, { force = false }: { force?: boolean } = {}): SessionRow | null {
+    const row = this.#db.prepare("select title, auto_title from sessions where id = ?").get(id) as
+      | { title: string; auto_title: string | null }
+      | undefined;
+    if (!row) return null;
+    const clean = title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim();
+    if (!clean) return null;
+    const wasAuto = row.auto_title == null || row.auto_title === "" || row.title === row.auto_title;
+    const nextTitle = force || wasAuto ? clean : row.title;
+    this.#db
+      .prepare("update sessions set auto_title = ?, title = ? where id = ?")
+      .run(clean, nextTitle, id);
+    return this.getSession(id) ?? null;
   }
 
   /** Window declared for a model (null = nothing remembered). */

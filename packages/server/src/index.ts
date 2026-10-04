@@ -613,6 +613,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return send(res, /no such session/.test(msg) ? 404 : 400, { error: msg });
         }
       }
+      if (req.method === "POST" && sub === "/title/regenerate") {
+        try {
+          // Ask the agent to name this conversation from its CURRENT content (via a throwaway
+          // fork), falling back to the latest prompt when it cannot. The store's authority
+          // rule decides whether the visible title moves; `via` says which producer answered.
+          const info = await mgr.regenerateTitle(id);
+          emit({ t: "sessions", sessions: mgr.list() });
+          return send(res, 200, { info, via: mgr.lastTitleVia });
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          if (/no such session/.test(msg)) return send(res, 404, { error: msg });
+          return send(res, 409, { error: msg });
+        }
+      }
       if (req.method === "POST" && sub === "/fork") {
         try {
           // forking a cold session resumes it first (the call has to reach a live agent)

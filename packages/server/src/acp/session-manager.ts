@@ -11,7 +11,10 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv } from "./backends.js";
-import type { Store } from "../store/store.js";
+import {
+  cleanAgentTitle, deriveTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
+} from "../title.js";
+import type { Store, SessionRow } from "../store/store.js";
 import type {
   AttachmentSummary,
   BackendId,
@@ -29,6 +32,11 @@ import type {
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
 const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 * 60_000);
 
+// A title fork is a real model turn over a copy of the conversation: give it room, but never
+// let a stuck one hang the operator's click — the caller falls back to the derived name on
+// timeout. Env-tunable so a sweep can exercise the timeout path in seconds.
+const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTSLOT_TITLE_TIMEOUT_MS || 90_000);
+
 interface LiveSession {
   info: SessionInfo;
   child?: ReturnType<typeof spawn>;
@@ -37,6 +45,13 @@ interface LiveSession {
   pendingPermissions: Map<string, { resolve: (r: RequestPermissionResponse) => void; timer: NodeJS.Timeout }>;
   alwaysAllow: Set<string>; // "allow_always" remembered per live session only (AionUi F-PERM-05)
   stderrBuf: string[];
+  /** What the agent says it can do (initialize.agentCapabilities), kept because the title
+   *  regeneration is only possible when it advertises `session/fork`. */
+  caps: { fork: boolean; load: boolean };
+  /** Text sinks for sessions that live on this connection but are NOT the one in the rail —
+   *  today only the throwaway fork used to summarise the conversation for a title. Anything
+   *  whose sessionId is not `info.acpSessionId` is routed here and never persisted. */
+  collectors: Map<string, (u: Record<string, unknown>) => void>;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -128,10 +143,13 @@ export class SessionManager {
         id, backend, acpSessionId: null, cwd,
         workspace: null, contextLimit: null,
         status: "starting",
-        pid: child.pid ?? null, title: title || `${spec.label} @ ${shortCwd(cwd)}`,
+        pid: child.pid ?? null,
+        title: title || `${spec.label} @ ${shortCwd(cwd)}`,
+        autoTitle: title || `${spec.label} @ ${shortCwd(cwd)}`,
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      caps: { fork: false, load: false }, collectors: new Map(),
     };
     this.#sessions.set(id, live);
     this.#store.upsertSession(sessionRow(live.info));
@@ -159,10 +177,18 @@ export class SessionManager {
       );
       live.conn = conn;
 
-      await conn.initialize({
+      const init = await conn.initialize({
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
+      const caps = (init?.agentCapabilities ?? {}) as {
+        loadSession?: boolean;
+        sessionCapabilities?: { fork?: unknown };
+      };
+      live.caps = {
+        fork: Boolean(caps.sessionCapabilities?.fork),
+        load: Boolean(caps.loadSession),
+      };
       const res = await conn.newSession({ cwd, mcpServers: [] });
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
@@ -224,6 +250,7 @@ export class SessionManager {
         commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      caps: { fork: false, load: false }, collectors: new Map(),
     };
     this.#sessions.set(id, live);
     this.#store.upsertSession(sessionRow(live.info));
@@ -320,7 +347,7 @@ export class SessionManager {
         workspace: r.workspace ?? null,
         models: (r.models ?? null) as SessionInfo["models"],
         contextLimit: r.contextLimit ?? null,
-        title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
+        title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
         modes: (r.modes ?? null) as SessionModeState | null,
         configOptions: (r.configOptions ?? []) as ConfigOptionView[],
         usage: (r.usage ?? null) as SessionInfo["usage"],
@@ -343,6 +370,13 @@ export class SessionManager {
       sessionId, kind: "user", payload: { text, attachments: summarize(attachments) }, createdAt: Date.now(),
     });
     this.#emit({ t: "message", message: msg });
+    // A brand-new slot is called "<backend> @ <dir>" until something better exists, and the
+    // moment the operator asks something that placeholder is plainly wrong. Name it now,
+    // from the prompt itself: instant, offline, no model call in our layer (AionUi derives
+    // its auto title the same way). The AGENT may have its own opinion — Hermes generates a
+    // title in the turn prologue and announces it via `session_info_update` a little later,
+    // and that one wins, because it can be right about a conversation we never parse.
+    this.#autoTitleFrom(s, text);
     try {
       const res = await s.conn.prompt({
         sessionId: s.info.acpSessionId,
@@ -449,8 +483,13 @@ export class SessionManager {
   }
 
   #onSessionUpdate(live: LiveSession, params: { sessionId: string; update: Record<string, unknown> }): void {
-    const kind = live.info.acpSessionId === params.sessionId ? live : null;
-    void kind;
+    if (live.info.acpSessionId !== params.sessionId) {
+      // Another session on OUR connection: only the title fork does that. Its output is a
+      // scratch copy of this conversation, so it goes to the collector and stops there —
+      // never persisted, never broadcast (the rail must not grow a phantom session).
+      live.collectors.get(params.sessionId)?.(params.update);
+      return;
+    }
     const u = params.update;
     const st = String(u.sessionUpdate ?? "");
     let msg: Parameters<Store["appendMessage"]>[0] | null = null;
@@ -489,6 +528,16 @@ export class SessionManager {
           name: x.name, description: x.description,
         }));
         this.#updateSession(live);
+        return;
+      }
+      case "session_info_update": {
+        // The protocol's own title channel: "Agents send this notification to update session
+        // information like title… This allows clients to display dynamic session names."
+        // Hermes uses it for the auto title it generates in the turn prologue (and for
+        // provenance updates where the title is unchanged — a no-op here). This is why the
+        // cockpit shows generated names at all: the intelligence stays in the CLI.
+        const t = cleanAgentTitle((u as { title?: string | null }).title ?? null);
+        if (t) this.#applyAutoTitle(live.info.id, t, false);
         return;
       }
       case "usage_update": {
@@ -665,6 +714,132 @@ export class SessionManager {
     };
   }
 
+  // ---- generated titles -----------------------------------------------------
+  //
+  // Two producers, one authority rule (see Store.setAutoTitle): a generated name always lands
+  // in `auto_title`, and it moves the DISPLAY title only while the operator has not named the
+  // session themselves. So an automatic title can fire at any time without ever overwriting a
+  // hand-written one, and a cleared rename still falls back to something real.
+
+  /** The name a slot wears before anything is known about it ("Hermes @ tmp"). */
+  #placeholder(row: SessionRow): string {
+    const label = BACKENDS[row.backend]?.label ?? row.backend;
+    return `${label} @ ${shortCwd(row.cwd)}`;
+  }
+
+  /** Derive a title from the prompt the operator just sent (no model, instant).
+   *
+   *  Only while the row still wears its placeholder. A derived name is a STARTING point, not a
+   *  running commentary on the conversation: once a better name exists — the agent announced
+   *  one, or the operator regenerated it — quoting the newest prompt over it would be a
+   *  downgrade. (AionUi draws the same line: it only re-derives while the name is still the
+   *  default one.) */
+  #autoTitleFrom(s: LiveSession, text: string): void {
+    const row = this.#store.getSession(s.info.id);
+    if (!row) return;
+    const placeholder = this.#placeholder(row);
+    if (row.autoTitle && row.autoTitle !== placeholder) return;
+    const t = deriveTitle(text);
+    if (!t || t === row.autoTitle) return;
+    this.#applyAutoTitle(s.info.id, t, false);
+  }
+
+  /** Write a generated title and tell everyone who renders a row about it. */
+  #applyAutoTitle(id: string, title: string, force: boolean): SessionRow | null {
+    const row = this.#store.setAutoTitle(id, title, { force });
+    if (!row) return null;
+    const live = this.#sessions.get(id);
+    if (live) {
+      live.info.title = row.title;
+      live.info.autoTitle = row.autoTitle ?? null;
+      this.#updateSession(live);
+    }
+    // the rail lists cold slots too, so refresh the whole list rather than just this session
+    this.#emit({ t: "sessions", sessions: this.list() });
+    return row;
+  }
+
+  /** How the last regeneration got its name — "agent" (a real summary) or "derived" (the
+   *  fallback that just names the session after the latest prompt). */
+  lastTitleVia: "agent" | "derived" = "derived";
+
+  /**
+   * Regenerate a slot's name from the CURRENT conversation (the operator asking for one).
+   *
+   * The agent does the summarising, on a THROWAWAY FORK of the session: ACP's `session/fork`
+   * exists for exactly this — "Creates a new session based on the context of an existing one,
+   * allowing operations like generating summaries without affecting the original session's
+   * history" (Hermes deep-copies the history into the fork). So we get a name that reflects
+   * everything said so far while the session's own transcript, context window and turn count
+   * stay untouched. Needs a live agent advertising `session/fork`; otherwise — and on any
+   * failure — we fall back to naming it after the LATEST prompt: still the newest context,
+   * just without a model.
+   */
+  async regenerateTitle(id: string): Promise<SessionInfo> {
+    const live = this.#sessions.get(id);
+    const msgs = this.#store.messagesTail(id, Number.MAX_SAFE_INTEGER).messages;
+    // Nothing has been said yet: there is no context to name, and asking the agent would
+    // either burn a turn on an empty conversation or produce a title about nothing. Refuse.
+    if (!msgs.some((m) => m.kind === "user")) {
+      throw new Error("这个会话还没有可以用来生成标题的对话内容");
+    }
+    let title: string | null = null;
+    let via: "agent" | "derived" = "derived";
+    if (live?.conn && live.info.acpSessionId && live.caps.fork && !live.busy) {
+      title = await this.#titleFromFork(live).catch(() => null);
+      if (title) via = "agent";
+    }
+    if (!title) title = titleFromLatestPrompt(msgs);
+    if (!title) throw new Error("这个会话还没有可以用来生成标题的对话内容");
+    if (!this.#applyAutoTitle(id, title, true)) throw new Error(`no such session: ${id}`);
+    this.lastTitleVia = via;
+    const info = this.#sessions.get(id)?.info ?? this.#coldInfo(id);
+    this.#emit({ t: "session", session: info });
+    return info;
+  }
+
+  /** Fork the session, ask the FORK for a title, throw the fork away. */
+  async #titleFromFork(s: LiveSession): Promise<string | null> {
+    const conn = s.conn!;
+    const fork = await conn.unstable_forkSession({
+      sessionId: s.info.acpSessionId!,
+      cwd: s.info.workspace || s.info.cwd,
+      mcpServers: [],
+    });
+    const forkId = (fork as { sessionId?: string } | null)?.sessionId;
+    if (!forkId) return null;
+    let text = "";
+    s.collectors.set(forkId, (u) => {
+      if (String(u.sessionUpdate ?? "") !== "agent_message_chunk") return;
+      const c = u.content as { text?: string } | undefined;
+      if (typeof c?.text === "string") text += c.text;
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const turn = conn
+        .prompt({
+          sessionId: forkId,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ContentBlock union
+          prompt: [{ type: "text", text: TITLE_INSTRUCTION }] as any,
+        })
+        .then(() => "done" as const)
+        .catch(() => "failed" as const);
+      const timeout = new Promise<"timeout">((r) => {
+        timer = setTimeout(() => r("timeout"), TITLE_FORK_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      const winner = await Promise.race([turn, timeout]);
+      if (winner === "timeout") await conn.cancel({ sessionId: forkId }).catch(() => {});
+      return winner === "timeout" ? null : cleanAgentTitle(text);
+    } finally {
+      clearTimeout(timer);
+      s.collectors.delete(forkId);
+      // best effort: the agent may not implement session/close (Hermes advertises fork but
+      // not close today, and an unclosed fork is just a copy the agent will drop)
+      await conn.closeSession({ sessionId: forkId }).catch(() => {});
+    }
+  }
+
   /** Switch the model for a live session. ACP method `session/set_model` — not in the
    *  SDK's typed surface, so it goes through the generic request() overload (verified
    *  against hermes acp, which implements set_session_model). A cold slot has no agent
@@ -721,7 +896,7 @@ export class SessionManager {
       workspace: r.workspace ?? null, contextLimit: r.contextLimit ?? null,
       modelContextLimit: this.#store.getModelLimit(((r.models ?? null) as SessionInfo["models"])?.currentModelId ?? null),
       models: (r.models ?? null) as SessionInfo["models"],
-      title: r.title, status: r.status, pid: null, createdAt: r.createdAt,
+      title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
       modes: (r.modes ?? null) as SessionModeState | null,
       configOptions: (r.configOptions ?? []) as ConfigOptionView[],
       usage: (r.usage ?? null) as SessionInfo["usage"],

@@ -94,7 +94,11 @@ const agent = () => ({
       protocolVersion: 1,
       agentCapabilities: {
         loadSession: true,
-        sessionCapabilities: { list: {}, cancel: {} },
+        // `fork` was implemented below but never advertised, so a conformant client could
+        // not use it. The cockpit's "regenerate the session name from the conversation"
+        // feature is such a client — it forks the session, asks the fork to summarise, and
+        // throws the fork away. Advertising it makes that path testable offline.
+        sessionCapabilities: { list: {}, cancel: {}, fork: {} },
       },
       authMethods: [{ id: "mock", name: "Mock auth (no-op)" }],
     };
@@ -102,7 +106,7 @@ const agent = () => ({
 
   async newSession({ cwd }) {
     const sessionId = `mock-${++seq}`;
-    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0 });
+    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [] });
     // Announce slash commands the way a real agent does (available_commands_update),
     // so the cockpit's palette path is exercised without a real backend.
     setTimeout(() => {
@@ -137,7 +141,7 @@ const agent = () => ({
     // session ("no such session: mock-2") fails for reasons that have nothing to do with
     // the cockpit. Register the id as the parent's stand-in instead of inventing a new one.
     if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true });
+      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true, history: [] });
       process.stderr.write(`[mock-agent] loadSession ${sessionId} -> restored (not in memory)\n`);
     }
     if (sessions.has(sessionId)) {
@@ -186,6 +190,25 @@ const agent = () => ({
     if (!s) throw new Error("no such session");
     s.cancelled = false;
     const text = prompt.map((p) => p.text || "").join(" ");
+
+    // A title request (the cockpit's 重新生成) is answered from what this session already
+    // knows. On a FORK that is the parent's copied transcript, so the count is the proof the
+    // copy arrived; a session with no parent cannot be a title fork at all.
+    const inherited = (s.history || []).length;
+    s.history = [...(s.history || []), text];
+    if (/会话标题/.test(text)) {
+      // A real model needs a moment; the delay is deliberate so a client's "working…" state
+      // is observable in a test instead of flashing past.
+      await sleep(Number(process.env.MOCK_TITLE_MS || 1200));
+      const answer = s.parent
+        ? `继承 ${inherited} 轮上下文的标题`
+        : `没有父会话可继承的标题`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: answer },
+      });
+      return { stopReason: "end_turn" };
+    }
 
     // QA triggers: prompt text flips behaviors per turn (env sets global defaults).
     // Declared up front — used by the blocks below (a hoisting mistake here shows

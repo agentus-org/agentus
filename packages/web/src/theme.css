@@ -180,6 +180,10 @@ button { font: inherit; }
   font-weight: 600; font-size: 14px; flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* a button that is waiting on the agent: spin the icon so the wait is visible */
+.icon-btn .spin, .sess-menu-item .spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn .spin, .sess-menu-item .spin { animation: none; } }
 .head-spacer { flex: 1 1 auto; min-width: 4px; }
 /* The head's action cluster. The operator's read: "还是间距太大". Two things were making
    it look loose, and only one of them was the gap:

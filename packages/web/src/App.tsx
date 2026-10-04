@@ -15,7 +15,7 @@ import {
 import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
-  IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconSettings, IconShield,
+  IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
 import type { ClientCommand, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
@@ -241,10 +241,11 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onFork, onWorkspace, onExport, onResume, onCloseSession, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onResume, onCloseSession, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; canFork: boolean;
-  onDismiss: () => void; onRename: () => void; onFork: () => void; onWorkspace: () => void;
+  onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
+  onFork: () => void; onWorkspace: () => void;
   onExport: () => void;
   onResume: () => void; onCloseSession: () => void; onDelete: () => void;
 }): JSX.Element {
@@ -292,6 +293,11 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
         <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
       </div>
       {item("重命名", <IconPencil size={14} />, onRename)}
+      {item(
+        retitling ? "正在重新生成…" : "重新生成会话名",
+        retitling ? <IconRefresh size={14} className="spin" /> : <IconRefresh size={14} />,
+        onRetitle,
+      )}
       {canFork ? item(cold ? "fork 会话（先恢复）" : "fork 会话", <IconFork size={14} />, onFork) : null}
       {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
       {item("导出会话（Markdown）", <IconDownload size={14} />, onExport)}
@@ -324,6 +330,8 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
   const [editing, setEditing] = useState("");
   const [draft, setDraft] = useState("");
   const [pickFor, setPickFor] = useState("");
+  // which session's menu is waiting on a regenerated name (drives the menu's spinner)
+  const [retitling, setRetitling] = useState("");
   const pressTimer = useRef<number | null>(null);
   const pressFired = useRef(false);
   const pressClear = (): void => { if (pressTimer.current) { window.clearTimeout(pressTimer.current); pressTimer.current = null; } };
@@ -366,6 +374,24 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
       await cockpit.rename(id, next.length ? next : null);
     } catch (e) {
       setErr(`改名失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+  // "重新生成会话名": keep the menu open with a spinner while the server asks the agent
+  // (a fork + one turn, up to ~90s), then close it. The row itself updates over WS.
+  const regenerateTitle = async (info: SessionInfo): Promise<void> => {
+    setErr("");
+    setRetitling(info.id);
+    try {
+      const { via } = await cockpit.regenerateTitle(info.id);
+      setMenu(null);
+      if (via === "derived") {
+        // Honest about what happened: no agent summary — we named it after the latest message.
+        setErr("已按最新一条消息生成会话名（该后端不支持摘要式重新生成）");
+      }
+    } catch (e) {
+      setErr(`生成会话名失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setRetitling("");
     }
   };
   const menuInfo = menu ? (sessions.find((x) => x.id === menu.id) ?? archived.find((x) => x.id === menu.id) ?? null) : null;
@@ -541,6 +567,8 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
           info={menuInfo} cold={menuCold} canFork={Boolean(menuInfo.acpSessionId) || menuCold}
           onDismiss={() => setMenu(null)}
           onRename={() => startRename(menuInfo)}
+          retitling={retitling === menuInfo.id}
+          onRetitle={() => { void regenerateTitle(menuInfo); }}
           onFork={() => { setMenu(null); void onFork(menuInfo.id); }}
           onWorkspace={() => { setMenu(null); setPickFor(menuInfo.id); }}
           onExport={() => {
