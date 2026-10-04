@@ -985,6 +985,63 @@ try {
     && phoneSheet.knobs.every((h) => h >= 34), JSON.stringify(phoneSheet));
   fs.writeFileSync(`${SHOTS}/call-settings-phone.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
 
+  // ---- 通话页的历史小窗：不离开通话就能翻阅之前说了什么 ---------------------------------------
+  // Measured on the PHONE viewport (the emulation above is still active) because that is where the
+  // space is tight and where "the controls must stay reachable" has to keep holding.
+  await closeSheet();
+  await sleep(300);
+  const histClosed = await ev2(`(() => { const h = document.querySelector('.call-hist'); const b = document.querySelector('.call-hist-bar');
+    if (!b) return null; const r = b.getBoundingClientRect();
+    return { expanded: b.getAttribute('aria-expanded'), open: h?.dataset.open, list: !!document.querySelector('.call-hist-list'),
+      h: Math.round(r.height), text: b.textContent }; })()`);
+  check("a history bar sits on the call, closed by default and thumb-sized",
+    !!histClosed && histClosed.expanded === "false" && histClosed.open === "false" && !histClosed.list && histClosed.h >= 44,
+    JSON.stringify(histClosed));
+  check("…and it says what it is and how much there is",
+    !!histClosed && histClosed.text.includes("历史记录") && /\d+\s*条/.test(histClosed.text), histClosed?.text);
+  await ev2(`document.querySelector('.call-hist-bar')?.click(); true`);
+  await sleep(500);
+  const histOpen = await ev2(`(() => { const l = document.querySelector('.call-hist-list');
+    const rows = [...document.querySelectorAll('.call-hm')];
+    const c = document.querySelector('.call-controls').getBoundingClientRect();
+    const o = document.querySelector('.call-orb').getBoundingClientRect();
+    const lb = l.getBoundingClientRect();
+    return { rows: rows.length,
+      kinds: [...new Set(rows.map((r) => r.className.replace('call-hm ', '').replace(' current', '').trim()))],
+      scrollH: l.scrollHeight, clientH: l.clientHeight, atBottom: l.scrollHeight - l.scrollTop - l.clientHeight < 24,
+      text: rows.map((r) => r.textContent).join(' '),
+      overflowY: getComputedStyle(l).overflowY, overscroll: getComputedStyle(l).overscrollBehaviorY,
+      controlsIn: c.bottom <= innerHeight + 1 && c.top >= -1,
+      orbIn: o.bottom <= innerHeight + 1 && o.top >= -1,
+      listIn: lb.bottom <= innerHeight + 1 && lb.top >= -1,
+      overflowX: document.documentElement.scrollWidth - innerWidth }; })()`);
+  check("opened, it is a real small window: it scrolls and it is not empty",
+    histOpen.rows >= 6 && histOpen.scrollH > histOpen.clientH + 20 && histOpen.overflowY === "auto",
+    JSON.stringify({ rows: histOpen.rows, scrollH: histOpen.scrollH, clientH: histOpen.clientH }));
+  check("…holding both sides of the conversation (the operator's words and the answers)",
+    histOpen.kinds.includes("user") && histOpen.kinds.includes("agent") && histOpen.text.includes("旧库标记Q1"),
+    JSON.stringify(histOpen.kinds));
+  check("…opening on the newest line", histOpen.atBottom === true, `atBottom=${histOpen.atBottom}`);
+  check("…with scrolling kept inside the window (the call page must not move)",
+    histOpen.overscroll === "contain" && histOpen.overflowX <= 0,
+    JSON.stringify({ overscroll: histOpen.overscroll, overflowX: histOpen.overflowX }));
+  check("…and on a phone the window plus its controls still fit",
+    histOpen.controlsIn && histOpen.orbIn && histOpen.listIn,
+    JSON.stringify({ controlsIn: histOpen.controlsIn, orbIn: histOpen.orbIn, listIn: histOpen.listIn }));
+  fs.writeFileSync(`${SHOTS}/call-history.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await ev2(`(() => { const l = document.querySelector('.call-hist-list'); l.scrollTop = 0; l.dispatchEvent(new Event('scroll')); return true; })()`);
+  await sleep(400);
+  const histUp = await ev2(`({ top: Math.round(document.querySelector('.call-hist-list').scrollTop), back: !!document.querySelector('.call-hist-back') })`);
+  check("scrolling back offers 回到最新", histUp.top === 0 && histUp.back === true, JSON.stringify(histUp));
+  await ev2(`document.querySelector('.call-hist-back')?.click(); true`);
+  await sleep(400);
+  const histDown = await ev2(`(() => { const l = document.querySelector('.call-hist-list'); return { atBottom: l.scrollHeight - l.scrollTop - l.clientHeight < 24 }; })()`);
+  check("…and one tap goes back down to the newest line", histDown.atBottom === true, JSON.stringify(histDown));
+  await ev2(`document.querySelector('.call-hist-bar')?.click(); true`);
+  await sleep(300);
+  check("collapsing it puts the call back to the way it was (no list, no reserved space)",
+    (await ev2(`!document.querySelector('.call-hist-list')`)) === true, "");
+
   try { await fetch(`${CDP}/json/close/${tab2.id}`); } catch { /* gone */ }
 
 

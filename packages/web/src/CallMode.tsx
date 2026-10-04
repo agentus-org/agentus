@@ -24,12 +24,13 @@
 //     are OPERATOR settings, not constants — a phone on a table and a headset in a quiet
 //     room need different numbers, and only the person in the room knows which. The panel
 //     is on the call (the ⚙ in the corner); callSettings.ts holds the values.
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { cockpit } from "./state";
+import { cockpit, type MsgView } from "./state";
 import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
-import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
+import { IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
 import {
   bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES, patchCallSettings, useCallSettings,
   type CallSettings,
@@ -84,6 +85,33 @@ function charCount(text: string): number {
  *  operator hears. */
 const PREFETCH_SENTENCES = 1;
 
+/** One line of history in the call's window.
+ *  Memoised: the reply streams in chunks, the window re-renders on every one of them, and the rows
+ *  that did not change must not re-render with it. */
+const HistRow = memo(function HistRow({ kind, who, text, current }: { kind: string; who: string; text: string; current: boolean }): JSX.Element | null {
+  if (!text.trim()) return null;
+  return (
+    <div className={`call-hm ${kind}${current ? " current" : ""}`}>
+      {who ? <span className="call-hm-who">{who}</span> : null}
+      {kind === "agent" || kind === "user" ? <MiniMarkdown text={text} /> : <span>{text}</span>}
+    </div>
+  );
+});
+
+/** One compact line per message: what the operator needs to RECOGNISE a turn (their own words, the
+ *  answer, a notice) without the chat's full row furniture. A tool shows its title, so "something ran
+ *  in there" is visible instead of a silent gap; thoughts and plans collapse to one dim line. */
+function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: string; text: string } {
+  switch (m.kind) {
+    case "user": return { kind: "user", who: "你", text: m.text };
+    case "agent": return { kind: "agent", who: "它", text: m.text };
+    case "meta": return { kind: "meta", who: "", text: m.text };
+    case "tool": return { kind: "tool", who: "", text: `${m.title || m.kind2 || "工具"}${m.status ? ` · ${m.status}` : ""}` };
+    case "plan": return { kind: "tool", who: "", text: `计划：${m.items.map((i) => i.content).join("；")}` };
+    case "thought": return { kind: "tool", who: "", text: m.text };
+  }
+}
+
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
 export function CallMode({ sessionId, onClose, onKeyboard }: {
   sessionId: string;
@@ -104,6 +132,11 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   // only means anything while you are on the call that is misbehaving.
   const [cfg] = useCallSettings();
   const [showCfg, setShowCfg] = useState(false);
+  // The history window: collapsed to a bar by default (a call is for talking), open on demand so the
+  // operator can read back what was said without leaving the call.
+  const [histOpen, setHistOpen] = useState(false);
+  const [histAtBottom, setHistAtBottom] = useState(true);
+  const histRef = useRef<HTMLDivElement | null>(null);
   const [cfgErr, setCfgErr] = useState("");
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
@@ -664,6 +697,30 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduced]);
 
+  // Follow the newest line ONLY while the operator is at the bottom: scrolling back to read something
+  // must not be yanked away by the next streamed chunk (the same rule the transcript uses).
+  const histLast = msgs.length ? histLine(msgs[msgs.length - 1]).text : "";
+  useEffect(() => {
+    if (!histOpen || !histAtBottom) return;
+    const el = histRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [histOpen, histAtBottom, msgs.length, histLast]);
+
+  const onHistScroll = (): void => {
+    const el = histRef.current;
+    if (!el) return;
+    setHistAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+  };
+  const toLatest = (): void => {
+    const el = histRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setHistAtBottom(true);
+  };
+  const toggleHist = (): void => {
+    if (!histOpen) setHistAtBottom(true);      // opening lands on the newest line
+    setHistOpen(!histOpen);
+  };
+
   // Saying something short and having nothing happen is the worst kind of silence: the hint
   // names the reason instead of leaving the operator to guess (the minChars knob).
   const heardCount = charCount(heard);
@@ -733,6 +790,38 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       </div>
 
       <canvas ref={waveRef} className="call-wave" aria-hidden="true" />
+
+      {/* Browsing what was already said, without leaving the call. Collapsed it is one bar (44px, a
+          thumb target); open it scrolls — overscroll stays inside it, so the call page never moves. */}
+      <div className="call-hist" data-open={histOpen}>
+        <button
+          type="button"
+          className="call-hist-bar"
+          onClick={toggleHist}
+          aria-expanded={histOpen}
+          aria-label={histOpen ? "收起历史聊天记录" : "翻阅历史聊天记录"}
+          title={histOpen ? "收起" : "翻阅历史聊天记录"}
+        >
+          <IconHistory size={15} />
+          <span className="call-hist-title">历史记录</span>
+          <span className="call-hist-n">{msgs.length} 条</span>
+          {!histOpen && histLast ? <span className="call-hist-peek">{histLast.slice(0, 60)}</span> : null}
+          <span className="call-hist-chev" aria-hidden="true"><IconChevronDown size={14} /></span>
+        </button>
+        {histOpen ? (
+          <>
+            <div className="call-hist-list" ref={histRef} onScroll={onHistScroll}>
+              {msgs.map((m, i) => {
+                const l = histLine(m);
+                return <HistRow key={m.key} kind={l.kind} who={l.who} text={l.text} current={i === msgs.length - 1 && phase === "speaking"} />;
+              })}
+            </div>
+            {!histAtBottom ? (
+              <button type="button" className="call-hist-back" onClick={toLatest}>回到最新 ↓</button>
+            ) : null}
+          </>
+        ) : null}
+      </div>
 
       <div className="call-controls">
         <button

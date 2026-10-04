@@ -182,3 +182,7 @@ export const IconDevice = (p: IconProps = {}): JSX.Element =>
 /** a lock: the login-lockout card */
 export const IconLock = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>, p);
+
+/** history — a clock face with a turn-back arrow, used by the call's history window */
+export const IconHistory = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" /><path d="M3 4v4h4" /><path d="M12 8v4.4l3 1.8" /></>, p);
