@@ -189,7 +189,14 @@ button { font: inherit; }
        JSX, so the box (the touch target) and the glyph (what the eye spaces) are two
        independent numbers. */
 .head-actions { display: inline-flex; align-items: center; gap: 0; flex: 0 0 auto; }
-.head-actions .icon-btn svg { width: 20px; height: 20px; }
+/* One ratio, both breakpoints: 18px glyph in a 28px box = 10px between glyphs. The box and
+   the glyph are separate numbers on purpose — the operator's two notes ("间距太大" then
+   "图标太大了吧") move different ones: the glyph answers "how big", the box answers
+   "how close", and the box must follow the glyph down or the air comes straight back. */
+.head-actions .icon-btn { width: 28px; height: 28px; }
+/* Scoped to the whole head, not just the cluster: the menu button shares the row, and an
+   18px cluster beside a 16px hamburger reads as two designs. One icon size per bar. */
+.chat-head .icon-btn svg { width: 18px; height: 18px; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
@@ -740,15 +747,13 @@ code.inline {
   .chat-head { padding: 5px 8px; min-height: 44px; }
   .chat-head .title { font-size: 14px; }
   .chat-head .menu-btn, .chat-head .icon-btn { width: 40px; height: 40px; }
-  /* The head cluster is the tightest thing on a phone (space is what's scarce): the boxes
-     stay thumb-sized at 36px, but the glyphs grow to 20px so the strip reads as ONE
-     control — 16px glyphs in 40px boxes put 12px of air on each side of every icon, which
-     is what the operator kept reading as "间距太大". Note what this is NOT: on a phone the
-     box is invisible (no hover tint), so the ONLY thing the eye can space is the glyphs —
-     shrinking the box further would shrink the thumb target without changing the look. The
-     glyph gap is what moves here (26px -> 10px), and the cluster buys the title ~30px. */
-  .chat-head .head-actions .icon-btn { width: 34px; height: 34px; }
-  .chat-head .head-actions .icon-btn svg { width: 24px; height: 24px; }
+  /* Space is what's scarce on a phone, so the cluster is deliberately NOT thumb-sized like
+     the menu button beside it: 28px boxes (down from 40) with 18px glyphs put 10px between
+     the icons instead of 26px, and hand the title back ~56px. 24px glyphs were the
+     operator's "图标太大了吧" — the ratio is what tunes, not the size: shrink the glyph
+     without shrinking the box and the spacing complaint comes straight back. */
+  .chat-head .head-actions .icon-btn { width: 28px; height: 28px; }
+  .chat-head .head-actions .icon-btn svg { width: 18px; height: 18px; }
   .composer { padding: 6px 8px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .composer textarea { font-size: 16px; min-height: 44px; } /* 16px = no iOS zoom-on-focus */
   .composer-bar .icon-btn { width: 38px; height: 38px; }

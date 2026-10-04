@@ -278,16 +278,17 @@ const phoneHead = await ev(`(() => { const b = document.querySelector('.chat-hea
     minW: Math.min(...btns), clusterLeft: Math.round(rs[0].left),
     titleRight: Math.round(t.right), titleW: Math.round(t.width) }; })()`);
 check("every head action is thumb-sized on a phone and still on one row",
-  !!phoneHead && phoneHead.minW >= 34 && phoneHead.h >= 34 && phoneHead.right <= phoneHead.vw && phoneHead.oneRow,
+  !!phoneHead && phoneHead.minW >= 28 && phoneHead.h >= 28 && phoneHead.right <= phoneHead.vw && phoneHead.oneRow,
   JSON.stringify(phoneHead));
 check("on a phone the four head buttons leave the session title room (no overlap)",
   !!phoneHead && phoneHead.titleW >= 40 && phoneHead.titleRight <= phoneHead.clusterLeft + 1,
   JSON.stringify({ titleW: phoneHead?.titleW, titleRight: phoneHead?.titleRight, clusterLeft: phoneHead?.clusterLeft }));
 // phone is where the space is scarce: glyphs grow (20px) while the boxes come back to 36px,
 // so the strip is both tighter and narrower than the 4x40px one it replaced.
-check("on a phone the glyphs are bigger and the strip narrower than before",
-  !!phoneHead && phoneHead.glyphW >= 23 && phoneHead.glyphGaps.every((g) => g <= 11)
-    && phoneHead.btns[0] >= 34 && 4 * phoneHead.btns[0] <= 4 * 36,
+check("on a phone the glyphs stay modest (18px, not the 24px 'too big' version) and the strip is narrower than the 4x40px one it replaced",
+  !!phoneHead && phoneHead.glyphW >= 17 && phoneHead.glyphW <= 19
+    && phoneHead.glyphGaps.every((g) => g <= 12)
+    && phoneHead.btns[0] >= 28 && 4 * phoneHead.btns[0] <= 4 * 28,
   JSON.stringify({ glyphW: phoneHead?.glyphW, glyphGaps: phoneHead?.glyphGaps, box: phoneHead?.btns?.[0], cluster: phoneHead?.btns?.reduce((a, b) => a + b, 0) }));
 await ev(`document.querySelectorAll('.session-item')[0].dispatchEvent((() => { const e=new Event('touchend',{bubbles:true}); e.changedTouches=[{clientX:0,clientY:0}]; return e; })())`);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
