@@ -2,7 +2,7 @@
   "name": "agentslot",
   "version": "0.0.0",
   "private": true,
-  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
+  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence \u2014 the agent lives in spawned CLI subprocesses.",
   "license": "Apache-2.0",
   "workspaces": [
     "packages/*"
@@ -20,6 +20,7 @@
     "auth-smoke": "node scripts/auth-smoke.mjs",
     "workspace-smoke": "node scripts/workspace-smoke.mjs",
     "voice-smoke": "node scripts/voice-smoke.mjs",
+    "sentence-units": "tsx scripts/qa/sentence-units.mts",
     "tls-smoke": "node scripts/tls-smoke.mjs"
   },
   "engines": {

@@ -28,6 +28,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { createPortal } from "react-dom";
 import { cockpit } from "./state";
 import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useVoicePrefs } from "./voice";
+import { splitSentences } from "./speech";
 import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
 import {
   bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES, patchCallSettings, useCallSettings,
@@ -76,18 +77,9 @@ function charCount(text: string): number {
   return [...text].length;
 }
 
-function splitSentences(text: string): { done: string[]; tail: string } {
-  const done: string[] = [];
-  // sentence enders in both scripts, keeping the punctuation with the sentence
-  const re = /[^。！？!?\n…]*[。！？!?\n…]+/g;
-  let last = 0;
-  for (const m of text.matchAll(re)) {
-    const s = m[0].trim();
-    if (s) done.push(s);
-    last = (m.index ?? 0) + m[0].length;
-  }
-  return { done, tail: text.slice(last).trim() };
-}
+/** How many sentences ahead of the one playing the reader asks for. Two: one is exactly the next
+ *  sentence, so if that request lands late the one after it still buys no time. */
+const PREFETCH_SENTENCES = 2;
 
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
 export function CallMode({ sessionId, onClose, onKeyboard }: {
@@ -278,6 +270,14 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     : "";
   const busy = Boolean(active?.busy);
 
+  /** Warm the clips of the sentences waiting in the queue.
+   *  Called when a sentence ARRIVES as well as at the top of every turn: the reply streams in, so
+   *  the sentence after the current one usually lands while the current one is already playing —
+   *  a prefetch issued only when its turn comes could miss exactly that one. */
+  const warmQueue = (): void => {
+    for (const s of queueRef.current.slice(0, PREFETCH_SENTENCES)) speaker.prefetch(s, prefs);
+  };
+
   useEffect(() => {
     if (phaseRef.current !== "thinking" && phaseRef.current !== "speaking") return;
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
@@ -300,6 +300,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       queueRef.current.push(...fresh);
       setReply((r) => `${r}${r ? " " : ""}${fresh.join(" ")}`);
       if (phaseRef.current === "thinking") setPhase("speaking");
+      warmQueue();                                   // ask for it the moment it exists
     }
     if (!busy && tail) {                             // turn over: flush the last fragment
       if (queuedRef.current >= done.length) {
@@ -324,11 +325,10 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     void (async () => {
       while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
         const sentence = queueRef.current.shift() as string;
-        // Generate the NEXT sentence while this one plays. Sequentially, the call went silent
+        // Generate the NEXT sentences while this one plays. Sequentially, the call went silent
         // between sentences for as long as the next one took to synthesise and arrive
         // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
-        const next = queueRef.current[0];
-        if (next) speaker.prefetch(next, prefs);
+        warmQueue();
         await speaker.speak(sentence, "call", prefs);
         // barged in, hung up, or the call is gone: never hand another sentence to the speaker
         if (!aliveRef.current || phaseRef.current !== "speaking") break;

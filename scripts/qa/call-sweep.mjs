@@ -772,7 +772,12 @@ try {
   //   · with 自动朗读 on, the call still owns the voice: the auto-read of the same reply would
   //     preempt the sentence queue and read the answer again from the top.
   const OLD = "旧库标记Q1";
-  const NEW = ["新篇标记K1", "新篇标记K2"];
+  // The markers are deliberately LONGER than the reader's SHORT_SENTENCE (12 chars): a check further
+  // down proves the call never hands the whole answer to the provider in one request, and with short
+  // markers the reader is *supposed* to glue them together — which would make that check fail for the
+  // right reason but for the wrong rule. Longer markers keep the two readings distinguishable: the
+  // call reads one sentence per request, the auto-read's first 80-char chunk would hold both.
+  const NEW = ["新篇标记K1这句话够长", "新篇标记K2这句话也够长"];
   await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);      // set up history in peace
   await feed(0, "");
   await sleep(400);
@@ -828,10 +833,26 @@ try {
   await tapOrb2();
   check("the call is listening before the mute test", await waitPhase2("listening", 6000), `phase=${await phase2()}`);
   const promptsBefore4 = await frameCount("prompt");
-  await ev2(`document.querySelector('.call-btn[title="静音麦克风"]')?.click(); true`);
-  await sleep(400);
+  // The microphone is left HOLDING words and then the call stops the dictation itself — which is
+  // what mute does (`dictation.stop()`). On a phone that is the IME bug in one move: the shared
+  // dictation lands back in an idle state with text pending, so the composer's sink used to drink it
+  // and focus its textarea, raising the on-screen keyboard in the middle of a reply. The call's own
+  // UI shows what the dictation holds (`.call-heard`), so the trigger is ESTABLISHED first — only
+  // then does "it never reached the composer" say anything.
   await feed(0.4, "这句话在静音时不该发出去。");
-  await sleep(250);
+  let heldUp = false;
+  for (let i = 0; i < 20 && !heldUp; i++) {
+    await sleep(150);
+    heldUp = (await ev2(`(document.querySelector('.call-heard')?.textContent ?? '').trim().length`)) > 6;
+  }
+  check("the shared dictation really holds the operator's words before it is stopped", heldUp,
+    "no .call-heard text: the trigger was never established");
+  await ev2(`document.querySelector('.call-btn[title="静音麦克风"]')?.click(); true`);   // → dictation.stop()
+  await sleep(400);
+  const held = await ev2(`(() => { const ta = document.querySelector('textarea');
+    return { text: ta ? ta.value : null, focused: ta ? document.activeElement === ta : null }; })()`);
+  check("stopping it mid-word never feeds the composer nor raises the keyboard for it",
+    held.text === "" && held.focused === false, JSON.stringify(held));
   await feed(0, "这句话在静音时不该发出去。");
   await sleep(2600);
   check("a muted microphone does not auto-send (the loop used to send the stale transcript)",
@@ -854,6 +875,13 @@ try {
   for (let i = 1; i < ttsStarts.length; i++) closestGap = Math.min(closestGap, ttsStarts[i] - ttsStarts[i - 1]);
   check("the call synthesises the NEXT sentence while the current one plays (no silence between)",
     closestGap < 900, `closest gap=${closestGap}ms over ${ttsStarts.length} requests`);
+  // The reader's own rule: a piece too short to cover the wait for the next clip is read together
+  // with it. Only the LAST clip may be short (nothing follows it). The discriminating case — a real
+  // 2-character opening sentence — a canned mock copy cannot produce, so scripts/qa/sentence-units.mts
+  // owns that one; this pins the invariant on what actually went to the provider.
+  const shortClips = ttsBodies.filter((b, i) => b.length < 12 && i < ttsBodies.length - 1);
+  check("no clip is shorter than the glued-sentence threshold (except the last one)",
+    shortClips.length === 0, JSON.stringify(shortClips.map((b) => `${b.length}字:${b}`).slice(0, 4)));
   await sleep(400);                          // the first sentence reaches the TTS first
   const hitsAtHangup = ttsBodies.length;
   await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);

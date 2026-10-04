@@ -1792,12 +1792,18 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   // Dictation finishes into the composer: one line of plumbing, because the composer
   // is the only place a prompt can land.
   useEffect(() => {
+    // While a call is up the microphone belongs to the CALL, not to this draft box. This sink used
+    // to run anyway, and `ta.focus()` at the end is what raises the on-screen keyboard: the call
+    // itself stops/starts the shared dictation (mute, phase change, echo of our own voice reaching
+    // the phone's microphone mid-reply), which lands the transcript here in an idle state — so the
+    // operator's words went into the composer AND the IME popped up in the middle of the answer.
+    if (call) return;
     if (dict.status !== "idle" || !dict.text) return;
     const heard = dictation.consume();
     if (!heard) return;
     setText((cur) => (cur.trim() ? `${cur.trim()} ${heard}` : heard));
     ta.current?.focus();
-  }, [dict.status, dict.text]);
+  }, [dict.status, dict.text, call]);
 
   // Slash palette (AionUi F-DISPLAY-10): the commands are the AGENT's own
   // (available_commands_update over ACP) — we never invent a command list here.

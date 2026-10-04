@@ -143,8 +143,9 @@ const BROWSER_CHUNK = 220;
 /** How many TTS requests may be in flight: the next chunk is being generated and transferred
  *  while the current one plays, which is what removes the silence BETWEEN sentences. */
 const SPEAK_AHEAD = 2;
-/** Prefetched chunks kept (the operator is one sentence ahead at most; audio is small). */
-const PRE_CACHE_MAX = 6;
+/** Prefetched chunks kept. The call warms two sentences ahead (PREFETCH_SENTENCES) and one long
+ *  sentence is up to three 80-char chunks, so six was one sentence short of useless. */
+const PRE_CACHE_MAX = 12;
 
 export function splitForSpeech(text: string, max = BROWSER_CHUNK): string[] {
   const clean = text
