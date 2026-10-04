@@ -312,6 +312,65 @@ await sleep(600);
 const activeAfter = await ev(`document.querySelector('.session-item.active')?.dataset.session ?? null;`);
 check("the click that follows a long press does not switch sessions", activeAfter === activeBefore, `before=${activeBefore} after=${activeAfter}`);
 
+// --- ordering: the rail is a launch pad, so the session (and the workspace) you last TALKED
+//     to comes first. Creation time is the wrong key — a session chatted a minute ago can be the
+//     oldest row in the list, and `lastSeq` is a per-session counter, so it cannot order them.
+// the cwd is validated ("cwd not a directory"), so the probe owns its directories
+fs.mkdirSync("/tmp/as-order-A", { recursive: true });
+fs.mkdirSync("/tmp/as-order-B", { recursive: true });
+const seeded = await ev(`(async () => {
+  const j = (r) => r.json();
+  const post = (u, b) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(j);
+  const older = await post('/api/sessions', { backend: 'mock', cwd: '/tmp/as-order-A' });
+  const newer = await post('/api/sessions', { backend: 'mock', cwd: '/tmp/as-order-B' });
+  const sibling = await post('/api/sessions', { backend: 'mock', cwd: '/tmp/as-order-A' });
+  return { older: older.id, newer: newer.id, sibling: sibling.id };
+})()`);
+await sleep(1500);   // the two creations must be clearly apart on the clock
+await ev(`fetch('/api/sessions/${seeded.older}/prompt', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '排序测试：这条会话是刚聊过的' }) })`);
+let list = [];
+for (let i = 0; i < 40; i++) {
+  await sleep(500);
+  list = await ev(`fetch('/api/sessions').then((r) => r.json()).then((d) => d.live.map((s) => ({ id: s.id, lastAt: s.lastAt, createdAt: s.createdAt })))`);
+  if (list[0]?.id === seeded.older) break;
+}
+const at = (id) => list.find((s) => s.id === id);
+const me = at(seeded.older), rival = at(seeded.newer);
+check("the ordering probe could seed its own sessions (cwd must exist, and it does)",
+  Boolean(seeded.older && seeded.newer && seeded.sibling), JSON.stringify(seeded));
+check("the session chatted just now is FIRST, even though the idle one was created later",
+  list[0]?.id === seeded.older && (rival?.lastAt ?? 0) < (me?.lastAt ?? 0) && (rival?.createdAt ?? 0) > (me?.createdAt ?? 0),
+  `head=${list.slice(0, 3).map((s) => s.id).join(",")} olderCreated=${me?.createdAt} newerCreated=${rival?.createdAt}`);
+check("it reports a real last-chat time, not its creation time",
+  (me?.lastAt ?? 0) > (me?.createdAt ?? 0) + 400, `lastAt-createdAt=${(me?.lastAt ?? 0) - (me?.createdAt ?? 0)}ms`);
+
+await send("Page.reload", { ignoreCache: true });
+await sleep(3400);
+const readRail = async () => ev(`(() => [...document.querySelectorAll('.rail-group')].map((g) => ({
+  path: g.querySelector('.rail-group-head')?.dataset.workspace ?? '',
+  items: [...g.querySelectorAll('.session-item')].map((r) => r.dataset.session),
+})))()`);
+let ui = await readRail();
+if (!ui.find((g) => g.path === '/tmp/as-order-A')?.items.length) {
+  await ev(`document.querySelector('.rail-group-head[data-workspace="/tmp/as-order-A"]')?.click()`);
+  await sleep(500);
+  ui = await readRail();
+}
+const gi = (p) => ui.findIndex((g) => g.path === p);
+check("the workspace you were just chatting in now sorts above the idle one",
+  gi('/tmp/as-order-A') >= 0 && gi('/tmp/as-order-B') >= 0 && gi('/tmp/as-order-A') < gi('/tmp/as-order-B'),
+  JSON.stringify(ui.map((g) => g.path)));
+const gA = ui.find((g) => g.path === '/tmp/as-order-A');
+check("inside a workspace, the session you last talked to sits above an idle sibling",
+  Boolean(gA) && gA.items.indexOf(seeded.older) >= 0 && gA.items.indexOf(seeded.older) < gA.items.indexOf(seeded.sibling),
+  `items=${JSON.stringify(gA?.items ?? null)} older=${seeded.older} sibling=${seeded.sibling}`);
+
+// the receipt for this fix: a real rail screenshot, in the order the operator asked for
+await setViewport(1440, 900);
+await sleep(500);
+const shotOrder = await send("Page.captureScreenshot", { format: "png" }, 25000);
+fs.writeFileSync(`${SHOTS}/rail-order.png`, Buffer.from(shotOrder.data, "base64"));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log("shots: desktop-rail-oneline.png, phone-session-menu.png");
 await fetch(`${CDP}/json/close/${t.id}`).catch(() => {});

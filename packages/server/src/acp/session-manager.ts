@@ -75,13 +75,17 @@ export class SessionManager {
   }
 
   list(): SessionInfo[] {
-    // newest slot first — the cockpit's left rail is a launch pad, not a log file
+    // Most recently CHATTED first — the cockpit's left rail is a launch pad, not a log file, and
+    // creation order is the wrong key for that: the session you talked to a minute ago is the
+    // one you come back to, even when it is the oldest row in the list.
+    const lastAt = this.#store.lastMessageAt();
     return [...this.#sessions.values()]
       .map((s) => ({
         ...s.info,
         lastSeq: this.#store.maxSeq(s.info.id),
+        lastAt: lastAt.get(s.info.id) ?? s.info.createdAt,
       }))
-      .sort((a, b) => b.createdAt - a.createdAt || (b.lastSeq ?? 0) - (a.lastSeq ?? 0));
+      .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt);
   }
 
   isBusy(id: string): boolean {
@@ -160,6 +164,7 @@ export class SessionManager {
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
     };
     this.#sessions.set(id, live);
+    live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
     this.#store.upsertSession(sessionRow(live.info));
 
     child.stderr?.on("data", (d: Buffer) => {
@@ -261,6 +266,7 @@ export class SessionManager {
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
     };
     this.#sessions.set(id, live);
+    live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
     this.#store.upsertSession(sessionRow(live.info));
 
     child.stderr?.on("data", (d: Buffer) => {
@@ -349,7 +355,6 @@ export class SessionManager {
       // it was still on disk. Real deletion is the separate ✕ purge button.
       .listSessions(true)
       .filter((r) => !this.#sessions.has(r.id))
-      .slice(0, limit)
       .map((r) => ({
         id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
         workspace: r.workspace ?? null,
@@ -361,7 +366,11 @@ export class SessionManager {
         usage: (r.usage ?? null) as SessionInfo["usage"],
         commands: normCommands(r.commands),
         lastSeq: this.#store.maxSeq(r.id),
-      }));
+        lastAt: this.#store.lastMessageAt().get(r.id) ?? r.createdAt,
+      }))
+      // cold rows by the same rule as live ones (recent chat first), THEN take the page
+      .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt)
+      .slice(0, limit);
   }
 
   async prompt(
@@ -403,6 +412,7 @@ export class SessionManager {
     const msg = this.#store.appendMessage({
       sessionId, kind: "user", payload: { text, attachments: summarize(attachments) }, createdAt: Date.now(),
     });
+    this.#touch(s, msg.createdAt);
     this.#emit({ t: "message", message: msg });
     // A brand-new slot is called "<backend> @ <dir>" until something better exists, and the
     // moment the operator asks something that placeholder is plainly wrong. Name it now,
@@ -595,6 +605,7 @@ export class SessionManager {
     }
     if (msg) {
       const stored = this.#store.appendMessage(msg);
+      this.#touch(live, stored.createdAt);
       this.#emit({ t: "message", message: stored });
     }
   }
@@ -938,6 +949,14 @@ export class SessionManager {
     return row;
   }
 
+  /** Keep `lastAt` on the session ITSELF, not only on the list projection. A single-session
+   *  payload (status change, title update, a rename response) built from `info` used to arrive
+   *  without the field, so the client's copy dropped it and that session fell back to creation
+   *  order — the rail stopped moving a session up the moment you talked to it. */
+  #touch(live: LiveSession, at = Date.now()): void {
+    live.info.lastAt = at;
+  }
+
   /** One cold row, in the same shape list()/archived() produce. */
   #coldInfo(id: string): SessionInfo {
     const r = this.#store.getSession(id);
@@ -953,6 +972,7 @@ export class SessionManager {
       usage: (r.usage ?? null) as SessionInfo["usage"],
       commands: normCommands(r.commands),
       lastSeq: this.#store.maxSeq(id),
+      lastAt: this.#store.lastMessageAt().get(id) ?? r.createdAt,
     };
   }
 

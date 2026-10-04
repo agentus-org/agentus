@@ -420,11 +420,23 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
       byPath.set(path, g);
     }
     const activeKey = activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : "";
+    // When the operator last TALKED to a session (creation time when it has no messages yet).
+    const lastOf = (s: SessionInfo): number => s.lastAt ?? s.createdAt;
+    // A workspace is as recent as its newest session, so the workspace order follows the
+    // session order: chat in a directory and that group rises with it.
+    const at = (g: { items: { s: SessionInfo }[] }): number => g.items.reduce((m, i) => Math.max(m, lastOf(i.s)), 0);
     return [...byPath.values()]
-      // live before cold inside a group (a session you can talk to now beats one you cannot)
-      .map((g) => ({ ...g, items: [...g.items].sort((a, b) => (a.cold === b.cold ? 0 : a.cold ? 1 : -1)) }))
-      // the group you are working in first, then alphabetically
-      .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : a.label.localeCompare(b.label)));
+      // live before cold inside a group (a session you can talk to now beats one you cannot),
+      // then whichever one the operator last talked to
+      .map((g) => ({
+        ...g,
+        items: [...g.items].sort((a, b) =>
+          (a.cold === b.cold ? 0 : a.cold ? 1 : -1)
+          || (lastOf(b.s) - lastOf(a.s))
+          || (b.s.createdAt - a.s.createdAt)),
+      }))
+      // the group you are working in first, then by last chat, then alphabetically
+      .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : at(b) - at(a) || a.label.localeCompare(b.label)));
   }, [sessions, archived, activeId, needle]);
 
   const onFork = async (id: string): Promise<void> => {

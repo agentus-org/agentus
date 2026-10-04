@@ -56,6 +56,10 @@ export interface SessionInfo {
   lastError?: string;
   /** highest persisted seq (resume anchor hint) */
   lastSeq?: number;
+  /** When this session last received a message (wall clock; creation time when it has none).
+   *  This — not `createdAt`, and not `lastSeq` (a per-session counter) — is what the rail
+   *  orders by: "which of these did I last talk to". */
+  lastAt?: number;
 }
 
 export interface AvailableCommandView {

@@ -183,6 +183,17 @@ export class Store {
   }
 
   /** Highest persisted seq for a session (0 when empty) — the resume anchor. */
+  /** When each session last received a message, as a wall clock so sessions CAN be ordered
+   *  against each other — `seq` is a per-session counter (primary key is session_id+seq), so
+   *  comparing it across sessions was meaningless. Sessions with no messages are absent;
+   *  callers fall back to creation time. */
+  lastMessageAt(): Map<string, number> {
+    const rows = this.#db
+      .prepare("select session_id as id, max(created_at) as at from messages group by session_id")
+      .all() as unknown as { id: string; at: number }[];
+    return new Map(rows.map((r) => [r.id, r.at]));
+  }
+
   maxSeq(sessionId: string): number {
     const row = this.#db
       .prepare("select max(seq) as m from messages where session_id = ?")
