@@ -92,6 +92,39 @@ check("it sits LEFT of the folder and panel buttons", headToggle.leftOfFolder &&
 check("it reports its state (aria-pressed, off by default) and can speak on this machine",
   headToggle.pressed === "false" && headToggle.disabled === false, JSON.stringify({ pressed: headToggle.pressed, disabled: headToggle.disabled }));
 
+// --- the head's action cluster: phone + auto-read + workspace + panel, one tight strip
+const cluster = await ev(`(() => {
+  const head = document.querySelector('.chat-head');
+  const group = head?.querySelector('.head-actions');
+  if (!group) return { present: false };
+  const btns = [...group.querySelectorAll('.icon-btn')];
+  const rects = btns.map((b) => b.getBoundingClientRect());
+  const gaps = rects.slice(1).map((r, i) => Math.round(r.left - rects[i].right));
+  const phone = group.querySelector('button[aria-label="开始语音通话"]');
+  const sr = phone?.getBoundingClientRect();
+  return {
+    present: true,
+    labels: btns.map((b) => b.getAttribute("aria-label")),
+    gapCss: getComputedStyle(group).gap,
+    gaps, sameRow: rects.every((r) => Math.abs(r.top - rects[0].top) < 1),
+    phoneLeftOfSpeaker: !!sr && sr.right <= rects[1].left + 1,
+    clusterRight: Math.round(Math.max(...rects.map((r) => r.right))),
+    headRight: Math.round(head.getBoundingClientRect().right),
+    phones: document.querySelectorAll('button[aria-label="开始语音通话"]').length,
+    phoneInComposer: !!document.querySelector(".composer-bar button[aria-label=\\"开始语音通话\\"]"),
+  };
+})()`);
+check("the call button moved into the chat head, LEFT of the auto-read speaker",
+  cluster.present === true && cluster.labels[0] === "开始语音通话" && cluster.phoneLeftOfSpeaker,
+  JSON.stringify({ labels: cluster.labels, phoneLeftOfSpeaker: cluster.phoneLeftOfSpeaker }));
+check("it is the only way in (no leftover phone button in the composer tool row)",
+  cluster.phones === 1 && cluster.phoneInComposer === false,
+  JSON.stringify({ phones: cluster.phones, phoneInComposer: cluster.phoneInComposer }));
+check("the head's four action buttons read as one tight strip, flush to the right edge",
+  cluster.gapCss === "2px" && cluster.gaps.every((g) => g >= 0 && g <= 2) && cluster.sameRow
+    && cluster.headRight - cluster.clusterRight <= 12,
+  JSON.stringify({ gap: cluster.gapCss, gaps: cluster.gaps, sameRow: cluster.sameRow, edge: cluster.headRight - cluster.clusterRight }));
+
 const toggled = await ev(`(async () => {
   const btn = document.querySelector('.chat-head .icon-btn.auto-read');
   const before = JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead;
@@ -221,10 +254,20 @@ check("the phone sheet stretches across the screen (no content-width left-hug)",
   sheetW.w >= sheetW.vw - 24 && sheetW.x <= 12, JSON.stringify(sheetW));
 const phoneHead = await ev(`(() => { const b = document.querySelector('.chat-head .icon-btn.auto-read');
   if (!b) return null; const r = b.getBoundingClientRect();
-  return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), vw: innerWidth }; })()`);
-check("the header switch is thumb-sized on a phone too",
-  !!phoneHead && phoneHead.w >= 28 && phoneHead.h >= 28 && phoneHead.right <= phoneHead.vw,
+  const g = document.querySelector('.chat-head .head-actions');
+  const btns = [...g.querySelectorAll('.icon-btn')].map((x) => Math.round(x.getBoundingClientRect().width));
+  const rs = [...g.querySelectorAll('.icon-btn')].map((x) => x.getBoundingClientRect());
+  const t = document.querySelector('.chat-head .title').getBoundingClientRect();
+  return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), vw: innerWidth,
+    btns, oneRow: rs.every((x) => Math.abs(x.top - rs[0].top) < 1),
+    minW: Math.min(...btns), clusterLeft: Math.round(rs[0].left),
+    titleRight: Math.round(t.right), titleW: Math.round(t.width) }; })()`);
+check("every head action is thumb-sized on a phone and still on one row",
+  !!phoneHead && phoneHead.minW >= 28 && phoneHead.h >= 28 && phoneHead.right <= phoneHead.vw && phoneHead.oneRow,
   JSON.stringify(phoneHead));
+check("on a phone the four head buttons leave the session title room (no overlap)",
+  !!phoneHead && phoneHead.titleW >= 40 && phoneHead.titleRight <= phoneHead.clusterLeft + 1,
+  JSON.stringify({ titleW: phoneHead?.titleW, titleRight: phoneHead?.titleRight, clusterLeft: phoneHead?.clusterLeft }));
 await ev(`document.querySelectorAll('.session-item')[0].dispatchEvent((() => { const e=new Event('touchend',{bubbles:true}); e.changedTouches=[{clientX:0,clientY:0}]; return e; })())`);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-session-menu.png`, Buffer.from(shot2.data, "base64"));

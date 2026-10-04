@@ -181,6 +181,11 @@ button { font: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .head-spacer { flex: 1 1 auto; min-width: 4px; }
+/* The head's action cluster. The head's own 6px gap is right for separating the title
+   and the perm chip from what follows, but inside the cluster it floats the glyphs
+   apart (16px icons in 30px boxes already carry 7px of air each side) — the operator
+   read that as "间隔太大". 2px keeps them one strip, like the composer's tool row. */
+.head-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: 0 0 auto; padding: 0;

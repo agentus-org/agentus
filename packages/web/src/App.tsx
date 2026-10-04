@@ -603,6 +603,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings }: {
   // here so switching slots keeps the panel open on the new slot's workspace.
   const [panelOpen, setPanelOpen] = useState(false);
   const [pickWorkspace, setPickWorkspace] = useState(false);
+  // The call overlay is launched from the HEAD (it is a way of talking to the session,
+  // like the other head controls) but lives in the composer, so the state sits here:
+  // the head opens it, the composer renders it and can hand the keyboard back.
+  const [call, setCall] = useState(false);
   // Voice capabilities are fetched once; the buttons fall back to browser-only until
   // the answer arrives.
   useEffect(() => { void loadVoiceCaps(); }, []);
@@ -633,11 +637,13 @@ function Main({ onMenu, settingsOpen, onCloseSettings }: {
         panelOpen={panelOpen}
         onTogglePanel={() => setPanelOpen((o) => !o)}
         onPickWorkspace={() => setPickWorkspace(true)}
+        call={call}
+        onCall={() => { dictation.stop(); setCall(true); }}
       />
       <div className="main-body">
         <div className="chat-col">
           <Stream v={active} />
-          <Composer v={active} />
+          <Composer v={active} call={call} onCloseCall={() => setCall(false)} />
         </div>
         {panelOpen && (
           <ToolPanel
@@ -710,12 +716,14 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
   );
 }
 
-function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
+function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall }: {
   v: SessionView;
   onMenu: () => void;
   panelOpen: boolean;
   onTogglePanel: () => void;
   onPickWorkspace: () => void;
+  call: boolean;
+  onCall: () => void;
 }): JSX.Element {
   const info = v.info;
   const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
@@ -734,10 +742,10 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
     : prefs.autoRead
       ? "自动朗读：开 —— 每条回复结束后自动念出来（点一下关闭）"
       : "自动朗读：关 —— 点一下开启，之后每条回复结束都会自动念出来";
-  // Two controls, and only two (the operator's ask, and hermes-studio's head does the
-  // same): where this slot works, and the panel that shows it. Mode, thinking depth,
-  // context and voice all moved into the composer, where the prompt is written —
-  // a header is a place for identity, not for settings.
+  // The head keeps identity and session controls: where this slot works, the panel that
+  // shows it, and the two ways of TALKING to it (call, auto-read) — the operator's call
+  // list. Mode, thinking depth and context stay in the composer, where the prompt is
+  // written: a header is a place for identity, not for settings.
   return (
     <div className="chat-head">
       <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
@@ -748,33 +756,47 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
         </span>
       ) : null}
       <span className="head-spacer" />
-      <button
-        className={`icon-btn auto-read ${prefs.autoRead ? "on" : ""}`}
-        title={autoReadTitle}
-        aria-label="自动朗读新回复"
-        aria-pressed={prefs.autoRead}
-        disabled={!canSpeak}
-        onClick={() => setPrefs({ autoRead: !prefs.autoRead })}
-      >
-        {prefs.autoRead ? <IconVolume size={16} /> : <IconVolumeOff size={16} />}
-      </button>
-      <button
-        className="icon-btn"
-        title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}
-        aria-label="workspace"
-        onClick={onPickWorkspace}
-      >
-        <IconFolder size={16} />
-      </button>
-      <button
-        className={`icon-btn ${panelOpen ? "on" : ""}`}
-        title="workspace panel — files and terminal"
-        aria-label="workspace panel"
-        aria-expanded={panelOpen}
-        onClick={onTogglePanel}
-      >
-        <IconPanel size={16} />
-      </button>
+      {/* One cluster: the way in to talking with this session (call, dictation-backed
+          reading), then where it works and what it shows. Same gap as the composer's
+          tool row — icon buttons that belong together should read as one strip, not
+          as separate stops. */}
+      <span className="head-actions">
+        <button
+          className={`icon-btn ${call ? "on" : ""}`}
+          title="语音通话 —— 像打电话一样跟这个会话说话"
+          aria-label="开始语音通话"
+          onClick={onCall}
+        >
+          <IconPhone size={16} />
+        </button>
+        <button
+          className={`icon-btn auto-read ${prefs.autoRead ? "on" : ""}`}
+          title={autoReadTitle}
+          aria-label="自动朗读新回复"
+          aria-pressed={prefs.autoRead}
+          disabled={!canSpeak}
+          onClick={() => setPrefs({ autoRead: !prefs.autoRead })}
+        >
+          {prefs.autoRead ? <IconVolume size={16} /> : <IconVolumeOff size={16} />}
+        </button>
+        <button
+          className="icon-btn"
+          title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}
+          aria-label="workspace"
+          onClick={onPickWorkspace}
+        >
+          <IconFolder size={16} />
+        </button>
+        <button
+          className={`icon-btn ${panelOpen ? "on" : ""}`}
+          title="workspace panel — files and terminal"
+          aria-label="workspace panel"
+          aria-expanded={panelOpen}
+          onClick={onTogglePanel}
+        >
+          <IconPanel size={16} />
+        </button>
+      </span>
     </div>
   );
 }
@@ -1663,7 +1685,7 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
   );
 }
 
-function Composer({ v }: { v: SessionView }): JSX.Element {
+function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onCloseCall: () => void }): JSX.Element {
   const [text, setText] = useState("");
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
@@ -1685,9 +1707,8 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   const dict = useDictation();
   const spoken = useSpeaker();
   const ta = useRef<HTMLTextAreaElement>(null);
-  // the voice call takes the whole screen; the composer stays mounted underneath so
-  // "改用键盘" lands back in the prompt box with the draft intact
-  const [call, setCall] = useState(false);
+  // The call overlay is owned by Main (it is opened from the chat head); the composer
+  // renders it so "改用键盘" can put the cursor back in the prompt box, draft intact.
   const fileRef = useRef<HTMLInputElement>(null);
 
   const addFiles = async (files: FileList | File[]): Promise<void> => {
@@ -2074,19 +2095,11 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             >
               <IconMic size={16} />
             </button>
-            <button
-              className={`icon-btn ${call ? "on" : ""}`}
-              title="语音通话 —— 像打电话一样跟这个会话说话"
-              aria-label="开始语音通话"
-              onClick={() => { dictation.stop(); setCall(true); }}
-            >
-              <IconPhone size={16} />
-            </button>
             {call ? (
               <CallMode
                 sessionId={v.info.id}
-                onClose={() => setCall(false)}
-                onKeyboard={() => { setCall(false); window.setTimeout(() => ta.current?.focus(), 30); }}
+                onClose={onCloseCall}
+                onKeyboard={() => { onCloseCall(); window.setTimeout(() => ta.current?.focus(), 30); }}
               />
             ) : null}
             {v.busy ? (
