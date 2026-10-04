@@ -1829,6 +1829,11 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
           </div>
         )}
         {attachErr && <div className="composer-note err">{attachErr}</div>}
+        {/* The speaker records why it fell back / failed — it was never rendered, so a
+            server-voice failure silently switched the operator to the system voice.
+            Surfacing it here is the honest half of that fallback. */}
+        {spoken.note ? <div className="composer-note">{spoken.note}</div> : null}
+        {spoken.error ? <div className="composer-note err">{spoken.error}</div> : null}
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />

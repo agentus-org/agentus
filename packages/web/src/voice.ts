@@ -183,6 +183,12 @@ export async function unlockAudio(): Promise<boolean> {
   }
 }
 
+/** Playback was stopped by the operator. Distinct from a failure on purpose: a stop must
+ *  never trigger the "server voice failed, use the browser voice" fallback. */
+export class SpeechStopped extends Error {
+  constructor() { super("stopped"); this.name = "SpeechStopped"; }
+}
+
 /** Play a synthesized clip. Web Audio first (it survives the activation window), the
  *  <audio> element as the fallback for formats decodeAudioData cannot take. */
 export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> {
@@ -199,7 +205,7 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
         src.onended = () => resolve();
         const abort = (): void => {
           try { src.stop(); } catch { /* already stopped */ }
-          reject(new Error("stopped"));
+          reject(new SpeechStopped());
         };
         if (signal) {
           if (signal.aborted) return abort();
@@ -209,7 +215,8 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
       });
       return;
     } catch (e) {
-      if (signal?.aborted) throw new Error("stopped");
+      if (e instanceof SpeechStopped) throw e;
+      if (signal?.aborted) throw new SpeechStopped();
       // fall through to the element: a format the encoder produced but the decoder cannot take
     }
   }
@@ -217,9 +224,15 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
   try {
     await new Promise<void>((resolve, reject) => {
       const audio = new Audio(url);
-      audio.onended = () => resolve();
-      audio.onerror = () => reject(new Error("audio playback failed"));
-      void audio.play().catch((e) => reject(new Error(String((e as Error)?.message ?? e))));
+      const abort = (): void => { try { audio.pause(); } catch { /* already paused */ } reject(new SpeechStopped()); };
+      audio.onended = () => { cleanup(); resolve(); };
+      audio.onerror = () => { cleanup(); reject(new Error("audio playback failed")); };
+      const cleanup = (): void => { if (signal) signal.removeEventListener("abort", abort); };
+      if (signal) {
+        if (signal.aborted) return abort();
+        signal.addEventListener("abort", abort, { once: true });
+      }
+      void audio.play().catch((e) => { cleanup(); reject(new Error(String((e as Error)?.message ?? e))); });
     });
   } finally {
     URL.revokeObjectURL(url);
@@ -245,6 +258,13 @@ class Speaker {
   #state: SpeakState = { speakingId: null, speaking: false, error: "", note: "" };
   #listeners = new Set<() => void>();
   #abort: AbortController | null = null;
+  /** Run token + stop flag. A stop() is NOT a failure. Without these the abort it raises
+   *  came back as a rejected promise, speak()'s catch read it as "the server voice
+   *  failed", and the documented browser fallback re-read the whole reply — i.e. pressing
+   *  stop once more spoke it aloud with the system voice (operator report). The token also
+   *  keeps an older run from clearing a newer run's state. */
+  #run = 0;
+  #stopped = false;
   #voices: SpeechSynthesisVoice[] = [];
   #voiceListeners = new Set<() => void>();
 
@@ -316,39 +336,52 @@ class Speaker {
   async speak(text: string, id: string, prefs: VoicePrefs): Promise<void> {
     const body = String(text ?? "").trim();
     if (!body) return;
-    this.stop();
+    this.stop();                       // stops playback AND marks the previous run stopped
+    const run = ++this.#run;           // this run's token: stale runs must not write state
+    this.#stopped = false;
     const chunks = splitForSpeech(body);
     if (!chunks.length) return;
+    const ctrl = new AbortController();   // one controller for the whole utterance
+    this.#abort = ctrl;
     this.#set({ error: "", note: "", speakingId: id, speaking: true });
     try {
       if (prefs.serverTts && voiceCaps().tts.server) {
-        await this.#speakServer(chunks, prefs);
+        await this.#speakServer(chunks, prefs, ctrl.signal);
       } else {
-        await this.#speakBrowser(chunks, prefs);
+        await this.#speakBrowser(chunks, prefs, ctrl.signal);
       }
     } catch (e) {
+      // A STOP is not a failure. Returning quietly here is the whole fix: the fallback
+      // below is for a server that really failed, not for the operator pressing stop.
+      if (this.#stopped || run !== this.#run || e instanceof SpeechStopped || (e as Error)?.name === "AbortError") {
+        return;
+      }
       // Server voice failed: the browser can still read it. Say so once, then do it.
       if (prefs.serverTts && browserSpeechAvailable()) {
         this.#set({ note: `server voice failed (${String((e as Error)?.message ?? e)}), using the browser voice` });
         try {
-          await this.#speakBrowser(chunks, prefs);
+          await this.#speakBrowser(chunks, prefs, ctrl.signal);
           return;
         } catch (e2) {
+          if (this.#stopped || e2 instanceof SpeechStopped) return;
           this.#set({ error: String((e2 as Error)?.message ?? e2) });
         }
       } else {
         this.#set({ error: String((e as Error)?.message ?? e) });
       }
     } finally {
-      this.#set({ speaking: false, speakingId: null });
+      if (this.#abort === ctrl) this.#abort = null;
+      // only the current run may clear the lamp: a newer speak() owns the state now
+      if (run === this.#run) this.#set({ speaking: false, speakingId: null });
     }
   }
 
-  async #speakBrowser(chunks: string[], prefs: VoicePrefs): Promise<void> {
+  async #speakBrowser(chunks: string[], prefs: VoicePrefs, signal?: AbortSignal): Promise<void> {
     if (!browserSpeechAvailable()) throw new Error("this browser has no speech synthesis");
     const synth = window.speechSynthesis;
     const voice = this.pickVoice(prefs);
     for (const [i, chunk] of chunks.entries()) {
+      if (signal?.aborted) throw new SpeechStopped();
       await new Promise<void>((resolve, reject) => {
         const u = new SpeechSynthesisUtterance(chunk);
         if (voice) { u.voice = voice; u.lang = voice.lang; } else { u.lang = prefs.lang; }
@@ -360,29 +393,34 @@ class Speaker {
         // here costs nothing and unsticks it.
         if (i === 0) synth.resume();
       });
+      // cancel() ends the utterance we were awaiting; without this check the loop simply
+      // moved on and spoke the NEXT chunk after a stop
+      if (signal?.aborted) throw new SpeechStopped();
       if (synth.paused) synth.resume();
     }
   }
 
-  async #speakServer(chunks: string[], prefs: VoicePrefs): Promise<void> {
+  async #speakServer(chunks: string[], prefs: VoicePrefs, signal: AbortSignal): Promise<void> {
     for (const chunk of chunks) {
-      this.#abort = new AbortController();
+      if (signal.aborted) throw new SpeechStopped();
       const res = await fetch("/api/tts", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        signal: this.#abort.signal,
+        signal,
         body: JSON.stringify({ text: chunk, speed: prefs.rate }),
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string };
         throw new Error(detail.error ?? `tts ${res.status}`);
       }
-      await playBlob(await res.blob(), this.#abort.signal);
+      await playBlob(await res.blob(), signal);
+      if (signal.aborted) throw new SpeechStopped();
     }
   }
 
   stop(): void {
+    this.#stopped = true;              // marks the in-flight run: do NOT fall back, do not error
     this.#abort?.abort();
     this.#abort = null;
     // Web Audio playback stops through the abort signal above; the browser voice needs
