@@ -400,6 +400,40 @@ try {
   check("…and the legacy file is kept as .imported, not deleted",
     fs.existsSync(path.join(legacyDir, "settings.json.imported")) && !fs.existsSync(path.join(legacyDir, "settings.json")));
   killGroup(third.proc);
+
+  // a call section that is STILL at the old shipped defaults (最少字数 1 was the old default)
+  // must follow the new ones instead of carrying a fossil of them into the panel
+  const fossilDir = mkdtempSync(path.join(tmpdir(), "agentslot-fossil-"));
+  fs.writeFileSync(
+    path.join(fossilDir, "settings.json"),
+    JSON.stringify({ call: { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 }, updatedAt: 1 }),
+    { mode: 0o600 },
+  );
+  const fourth = await boot(fossilDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const mig2 = await (async () => {
+    const res = await fetch(fourth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(fossilDir)}` } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  })();
+  check("a call section still at the OLD defaults adopts the new ones (最少字数 1 → 3)",
+    mig2.body?.call?.minChars === 3 && mig2.body?.call?.bargeSensitivity === 60, JSON.stringify(mig2.body?.call));
+  killGroup(fourth.proc);
+
+  // …but a section the operator really tuned is left exactly as it is
+  const tunedDir = mkdtempSync(path.join(tmpdir(), "agentslot-tuned-"));
+  fs.writeFileSync(
+    path.join(tunedDir, "settings.json"),
+    JSON.stringify({ call: { bargeSensitivity: 85, bargeMs: 500, silenceMs: 900, minChars: 1 }, updatedAt: 1 }),
+    { mode: 0o600 },
+  );
+  const fifth = await boot(tunedDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const mig3 = await (async () => {
+    const res = await fetch(fifth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(tunedDir)}` } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  })();
+  check("…while a hand-tuned section is left alone (最少字数 1 是操作者选的)",
+    mig3.body?.call?.minChars === 1 && mig3.body?.call?.bargeSensitivity === 85 && mig3.body?.call?.silenceMs === 900,
+    JSON.stringify(mig3.body?.call));
+  killGroup(fifth.proc);
 } catch (e) {
   check("suite ran to completion", false, String(e?.stack ?? e).slice(0, 300));
 } finally {

@@ -101,6 +101,17 @@ export const PREFS_DEFAULT: PrefsSettings = {
 
 export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3 };
 
+/** What this section shipped with before the sensitivity rename. A stored section that is still
+ *  EXACTLY this is a section nobody ever touched — the operator should get the new defaults
+ *  rather than a fossil of the old ones (the live instance had 最少字数 1 stored simply because
+ *  1 used to be the default). One deliberate change to any knob and the section is left alone. */
+/** True when every knob still sits at a shipped value — either generation: the pre-rename row
+ *  had `bargeLevel`, and a row that has already been through pickCall has no such key at all. */
+function callAtShippedDefaults(r: Record<string, unknown>): boolean {
+  const sens = r.bargeSensitivity === undefined ? Number(r.bargeLevel) === 0.2 : Number(r.bargeSensitivity) === 60;
+  return sens && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
+}
+
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
  *  that enforces them, so a hand-written request cannot store a nonsense value. */
 export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
@@ -213,6 +224,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
 function pickCall(raw: unknown): CallSettings {
   const out = { ...CALL_DEFAULT };
   if (raw && typeof raw === "object") {
+    if (callAtShippedDefaults(raw as Record<string, unknown>)) return out;
     for (const k of Object.keys(CALL_DEFAULT) as (keyof CallSettings)[]) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
