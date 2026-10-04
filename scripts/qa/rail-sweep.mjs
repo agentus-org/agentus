@@ -100,13 +100,18 @@ const cluster = await ev(`(() => {
   const btns = [...group.querySelectorAll('.icon-btn')];
   const rects = btns.map((b) => b.getBoundingClientRect());
   const gaps = rects.slice(1).map((r, i) => Math.round(r.left - rects[i].right));
+  // what the EYE spaces is the glyphs, not the boxes: measure icon edge to icon edge
+  const glyphs = btns.map((b) => (b.querySelector('svg') ?? b).getBoundingClientRect());
+  const glyphGaps = glyphs.slice(1).map((r, i) => Math.round(r.left - glyphs[i].right));
+  const glyphW = Math.round(glyphs[0].width);
   const phone = group.querySelector('button[aria-label="开始语音通话"]');
   const sr = phone?.getBoundingClientRect();
   return {
     present: true,
     labels: btns.map((b) => b.getAttribute("aria-label")),
     gapCss: getComputedStyle(group).gap,
-    gaps, sameRow: rects.every((r) => Math.abs(r.top - rects[0].top) < 1),
+    gaps, glyphGaps, glyphW, boxW: Math.round(rects[0].width),
+    sameRow: rects.every((r) => Math.abs(r.top - rects[0].top) < 1),
     phoneLeftOfSpeaker: !!sr && sr.right <= rects[1].left + 1,
     clusterRight: Math.round(Math.max(...rects.map((r) => r.right))),
     headRight: Math.round(head.getBoundingClientRect().right),
@@ -121,9 +126,15 @@ check("it is the only way in (no leftover phone button in the composer tool row)
   cluster.phones === 1 && cluster.phoneInComposer === false,
   JSON.stringify({ phones: cluster.phones, phoneInComposer: cluster.phoneInComposer }));
 check("the head's four action buttons read as one tight strip, flush to the right edge",
-  cluster.gapCss === "2px" && cluster.gaps.every((g) => g >= 0 && g <= 2) && cluster.sameRow
+  cluster.gapCss === "0px" && cluster.gaps.every((g) => g === 0) && cluster.sameRow
     && cluster.headRight - cluster.clusterRight <= 12,
   JSON.stringify({ gap: cluster.gapCss, gaps: cluster.gaps, sameRow: cluster.sameRow, edge: cluster.headRight - cluster.clusterRight }));
+// The operator said "间距太大" twice; the second time it was not the gap but the air INSIDE
+// each box (a 16px glyph in a 30px box). So assert on the glyph spacing the eye reads:
+// on desktop the icons must be closer together than the icon is wide.
+check("the icons themselves sit close (glyph gap well under one icon width)",
+  cluster.glyphW >= 16 && cluster.glyphGaps.every((g) => g <= 12),
+  JSON.stringify({ glyphW: cluster.glyphW, glyphGaps: cluster.glyphGaps, boxW: cluster.boxW }));
 
 const toggled = await ev(`(async () => {
   const btn = document.querySelector('.chat-head .icon-btn.auto-read');
@@ -255,19 +266,29 @@ check("the phone sheet stretches across the screen (no content-width left-hug)",
 const phoneHead = await ev(`(() => { const b = document.querySelector('.chat-head .icon-btn.auto-read');
   if (!b) return null; const r = b.getBoundingClientRect();
   const g = document.querySelector('.chat-head .head-actions');
-  const btns = [...g.querySelectorAll('.icon-btn')].map((x) => Math.round(x.getBoundingClientRect().width));
-  const rs = [...g.querySelectorAll('.icon-btn')].map((x) => x.getBoundingClientRect());
+  const els = [...g.querySelectorAll('.icon-btn')];
+  const btns = els.map((x) => Math.round(x.getBoundingClientRect().width));
+  const rs = els.map((x) => x.getBoundingClientRect());
+  const gl = els.map((x) => (x.querySelector('svg') ?? x).getBoundingClientRect());
+  const glyphGaps = gl.slice(1).map((y, i) => Math.round(y.left - gl[i].right));
   const t = document.querySelector('.chat-head .title').getBoundingClientRect();
   return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), vw: innerWidth,
-    btns, oneRow: rs.every((x) => Math.abs(x.top - rs[0].top) < 1),
+    btns, glyphW: Math.round(gl[0].width), glyphGaps,
+    oneRow: rs.every((x) => Math.abs(x.top - rs[0].top) < 1),
     minW: Math.min(...btns), clusterLeft: Math.round(rs[0].left),
     titleRight: Math.round(t.right), titleW: Math.round(t.width) }; })()`);
 check("every head action is thumb-sized on a phone and still on one row",
-  !!phoneHead && phoneHead.minW >= 28 && phoneHead.h >= 28 && phoneHead.right <= phoneHead.vw && phoneHead.oneRow,
+  !!phoneHead && phoneHead.minW >= 34 && phoneHead.h >= 34 && phoneHead.right <= phoneHead.vw && phoneHead.oneRow,
   JSON.stringify(phoneHead));
 check("on a phone the four head buttons leave the session title room (no overlap)",
   !!phoneHead && phoneHead.titleW >= 40 && phoneHead.titleRight <= phoneHead.clusterLeft + 1,
   JSON.stringify({ titleW: phoneHead?.titleW, titleRight: phoneHead?.titleRight, clusterLeft: phoneHead?.clusterLeft }));
+// phone is where the space is scarce: glyphs grow (20px) while the boxes come back to 36px,
+// so the strip is both tighter and narrower than the 4x40px one it replaced.
+check("on a phone the glyphs are bigger and the strip narrower than before",
+  !!phoneHead && phoneHead.glyphW >= 23 && phoneHead.glyphGaps.every((g) => g <= 11)
+    && phoneHead.btns[0] >= 34 && 4 * phoneHead.btns[0] <= 4 * 36,
+  JSON.stringify({ glyphW: phoneHead?.glyphW, glyphGaps: phoneHead?.glyphGaps, box: phoneHead?.btns?.[0], cluster: phoneHead?.btns?.reduce((a, b) => a + b, 0) }));
 await ev(`document.querySelectorAll('.session-item')[0].dispatchEvent((() => { const e=new Event('touchend',{bubbles:true}); e.changedTouches=[{clientX:0,clientY:0}]; return e; })())`);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-session-menu.png`, Buffer.from(shot2.data, "base64"));

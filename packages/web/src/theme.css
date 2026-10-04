@@ -181,11 +181,15 @@ button { font: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .head-spacer { flex: 1 1 auto; min-width: 4px; }
-/* The head's action cluster. The head's own 6px gap is right for separating the title
-   and the perm chip from what follows, but inside the cluster it floats the glyphs
-   apart (16px icons in 30px boxes already carry 7px of air each side) — the operator
-   read that as "间隔太大". 2px keeps them one strip, like the composer's tool row. */
-.head-actions { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+/* The head's action cluster. The operator's read: "还是间距太大". Two things were making
+   it look loose, and only one of them was the gap:
+     · the cluster's own gap (now 0 — these four are peers, they should read as one strip);
+     · the icon-to-box ratio. A 16px glyph in a 30px box leaves 7px of air per side, so
+       even with a small gap the GLYPHS sit ~16px apart. The icons are sized here, not in
+       JSX, so the box (the touch target) and the glyph (what the eye spaces) are two
+       independent numbers. */
+.head-actions { display: inline-flex; align-items: center; gap: 0; flex: 0 0 auto; }
+.head-actions .icon-btn svg { width: 20px; height: 20px; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
@@ -736,6 +740,15 @@ code.inline {
   .chat-head { padding: 5px 8px; min-height: 44px; }
   .chat-head .title { font-size: 14px; }
   .chat-head .menu-btn, .chat-head .icon-btn { width: 40px; height: 40px; }
+  /* The head cluster is the tightest thing on a phone (space is what's scarce): the boxes
+     stay thumb-sized at 36px, but the glyphs grow to 20px so the strip reads as ONE
+     control — 16px glyphs in 40px boxes put 12px of air on each side of every icon, which
+     is what the operator kept reading as "间距太大". Note what this is NOT: on a phone the
+     box is invisible (no hover tint), so the ONLY thing the eye can space is the glyphs —
+     shrinking the box further would shrink the thumb target without changing the look. The
+     glyph gap is what moves here (26px -> 10px), and the cluster buys the title ~30px. */
+  .chat-head .head-actions .icon-btn { width: 34px; height: 34px; }
+  .chat-head .head-actions .icon-btn svg { width: 24px; height: 24px; }
   .composer { padding: 6px 8px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .composer textarea { font-size: 16px; min-height: 44px; } /* 16px = no iOS zoom-on-focus */
   .composer-bar .icon-btn { width: 38px; height: 38px; }

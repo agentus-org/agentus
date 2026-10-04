@@ -767,7 +767,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           aria-label="开始语音通话"
           onClick={onCall}
         >
-          <IconPhone size={16} />
+          <IconPhone />
         </button>
         <button
           className={`icon-btn auto-read ${prefs.autoRead ? "on" : ""}`}
@@ -777,7 +777,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           disabled={!canSpeak}
           onClick={() => setPrefs({ autoRead: !prefs.autoRead })}
         >
-          {prefs.autoRead ? <IconVolume size={16} /> : <IconVolumeOff size={16} />}
+          {prefs.autoRead ? <IconVolume /> : <IconVolumeOff />}
         </button>
         <button
           className="icon-btn"
@@ -785,7 +785,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           aria-label="workspace"
           onClick={onPickWorkspace}
         >
-          <IconFolder size={16} />
+          <IconFolder />
         </button>
         <button
           className={`icon-btn ${panelOpen ? "on" : ""}`}
@@ -794,7 +794,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           aria-expanded={panelOpen}
           onClick={onTogglePanel}
         >
-          <IconPanel size={16} />
+          <IconPanel />
         </button>
       </span>
     </div>
