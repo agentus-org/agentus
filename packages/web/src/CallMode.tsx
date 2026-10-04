@@ -62,6 +62,15 @@ const VOICE_LEVEL = 0.06;
  *  120 ms tick rather than a lazy 250 ms one — "说完停顿 1.2 秒" has to mean 1.2 s. */
 const LOOP_MS = 120;
 
+/** The agent's OWN words when it REFUSES to start a turn (its cross-process turn lease is held, or
+ *  a stale hard-interrupt is pending — see `bargeIn`): "Stopped waiting for another Hermes process
+ *  on this session. Your message was not processed."
+ *
+ *  That is a protocol notice, not an answer, and in a call it must not be READ OUT as one. Matched
+ *  verbatim and anchored on purpose: the turn still reports `end_turn`, so there is no field to
+ *  read, and a loose matcher would swallow a real answer that merely quotes the sentence. */
+const NON_ANSWER_RE = /^(?:Stopped waiting for another Hermes process on this session\. Your message was not processed\.|⏳? ?Another Hermes process kept this session busy too long[\s\S]*not processed[\s\S]*)$/;
+
 /** Code points, not UTF-16 units: "最少字数" must not count an emoji as two. */
 function charCount(text: string): number {
   return [...text].length;
@@ -271,6 +280,11 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
     // message this turn actually produced.
     if (!agentKey || agentKey === baselineKeyRef.current) return;
+    if (NON_ANSWER_RE.test(agentText.trim())) {      // a refusal, not an answer: never speak it
+      setErr("刚才那句没被处理（这个会话正被另一个 Hermes 进程占用），再说一次即可。");
+      void backToListening(false);
+      return;
+    }
     if (agentKey !== replyKeyRef.current) {          // a new reply started
       replyKeyRef.current = agentKey;
       queuedRef.current = 0;
@@ -324,10 +338,18 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, reply, busy]);
 
-  /** Talking over the agent: drop our playback, cancel ITS turn, listen again. */
+  /** Talking over the agent: drop our playback, cancel ITS turn, listen again.
+   *
+   *  The cancel goes out ONLY when a turn is actually in flight. The call stays in its `speaking`
+   *  phase for as long as the reply is being read out, and the agent's turn usually ends well before
+   *  that — so "speaking" is not evidence of a running turn. A cancel on an IDLE session is not a
+   *  no-op on the agent side: it leaves a hard interrupt pending, and the NEXT turn then dies at its
+   *  turn-lease admission with the refusal notice above (the server refuses the same cancel too, as
+   *  a second line of defence). */
   const bargeIn = async (): Promise<void> => {
     speaker.stop();
-    cockpit.send({ t: "cancel", sessionId });
+    const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
+    if (running) cockpit.send({ t: "cancel", sessionId });
     await backToListening(false);
   };
 

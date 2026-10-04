@@ -441,9 +441,21 @@ export class SessionManager {
 
   async cancel(sessionId: string): Promise<void> {
     const s = this.#need(sessionId);
-    if (s.conn && s.info.acpSessionId) {
-      await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
+    if (!s.conn || !s.info.acpSessionId) return;
+    // An idle session must NOT be cancelled. On the agent side this is not a no-op: Hermes' ACP
+    // `session/cancel` sets the hard-interrupt flag unconditionally (`request_hard_interrupt`) and
+    // clears it only at a turn boundary, so the NEXT turn aborts before it starts — at its
+    // cross-process turn-lease admission — with "Stopped waiting for another Hermes process on this
+    // session. Your message was not processed." The operator's words are dropped and that notice is
+    // rendered (and in a call, READ OUT) like an answer. The call hit this whenever the operator
+    // talked over a reply still being read aloud: the agent's turn was already over, so the
+    // barge-in's cancel landed on an idle session.
+    if (!s.busy) {
+      console.log(`[agentslot] cancel ignored for ${sessionId}: no turn is running`);
+      return;
     }
+    console.log(`[agentslot] cancel sent for ${sessionId}`);
+    await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {

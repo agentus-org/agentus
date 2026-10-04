@@ -465,6 +465,8 @@ try {
   let slow2Idle = false;
   for (let i = 0; i < 60 && !slow2Idle; i++) { await sleep(250); slow2Idle = !(await busyOf(slow2.id)); }
   check("the cancelled turn really stopped on the server", slow2Idle === true);
+  check("…and the server really forwarded it to the agent (a RUNNING turn is still interruptible)",
+    log.includes("cancel sent"), `cancel-sent=${log.includes("cancel sent")}`);
   // ---- 通话设置：面板 + 四个阈值真的改变行为 --------------------------------------------
   // A threshold only means something in the room it is used in (a phone on a table leaks its
   // own loudspeaker into its own microphone; a headset does not), so the panel lives ON the
@@ -637,19 +639,43 @@ try {
   const phaseAtQuiet = await phase2();
   await feed(0.35, "");                                      // loud enough to barge at the default
   await sleep(1400);
+  // the observable is the PHASE (did the floor change hands), not the cancel frame: a cancel is
+  // only sent when a turn is actually running (see below), so the frame count cannot carry the
+  // knob's meaning any more.
   check("with 抢话灵敏度 at its least sensitive, that voice does NOT take the floor",
-    (await frameCount("cancel")) === cancelsBefore,
-    JSON.stringify({ set: insensitive, cancelsBefore, now: await frameCount("cancel"), phaseAtStart: phaseAtQuiet }));
+    (await phase2()) === phaseAtQuiet && (await frameCount("cancel")) === cancelsBefore,
+    JSON.stringify({ set: insensitive, phase: await phase2(), phaseAtStart: phaseAtQuiet, cancels: await frameCount("cancel") }));
 
   await openSheet();
   await sleep(300);
   const sensitive = await setRange("抢话灵敏度", 100);        // 100 % = 最灵敏, applied live
   await sleep(300);
-  const barged = await waitFrames("cancel", cancelsBefore + 1, 3000);
+  const busyAtBarge = await busyOf(slow2.id);
+  const floorMark = log.length;
+  const tookFloor = await waitPhase2("listening", 3000);
   check("…and at its most sensitive the SAME voice takes the floor immediately (live apply)",
-    barged === true, JSON.stringify({ set: sensitive, cancelsBefore, now: await frameCount("cancel") }));
+    tookFloor === true, JSON.stringify({ set: sensitive, phase: await phase2() }));
+  // REGRESSION for "Stopped waiting for another Hermes process on this session. Your message was
+  // not processed." The call sits in `speaking` while the reply is read out, and the agent's TURN
+  // is usually over long before that — so barge-in used to cancel an IDLE session, which leaves a
+  // hard interrupt pending in the agent and makes the NEXT turn die at its turn-lease admission
+  // (the operator's words dropped, the refusal read out as the answer). Contract: cancel ⇔ a turn
+  // is really running.
+  const cancelsAfter = await frameCount("cancel");
+  const refusedOnServer = log.slice(floorMark).includes("cancel ignored");
+  check("taking the floor sends a cancel ONLY while a turn is really running (an idle cancel poisons the NEXT turn)",
+    busyAtBarge ? cancelsAfter === cancelsBefore + 1 : (cancelsAfter === cancelsBefore && !refusedOnServer),
+    JSON.stringify({ busyAtBarge, cancelsBefore, cancelsAfter, refusedOnServer }));
   check("…leaving the call listening for the operator again",
     await waitPhase2("listening", 3000), `phase=${await phase2()}`);
+  // second line of defence: the server holds the same rule, so a cancel that arrives from ANY
+  // client with nothing running is refused (and says so) instead of being forwarded.
+  const idleMark = log.length;
+  await api("POST", `/api/sessions/${slow2.id}/cancel`, {});
+  await sleep(500);
+  check("an idle session is never cancelled: the server logs the refusal and does not forward it",
+    log.slice(idleMark).includes("cancel ignored") && !log.slice(idleMark).includes("cancel sent"),
+    JSON.stringify((log.slice(idleMark).match(/\[agentslot\] cancel [a-z]+/g) ?? [])));
   const savedBarge = (await api("GET", "/api/settings")).body?.call?.bargeSensitivity;
   check("the sensitivity the panel set is what the server holds", savedBarge === 100, `bargeSensitivity=${savedBarge}`);
   fs.writeFileSync(`${SHOTS}/call-settings.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
