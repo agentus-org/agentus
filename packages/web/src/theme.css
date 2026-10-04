@@ -1315,6 +1315,8 @@ code.inline {
 }
 .call-hint { margin: 0; font-size: 12.5px; color: var(--text-dim); }
 .call-err { margin: 0; font-size: 12.5px; color: var(--err); }
+/* the speaker fell back for this sentence: informational, not an error */
+.call-note { margin: 0; font-size: 12.5px; color: var(--warn, #d08a2a); }
 
 /* input vs output waveform: its colour follows the phase (see the canvas) */
 .call-wave {

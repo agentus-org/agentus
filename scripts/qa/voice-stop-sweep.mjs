@@ -157,7 +157,11 @@ const state = async () => ev(`(() => {
   return { present: !!b, on: !!b && b.className.includes('on'),
     label: b ? b.getAttribute('aria-label') : null,
     browserVoiceCalls: window.__voiceCalls ?? -1,
-    note: [...document.querySelectorAll('*')].some((n) => /server voice failed/i.test(n.textContent || '')) };
+    // The fallback note is operator-facing text, so it is CHINESE — matching only the old English
+    // wording made this check fail the moment the message was translated (a behaviour change broke its
+    // observation point, not the behaviour). Match either wording.
+    note: [...document.querySelectorAll('*')].some((n) => /服务端语音这一句失败|server voice failed/i.test(n.textContent || '')),
+    err: (document.querySelector('.composer-note.err')?.textContent ?? '').slice(0, 60) };
 })()`);
 
 try {
@@ -271,10 +275,24 @@ try {
   upstreamFail = true;
   const beforeFail = await state();
   await trustedClick(".bubble-btn.speak");
-  await sleep(UPSTREAM_DELAY_MS + 1200);
+  // The client now RE-ASKS a failed clip before falling back (2 retries, 400 + 800 ms backoff): a
+  // failed clip used to change the voice, and that is worse than half a second of silence. So this
+  // wait has to cover the retries — a fixed-length stub makes every budget here a moving target.
+  // Sample while it happens: a single reading 4 s later misses the moment (and made a real bug look
+  // like a budget problem once).
+  const samples = [];
+  for (let i = 0; i < 16; i++) {
+    await sleep(400);
+    const st = await state();
+    samples.push(`${(i + 1) * 0.4}s:on=${st.on ? 1 : 0},bv=${st.browserVoiceCalls},note=${st.note ? 1 : 0}`);
+    if (st.browserVoiceCalls > beforeFail.browserVoiceCalls && st.note) break;
+  }
   const fellBack = await state();
   check("a genuinely failing server voice still falls back to the browser voice",
-    fellBack.browserVoiceCalls > beforeFail.browserVoiceCalls, JSON.stringify({ before: beforeFail.browserVoiceCalls, after: fellBack.browserVoiceCalls }));
+    fellBack.browserVoiceCalls > beforeFail.browserVoiceCalls,
+    JSON.stringify({ before: beforeFail.browserVoiceCalls, after: fellBack.browserVoiceCalls,
+      onBefore: beforeFail.on, onAfter: fellBack.on, upstream: upstreamHits, err: fellBack.err,
+      samples }));
   check("and the fallback says so (the operator is not silently switched)",
     fellBack.note === true, JSON.stringify({ note: fellBack.note }));
   upstreamFail = false;

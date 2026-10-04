@@ -27,7 +27,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit } from "./state";
-import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useVoicePrefs } from "./voice";
+import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { splitSentences } from "./speech";
 import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
 import {
@@ -77,9 +77,12 @@ function charCount(text: string): number {
   return [...text].length;
 }
 
-/** How many sentences ahead of the one playing the reader asks for. Two: one is exactly the next
- *  sentence, so if that request lands late the one after it still buys no time. */
-const PREFETCH_SENTENCES = 2;
+/** How many sentences ahead of the one playing the reader asks for. ONE, not two: the provider
+ *  accepts three clips at once (measured), so two sentences of speculation can hold every slot and
+ *  make the clip the reader needs wait for a speculative one to land — the same stall, wearing a
+ *  different hat. The next sentence is also the only one that matters: it is the boundary the
+ *  operator hears. */
+const PREFETCH_SENTENCES = 1;
 
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
 export function CallMode({ sessionId, onClose, onKeyboard }: {
@@ -88,6 +91,10 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   onKeyboard: () => void;
 }): JSX.Element {
   const [prefs] = useVoicePrefs();
+  // Why the voice changed: the speaker records a note when the server voice fails for a sentence and
+  // the browser reads it instead. It used to be rendered only in the composer, i.e. never while a call
+  // was up — so the operator heard the voice change with no explanation anywhere.
+  const spoken = useSpeaker();
   const [phase, setPhase] = useState<CallPhase>("connecting");
   const [muted, setMuted] = useState(false);
   const [err, setErr] = useState("");
@@ -721,6 +728,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         {heard ? <p className="call-heard">{heard}</p> : null}
         {reply ? <p className="call-reply">{reply}</p> : null}
         {err ? <p className="call-err">{err}</p> : null}
+        {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
         {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
       </div>
 

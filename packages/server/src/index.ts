@@ -476,7 +476,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         res.writeHead(200, { "content-type": contentType, "content-length": String(audio.length), "cache-control": "no-store" });
         return res.end(audio);
       } catch (e) {
-        if (e instanceof VoiceError) return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
+        if (e instanceof VoiceError) {
+          // Leave a trace, or the only symptom is a voice that changed mid-reply (the client falls
+          // back to the browser voice for that sentence). Measured cause so far: 429
+          // Throttling.RateQuota from 百炼 when more than three clips are asked for at once.
+          console.error(`[agentslot] tts failed: ${e.code} ${e.message.slice(0, 160)}`);
+          return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
+        }
         throw e;
       }
     }

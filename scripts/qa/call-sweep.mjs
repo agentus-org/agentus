@@ -58,20 +58,39 @@ let upstreamHits = 0;
 const ttsBodies = [];
 /** arrival time of each TTS request: the call's cross-sentence gap is a timing question. */
 const ttsStarts = [];
+/** Set to a piece of text to make the stub REFUSE the first request containing it — exactly what the
+ *  provider does when too many clips are asked for at once (502 + Throttling.RateQuota). The block that
+ *  proves a refused clip is re-asked (instead of being read by the browser voice) turns it on. */
+let throttleOnceFor = "";
+let throttled = 0;
+/** {start,end} per request: the concurrency quota is the whole point, so the sweep has to be able to
+ *  see how many requests were really in flight at the same time. */
+const ttsSpans = [];
 const stub = http.createServer((req, res) => {
   if (req.method === "POST" && String(req.url).startsWith("/audio/speech")) {
     upstreamHits++;
     ttsStarts.push(Date.now());
+    const startedAt = Date.now();
     let raw = "";
     req.on("data", (d) => { raw += String(d); });
     req.on("end", () => {
+      let input = "";
       try {
         const body = JSON.parse(raw);
-        ttsBodies.push(String(body?.input ?? ""));
+        input = String(body?.input ?? "");
+        ttsBodies.push(input);
       } catch { /* not json: not our business */ }
+      if (throttleOnceFor && input.includes(throttleOnceFor) && throttled === 0) {
+        throttled++;
+        ttsSpans.push({ start: startedAt, end: Date.now(), throttled: true });
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: 'dashscope tts 429: {"code":"Throttling.RateQuota"}', code: "upstream" }));
+        return;
+      }
       setTimeout(() => {
         res.writeHead(200, { "content-type": "audio/wav", "content-length": String(clip.length) });
         res.end(clip);
+        ttsSpans.push({ start: startedAt, end: Date.now(), throttled: false });
       }, 700);
     });
     return;
@@ -423,6 +442,11 @@ try {
     // threshold is only observable if something is making a sound
     window.__asFeed = { level: 0, text: '', interim: '' };
     window.__frames = [];
+    window.__bvoice = [];
+    if (window.speechSynthesis) {
+      const _sp = window.speechSynthesis.speak.bind(window.speechSynthesis);
+      window.speechSynthesis.speak = (u) => { window.__bvoice.push(String((u && u.text) || "").slice(0, 40)); return _sp(u); };
+    }
     const rawSend = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
       try { window.__frames.push(JSON.parse(String(data))); } catch { /* not json */ }
@@ -891,6 +915,43 @@ try {
     JSON.stringify({ at: hitsAtHangup, now: ttsBodies.length, tail: ttsBodies.slice(-2) }));
   check("…and the call is really gone", (await ev2(`!document.querySelector('.call-mode')`)) === true);
   await feed(0, "");
+
+  // ---- 限流不能换嗓子 ---------------------------------------------------------------------------
+  // 实测（同一把百炼 key，20 字句子）：并发 1 → 1/1 成功；并发 3 → 3/3；并发 6 → 3/6，其余 502
+  // `Throttling.RateQuota`（0.15 s 内拒绝）。所以两件事都要成立：客户端在飞请求不超过配额，被拒的
+  // 那一块要**重问**，而不能让那一句改由浏览器语音念（用户听到的就是"播到一半换成浏览器语音"）。
+  // stub 只拒一次，先把触发条件建立起来再断言。
+  const THROTTLE_PROMPT = "限流标记M1这句话够长一点。第二句也要足够长才不会被粘到别的句子上去。"
+    + "接下来这一句特别长，是为了让它必须被切成两块以上送给服务端合成，别管内容通不通顺，只要够长就够了，"
+    + "长到八十个字往上，这样一句就会发两个请求，正好把并发顶到配额上面去。最后一句收尾。";
+  throttleOnceFor = "限流标记M1这句话够长一点";
+  throttled = 0;
+  const spansFrom = ttsSpans.length;
+  const bodiesFrom2 = ttsBodies.length;
+  await ev2(`window.__bvoice.length = 0; true`);
+  // 那句"特别长"的是故意的：超过 80 字的一句会被切成两块，于是"当前句的两块 + 后面两句的预取"就会把
+  // 并发顶到配额以上 —— 这正是用户听到换嗓子的那个条件。
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, { text: THROTTLE_PROMPT });
+  for (let i = 0; i < 40; i++) { await sleep(250); if (await busyOf(slow2.id)) break; }
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]')?.click(); true`);
+  await waitPhase2("speaking", 30000);
+  for (let i = 0; i < 60; i++) { await sleep(500); if (!(await busyOf(slow2.id)) && (await phase2()) !== "speaking") break; }
+  const spans = ttsSpans.slice(spansFrom);
+  let maxInFlight = 0;
+  for (const a of spans) maxInFlight = Math.max(maxInFlight, spans.filter((b) => b.start <= a.start && b.end >= a.start).length);
+  check("the client never asks the provider for more clips at once than its quota allows",
+    spans.length > 1 && maxInFlight <= 3, JSON.stringify({ requests: spans.length, maxInFlight }));
+  check("the stub really refused a clip (the trigger is established)", throttled === 1, `throttled=${throttled}`);
+  const markerAsks = ttsBodies.slice(bodiesFrom2).filter((b) => b.includes(throttleOnceFor)).length;
+  // The mock echoes the prompt twice, so the marker's own clip is asked for twice by the reading
+  // itself — a third request can only be the RETRY of the refused one. (Measured: 3 with the retry,
+  // 2 without it, which is why the bound is 3 and not 2.)
+  check("a refused clip is re-asked instead of costing that sentence its voice", markerAsks >= 3,
+    `requests carrying the marker=${markerAsks}（2 次是回复里两处引用，第 3 次才是重问）`);
+  const bvoice = await ev2(`window.__bvoice`);
+  check("…and nothing was read by the browser voice", bvoice.length === 0, JSON.stringify(bvoice.slice(0, 3)));
+  await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);
+  await sleep(400);
 
   // persistence: wipe the browser's copy and reload — the numbers come back from the server
   await closeSheet();

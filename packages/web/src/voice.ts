@@ -147,6 +147,55 @@ const SPEAK_AHEAD = 2;
  *  sentence is up to three 80-char chunks, so six was one sentence short of useless. */
 const PRE_CACHE_MAX = 12;
 
+/** How many clips the PROVIDER will accept at once — and why this has to be enforced here instead of
+ *  hoped for. Measured 2026-10-04 against the same 百炼 key with a 20-character sentence: 1 in flight
+ *  → 1/1 ok, 3 in flight → 3/3 ok, 6 in flight → 3/6 ok with 502 `Throttling.RateQuota` after ~0.15 s.
+ *  The prefetch pipeline that removed the inter-sentence silence therefore buys its silence back as a
+ *  FAILED clip — and a failed clip is what made a whole sentence fall back to the browser voice
+ *  ("播到一半换成浏览器语音了"). Bound it, and the failure stops happening. */
+const TTS_IN_FLIGHT = 3;
+/** A clip that failed is re-asked in place: one extra round trip beats changing voice mid-reply. */
+const TTS_RETRIES = 2;
+const TTS_RETRY_MS = 400;
+/** A clip the reader needs NOW must not queue behind a speculative one for a sentence two later —
+ *  that would be the same stall in a new costume. */
+export const TTS_PRIORITY_NOW = 0;
+export const TTS_PRIORITY_AHEAD = 1;
+
+interface TtsWaiter { priority: number; run: () => void }
+let ttsInFlight = 0;
+const ttsQueue: TtsWaiter[] = [];
+
+/** Hold one of the provider's slots for the duration of `fn`. A released slot is handed straight to
+ *  the next waiter (never freed first — that would let a newcomer overtake the queue). Waiting is
+ *  abortable: a call that stops must not leave a request stuck for a slot it will never use. */
+async function withTtsSlot<T>(priority: number, signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  if (ttsInFlight >= TTS_IN_FLIGHT) {
+    await new Promise<void>((resolve, reject) => {
+      const mine: TtsWaiter = { priority, run: resolve };
+      ttsQueue.push(mine);
+      ttsQueue.sort((a, b) => a.priority - b.priority);
+      const drop = (): void => {
+        const at = ttsQueue.indexOf(mine);
+        if (at >= 0) ttsQueue.splice(at, 1);
+        reject(new SpeechStopped());
+      };
+      if (signal) {
+        if (signal.aborted) drop();
+        else signal.addEventListener("abort", drop, { once: true });
+      }
+    });
+  }
+  ttsInFlight++;
+  try {
+    return await fn();
+  } finally {
+    const next = ttsQueue.shift();
+    if (next) next.run();
+    else ttsInFlight--;
+  }
+}
+
 export function splitForSpeech(text: string, max = BROWSER_CHUNK): string[] {
   const clean = text
     .replace(/```[\s\S]*?```/g, " code block ") // never read code aloud
@@ -414,7 +463,7 @@ class Speaker {
       }
       // Server voice failed: the browser can still read it. Say so once, then do it.
       if (prefs.serverTts && browserSpeechAvailable()) {
-        this.#set({ note: `server voice failed (${String((e as Error)?.message ?? e)}), using the browser voice` });
+        this.#set({ note: `服务端语音这一句失败了（${String((e as Error)?.message ?? e)}），已改用浏览器语音` });
         try {
           await this.#speakBrowser(chunks, prefs, ctrl.signal);
           return;
@@ -456,9 +505,9 @@ class Speaker {
     }
   }
 
-  /** One chunk of audio from the server (no caching, no playback). */
-  #fetchAudio(text: string, prefs: VoicePrefs, signal?: AbortSignal): Promise<Blob> {
-    return (async () => {
+  /** One chunk of audio from the server, holding one of the provider's slots. */
+  #fetchOnce(text: string, prefs: VoicePrefs, signal: AbortSignal | undefined, priority: number): Promise<Blob> {
+    return withTtsSlot(priority, signal, async () => {
       const res = await fetch("/api/tts", {
         method: "POST",
         credentials: "same-origin",
@@ -471,7 +520,26 @@ class Speaker {
         throw new Error(detail.error ?? `tts ${res.status}`);
       }
       return await res.blob();
-    })();
+    });
+  }
+
+  /** A clip that failed is re-asked in place. A throttled PREFETCH used to be remembered as a failed
+   *  promise, so the sentence it belonged to fell back to the browser voice even though the service was
+   *  healthy again by the time the clip was needed — one extra round trip is far better than a voice
+   *  that changes in the middle of a reply. */
+  async #fetchAudio(text: string, prefs: VoicePrefs, signal?: AbortSignal, priority = TTS_PRIORITY_NOW): Promise<Blob> {
+    let last: unknown = null;
+    for (let attempt = 0; attempt <= TTS_RETRIES; attempt++) {
+      if (signal?.aborted) throw new SpeechStopped();
+      try {
+        return await this.#fetchOnce(text, prefs, signal, priority);
+      } catch (e) {
+        if (e instanceof SpeechStopped || (e as Error)?.name === "AbortError" || signal?.aborted) throw e;
+        last = e;
+        if (attempt < TTS_RETRIES) await new Promise((r) => { window.setTimeout(r, TTS_RETRY_MS * (attempt + 1)); });
+      }
+    }
+    throw last instanceof Error ? last : new Error(String(last));
   }
 
   /** Audio that was generated ahead of time, keyed by rate + voice + text. Invalidating on
@@ -493,7 +561,7 @@ class Speaker {
     for (const chunk of splitForSpeech(body, SERVER_CHUNK)) {
       const key = this.#preKey(chunk, prefs);
       if (this.#pre.has(key)) continue;
-      const p = this.#fetchAudio(chunk, prefs);
+      const p = this.#fetchAudio(chunk, prefs, undefined, TTS_PRIORITY_AHEAD);
       p.catch(() => { /* awaited later if it is needed; a stray prefetch must not warn */ });
       this.#pre.set(key, p);
       while (this.#pre.size > PRE_CACHE_MAX) {
@@ -514,9 +582,12 @@ class Speaker {
       const hit = this.#pre.get(key);
       if (hit) {
         this.#pre.delete(key);
-        return hit;
+        // A prefetch can have been throttled while it was generated AHEAD of time, in which case it is
+        // remembered as a failed promise — the service may well be healthy by the time the clip is
+        // needed. Re-ask (bounded) rather than letting this sentence change voice.
+        return hit.catch(() => this.#fetchAudio(text, prefs, signal, TTS_PRIORITY_NOW));
       }
-      const p = this.#fetchAudio(text, prefs, signal);
+      const p = this.#fetchAudio(text, prefs, signal, TTS_PRIORITY_NOW);
       p.catch(() => { /* awaited below: the catch here only marks it handled */ });
       return p;
     };
