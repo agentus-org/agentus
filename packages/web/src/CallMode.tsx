@@ -307,6 +307,11 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     void (async () => {
       while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
         const sentence = queueRef.current.shift() as string;
+        // Generate the NEXT sentence while this one plays. Sequentially, the call went silent
+        // between sentences for as long as the next one took to synthesise and arrive
+        // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
+        const next = queueRef.current[0];
+        if (next) speaker.prefetch(next, prefs);
         await speaker.speak(sentence, "call", prefs);
         // barged in, hung up, or the call is gone: never hand another sentence to the speaker
         if (!aliveRef.current || phaseRef.current !== "speaking") break;

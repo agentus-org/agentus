@@ -57,11 +57,23 @@ const CLIP_SECONDS = 2;   // longer than the stop window, short enough to settle
 const UPSTREAM_DELAY_MS = 1200;   // long enough to press stop WHILE the fetch is in flight
 const clip = wav(CLIP_SECONDS);
 let upstreamHits = 0;
+/** when each request arrived, and what it asked for: "are chunks requested AHEAD of the
+ *  playback" and "is a chunk a sentence or a 220-character block" are both questions about
+ *  these two arrays (they are what the operator experiences as speed). */
+const ttsStarts = [];
+const ttsTexts = [];
 let upstreamFail = false;          // flip on to prove the REAL failure path still falls back
 
 const stub = http.createServer((req, res) => {
   if (req.method === "POST" && String(req.url).startsWith("/audio/speech")) {
     upstreamHits++;
+    ttsStarts.push(Date.now());
+    const chunks = [];
+    req.on("data", (d) => chunks.push(d));
+    req.on("end", () => {
+      try { ttsTexts.push(String(JSON.parse(Buffer.concat(chunks).toString("utf8"))?.input ?? "")); }
+      catch { /* not json */ }
+    });
     req.resume();
     req.on("end", () => setTimeout(() => {
       if (upstreamFail) { res.writeHead(500, { "content-type": "application/json" }); res.end('{"error":"stub upstream down"}'); return; }
@@ -230,13 +242,29 @@ try {
   check("no fallback note is shown for a deliberate stop", afterB.note === false, JSON.stringify(afterB));
 
   // ---- C: a clip left alone still ends by itself (the fix must not break normal playback)
+  // The budget is generous on purpose: the server path chunks at SENTENCE size now, so this
+  // reply is ~11 requests, and the stub returns a FIXED-length clip for each of them (a real
+  // provider returns audio proportional to the text, so its total duration is unchanged). If
+  // this ever times out the reading is still playing, and D's click would only STOP it — which
+  // is exactly how three checks failed once.
   await trustedClick(".bubble-btn.speak");
   const ended = await (async () => {
-    for (let i = 0; i < 30; i++) { await sleep(500); if (!(await state()).on) return true; }
+    for (let i = 0; i < 90; i++) { await sleep(500); if (!(await state()).on) return true; }
     return false;
   })();
   check("an untouched clip plays to the end and clears its own state", ended, `upstream=${upstreamHits}`);
   check("the server endpoint was actually used", upstreamHits >= 3, `hits=${upstreamHits}`);
+  // Two complaints hide in "播报很慢", and both are measurable here:
+  //   · sequentially the next chunk was requested only AFTER the current one finished playing
+  //     (a full round trip of silence between sentences);
+  //   · a chunk used to be up to 220 characters, so the first sound waited for ~2 MB of audio.
+  let closest = Infinity;
+  for (let i = 1; i < ttsStarts.length; i++) closest = Math.min(closest, ttsStarts[i] - ttsStarts[i - 1]);
+  check("chunks are requested AHEAD of the playback (the next one is already in flight)",
+    closest < 800, `closest gap=${closest}ms over ${ttsStarts.length} requests`);
+  const longest = ttsTexts.reduce((m, t) => Math.max(m, t.length), 0);
+  check("a request is a SENTENCE-sized chunk (≤ 80 chars), so the first sound starts fast",
+    longest > 0 && longest <= 80, `longest=${longest} chars over ${ttsTexts.length} requests`);
 
   // ---- D: the fallback must survive the fix — a REAL upstream failure still speaks
   // (this is the guard rail for the change: "stop is not a failure" must not swallow errors)

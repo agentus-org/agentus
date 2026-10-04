@@ -132,7 +132,21 @@ export function subscribeVoiceCaps(fn: () => void): () => void {
 
 /** Text is spoken in sentence-sized pieces: one huge utterance is both unreliable
  *  (browsers truncate) and unstoppable mid-way. */
-export function splitForSpeech(text: string, max = 220): string[] {
+/** Chunk size for the SERVER path. Measured against a real 百炼 endpoint (2026-10-04):
+ *  a 19-character sentence came back as 86 KB of wav in 0.5 s, 114 characters as 1.07 MB in
+ *  3.3 s. So the first sound should wait for one SENTENCE, not for a 220-character block, and
+ *  the extra requests cost nothing once they are prefetched (the audio is played while the
+ *  next one is generated). The browser voice keeps the larger blocks: every utterance it
+ *  starts has its own overhead. */
+const SERVER_CHUNK = 80;
+const BROWSER_CHUNK = 220;
+/** How many TTS requests may be in flight: the next chunk is being generated and transferred
+ *  while the current one plays, which is what removes the silence BETWEEN sentences. */
+const SPEAK_AHEAD = 2;
+/** Prefetched chunks kept (the operator is one sentence ahead at most; audio is small). */
+const PRE_CACHE_MAX = 6;
+
+export function splitForSpeech(text: string, max = BROWSER_CHUNK): string[] {
   const clean = text
     .replace(/```[\s\S]*?```/g, " code block ") // never read code aloud
     .replace(/[*_`#>|]/g, " ")
@@ -379,13 +393,14 @@ class Speaker {
     this.stop();                       // stops playback AND marks the previous run stopped
     const run = ++this.#run;           // this run's token: stale runs must not write state
     this.#stopped = false;
-    const chunks = splitForSpeech(body);
+    const onServer = prefs.serverTts && voiceCaps().tts.server;
+    const chunks = splitForSpeech(body, onServer ? SERVER_CHUNK : BROWSER_CHUNK);
     if (!chunks.length) return;
     const ctrl = new AbortController();   // one controller for the whole utterance
     this.#abort = ctrl;
     this.#set({ error: "", note: "", speakingId: id, speaking: true });
     try {
-      if (prefs.serverTts && voiceCaps().tts.server) {
+      if (onServer) {
         await this.#speakServer(chunks, prefs, ctrl.signal);
       } else {
         await this.#speakBrowser(chunks, prefs, ctrl.signal);
@@ -440,21 +455,76 @@ class Speaker {
     }
   }
 
-  async #speakServer(chunks: string[], prefs: VoicePrefs, signal: AbortSignal): Promise<void> {
-    for (const chunk of chunks) {
-      if (signal.aborted) throw new SpeechStopped();
+  /** One chunk of audio from the server (no caching, no playback). */
+  #fetchAudio(text: string, prefs: VoicePrefs, signal?: AbortSignal): Promise<Blob> {
+    return (async () => {
       const res = await fetch("/api/tts", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
         signal,
-        body: JSON.stringify({ text: chunk, speed: prefs.rate }),
+        body: JSON.stringify({ text, speed: prefs.rate }),
       });
       if (!res.ok) {
-        const detail = await res.json().catch(() => ({ error: `${res.status}` })) as { error?: string };
+        const detail = (await res.json().catch(() => ({ error: `${res.status}` }))) as { error?: string };
         throw new Error(detail.error ?? `tts ${res.status}`);
       }
-      await playBlob(await res.blob(), signal);
+      return await res.blob();
+    })();
+  }
+
+  /** Audio that was generated ahead of time, keyed by rate + voice + text. Invalidating on
+   *  voice/rate means a settings change can never be heard as the previous voice. */
+  #pre = new Map<string, Promise<Blob>>();
+
+  #preKey(text: string, prefs: VoicePrefs): string {
+    return `${prefs.rate}|${voiceCaps().tts.voice ?? ""}|${text}`;
+  }
+
+  /** Generate the audio for something that is about to be spoken — the CALL uses this on the
+   *  next sentence while the current one is playing, which is where its inter-sentence silence
+   *  came from. Deliberately not tied to a run's AbortSignal: the cache outlives the sentence
+   *  that happened to ask for it. */
+  prefetch(text: string, prefs: VoicePrefs): void {
+    if (!(prefs.serverTts && voiceCaps().tts.server)) return;   // the browser voice fetches nothing
+    const body = String(text ?? "").trim();
+    if (!body) return;
+    for (const chunk of splitForSpeech(body, SERVER_CHUNK)) {
+      const key = this.#preKey(chunk, prefs);
+      if (this.#pre.has(key)) continue;
+      const p = this.#fetchAudio(chunk, prefs);
+      p.catch(() => { /* awaited later if it is needed; a stray prefetch must not warn */ });
+      this.#pre.set(key, p);
+      while (this.#pre.size > PRE_CACHE_MAX) {
+        const oldest = this.#pre.keys().next().value;
+        if (oldest === undefined) break;
+        this.#pre.delete(oldest);
+      }
+    }
+  }
+
+  /** Chunks are requested AHEAD of the playback: sequentially, the cost of the next sentence
+   *  (generate + transfer + decode) was paid as silence BETWEEN them, which measured 0.5–3.3 s
+   *  per gap and is what "播报很慢" actually was. */
+  async #speakServer(chunks: string[], prefs: VoicePrefs, signal: AbortSignal): Promise<void> {
+    const queue: Promise<Blob>[] = [];
+    const take = (text: string): Promise<Blob> => {
+      const key = this.#preKey(text, prefs);
+      const hit = this.#pre.get(key);
+      if (hit) {
+        this.#pre.delete(key);
+        return hit;
+      }
+      const p = this.#fetchAudio(text, prefs, signal);
+      p.catch(() => { /* awaited below: the catch here only marks it handled */ });
+      return p;
+    };
+    for (let i = 0; i < chunks.length; i++) {
+      if (signal.aborted) throw new SpeechStopped();
+      while (queue.length < Math.min(SPEAK_AHEAD, chunks.length - i)) {
+        queue.push(take(chunks[i + queue.length]));
+      }
+      await playBlob(await (queue.shift() as Promise<Blob>), signal);
       if (signal.aborted) throw new SpeechStopped();
     }
   }

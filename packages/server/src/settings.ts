@@ -138,7 +138,11 @@ const DEFAULTS: VoiceSettings = {
   asrStream: true,
   ttsModel: "qwen-audio-3.0-tts-flash",
   ttsVoice: "longanhuan_v3.6",
-  ttsFormat: "wav",
+  // mp3, not wav: measured on a real endpoint, the same 84-character reply is 664 KB of wav
+  // versus 193 KB of mp3 (and 154 KB vs 37 KB for one sentence). The operator is often on a
+  // phone or through a tunnel, where those bytes are the wait. Still a setting: wav is one
+  // click away for anyone who wants it.
+  ttsFormat: "mp3",
   hotwords: [],
   dynamicHotwords: true,
   hotwordLimit: 30,

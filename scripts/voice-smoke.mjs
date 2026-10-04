@@ -211,6 +211,10 @@ try {
   check("default provider is 百炼, unconfigured", s0.body?.provider === "dashscope" && s0.body?.apiKeySet === false, `provider=${s0.body?.provider} keySet=${s0.body?.apiKeySet}`);
   check("default ASR models are the 百炼 ones", s0.body?.asrModel === "qwen-audio-3.1-asr-flash-streaming" && s0.body?.asrBatchModel === "qwen3-asr-flash");
   check("default TTS voice is 龙安欢", s0.body?.ttsVoice === "longanhuan_v3.6" && s0.body?.ttsModel === "qwen-audio-3.0-tts-flash");
+  // mp3, not wav: the same 84-character reply measured 664 KB of wav versus 193 KB of mp3, and
+  // the operator is often on a phone or through a tunnel where those bytes are the wait.
+  check("the shipped synthesis format is mp3 (wav is 3× the bytes for the same audio)",
+    s0.body?.defaults?.ttsFormat === "mp3", `ttsFormat=${s0.body?.ttsFormat}`);
   check("settings body carries no key material", !/sk-/.test(JSON.stringify(s0.body)), "");
 
   const caps0 = await get("/api/voice");
@@ -348,7 +352,9 @@ try {
   const ttsEnvBytes = Buffer.from(await ttsEnv.arrayBuffer());
   check("百炼 TTS: the synthesizer is called and its audio URL is fetched", ttsEnv.status === 200 && ttsEnvBytes.toString("utf8").startsWith("RIFF"), `${ttsEnv.status} ${ttsEnvBytes.length}B`);
   const synthBody = seen.ttsBodies[seen.ttsBodies.length - 1] ?? "";
-  check("百炼 TTS body carries model + voice + format", /qwen-audio-3\.0-tts-flash/.test(synthBody) && /longanhuan_v3\.6/.test(synthBody) && /"format":"wav"/.test(synthBody), synthBody.slice(0, 130));
+  // mp3 since 2026-10-04 (the same audio measured 2.4x smaller than wav); the assertion is the
+  // shipped default, and the settings check above pins `defaults.ttsFormat` to the same value.
+  check("百炼 TTS body carries model + voice + format", /qwen-audio-3\.0-tts-flash/.test(synthBody) && /longanhuan_v3\.6/.test(synthBody) && /"format":"mp3"/.test(synthBody), synthBody.slice(0, 130));
 
   const sttEnv = await fetch(`${base2}/api/stt`, { method: "POST", headers: { ...H2, "content-type": "audio/wav" }, body: Buffer.from("RIFFfake-input") });
   const sttEnvBody = await sttEnv.json();

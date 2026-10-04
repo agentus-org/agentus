@@ -56,9 +56,12 @@ let upstreamHits = 0;
 /** every text the app asked the TTS to say, in order: "what came out of the speaker" is the
  *  thing two of these checks are about (the old reply, and the call's own sentences). */
 const ttsBodies = [];
+/** arrival time of each TTS request: the call's cross-sentence gap is a timing question. */
+const ttsStarts = [];
 const stub = http.createServer((req, res) => {
   if (req.method === "POST" && String(req.url).startsWith("/audio/speech")) {
     upstreamHits++;
+    ttsStarts.push(Date.now());
     let raw = "";
     req.on("data", (d) => { raw += String(d); });
     req.on("end", () => {
@@ -740,6 +743,11 @@ try {
   await ev2(`document.querySelector('button[aria-label="开始语音通话"]')?.click(); true`);
   check("the call is reading a multi-sentence answer (a queue exists to leak)",
     await waitPhase2("speaking", 30000), `phase=${await phase2()}`);
+  await sleep(1200);
+  let closestGap = Infinity;
+  for (let i = 1; i < ttsStarts.length; i++) closestGap = Math.min(closestGap, ttsStarts[i] - ttsStarts[i - 1]);
+  check("the call synthesises the NEXT sentence while the current one plays (no silence between)",
+    closestGap < 900, `closest gap=${closestGap}ms over ${ttsStarts.length} requests`);
   await sleep(400);                          // the first sentence reaches the TTS first
   const hitsAtHangup = ttsBodies.length;
   await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);
