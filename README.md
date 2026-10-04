@@ -261,6 +261,11 @@ to your production memory daemon), and `.env` copied 0600.
   cases** (transcripts whose process exited;
   click to respawn + `loadSession` resume, re-applying the stored permission mode/effort),
   with search across both by title / backend / cwd
+- **sessions name themselves**: the agent's own title (ACP `session_info_update` — Hermes
+  generates one in the turn prologue) is adopted as-is, and a backend that never sends one
+  still gets a name derived from the first prompt (first line, markdown stripped, ≤50 chars);
+  the menu's **重新生成会话名** asks the agent to name the conversation from its CURRENT
+  content, on a throwaway `session/fork`, so the session's own transcript is untouched
 - streaming render of `agent_message_chunk` / `agent_thought_chunk`, tool calls
   (upserted by `toolCallId`, never appended), plan updates, usage. A tool call is one
   compact line — status dot, truncated title, chevron — and shows the full name, kind,
@@ -351,8 +356,16 @@ The UI says **session** everywhere (the rail, the empty state, the dialogs). "Sl
 only the project's name — the concept an operator works with is a session, and the
 product may well be renamed; nothing in the interface leans on the metaphor.
 
+Names have two layers: `title` is what the rail shows, `auto_title` is the generated name it
+falls back to. A generated name (the agent's, or ours derived from the first prompt) never
+overwrites a hand-written one; clearing a rename restores it; and an explicit
+**重新生成会话名** replaces it on purpose. Regeneration goes through the agent, not through a
+model of our own: we fork the session, the fork summarises the copied history, and the fork is
+discarded — our layer still holds no intelligence (red line D).
+
 Session actions live on a per-session menu (⋯ / right-click / phone long-press):
-rename (in place, reversible), fork, workspace, **export**
+rename (in place, reversible — clearing it restores the generated name), **regenerate the
+name from the current conversation**, fork, workspace, **export**
 (`GET /api/sessions/:id/export?format=md|json` — rendered from our own persisted
 transcript, so an archived session exports without waking the agent; ACP itself has
 no export concept), copy id, archive (= close: process exits, record kept) and,
