@@ -1,6 +1,7 @@
 // SQLite persistence via node:sqlite (Node >=22.5, zero deps).
 // Design: sessions row carries `pid` (orphan-reclaim anchor, AC5);
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
+import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { BackendId, SessionStatus, StoredMessage } from "@agentslot/shared";
 
@@ -93,7 +94,18 @@ export class Store {
       create table if not exists model_context (
         model_id text primary key, context_limit integer not null, updated_at integer not null
       );
+      -- Operator settings (voice / theme / call / prefs), one row per section, as JSON. They
+      -- used to be a 0600 file beside the DB; anything the operator changes belongs in the
+      -- store, not in a browser's localStorage (that copy is a first-frame mirror only).
+      create table if not exists settings (
+        key text primary key, value text not null, updated_at integer not null
+      );
     `);
+    // The DB now holds the speech endpoint's key, so it is the operator's secret material:
+    // 0600 like the file it replaced (a default 0644 sqlite file would be a downgrade).
+    try {
+      fs.chmodSync(path, 0o600);
+    } catch { /* someone else's filesystem: nothing to tighten */ }
     // additive migration: mode/config persistence for resume (M4-lite)
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
@@ -360,6 +372,39 @@ export class Store {
     } else {
       this.#db.prepare("delete from model_context where model_id = ?").run(modelId);
     }
+  }
+
+  /** One settings section (voice / theme / call / prefs). A missing key means "nothing
+   *  stored yet", which settings.ts turns into the defaults. */
+  getSetting(key: string): unknown {
+    const row = this.#db.prepare("select value from settings where key = ?").get(key) as { value?: string } | undefined;
+    if (!row?.value) return null;
+    try {
+      return JSON.parse(row.value) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  setSetting(key: string, value: unknown): void {
+    this.#db
+      .prepare(
+        `insert into settings (key, value, updated_at) values (?, ?, ?)
+         on conflict(key) do update set value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(key, JSON.stringify(value ?? null), Date.now());
+  }
+
+  /** Every stored section at once (the settings payload is read as one object). */
+  listSettings(): Record<string, unknown> {
+    const rows = this.#db.prepare("select key, value from settings").all() as { key: string; value: string }[];
+    const out: Record<string, unknown> = {};
+    for (const r of rows) {
+      try {
+        out[r.key] = JSON.parse(r.value) as unknown;
+      } catch { /* unreadable row: treated as absent */ }
+    }
+    return out;
   }
 
   listModelLimits(): { modelId: string; limit: number }[] {

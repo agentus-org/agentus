@@ -18,7 +18,7 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
-import { initSettings, publicSettings, saveCall, saveSettings, saveTheme } from "./settings.js";
+import { initSettings, publicSettings, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
 
@@ -84,9 +84,10 @@ function emit(evt: ServerEvent): void {
 
 const mgr = new SessionManager(store, emit);
 
-// Operator settings (voice, theme) live in a 0600 JSON next to the store: the settings
-// page owns them and env only bootstraps them (settings.ts). Read before anything asks.
-initSettings(DATA_DIR);
+// Operator settings (voice, theme, call knobs, talk-to-agent prefs) live in the store's
+// `settings` table: the UI owns them and env only bootstraps them (settings.ts). Read
+// before anything asks.
+initSettings(DATA_DIR, store);
 // Dynamic hotwords are mined from the transcript — the store's business, not voice.ts's,
 // so the lookup is injected rather than imported.
 setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word));
@@ -429,7 +430,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (body.voice && typeof body.voice === "object") saveSettings(body.voice as Record<string, unknown>);
         if (body.theme && typeof body.theme === "object") saveTheme(body.theme as Record<string, unknown>);
         if (body.call && typeof body.call === "object") saveCall(body.call as Record<string, unknown>);
-        if (!body.voice && !body.theme && !body.call) saveSettings(body);
+        if (body.prefs && typeof body.prefs === "object") savePrefs(body.prefs as Record<string, unknown>);
+        if (!body.voice && !body.theme && !body.call && !body.prefs) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
         return send(res, 400, { error: String((e as Error)?.message ?? e) });

@@ -15,6 +15,17 @@ import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+
+/** Killing the `tsx` WRAPPER is not killing the server: tsx runs the app as its own child, and
+ *  a bare SIGKILL to the wrapper leaves that child listening on a random port for good. That is
+ *  exactly how a couple of hundred dead servers piled up on the dev machine. `detached: true`
+ *  makes the child a process-group leader, so one negative-pid signal takes the whole tree. */
+const killGroup = (target) => {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
+};
+
 const NAME = "agentslot-smoke.test";
 const [PLAIN, TLS, PLAIN_OFF, TLS_OFF] = await freePorts(4);
 const USER = "smoke-op", PASS = "smoke-pass-1";
@@ -46,7 +57,7 @@ function portInUse(port) {
   });
 }
 const CHILDREN = new Set();
-process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } catch { /* already gone */ } } });
 
 
 async function boot(dataDir, extraEnv = {}) {
@@ -55,6 +66,7 @@ async function boot(dataDir, extraEnv = {}) {
       + `(lsof -nP -iTCP:${PLAIN} -sTCP:LISTEN)`);
   }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development",
@@ -164,6 +176,7 @@ try {
   const dir2 = mkdtempSync(path.join(tmpdir(), "agentslot-tls-off-"));
   if (await portInUse(PLAIN_OFF)) throw new Error(`port ${PLAIN_OFF} in use — leaked server?`);
   const off = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
     cwd: ROOT,
     env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(PLAIN_OFF), AGENTSLOT_TLS_PORT: String(TLS_OFF),
       AGENTSLOT_DATA: dir2, HOME: path.join(dir2, "home") },
@@ -180,9 +193,9 @@ try {
     offLog.includes("tls off") && !offListening, offLog.includes("tls off") ? "" : offLog.slice(-200));
   const offCert = await fetch(`http://127.0.0.1:${PLAIN_OFF}/cert.crt`);
   check("no cert ⇒ /cert.crt is a plain 404, not an empty file", offCert.status === 404, `status=${offCert.status}`);
-  off.kill("SIGKILL");
+  killGroup(off);
 } finally {
-  srv.kill("SIGKILL");
+  killGroup(srv);
 }
 console.log(`\n${failed ? `${failed} FAILED` : "TLS SMOKE PASS"}`);
 process.exit(failed ? 1 : 0);

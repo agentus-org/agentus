@@ -18,6 +18,17 @@ import path from "node:path";
 import { createServer as createTcp } from "node:net";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
+
+/** Killing the `tsx` WRAPPER is not killing the server: tsx runs the app as its own child, and
+ *  a bare SIGKILL to the wrapper leaves that child listening on a random port for good. That is
+ *  exactly how a couple of hundred dead servers piled up on the dev machine. `detached: true`
+ *  makes the child a process-group leader, so one negative-pid signal takes the whole tree. */
+const killGroup = (target) => {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
+};
+
 const CDP = "http://127.0.0.1:9222";
 const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentslot/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,14 +53,24 @@ function wav(seconds, freq = 300) {
 }
 const clip = wav(2);
 let upstreamHits = 0;
+/** every text the app asked the TTS to say, in order: "what came out of the speaker" is the
+ *  thing two of these checks are about (the old reply, and the call's own sentences). */
+const ttsBodies = [];
 const stub = http.createServer((req, res) => {
   if (req.method === "POST" && String(req.url).startsWith("/audio/speech")) {
     upstreamHits++;
-    req.resume();
-    req.on("end", () => setTimeout(() => {
-      res.writeHead(200, { "content-type": "audio/wav", "content-length": String(clip.length) });
-      res.end(clip);
-    }, 700));
+    let raw = "";
+    req.on("data", (d) => { raw += String(d); });
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(raw);
+        ttsBodies.push(String(body?.input ?? ""));
+      } catch { /* not json: not our business */ }
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "audio/wav", "content-length": String(clip.length) });
+        res.end(clip);
+      }, 700);
+    });
     return;
   }
   res.writeHead(404); res.end();
@@ -67,6 +88,7 @@ const PORT = await freePort();
 const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-call-"));
 const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
   cwd: ROOT,
   env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTSLOT_PORT: String(PORT), AGENTSLOT_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
@@ -169,7 +191,11 @@ try {
     body: JSON.stringify({ username: ${JSON.stringify(user)}, password: ${JSON.stringify(passw)} }) }); return true; })()`);
   const stubVoice = { provider: "openai", baseUrl: `http://127.0.0.1:${stubPort}`, ttsModel: "stub-tts", ttsVoice: "stub" };
   stubVoice["api" + "Key"] = ["sk-", "stub", "-key"].join("");
-  const settingsBody = JSON.stringify({ voice: stubVoice });
+  // `prefs` is the operator's own setup (read-aloud switch, voice, recogniser) and lives in
+  // the store now, not in the browser. autoRead is deliberately ON: with a call open the CALL
+  // owns the voice, and the checks below would catch it if the auto-read grabbed it back.
+  const prefsBody = { autoRead: true, serverTts: true, stt: "auto", rate: 1, voiceURI: "", lang: "zh-CN" };
+  const settingsBody = JSON.stringify({ voice: stubVoice, prefs: prefsBody });
   const setup = await ev(`(async () => {
     localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(settingsBody)} });
@@ -493,14 +519,18 @@ try {
     return { knobs, card: { l: Math.round(card.left), t: Math.round(card.top), r: Math.round(card.right), b: Math.round(card.bottom) },
       inside: card.left >= -1 && card.right <= innerWidth + 1 && card.top >= -1 && card.bottom <= innerHeight + 1 }; })()`);
   const LABELS = ["抢话灵敏度", "抢话持续时间", "说完停顿", "最少字数"];
-  check("the panel offers exactly the four thresholds, at their defaults",
+  check("the panel offers exactly the four thresholds, at their defaults (灵敏度 60% / 最少字数 3)",
     Boolean(sheet) && sheet.knobs.length === 4
     && sheet.knobs.every((k, i) => k.label === LABELS[i])
-    && sheet.knobs[0].value === 0.2 && sheet.knobs[1].value === 300 && sheet.knobs[2].value === 1200 && sheet.knobs[3].value === 1,
+    && sheet.knobs[0].value === 60 && sheet.knobs[1].value === 300 && sheet.knobs[2].value === 1200 && sheet.knobs[3].value === 3,
     JSON.stringify(sheet?.knobs));
+  check("the default 最少字数 (3) is readable in the panel, and it is the default the server holds",
+    (await knobsNow()).find((k) => k.label === "最少字数")?.shown === "3 字"
+    && (await api("GET", "/api/settings")).body?.callDefaults?.minChars === 3,
+    JSON.stringify((await knobsNow()).find((k) => k.label === "最少字数")));
   check("every slider is draggable and the panel fits the screen",
     Boolean(sheet) && sheet.inside && sheet.knobs.every((k) => k.h >= 30 && k.w >= 180), JSON.stringify(sheet?.card));
-  const typed = await setRange("最少字数", 6);
+  const typed = await setRange("最少字数", 6);   // raise it above the new default of 3
   await sleep(800);
   const savedCall = (await api("GET", "/api/settings")).body?.call;
   check("moving a slider SAVES TO THE SERVER (a threshold is a setting, not a local pref)",
@@ -596,7 +626,7 @@ try {
 
   await openSheet();
   await sleep(300);
-  const insensitive = await setRange("抢话灵敏度", 0.8);      // least sensitive
+  const insensitive = await setRange("抢话灵敏度", 0);        // 0 % = 最迟钝
   await sleep(700);
   await closeSheet();
   await sleep(200);
@@ -610,16 +640,115 @@ try {
 
   await openSheet();
   await sleep(300);
-  const sensitive = await setRange("抢话灵敏度", 0.05);       // most sensitive, applied live
+  const sensitive = await setRange("抢话灵敏度", 100);        // 100 % = 最灵敏, applied live
   await sleep(300);
   const barged = await waitFrames("cancel", cancelsBefore + 1, 3000);
   check("…and at its most sensitive the SAME voice takes the floor immediately (live apply)",
     barged === true, JSON.stringify({ set: sensitive, cancelsBefore, now: await frameCount("cancel") }));
   check("…leaving the call listening for the operator again",
     await waitPhase2("listening", 3000), `phase=${await phase2()}`);
-  const savedBarge = (await api("GET", "/api/settings")).body?.call?.bargeLevel;
-  check("the sensitivity the panel set is what the server holds", savedBarge === 0.05, `bargeLevel=${savedBarge}`);
+  const savedBarge = (await api("GET", "/api/settings")).body?.call?.bargeSensitivity;
+  check("the sensitivity the panel set is what the server holds", savedBarge === 100, `bargeSensitivity=${savedBarge}`);
   fs.writeFileSync(`${SHOTS}/call-settings.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+
+  // ---- 旧回复 / 挂断 / 静音 / 自动朗读：谁在什么时候可以说话 -------------------------------
+  // Four things the operator reported or that the audit turned up, all of them about a call
+  // talking when it should not:
+  //   · a call must read THIS turn's reply, never the previous answer ("回复的时候把上一个问题
+  //     的回复也念了一遍"): the transcript's last agent message is still the old reply while a
+  //     new turn starts, and that is what the call was reading;
+  //   · hanging up must silence it — the sentence queue used to outlive the component
+  //     ("挂断的时候它有时候还在说话");
+  //   · a muted microphone must not send;
+  //   · with 自动朗读 on, the call still owns the voice: the auto-read of the same reply would
+  //     preempt the sentence queue and read the answer again from the top.
+  const OLD = "旧库标记Q1";
+  const NEW = ["新篇标记K1", "新篇标记K2"];
+  await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);      // set up history in peace
+  await feed(0, "");
+  await sleep(400);
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, { text: `${OLD}。这是上一轮的回答内容。` });
+  for (let i = 0; i < 40; i++) { await sleep(250); if (!(await busyOf(slow2.id))) break; }
+  // autoRead is ON, so the app reads that finished reply by itself — wait for the speaker to go
+  // quiet before snapshotting, or its remaining chunks look like the call re-reading it
+  // the stub answers in 700 ms and the speaker requests the next chunk only after that, so a
+  // short "nothing changed" window proves nothing: require 3 s of real quiet.
+  await (async () => {
+    let last = -1, quiet = 0;
+    for (let i = 0; i < 90 && quiet < 6; i++) {
+      if (ttsBodies.length === last) quiet += 1; else quiet = 0;
+      last = ttsBodies.length;
+      await sleep(500);
+    }
+  })();
+  const bodiesFrom = ttsBodies.length;       // anything before this is setup noise
+  check("the setup left a previous reply in the transcript (there is history to re-read)",
+    (await msgsOf(slow2.id)).some((m) => m.kind === "agent" && JSON.stringify(m).includes(OLD)),
+    `history has ${OLD}: false`);
+  await waitEl2('button[aria-label="开始语音通话"]', 8000);
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]')?.click(); true`);
+  check("the call comes up listening on a session that has history",
+    await waitPhase2("listening", 8000), `phase=${await phase2()}`);
+  const promptsBefore3 = await frameCount("prompt");
+  await feed(0.4, `${NEW[0]}。${NEW[1]}。`);
+  await sleep(250);
+  await feed(0, `${NEW[0]}。${NEW[1]}。`);
+  await sleep(2600);                         // long enough that the old code had read the whole previous answer
+  check("asking a question in a call does NOT read the PREVIOUS answer out loud (the report)",
+    !ttsBodies.slice(bodiesFrom).some((b) => b.includes(OLD)),
+    JSON.stringify(ttsBodies.slice(bodiesFrom, bodiesFrom + 3)));
+  const sentNew = await waitFrames("prompt", promptsBefore3 + 1, 5000);
+  const spokeNew = await (async () => {
+    for (let i = 0; i < 40; i++) {           // the reply to THIS question is read as usual
+      if (ttsBodies.slice(bodiesFrom).some((b) => NEW.some((n) => b.includes(n)))) return true;
+      await sleep(300);
+    }
+    return false;
+  })();
+  check("…while the reply to THIS question is read as usual", sentNew === true && spokeNew === true,
+    JSON.stringify({ sentNew, spokeNew, bodies: ttsBodies.length - bodiesFrom }));
+  const newBodies = ttsBodies.slice(bodiesFrom);
+  check("with 自动朗读 on, the call still owns the voice (no request ever holds the whole answer)",
+    !newBodies.some((b) => b.includes(NEW[0]) && b.includes(NEW[1])),
+    JSON.stringify(newBodies.filter((b) => b.includes("新篇")).slice(0, 4)));
+
+  // mute: the microphone is off, so nothing may be sent, however long the silence.
+  // Take the floor back first (a tap is instant) — the reply's markdown tail is long, and a
+  // mute test that runs during `speaking` would pass for the wrong reason (that branch cannot
+  // send at all), which is exactly the vacuous check this sweep is supposed to prevent.
+  await tapOrb2();
+  check("the call is listening before the mute test", await waitPhase2("listening", 6000), `phase=${await phase2()}`);
+  const promptsBefore4 = await frameCount("prompt");
+  await ev2(`document.querySelector('.call-btn[title="静音麦克风"]')?.click(); true`);
+  await sleep(400);
+  await feed(0.4, "这句话在静音时不该发出去。");
+  await sleep(250);
+  await feed(0, "这句话在静音时不该发出去。");
+  await sleep(2600);
+  check("a muted microphone does not auto-send (the loop used to send the stale transcript)",
+    (await frameCount("prompt")) === promptsBefore4 && (await phase2()) === "listening",
+    `prompts=${promptsBefore4} → ${await frameCount("prompt")} phase=${await phase2()}`);
+  await feed(0, "");                         // clear BEFORE unmuting, or it sends on the way back
+  await ev2(`document.querySelector('.call-btn[title="打开麦克风"]')?.click(); true`);
+  await sleep(400);
+
+  // hang up mid-answer: the queue must die with the call
+  await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);
+  await sleep(400);
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, { text: "收尾标记T1。收尾标记T2。收尾标记T3。收尾标记T4。" });
+  for (let i = 0; i < 40; i++) { await sleep(250); if (await busyOf(slow2.id)) break; }
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]')?.click(); true`);
+  check("the call is reading a multi-sentence answer (a queue exists to leak)",
+    await waitPhase2("speaking", 30000), `phase=${await phase2()}`);
+  await sleep(400);                          // the first sentence reaches the TTS first
+  const hitsAtHangup = ttsBodies.length;
+  await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);
+  await sleep(4200);                         // longer than one sentence (stub: 700 ms + a 2 s clip)
+  check("hanging up mid-answer silences the call (the queue does not outlive it)",
+    ttsBodies.length === hitsAtHangup,
+    JSON.stringify({ at: hitsAtHangup, now: ttsBodies.length, tail: ttsBodies.slice(-2) }));
+  check("…and the call is really gone", (await ev2(`!document.querySelector('.call-mode')`)) === true);
+  await feed(0, "");
 
   // persistence: wipe the browser's copy and reload — the numbers come back from the server
   await closeSheet();
@@ -635,7 +764,7 @@ try {
   await sleep(600);
   const afterReload = await knobsNow();
   check("the thresholds come back after a reload with local storage wiped (they live on the server)",
-    afterReload?.find((k) => k.label === "抢话灵敏度")?.value === 0.05
+    afterReload?.find((k) => k.label === "抢话灵敏度")?.value === 100
     && afterReload?.find((k) => k.label === "说完停顿")?.value === 1200
     && afterReload?.find((k) => k.label === "最少字数")?.value === 1,
     JSON.stringify(afterReload));
@@ -660,7 +789,7 @@ try {
   check("sweep ran to completion", false, String(e?.stack ?? e));
 } finally {
   try { await fetch(`${CDP}/json/close/${tab.id}`); } catch { /* gone */ }
-  proc.kill("SIGKILL");
+  killGroup(proc);
   stub.close();
 }
 

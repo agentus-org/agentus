@@ -10,7 +10,7 @@ import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
-  browserDictationAvailable, dictation, loadVoiceCaps, speaker, useAutoRead, useDictation,
+  browserDictationAvailable, dictation, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
@@ -41,6 +41,7 @@ export function App(): JSX.Element {
     if (snap.auth !== "in") return;
     void loadServerTheme();
     void loadServerCallSettings();   // the call panel's knobs live on the server too
+    void loadServerVoicePrefs();     // read-aloud / voice / recogniser: shared across devices
   }, [snap.auth]);
 
   if (snap.auth !== "in") return <AuthScreen />;

@@ -1,16 +1,24 @@
-// Operator settings: one JSON file next to the store, 0600, secrets never echoed back.
+// Operator settings: one row per section in the store's `settings` table, secrets never
+// echoed back.
 //
-// Why a file and not just env: the voice/theme features are configurable from the
-// settings page, and a restart must not lose the operator's choices. Env stays the
-// *bootstrap*: DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL are read from the process env
-// and — because the server is usually started from a plain shell, not from Hermes —
+// Why the DB and not just env: the voice / theme / call / prefs features are configurable
+// from the UI, and a restart (or another device) must not lose the operator's choices. Env
+// stays the *bootstrap*: DASHSCOPE_API_KEY / DASHSCOPE_BASE_URL are read from the process
+// env and — because the server is usually started from a plain shell, not from Hermes —
 // from the .env files Hermes itself reads (~/.hermes/.env, the test home).
 //
-// Secret handling: values are stored in the 0600 file and only ever leave through
-// mask() — "…abcd". The browser PUTs a full key only when the operator types one;
-// an unchanged masked value round-trips as null and keeps the stored secret.
+// Why not localStorage (the old home of the prefs section): a setting that describes how
+// THE OPERATOR works — read replies aloud, which voice, which recogniser, how the call
+// behaves — has to follow them from the phone to the laptop. localStorage already proved the
+// point by disagreeing with itself across two tabs of the same instance. The browser keeps a
+// copy for the first frame; the store is the truth.
+//
+// Secret handling: values live in the 0600 store and only ever leave through mask() —
+// "…abcd". The browser PUTs a full key only when the operator types one; an unchanged
+// masked value round-trips as null and keeps the stored secret.
 import fs from "node:fs";
 import path from "node:path";
+import type { Store } from "./store/store.js";
 
 export interface VoiceSettings {
   provider: "browser" | "openai" | "dashscope";
@@ -54,9 +62,11 @@ export const THEME_DEFAULT: ThemeSettings = { mode: "system", accent: "" };
  *  in a quiet room — so the defaults are a starting point, not a truth. The call page owns
  *  the panel; the settings page reads the same numbers. */
 export interface CallSettings {
-  /** mic level that counts as "the operator is taking the floor" (0.05 = very sensitive,
-   *  0.8 = you have to raise your voice over the reply). */
-  bargeLevel: number;
+  /** HOW EASY it is to talk over the reply, 0..100 (high = easy). Stored as a sensitivity,
+   *  not as a mic level: the panel says "灵敏度 60%" and the number has to mean that. The
+   *  threshold it maps to lives in the client (callSettings.ts `bargeLevelOf`), because the
+   *  mic scale is the client's business. */
+  bargeSensitivity: number;
   /** how long that level has to hold before the floor changes hands (ms) */
   bargeMs: number;
   /** silence that ends the operator's sentence (ms) */
@@ -67,12 +77,34 @@ export interface CallSettings {
   minChars: number;
 }
 
-export const CALL_DEFAULT: CallSettings = { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 };
+/** How the operator wants to TALK to the agent. These were browser-local (localStorage) and
+ *  are now the operator's settings like everything else: the read-aloud switch, the voice and
+ *  the speed have to be the same on the phone as on the laptop, and a second tab disagreeing
+ *  with the first is a bug, not a feature. */
+export interface PrefsSettings {
+  /** read a finished reply aloud without being asked */
+  autoRead: boolean;
+  /** browser voiceURI ("" = pick the best for the language) */
+  voiceURI: string;
+  rate: number;
+  /** BCP-47 for both directions; "" = whatever the browser is set to */
+  lang: string;
+  /** route synthesis through the server endpoint instead of the browser */
+  serverTts: boolean;
+  /** which recogniser to use, when the caller does not force one */
+  stt: "auto" | "browser" | "stream" | "server";
+}
+
+export const PREFS_DEFAULT: PrefsSettings = {
+  autoRead: false, voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
+};
+
+export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3 };
 
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
  *  that enforces them, so a hand-written request cannot store a nonsense value. */
 export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
-  bargeLevel: [0.05, 0.8],
+  bargeSensitivity: [0, 100],
   bargeMs: [100, 1000],
   silenceMs: [400, 4000],
   minChars: [1, 20],
@@ -82,6 +114,7 @@ export interface Settings {
   voice: VoiceSettings;
   theme: ThemeSettings;
   call: CallSettings;
+  prefs: PrefsSettings;
   updatedAt: number;
 }
 
@@ -100,8 +133,12 @@ const DEFAULTS: VoiceSettings = {
   hotwordLimit: 30,
 };
 
-let file = "";
-let cache: Settings = { voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT }, updatedAt: 0 };
+let db: Store | null = null;
+let legacyFile = "";
+let cache: Settings = {
+  voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT },
+  prefs: { ...PREFS_DEFAULT }, updatedAt: 0,
+};
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
 
@@ -134,17 +171,31 @@ function discoverEnv(): { apiKey: string; baseUrl: string; source: string } | nu
   return null;
 }
 
-export function initSettings(dataDir: string): Settings {
-  file = path.join(dataDir, "settings.json");
+export function initSettings(dataDir: string, store: Store): Settings {
+  db = store;
+  legacyFile = path.join(dataDir, "settings.json");
   envCreds = discoverEnv();
-  let stored: Partial<Settings> = {};
-  try {
-    stored = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Settings>;
-  } catch { /* first run */ }
+  const stored: Partial<Settings> = { ...(store.listSettings() as Partial<Settings>) };
+  if (!stored.voice && !stored.theme && !stored.call) {
+    // first run on this DB: adopt whatever the pre-store JSON file held, once. The file is
+    // left in place (renamed) rather than deleted — it is the only copy of a key that the
+    // operator may have typed by hand.
+    try {
+      const fromFile = JSON.parse(fs.readFileSync(legacyFile, "utf8")) as Partial<Settings>;
+      if (fromFile.voice || fromFile.theme || fromFile.call) {
+        stored.voice = fromFile.voice;
+        stored.theme = fromFile.theme;
+        stored.call = fromFile.call;
+        console.log(`[agentslot] settings: imported ${legacyFile} into the store`);
+      }
+      fs.renameSync(legacyFile, `${legacyFile}.imported`);
+    } catch { /* no legacy file: nothing to migrate */ }
+  }
   cache = {
     voice: { ...DEFAULTS, ...(stored.voice ?? {}) },
     theme: { ...THEME_DEFAULT, ...(stored.theme ?? {}) },
-    call: { ...CALL_DEFAULT, ...(stored.call ?? {}) },
+    call: pickCall(stored.call),
+    prefs: pickPrefs(stored.prefs),
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -155,11 +206,47 @@ export function initSettings(dataDir: string): Settings {
   return cache;
 }
 
+/** A stored section is not trusted: it may predate a rename (the call knobs replaced
+ *  `bargeLevel` with `bargeSensitivity`) or carry keys nothing understands any more. Anything
+ *  unrecognised or out of range is dropped, so the payload the UI reads has exactly the
+ *  fields it knows about. */
+function pickCall(raw: unknown): CallSettings {
+  const out = { ...CALL_DEFAULT };
+  if (raw && typeof raw === "object") {
+    for (const k of Object.keys(CALL_DEFAULT) as (keyof CallSettings)[]) {
+      const v = Number((raw as Record<string, unknown>)[k]);
+      const [lo, hi] = CALL_RANGE[k];
+      if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v;
+    }
+  }
+  return out;
+}
+
+function pickPrefs(raw: unknown): PrefsSettings {
+  const out = { ...PREFS_DEFAULT };
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    if (typeof r.autoRead === "boolean") out.autoRead = r.autoRead;
+    if (typeof r.serverTts === "boolean") out.serverTts = r.serverTts;
+    if (typeof r.voiceURI === "string" && r.voiceURI.length <= 200) out.voiceURI = r.voiceURI;
+    if (typeof r.lang === "string" && (!r.lang || /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(r.lang))) out.lang = r.lang;
+    const rate = Number(r.rate);
+    if (Number.isFinite(rate) && rate >= 0.5 && rate <= 2) out.rate = rate;
+    if (r.stt === "auto" || r.stt === "browser" || r.stt === "stream" || r.stt === "server") out.stt = r.stt;
+  }
+  return out;
+}
+
+/** One row per section, so a change to the call knobs cannot lose the speech key. */
 function persist(): void {
+  if (!db) return;
   try {
-    fs.writeFileSync(file, JSON.stringify(cache, null, 2), { mode: 0o600 });
+    db.setSetting("voice", cache.voice);
+    db.setSetting("theme", cache.theme);
+    db.setSetting("call", cache.call);
+    db.setSetting("prefs", cache.prefs);
   } catch (e) {
-    console.error(`[agentslot] cannot write ${file}: ${(e as Error).message}`);
+    console.error(`[agentslot] cannot write settings: ${(e as Error).message}`);
   }
 }
 
@@ -198,6 +285,8 @@ export function publicSettings(): Record<string, unknown> {
     hotwords: v.hotwords,
     dynamicHotwords: v.dynamicHotwords,
     hotwordLimit: v.hotwordLimit,
+    prefs: cache.prefs,
+    prefsDefaults: PREFS_DEFAULT,
     // the defaults, so the UI can offer "reset to Bailian defaults"
     defaults: { ...DEFAULTS, apiKey: undefined, baseUrl: undefined },
     updatedAt: cache.updatedAt,
@@ -275,6 +364,43 @@ export function saveCall(patch: Record<string, unknown>): Settings {
     c[key] = raw;
   }
   cache = { ...cache, call: c, updatedAt: Date.now() };
+  persist();
+  return cache;
+}
+
+/** The talk-to-the-agent preferences. Every key is checked here rather than trusted: this
+ *  set reaches a speech endpoint, and `rate` in particular feeds an audio API. */
+export function savePrefs(patch: Record<string, unknown>): Settings {
+  const next = { ...cache.prefs };
+  if ("autoRead" in patch) {
+    if (typeof patch.autoRead !== "boolean") throw new Error("invalid autoRead: expected true/false");
+    next.autoRead = patch.autoRead;
+  }
+  if ("serverTts" in patch) {
+    if (typeof patch.serverTts !== "boolean") throw new Error("invalid serverTts: expected true/false");
+    next.serverTts = patch.serverTts;
+  }
+  if ("voiceURI" in patch) {
+    const v = String(patch.voiceURI ?? "");
+    if (v.length > 200) throw new Error("invalid voiceURI: too long");
+    next.voiceURI = v;
+  }
+  if ("lang" in patch) {
+    const v = String(patch.lang ?? "");
+    if (v && !/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(v)) throw new Error(`invalid lang: ${JSON.stringify(v).slice(0, 40)}`);
+    next.lang = v;
+  }
+  if ("rate" in patch) {
+    const v = Number(patch.rate);
+    if (!Number.isFinite(v) || v < 0.5 || v > 2) throw new Error(`invalid rate: ${JSON.stringify(patch.rate)} (expected 0.5…2)`);
+    next.rate = v;
+  }
+  if ("stt" in patch) {
+    const v = String(patch.stt ?? "");
+    if (!["auto", "browser", "stream", "server"].includes(v)) throw new Error(`invalid stt: ${JSON.stringify(patch.stt)}`);
+    next.stt = v as PrefsSettings["stt"];
+  }
+  cache = { ...cache, prefs: next, updatedAt: Date.now() };
   persist();
   return cache;
 }

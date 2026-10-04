@@ -27,10 +27,11 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit } from "./state";
-import { dictation, playbackLevel, playbackWave, speaker, useVoicePrefs } from "./voice";
+import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useVoicePrefs } from "./voice";
 import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
 import {
-  CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, patchCallSettings, useCallSettings, type CallSettings,
+  bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, patchCallSettings, useCallSettings,
+  type CallSettings,
 } from "./callSettings";
 
 export type CallPhase = "connecting" | "listening" | "thinking" | "speaking" | "error";
@@ -118,6 +119,22 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** The reply that was ALREADY in the transcript when this turn began — usually the answer to
+   *  the previous question. The transcript is not synchronous with our own send: for a moment
+   *  after `prompt`, the last agent message is still the old answer (the user message has not
+   *  been broadcast yet), and reading it out is precisely the reported bug. Anything carrying
+   *  this key is history and is never spoken. */
+  const baselineKeyRef = useRef("");
+  /** The transcript's last agent message, unfiltered — what the baseline is taken from. */
+  const rawAgentKeyRef = useRef("");
+  /** The call is over the moment it closes. The sentence queue is an async loop that outlives
+   *  the component unless it is told to stop — hanging up mid-reply used to hand the next
+   *  sentence to the speaker and the call kept talking after it was gone. */
+  const aliveRef = useRef(true);
+  /** Read inside the loop (whose closure is fixed for the life of the call): muting has to
+   *  stop the auto-send, not just the recogniser. */
+  const mutedRef = useRef(false);
+  mutedRef.current = muted;
 
   const view = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const reduced = useMemo(
@@ -134,6 +151,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   // microphone, which is how the QA sweep drives it.
   useEffect(() => {
     let dead = false;
+    setCallActive(true);            // the call owns the voice while it is open (see voice.ts)
     const boot = async (): Promise<void> => {
       try {
         const snap = cockpit.getSnapshot();
@@ -142,9 +160,14 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
           if (dead) return;
           sentRef.current = true;             // a turn is already in flight
           replyKeyRef.current = "";
+          // …and that in-flight message IS this turn's reply, so it gets read from its start
+          // (baseline stays empty). A session that is merely idle is the opposite case: the
+          // reply sitting in the transcript is history.
           setPhase("thinking");
           return;
         }
+        const lastAgent = [...(live?.msgs ?? [])].reverse().find((m) => m.kind === "agent");
+        baselineKeyRef.current = (lastAgent as { key?: string } | undefined)?.key ?? "";
         dictation.stop();
         const ok = await dictation.start(prefs, sessionId);
         if (dead) return;
@@ -159,8 +182,10 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     void boot();
     return () => {
       dead = true;
+      aliveRef.current = false;     // covers 改用键盘 and the parent closing the call
       speaker.stop();
       dictation.stop();
+      setCallActive(false);
     };
     // prefs/sessionId are fixed for the lifetime of a call on purpose
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -180,10 +205,13 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         const quietFor = Date.now() - voiceAtRef.current;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
-        if (text && charCount(text) >= c.minChars && quietFor > c.silenceMs && !sentRef.current) {
+        if (text && !mutedRef.current && charCount(text) >= c.minChars
+          && quietFor > c.silenceMs && !sentRef.current) {
           sentRef.current = true;
           setPhase("thinking");
           setHeard(text);
+          setErr("");                  // a new question clears the previous failure
+          baselineKeyRef.current = rawAgentKeyRef.current;   // the old answer is not the answer
           // stop feeding our own audio to the recogniser while the turn runs
           dictation.setRelay(false);
           // `interrupt`: if the agent is somehow still finishing the previous turn (the
@@ -198,7 +226,8 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         // turn. Stopping only the speaker left the turn running, so the sentence the operator
         // said next was refused with "turn already running": barge-in that doesn't hand the
         // floor over isn't barge-in.
-        const over = lvl > c.bargeLevel;
+        // the panel's sensitivity, mapped to a mic level here (callSettings.bargeLevelOf)
+        const over = lvl > bargeLevelOf(c.bargeSensitivity);
         bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
         if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
@@ -214,13 +243,34 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
 
   // ---- what the agent is saying: queue it sentence by sentence --------------------------
   const active = view.active?.info.id === sessionId ? view.active : undefined;
-  const lastAgent = active ? [...active.msgs].reverse().find((m) => m.kind === "agent") : undefined;
-  const agentText = lastAgent?.kind === "agent" ? lastAgent.text : "";
-  const agentKey = lastAgent?.key ?? "";
+  const msgs = active?.msgs ?? [];
+  // WHAT TO READ: the reply to the CURRENT prompt — the last agent message that comes AFTER
+  // the last user message. The transcript's last agent message is NOT the same thing: while a
+  // new turn is starting it is still the PREVIOUS answer, and reading that out is exactly what
+  // the operator heard ("回复的时候把上一个问题的回复也念了一遍"). Joining a turn in flight is
+  // still supported (then the in-flight message IS this turn's reply, read from its start),
+  // but history is never spoken — a call is not a podcast of the session.
+  const kinds = msgs.map((m) => m.kind);
+  const lastUserIdx = kinds.lastIndexOf("user");
+  const lastAgentIdx = kinds.lastIndexOf("agent");
+  rawAgentKeyRef.current = lastAgentIdx >= 0 ? (msgs[lastAgentIdx] as { key?: string }).key ?? "" : "";
+  const replyMsg = lastAgentIdx > lastUserIdx ? msgs[lastAgentIdx] : undefined;
+  const agentText = replyMsg?.kind === "agent" ? replyMsg.text : "";
+  const agentKey = replyMsg?.key ?? "";
+  // A turn that ends without text (tool-only, or failed) must not leave the call stuck in
+  // "thinking" with no explanation: the newest meta line after the prompt is the server's own
+  // words about what happened.
+  const lastMetaIdx = kinds.lastIndexOf("meta");
+  const failureText = lastMetaIdx > lastUserIdx && msgs[lastMetaIdx]?.kind === "meta"
+    ? (msgs[lastMetaIdx] as { text: string }).text
+    : "";
   const busy = Boolean(active?.busy);
 
   useEffect(() => {
     if (phaseRef.current !== "thinking" && phaseRef.current !== "speaking") return;
+    // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
+    // message this turn actually produced.
+    if (!agentKey || agentKey === baselineKeyRef.current) return;
     if (agentKey !== replyKeyRef.current) {          // a new reply started
       replyKeyRef.current = agentKey;
       queuedRef.current = 0;
@@ -242,24 +292,27 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       }
     }
     if (!busy && phaseRef.current === "thinking" && !queueRef.current.length && done.length === 0 && !tail) {
-      // a turn with no text at all (a tool-only turn): do not sit in "thinking" forever
+      // a turn with no text at all: do not sit in "thinking" forever, and say why if the
+      // server said anything (turn failed, permission denied, …)
+      if (failureText) setErr(failureText);
       void backToListening(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentText, agentKey, busy]);
+  }, [agentText, agentKey, busy, failureText]);
 
   // the speaker: one sentence at a time, in order
   useEffect(() => {
     if (phaseRef.current !== "speaking" || queueRunRef.current) return;
     queueRunRef.current = true;
     void (async () => {
-      while (queueRef.current.length && phaseRef.current !== "error") {
+      while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
         const sentence = queueRef.current.shift() as string;
         await speaker.speak(sentence, "call", prefs);
-        if (phaseRef.current !== "speaking") break;   // barged in / hung up
+        // barged in, hung up, or the call is gone: never hand another sentence to the speaker
+        if (!aliveRef.current || phaseRef.current !== "speaking") break;
       }
       queueRunRef.current = false;
-      if (phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
+      if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
         void backToListening(false);
       }
     })();
@@ -275,6 +328,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
 
   /** Back to the operator's turn: fresh transcript, mic relaying again. */
   const backToListening = async (interrupted: boolean): Promise<void> => {
+    if (!aliveRef.current) return;      // the call is closed: no state, no microphone
     if (interrupted) speaker.stop();
     queueRef.current = [];
     queuedRef.current = 0;
@@ -299,6 +353,9 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   };
 
   const hangUp = (): void => {
+    // the call ends HERE: anything queued or in flight must not leave the speaker after the
+    // screen is gone ("挂断的时候它有时候还在说话")
+    aliveRef.current = false;
     speaker.stop();
     dictation.stop();
     onClose();
@@ -328,6 +385,8 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       if (text) {
         sentRef.current = true;
         setPhase("thinking");
+        setErr("");
+        baselineKeyRef.current = rawAgentKeyRef.current;     // the old answer is not the answer
         dictation.setRelay(false);
         cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
       }
@@ -658,7 +717,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
                   type="range"
                   min={CALL_RANGE[k.key][0]}
                   max={CALL_RANGE[k.key][1]}
-                  step={k.key === "bargeLevel" ? 0.01 : k.key === "silenceMs" ? 100 : k.key === "minChars" ? 1 : 50}
+                  step={k.key === "bargeSensitivity" ? 5 : k.key === "silenceMs" ? 100 : k.key === "minChars" ? 1 : 50}
                   value={cfg[k.key]}
                   onChange={(e) => applyCfg({ [k.key]: Number(e.target.value) } as Partial<CallSettings>)}
                   aria-label={k.label}

@@ -15,6 +15,17 @@ import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+
+/** Killing the `tsx` WRAPPER is not killing the server: tsx runs the app as its own child, and
+ *  a bare SIGKILL to the wrapper leaves that child listening on a random port for good. That is
+ *  exactly how a couple of hundred dead servers piled up on the dev machine. `detached: true`
+ *  makes the child a process-group leader, so one negative-pid signal takes the whole tree. */
+const killGroup = (target) => {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
+};
+
 // A random-ish scratch port: a leaked server from an earlier run must not fail the
 // suite (auth-smoke uses fixed ports and this bit us once locally).
 const PORT = await freePort();   // never a guessed port: see freePort() above
@@ -50,7 +61,7 @@ function portInUse(port) {
   });
 }
 const CHILDREN = new Set();
-process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } catch { /* already gone */ } } });
 
 
 /** An empty HOME: the server's settings bootstrap also reads `~/.hermes/.env`, so a suite
@@ -64,6 +75,7 @@ async function boot(port, dataDir) {
       + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
   }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
     cwd: ROOT,
     env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir, HOME: EMPTY_HOME },
     stdio: ["ignore", "pipe", "pipe"],
@@ -87,7 +99,7 @@ async function boot(port, dataDir) {
     } catch { /* not up yet */ }
     await sleep(250);
   }
-  proc.kill("SIGKILL");
+  killGroup(proc);
   throw new Error(`server never came up on ${port}:\n${log}`);
 }
 
@@ -373,7 +385,7 @@ try {
 } catch (e) {
   check("suite ran to completion", false, String(e?.stack ?? e));
 } finally {
-  proc.kill("SIGKILL");
+  killGroup(proc);
 }
 
 console.log(failed ? `\n${failed} FAILED of ${results.length}` : `\nALL ${results.length} CHECKS PASS`);

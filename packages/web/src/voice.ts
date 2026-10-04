@@ -481,7 +481,21 @@ export function useSpeaker(): SpeakState {
  *  history load never re-reads the same reply. */
 let lastAutoReadKey = "";
 
+/** A call is open (CallMode) → it owns the voice: it reads the reply sentence by sentence,
+ *  and the auto-read of the SAME reply would preempt it mid-sentence (one speaker, two
+ *  owners) — which sounds like the answer being read again from the beginning. */
+let callActive = false;
+
+export function setCallActive(on: boolean): void {
+  callActive = on;
+}
+
+export function isCallActive(): boolean {
+  return callActive;
+}
+
 export function shouldAutoRead(key: string, prefs: VoicePrefs, isNewTurn: boolean): boolean {
+  if (callActive) return false;
   if (!prefs.autoRead || !isNewTurn) return false;
   if (key === lastAutoReadKey) return false;
   lastAutoReadKey = key;
@@ -1012,12 +1026,80 @@ export function useDictation(): DictationState {
 let prefsState: VoicePrefs = loadVoicePrefs();
 const prefsListeners = new Set<() => void>();
 
+/** These used to be browser-local only. They are the operator's settings like the theme and
+ *  the call knobs, so they live on the server too: the read-aloud switch, the voice and the
+ *  speed have to be the same on the phone as on the laptop (and two tabs of one instance
+ *  disagreeing about them is a bug, not a feature). localStorage stays as the first-frame
+ *  mirror; `loadServerVoicePrefs` adopts the stored copy at boot and migrates the browser's
+ *  copy up once, so nobody loses a setting they already made. */
+export async function pushVoicePrefs(): Promise<string> {
+  try {
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefs: prefsState }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return data.error ?? `save failed (${res.status})`;
+    }
+    return "";
+  } catch (e) {
+    return String((e as Error)?.message ?? e);
+  }
+}
+
+/** What the server sent, in the client's shape. `lang: ""` means "the browser's language". */
+export function normalizePrefs(raw: unknown): VoicePrefs {
+  const base: VoicePrefs = { ...DEFAULT_PREFS };
+  if (!raw || typeof raw !== "object") return base;
+  const r = raw as Partial<VoicePrefs>;
+  return {
+    autoRead: typeof r.autoRead === "boolean" ? r.autoRead : base.autoRead,
+    voiceURI: typeof r.voiceURI === "string" ? r.voiceURI : base.voiceURI,
+    rate: Number.isFinite(Number(r.rate)) ? Math.min(2, Math.max(0.5, Number(r.rate))) : base.rate,
+    lang: typeof r.lang === "string" && r.lang ? r.lang : base.lang,
+    serverTts: typeof r.serverTts === "boolean" ? r.serverTts : base.serverTts,
+    stt: r.stt === "browser" || r.stt === "stream" || r.stt === "server" ? r.stt : "auto",
+  };
+}
+
+export function applyVoicePrefs(next: VoicePrefs): void {
+  prefsState = next;
+  saveVoicePrefs(prefsState);
+  for (const fn of prefsListeners) fn();
+}
+
+/** Adopt the stored copy. If the store has never been touched, the browser's copy wins and
+ *  is pushed up — the operator made that choice before there was a server-side home for it. */
+export async function loadServerVoicePrefs(): Promise<void> {
+  try {
+    const res = await fetch("/api/settings", { credentials: "same-origin" });
+    if (!res.ok) return;
+    const data = (await res.json()) as { prefs?: unknown; prefsDefaults?: unknown };
+    const server = normalizePrefs(data.prefs);
+    const defaults = normalizePrefs(data.prefsDefaults);
+    const untouched = PREFS_FIELDS.every((k) => server[k] === defaults[k]);
+    if (untouched && PREFS_FIELDS.some((k) => prefsState[k] !== server[k])) {
+      void pushVoicePrefs();
+      return;
+    }
+    if (PREFS_FIELDS.some((k) => prefsState[k] !== server[k])) applyVoicePrefs(server);
+  } catch {
+    /* offline / not logged in: the cached copy stands */
+  }
+}
+
+const PREFS_FIELDS: (keyof VoicePrefs)[] = ["autoRead", "voiceURI", "rate", "lang", "serverTts", "stt"];
+
 export function updateVoicePrefs(patch: Partial<VoicePrefs>): void {
   const next = { ...prefsState, ...patch };
   const rate = Number.isFinite(next.rate) ? Math.min(2, Math.max(0.5, next.rate)) : 1;
   prefsState = { ...next, rate };
   saveVoicePrefs(prefsState);
   for (const fn of prefsListeners) fn();
+  void pushVoicePrefs();
 }
 
 export function getVoicePrefs(): VoicePrefs {

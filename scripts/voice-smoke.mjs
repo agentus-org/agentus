@@ -13,9 +13,21 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer as createTcp } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { WebSocket } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+
+/** Killing the `tsx` WRAPPER is not killing the server: tsx runs the app as its own child, and
+ *  a bare SIGKILL to the wrapper leaves that child listening on a random port for good. That is
+ *  exactly how a couple of hundred dead servers piled up on the dev machine. `detached: true`
+ *  makes the child a process-group leader, so one negative-pid signal takes the whole tree. */
+const killGroup = (target) => {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
+};
+
 const PORT = await freePort();   // never a guessed port: see freePort() above
 const results = [];
 let failed = 0;
@@ -49,7 +61,7 @@ function portInUse(port) {
   });
 }
 const CHILDREN = new Set();
-process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* already gone */ } } });
+process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } catch { /* already gone */ } } });
 
 
 // ---- the stand-in provider -------------------------------------------------
@@ -135,6 +147,7 @@ async function boot(dataDir, extraEnv = {}, home = "") {
       + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
   }
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir,
@@ -162,7 +175,7 @@ async function boot(dataDir, extraEnv = {}, home = "") {
     } catch { /* not up yet */ }
     await sleep(250);
   }
-  proc.kill("SIGKILL");
+  killGroup(proc);
   throw new Error(`server never came up on ${port}:\n${log}`);
 }
 
@@ -217,6 +230,28 @@ try {
   check("a non-hex accent is rejected", t4.status === 400, `status ${t4.status}`);
   const t5 = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ theme: { accent: "" } }) });
   check("an empty accent clears back to the default", (await t5.json()).theme.accent === "");
+
+  // ---- 2b. the talk-to-agent prefs: the operator's own setup, now server-side ----
+  // (read-aloud switch, voice, speed, recogniser). These used to be browser-local, which meant
+  // a phone and a laptop disagreed about them — and a second tab of one instance disagreed
+  // with the first. They are settings like the rest: stored here, validated here.
+  const p1 = await fetch(`${base}/api/settings`, {
+    method: "PUT", headers: H,
+    body: JSON.stringify({ prefs: { autoRead: true, rate: 1.5, lang: "zh-CN", serverTts: true, stt: "stream", voiceURI: "Microsoft Xiaoxiao" } }),
+  });
+  const p1b = await p1.json();
+  check("prefs save (自动朗读 / voice / rate / recogniser)",
+    p1.status === 200 && p1b.prefs?.autoRead === true && p1b.prefs?.rate === 1.5 && p1b.prefs?.stt === "stream" && p1b.prefs?.voiceURI === "Microsoft Xiaoxiao",
+    JSON.stringify(p1b.prefs));
+  const p2 = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ prefs: { rate: 9 } }) });
+  check("an out-of-range speech rate is rejected", p2.status === 400, `status ${p2.status}`);
+  const p3 = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ prefs: { stt: "telepathy" } }) });
+  check("an unknown recogniser is rejected", p3.status === 400, `status ${p3.status}`);
+  const p4 = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ prefs: { autoRead: "yes" } }) });
+  check("a non-boolean switch is rejected", p4.status === 400, `status ${p4.status}`);
+  const p5 = await get("/api/settings");
+  check("a rejected write leaves the stored prefs alone", p5.body?.prefs?.autoRead === true && p5.body?.prefs?.rate === 1.5, JSON.stringify(p5.body?.prefs));
+  check("the prefs ship with their defaults", p5.body?.prefsDefaults?.autoRead === false && p5.body?.prefsDefaults?.stt === "auto", JSON.stringify(p5.body?.prefsDefaults));
 
   // ---- 3. provider + key: the settings page's whole job ----
   const bad = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ voice: { provider: "nope" } }) });
@@ -288,7 +323,7 @@ try {
 
   // ---- 9. the env bootstrap: this is how the operator's own machine is set up
   //         (DASHSCOPE_* in ~/.hermes/.env), and it must work with no page visit at all.
-  proc.kill("SIGKILL");
+  killGroup(proc);
   const home2 = mkdtempSync(path.join(tmpdir(), "agentslot-home-env-"));
   fs.mkdirSync(path.join(home2, ".hermes"), { recursive: true });
   fs.writeFileSync(path.join(home2, ".hermes", ".env"), `DASHSCOPE_API_KEY=sk-env-abcdef123\nDASHSCOPE_BASE_URL=http://127.0.0.1:${providerPort}/\n`);
@@ -324,17 +359,51 @@ try {
 
   const modelsEnv = await get2("/api/voice/models");
   check("the model list comes from the 百炼 endpoint", modelsEnv.status === 200 && modelsEnv.body?.total === 3 && modelsEnv.body?.tts?.includes("qwen-audio-3.0-tts-flash"), `status ${modelsEnv.status} ${JSON.stringify(modelsEnv.body)}`);
-  second.proc.kill("SIGKILL");
+  killGroup(second.proc);
 
-  // ---- 10. the settings file is 0600 and holds the key server-side only ----
-  const file = path.join(dataDir, "settings.json");
-  const mode = fs.existsSync(file) ? (fs.statSync(file).mode & 0o777).toString(8) : "missing";
-  check("settings.json is written 0600", mode === "600", mode);
-  check("settings.json holds the key server-side only", fs.existsSync(file) && fs.readFileSync(file, "utf8").includes("sk-test-abc123"));
+  // ---- 10. the settings are rows in OUR store (not a file, not localStorage) ----
+  // They used to be a 0600 JSON beside the DB plus a browser's localStorage. Anything the
+  // operator changes belongs with the rest of the data: it then survives a device change, and
+  // a second tab cannot disagree with the first.
+  const dbPath = path.join(dataDir, "agentslot.sqlite");
+  const dbMode = fs.existsSync(dbPath) ? (fs.statSync(dbPath).mode & 0o777).toString(8) : "missing";
+  const db = new DatabaseSync(dbPath);
+  const rows = db.prepare("select key, value from settings").all();
+  db.close();
+  const keys = rows.map((r) => r.key);
+  const voiceRow = String(rows.find((r) => r.key === "voice")?.value ?? "");
+  check("the store is 0600 (it holds the endpoint key)", dbMode === "600", dbMode);
+  check("voice / theme / call / prefs are rows in our own database",
+    ["voice", "theme", "call", "prefs"].every((k) => keys.includes(k)), keys.join(","));
+  check("the endpoint key is in the store, server-side only", /"apiKey"/.test(voiceRow) && voiceRow.length > 40, `${voiceRow.length}B`);
+  check("no settings file is left behind", !fs.existsSync(path.join(dataDir, "settings.json")));
+
+  // ---- 11. migration: a pre-store installation must not lose its settings ----
+  const legacyDir = mkdtempSync(path.join(tmpdir(), "agentslot-legacy-"));
+  fs.writeFileSync(
+    path.join(legacyDir, "settings.json"),
+    JSON.stringify({ theme: { mode: "dark", accent: "#123456" }, call: { bargeLevel: 0.3, minChars: 7 }, updatedAt: 1 }),
+    { mode: 0o600 },
+  );
+  const third = await boot(legacyDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const token3 = tokenFor(legacyDir);
+  const get3 = async (p) => {
+    const res = await fetch(third.base + p, { headers: { ...H, authorization: `Bearer ${token3}` } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  const mig = await get3("/api/settings");
+  check("a pre-store settings.json is imported into the DB", mig.body?.theme?.accent === "#123456", JSON.stringify(mig.body?.theme));
+  check("…and a knob keeps its value across the import", mig.body?.call?.minChars === 7, JSON.stringify(mig.body?.call));
+  check("…and a knob that no longer exists is dropped (bargeLevel → bargeSensitivity)",
+    mig.body?.call?.bargeLevel === undefined && mig.body?.call?.bargeSensitivity === 60,
+    JSON.stringify(mig.body?.call));
+  check("…and the legacy file is kept as .imported, not deleted",
+    fs.existsSync(path.join(legacyDir, "settings.json.imported")) && !fs.existsSync(path.join(legacyDir, "settings.json")));
+  killGroup(third.proc);
 } catch (e) {
   check("suite ran to completion", false, String(e?.stack ?? e).slice(0, 300));
 } finally {
-  for (const p of procs) { try { p.kill("SIGKILL"); } catch { /* already gone */ } }
+  for (const p of procs) { try { killGroup(p); } catch { /* already gone */ } }
   provider.close();
 }
 

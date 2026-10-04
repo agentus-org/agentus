@@ -13,8 +13,11 @@
 import { useSyncExternalStore } from "react";
 
 export interface CallSettings {
-  /** mic level that counts as "taking the floor" (low = sensitive) */
-  bargeLevel: number;
+  /** HOW EASY it is to talk over the reply, 0..100 (high = easy). The panel is a sensitivity
+   *  because that is what an operator can reason about; the mic level it maps to is
+   *  `bargeLevelOf` below. The first version stored the raw level, which made "灵敏度 80%"
+   *  mean "you have to shout" — a control that says the opposite of what it does. */
+  bargeSensitivity: number;
   /** how long that level must hold before the floor changes hands (ms) */
   bargeMs: number;
   /** silence that ends the operator's sentence (ms) */
@@ -23,11 +26,11 @@ export interface CallSettings {
   minChars: number;
 }
 
-export const CALL_DEFAULT: CallSettings = { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 };
+export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3 };
 
 /** The slider ends. The server validates against the same ranges (settings.ts CALL_RANGE). */
 export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
-  bargeLevel: [0.05, 0.8],
+  bargeSensitivity: [0, 100],
   bargeMs: [100, 1000],
   silenceMs: [400, 4000],
   minChars: [1, 20],
@@ -46,11 +49,11 @@ export interface CallKnob {
 
 export const CALL_KNOBS: CallKnob[] = [
   {
-    key: "bargeLevel",
+    key: "bargeSensitivity",
     label: "抢话灵敏度",
-    show: (v) => `${Math.round(v * 100)}%`,
-    ends: ["灵敏", "迟钝"],
-    hint: "你的声音超过这个音量才算抢话——手机外放容易串音，太灵敏会自己打断自己",
+    show: (v) => `${Math.round(v)}%`,
+    ends: ["迟钝", "灵敏"],
+    hint: "越高越容易打断它（100% 最灵敏）。手机外放容易串音，串音频繁就调低一点",
   },
   {
     key: "bargeMs",
@@ -71,9 +74,17 @@ export const CALL_KNOBS: CallKnob[] = [
     label: "最少字数",
     show: (v) => (v <= 1 ? "不限制" : `${v} 字`),
     ends: ["1", "20"],
-    hint: "自动发送时少于这个字数不发送（1 = 不限制）；点一下圆球是明确指令，照发",
+    hint: "自动发送时少于这个字数不发送（1 = 不限制）；点一下圆球是明确指令，照发。默认 3 字，挡掉语气词和噪音",
   },
 ];
+
+/** The panel's sensitivity → the mic level the loop compares against. 0 % = you have to
+ *  raise your voice over the reply (0.5); 100 % = a normal voice takes the floor (0.05).
+ *  Deliberately linear: it is a control, not an instrument. */
+export function bargeLevelOf(sensitivity: number): number {
+  const s = Math.min(100, Math.max(0, Number(sensitivity)));
+  return 0.5 - 0.45 * (s / 100);
+}
 
 const KEY = "agentslot.call";
 const FIELDS = Object.keys(CALL_DEFAULT) as (keyof CallSettings)[];

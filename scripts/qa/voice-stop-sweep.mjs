@@ -18,6 +18,17 @@ import path from "node:path";
 import { createServer as createTcp } from "node:net";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
+
+/** Killing the `tsx` WRAPPER is not killing the server: tsx runs the app as its own child, and
+ *  a bare SIGKILL to the wrapper leaves that child listening on a random port for good. That is
+ *  exactly how a couple of hundred dead servers piled up on the dev machine. `detached: true`
+ *  makes the child a process-group leader, so one negative-pid signal takes the whole tree. */
+const killGroup = (target) => {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
+};
+
 const CDP = "http://127.0.0.1:9222";
 const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentslot/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,9 +85,10 @@ const PORT = await freePort();
 const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-voice-"));
 const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
 const CHILDREN = new Set();
-process.on("exit", () => { for (const c of CHILDREN) { try { c.kill("SIGKILL"); } catch { /* gone */ } } });
+process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } catch { /* gone */ } } });
 
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: "development", HOME: emptyHome,
@@ -156,7 +168,13 @@ try {
   const stubVoice = { provider: "openai", baseUrl: `http://127.0.0.1:${stubPort}`, ttsModel: "stub-tts", ttsVoice: "stub" };
   // the settings validator insists on an sk-… shape (or empty), so the stub key obeys it
   stubVoice["api" + "Key"] = ["sk-", "stub", "-key"].join("");
-  const settingsBody = JSON.stringify({ voice: stubVoice });
+  // `serverTts` decides whether synthesis goes to the endpoint or to the browser's own voice —
+  // and it is a stored setting now, so it must be set where the app reads it (the store), not
+  // only in localStorage (which is just the first-frame mirror).
+  const settingsBody = JSON.stringify({
+    voice: stubVoice,
+    prefs: { serverTts: true, autoRead: false, stt: "auto", rate: 1, voiceURI: "", lang: "en-US" },
+  });
 
   const setup = await ev(`(async () => {
     localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'en-US', serverTts: true, stt: 'auto' }));
@@ -281,7 +299,7 @@ try {
   const shot = await send("Page.captureScreenshot", { format: "png" }).catch(() => null);
   if (shot) fs.writeFileSync(path.join(SHOTS, "phone-voice-stop.png"), Buffer.from(shot.data, "base64"));
   await fetch(`${CDP}/json/close/${tab.id}`).catch(() => {});
-  proc.kill("SIGKILL");
+  killGroup(proc);
   stub.close();
 }
 
