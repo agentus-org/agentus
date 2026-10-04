@@ -42,7 +42,7 @@ function wav(seconds, freq = 320) {
   head.write("data", 36); head.writeUInt32LE(data.length, 40);
   return Buffer.concat([head, data]);
 }
-const CLIP_SECONDS = 3;
+const CLIP_SECONDS = 2;   // longer than the stop window, short enough to settle fast
 const UPSTREAM_DELAY_MS = 1200;   // long enough to press stop WHILE the fetch is in flight
 const clip = wav(CLIP_SECONDS);
 let upstreamHits = 0;
@@ -233,6 +233,48 @@ try {
     fellBack.note === true, JSON.stringify({ note: fellBack.note }));
   upstreamFail = false;
   await ev(`(() => { if (window.speechSynthesis) window.speechSynthesis.cancel(); return true; })()`);
+
+  // ---- E: the header's auto-read switch — does a finished reply get read by itself?
+  await ev(`(() => { const b = document.querySelector('.chat-head .icon-btn.auto-read');
+    if (!b) throw new Error('no auto-read switch in the header');
+    if (b.getAttribute('aria-pressed') === 'false') b.click(); return true; })()`);
+  await sleep(400);
+  const autoOn = await ev(`document.querySelector('.chat-head .icon-btn.auto-read')?.getAttribute('aria-pressed')`);
+  check("the header switch reports auto-read ON", autoOn === "true", `aria-pressed=${autoOn}`);
+  const sendPrompt = (text) => ev(`(async () => {
+    const sid = localStorage.getItem('agentslot.active');
+    await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: ${JSON.stringify(text)} }) });
+    return sid; })()`);
+  // A long reply is split into chunks, and EACH chunk is one upstream request — so a
+  // single read can still be landing hits. Wait for the counter to go quiet before
+  // sampling, or the "silent" assertion reads the previous read's tail (it did).
+  // One chunk costs fetch(1.2s) + playback(2s) ≈ 3.2s, and a quiet gap BETWEEN two chunks
+  // looks exactly like "finished" if you sample too early. Stay quiet for longer than one
+  // full chunk cycle before believing the counter.
+  const hitsQuiet = async (ms = 4500) => {
+    let last = upstreamHits, quiet = 0;
+    while (quiet < ms) { await sleep(500); quiet = upstreamHits === last ? quiet + 500 : 0; last = upstreamHits; }
+    return upstreamHits;
+  };
+  const hitsOnBefore = upstreamHits;
+  await sendPrompt("自动朗读测试一：这条回复应该自己念出来。");
+  for (let i = 0; i < 40; i++) { await sleep(500); if (upstreamHits > hitsOnBefore) break; }
+  check("a finished reply is read aloud WITHOUT pressing anything (server path)",
+    upstreamHits > hitsOnBefore, `upstream ${hitsOnBefore} → ${upstreamHits}`);
+  await hitsQuiet();                                    // let that read finish (all chunks)
+  await ev(`(() => { if (window.speechSynthesis) window.speechSynthesis.cancel(); return true; })()`);
+
+  await ev(`(() => { const b = document.querySelector('.chat-head .icon-btn.auto-read');
+    if (b.getAttribute('aria-pressed') === 'true') b.click(); return true; })()`);
+  await sleep(400);
+  const autoOff = await ev(`document.querySelector('.chat-head .icon-btn.auto-read')?.getAttribute('aria-pressed')`);
+  const hitsOffBefore = await hitsQuiet();
+  await sendPrompt("自动朗读测试二：这条不应该被念出来。");
+  await sleep(6000);                                    // past the turn AND past any chunking
+  const hitsOffAfter = await hitsQuiet();
+  check("with the switch off the same flow stays silent",
+    autoOff === "false" && hitsOffAfter === hitsOffBefore, `aria-pressed=${autoOff}, upstream ${hitsOffBefore} → ${hitsOffAfter}`);
 } catch (e) {
   check("sweep ran to completion", false, String(e?.stack ?? e));
 } finally {

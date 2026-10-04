@@ -9,7 +9,7 @@ import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
   browserDictationAvailable, dictation, loadVoiceCaps, speaker, useAutoRead, useDictation,
-  useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
+  subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
@@ -718,6 +718,21 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
 }): JSX.Element {
   const info = v.info;
   const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
+  const [prefs, setPrefs] = useVoicePrefs();
+  // capabilities land after boot (loadVoiceCaps) — subscribe, or a browser with no local
+  // voice would keep the button disabled after the server answered that it can speak
+  const caps = useSyncExternalStore(subscribeVoiceCaps, voiceCaps);
+  // Auto-read is a LISTENING MODE rather than a buried setting: it changes what every
+  // reply does, so the operator asked for it next to the session's own controls (this is
+  // the one addition to the header; mode/depth/context stay in the composer). Same pref
+  // as the settings switch — one store, so the two can never disagree.
+  const canSpeak = caps.tts.server
+    || (typeof window !== "undefined" && "speechSynthesis" in window);
+  const autoReadTitle = !canSpeak
+    ? "自动朗读：这台设备没有可用语音（浏览器无 speechSynthesis，服务端也没配）"
+    : prefs.autoRead
+      ? "自动朗读：开 —— 每条回复结束后自动念出来（点一下关闭）"
+      : "自动朗读：关 —— 点一下开启，之后每条回复结束都会自动念出来";
   // Two controls, and only two (the operator's ask, and hermes-studio's head does the
   // same): where this slot works, and the panel that shows it. Mode, thinking depth,
   // context and voice all moved into the composer, where the prompt is written —
@@ -732,6 +747,16 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace }: {
         </span>
       ) : null}
       <span className="head-spacer" />
+      <button
+        className={`icon-btn auto-read ${prefs.autoRead ? "on" : ""}`}
+        title={autoReadTitle}
+        aria-label="自动朗读新回复"
+        aria-pressed={prefs.autoRead}
+        disabled={!canSpeak}
+        onClick={() => setPrefs({ autoRead: !prefs.autoRead })}
+      >
+        {prefs.autoRead ? <IconVolume size={16} /> : <IconVolumeOff size={16} />}
+      </button>
       <button
         className="icon-btn"
         title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}

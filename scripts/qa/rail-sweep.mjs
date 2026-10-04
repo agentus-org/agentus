@@ -73,6 +73,47 @@ const assets = await ev(`(async () => { const r = {};
 check("both brand icons are served", Object.values(assets).every((s) => s.startsWith("200")), JSON.stringify(assets));
 check("every row has a settings (⋯) button", rail.menuButtons === rail.rows, `buttons=${rail.menuButtons}`);
 
+// --- the chat header carries the auto-read switch, LEFT of the folder/panel pair
+const headToggle = await ev(`(() => {
+  const head = document.querySelector('.chat-head');
+  const btn = head?.querySelector('.icon-btn.auto-read');
+  if (!btn) return { present: false };
+  const folder = head.querySelector('button[aria-label="workspace"]');
+  const panel = head.querySelector('button[aria-label="workspace panel"]');
+  const r = btn.getBoundingClientRect(), f = folder?.getBoundingClientRect(), p = panel?.getBoundingClientRect();
+  return { present: true, pressed: btn.getAttribute('aria-pressed'), title: btn.getAttribute('title'),
+    offClass: !btn.className.includes('on'), disabled: btn.disabled,
+    leftOfFolder: !!f && r.right <= f.left + 1, leftOfPanel: !!p && r.right <= p.left + 1,
+    order: [...head.querySelectorAll('.icon-btn')].map((b) => b.getAttribute('aria-label')),
+    w: Math.round(r.width), h: Math.round(r.height) };
+})()`);
+check("the chat header has the auto-read switch", headToggle.present === true, JSON.stringify(headToggle));
+check("it sits LEFT of the folder and panel buttons", headToggle.leftOfFolder && headToggle.leftOfPanel, JSON.stringify(headToggle.order));
+check("it reports its state (aria-pressed, off by default) and can speak on this machine",
+  headToggle.pressed === "false" && headToggle.disabled === false, JSON.stringify({ pressed: headToggle.pressed, disabled: headToggle.disabled }));
+
+const toggled = await ev(`(async () => {
+  const btn = document.querySelector('.chat-head .icon-btn.auto-read');
+  const before = JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead;
+  const iconBefore = btn.innerHTML;
+  btn.click();
+  await new Promise((r) => setTimeout(r, 300));
+  const mid = { pressed: btn.getAttribute('aria-pressed'), cls: btn.className.includes('on'),
+    stored: JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead, title: btn.getAttribute('title'),
+    iconChanged: btn.innerHTML !== iconBefore };
+  btn.click();                                   // leave the pref where we found it
+  await new Promise((r) => setTimeout(r, 300));
+  const after = JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead;
+  return { before, mid, after, pressedNow: btn.getAttribute('aria-pressed') };
+})()`);
+check("clicking it turns auto-read ON, visibly and in storage",
+  toggled.mid.pressed === "true" && toggled.mid.cls === true && toggled.mid.stored === true,
+  JSON.stringify(toggled.mid));
+check("the icon and the title change with the state (not just a colour)",
+  toggled.mid.iconChanged === true && /自动朗读：开/.test(toggled.mid.title || ""), JSON.stringify({ icon: toggled.mid.iconChanged, title: toggled.mid.title }));
+check("clicking again turns it OFF and the pref is back where it started",
+  toggled.pressedNow === "false" && toggled.after === (toggled.before ?? false), JSON.stringify({ before: toggled.before, after: toggled.after }));
+
 // --- ⋯ opens the menu, and it lands INSIDE the viewport (geometry, not presence)
 await ev(`document.querySelector('.session-item .row-menu').click()`);
 await sleep(500);
@@ -178,6 +219,12 @@ const sheetW = await ev(`(() => { const m=document.querySelector('.sess-menu'); 
   return { w: Math.round(r.width), x: Math.round(r.x), vw: innerWidth, bottom: Math.round(r.bottom), vh: innerHeight }; })()`);
 check("the phone sheet stretches across the screen (no content-width left-hug)",
   sheetW.w >= sheetW.vw - 24 && sheetW.x <= 12, JSON.stringify(sheetW));
+const phoneHead = await ev(`(() => { const b = document.querySelector('.chat-head .icon-btn.auto-read');
+  if (!b) return null; const r = b.getBoundingClientRect();
+  return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), vw: innerWidth }; })()`);
+check("the header switch is thumb-sized on a phone too",
+  !!phoneHead && phoneHead.w >= 28 && phoneHead.h >= 28 && phoneHead.right <= phoneHead.vw,
+  JSON.stringify(phoneHead));
 await ev(`document.querySelectorAll('.session-item')[0].dispatchEvent((() => { const e=new Event('touchend',{bubbles:true}); e.changedTouches=[{clientX:0,clientY:0}]; return e; })())`);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-session-menu.png`, Buffer.from(shot2.data, "base64"));
