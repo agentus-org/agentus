@@ -30,7 +30,7 @@ import { cockpit } from "./state";
 import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useVoicePrefs } from "./voice";
 import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
 import {
-  bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, patchCallSettings, useCallSettings,
+  bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
 
@@ -235,8 +235,11 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         // turn. Stopping only the speaker left the turn running, so the sentence the operator
         // said next was refused with "turn already running": barge-in that doesn't hand the
         // floor over isn't barge-in.
+        // The voice barge exists only in 语音打断 mode. In 按键打断 the floor changes hands on a
+        // deliberate press and nothing else — that is the whole point of the mode (a phone on a
+        // table hears its own loudspeaker and would otherwise interrupt itself forever).
         // the panel's sensitivity, mapped to a mic level here (callSettings.bargeLevelOf)
-        const over = lvl > bargeLevelOf(c.bargeSensitivity);
+        const over = c.interruptMode === "voice" && lvl > bargeLevelOf(c.bargeSensitivity);
         bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
         if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
@@ -666,7 +669,8 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         ? `太短了（少于 ${cfg.minChars} 字，不会自动发送）——继续说，或点一下圆球直接发送`
         : "点一下直接发送，或说完停一下")
       : muted ? "麦克风已静音" : "说点什么…")
-    : phase === "speaking" ? "点一下打断，自己说" : phase === "thinking" ? "点一下停止它" : "";
+    : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
+      : phase === "thinking" ? "点一下停止它" : "";
 
   return createPortal(
     <div className="call-mode" data-phase={phase} role="dialog" aria-modal="true" aria-label="语音通话">
@@ -683,6 +687,24 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       <div className="call-head">
         <span className="call-title">{PHASE_LABEL[phase]}</span>
         <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
+        {/* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It
+            belongs here because it is the one setting that changes with the ROOM (a phone on a
+            table, a headset, a noisy cafe) — flipping it has to be one tap while the call is
+            misbehaving, and both ends stay visible so the current mode is never a guess. */}
+        <div className="call-modes" role="group" aria-label="打断方式" data-mode={cfg.interruptMode}>
+          {INTERRUPT_MODES.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className={`call-mode-btn ${cfg.interruptMode === m.id ? "on" : ""}`}
+              aria-pressed={cfg.interruptMode === m.id}
+              title={m.hint}
+              onClick={() => applyCfg({ interruptMode: m.id })}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <button
@@ -734,8 +756,16 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
             <p className="call-sheet-note">
               {cfgErr ? `保存失败：${cfgErr}（已在本机生效）` : "调整立即生效，并保存到服务器（换设备也一样）"}
             </p>
+            {/* In 按键打断 the two barge knobs have no effect at all — showing them as live
+                controls would be a control that lies. They stay visible (so the numbers survive a
+                flip back) but they are visibly off and the reason is written next to them. */}
+            {cfg.interruptMode === "button" ? (
+              <p className="call-sheet-warn">
+                现在是「按键打断」：语音抢话已关闭，所以灵敏度和持续时间当前不起作用（切回「语音打断」，在通话页上一下就行）
+              </p>
+            ) : null}
             {CALL_KNOBS.map((k) => (
-              <label className="call-knob" key={k.key}>
+              <label className={`call-knob ${cfg.interruptMode === "button" && k.key.startsWith("barge") ? "off" : ""}`} key={k.key}>
                 <span className="call-knob-top">
                   <span className="call-knob-name">{k.label}</span>
                   <span className="call-knob-val">{k.show(cfg[k.key])}</span>
@@ -748,6 +778,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
                   value={cfg[k.key]}
                   onChange={(e) => applyCfg({ [k.key]: Number(e.target.value) } as Partial<CallSettings>)}
                   aria-label={k.label}
+                  disabled={cfg.interruptMode === "button" && k.key.startsWith("barge")}
                 />
                 <span className="call-knob-ends"><span>{k.ends[0]}</span><span>{k.ends[1]}</span></span>
                 <span className="call-knob-hint">{k.hint}</span>

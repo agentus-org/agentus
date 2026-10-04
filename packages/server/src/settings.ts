@@ -61,7 +61,16 @@ export const THEME_DEFAULT: ThemeSettings = { mode: "system", accent: "" };
  *  what a phone's own loudspeaker leaks back into its microphone is nothing like a headset
  *  in a quiet room — so the defaults are a starting point, not a truth. The call page owns
  *  the panel; the settings page reads the same numbers. */
+export type InterruptMode = "voice" | "button";
+
 export interface CallSettings {
+  /** WHO gets to interrupt the agent, and the operator picks:
+   *  - `voice`  — the operator's own voice crossing the barge threshold (hands-free);
+   *  - `button` — only the orb, i.e. a deliberate press.
+   *  Both exist because the room decides: a phone on a table leaks its own loudspeaker straight
+   *  into its own microphone, so a hands-free call there interrupts itself all the time. The orb
+   *  tap always works in both modes — it is the one control that means "the floor changes hands". */
+  interruptMode: InterruptMode;
   /** HOW EASY it is to talk over the reply, 0..100 (high = easy). Stored as a sensitivity,
    *  not as a mic level: the panel says "灵敏度 60%" and the number has to mean that. The
    *  threshold it maps to lives in the client (callSettings.ts `bargeLevelOf`), because the
@@ -99,7 +108,16 @@ export const PREFS_DEFAULT: PrefsSettings = {
   autoRead: false, voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
 };
 
-export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3 };
+export const CALL_DEFAULT: CallSettings = {
+  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3,
+};
+
+export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button"];
+
+/** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
+ *  outside both the range table and the loops that validate numbers. */
+export const CALL_NUMERIC = ["bargeSensitivity", "bargeMs", "silenceMs", "minChars"] as const;
+export type CallNumeric = (typeof CALL_NUMERIC)[number];
 
 /** What this section shipped with before the sensitivity rename. A stored section that is still
  *  EXACTLY this is a section nobody ever touched — the operator should get the new defaults
@@ -109,12 +127,15 @@ export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, 
  *  had `bargeLevel`, and a row that has already been through pickCall has no such key at all. */
 function callAtShippedDefaults(r: Record<string, unknown>): boolean {
   const sens = r.bargeSensitivity === undefined ? Number(r.bargeLevel) === 0.2 : Number(r.bargeSensitivity) === 60;
-  return sens && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
+  // The mode counts too: a row that only says `interruptMode: "button"` IS a deliberate choice and
+  // must not be reset along with a section that happens to still carry the old numbers.
+  const modeShipped = r.interruptMode === undefined || r.interruptMode === CALL_DEFAULT.interruptMode;
+  return sens && modeShipped && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
 }
 
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
  *  that enforces them, so a hand-written request cannot store a nonsense value. */
-export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
+export const CALL_RANGE: Record<CallNumeric, [number, number]> = {
   bargeSensitivity: [0, 100],
   bargeMs: [100, 1000],
   silenceMs: [400, 4000],
@@ -229,7 +250,9 @@ function pickCall(raw: unknown): CallSettings {
   const out = { ...CALL_DEFAULT };
   if (raw && typeof raw === "object") {
     if (callAtShippedDefaults(raw as Record<string, unknown>)) return out;
-    for (const k of Object.keys(CALL_DEFAULT) as (keyof CallSettings)[]) {
+    const mode = (raw as Record<string, unknown>).interruptMode;
+    if (INTERRUPT_MODES.includes(mode as InterruptMode)) out.interruptMode = mode as InterruptMode;
+    for (const k of CALL_NUMERIC) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
       if (Number.isFinite(v) && v >= lo && v <= hi) out[k] = v;
@@ -370,7 +393,14 @@ export function saveTheme(patch: Record<string, unknown>): Settings {
  *  against CALL_RANGE before it is stored. */
 export function saveCall(patch: Record<string, unknown>): Settings {
   const c = { ...cache.call };
-  for (const key of Object.keys(CALL_DEFAULT) as (keyof CallSettings)[]) {
+  if ("interruptMode" in patch) {
+    const mode = patch.interruptMode;
+    if (!INTERRUPT_MODES.includes(mode as InterruptMode)) {
+      throw new Error(`invalid interruptMode: ${JSON.stringify(mode)} (expected voice|button)`);
+    }
+    c.interruptMode = mode as InterruptMode;
+  }
+  for (const key of CALL_NUMERIC) {
     if (!(key in patch)) continue;
     const raw = typeof patch[key] === "number" ? patch[key] as number : Number(patch[key]);
     const [lo, hi] = CALL_RANGE[key];

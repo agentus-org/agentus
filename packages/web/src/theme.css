@@ -1324,6 +1324,23 @@ code.inline {
   background: linear-gradient(to bottom, rgba(255,255,255,0.01), rgba(255,255,255,0.035));
 }
 
+/* the interrupt-mode switch, on the call itself: two ends, both readable, one tap apart.
+   Sized for a thumb (30px tall, ~11px padding) and tinted with the phase colour like the rest
+   of the call chrome — it is part of the call, not a settings widget that landed here. */
+.call-modes {
+  display: inline-flex; align-items: center; gap: 2px; margin-top: 6px; padding: 2px;
+  border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.04);
+}
+.call-mode-btn {
+  min-height: 28px; padding: 0 11px; border: 0; border-radius: 999px; cursor: pointer;
+  background: transparent; color: var(--text-dim); font-size: 12px; letter-spacing: 0.02em;
+}
+.call-mode-btn:hover { color: var(--text); }
+.call-mode-btn.on {
+  background: var(--call-tone, #38bdf8); color: #0b1220; font-weight: 600;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--call-tone, #38bdf8) 40%, transparent);
+}
+
 .call-controls { display: flex; align-items: center; gap: 16px; margin-top: 2px; }
 .call-btn {
   width: 52px; height: 52px; border-radius: 50%;
@@ -1379,6 +1396,15 @@ code.inline {
 .call-knob input[type="range"] { width: 100%; height: 30px; accent-color: var(--call-tone, #38bdf8); background: transparent; cursor: pointer; }
 .call-knob-ends { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-dim); }
 .call-knob-hint { font-size: 11px; line-height: 1.45; color: var(--text-dim); }
+/* a knob that cannot do anything right now says so instead of pretending */
+.call-knob.off { opacity: 0.45; }
+.call-knob.off input[type="range"] { cursor: not-allowed; }
+.call-sheet-warn {
+  margin: 0; padding: 9px 11px; border-radius: 10px; font-size: 11.5px; line-height: 1.5;
+  border: 1px solid color-mix(in srgb, var(--call-tone, #38bdf8) 35%, transparent);
+  background: color-mix(in srgb, var(--call-tone, #38bdf8) 12%, transparent);
+  color: var(--text);
+}
 .call-sheet-foot { display: flex; gap: 10px; justify-content: flex-end; margin-top: 2px; }
 .call-sheet-btn {
   min-height: 40px; padding: 0 14px; border-radius: 10px; font-size: 13px;

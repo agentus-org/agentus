@@ -676,6 +676,86 @@ try {
   check("an idle session is never cancelled: the server logs the refusal and does not forward it",
     log.slice(idleMark).includes("cancel ignored") && !log.slice(idleMark).includes("cancel sent"),
     JSON.stringify((log.slice(idleMark).match(/\[agentslot\] cancel [a-z]+/g) ?? [])));
+  // ---- 打断方式（语音打断 / 按键打断）：开关就在通话页上，一下切换、立即生效 ---------------
+  // One setting changes with the ROOM (a phone on a table hears its own loudspeaker; a headset does
+  // not), so both ends live on the call itself, always visible, and flipping one is a single tap —
+  // NOT a knob inside the settings sheet. In 按键打断 the voice barge is off and only the orb
+  // interrupts; the two barge knobs then have nothing to do and must say so.
+  const modesOf = () => ev2(`(() => { const b = document.querySelector('.call-modes');
+    return { present: !!(b && document.querySelector('.call-mode')), inSheet: !!(b && b.closest('.call-sheet')),
+      dataMode: b?.dataset.mode ?? null,
+      labels: [...(b?.querySelectorAll('.call-mode-btn') ?? [])].map((x) => x.textContent.trim()),
+      on: b?.querySelector('.call-mode-btn.on')?.textContent.trim() ?? null,
+      pressed: [...(b?.querySelectorAll('.call-mode-btn') ?? [])].map((x) => x.getAttribute('aria-pressed')) }; })()`);
+  // a fresh reply being READ OUT is the only state in which "voice mode would barge" is a claim
+  // with content, so every feed below is preceded by one (same recipe the sensitivity block uses).
+  const speakWindow = async () => {
+    await ev2(`document.querySelector('.call-btn.hangup').click(); true`);
+    await sleep(500);
+    await api("POST", `/api/sessions/${slow2.id}/prompt`, {
+      text: "第一句在这里。第二句在这里。第三句在这里。第四句也在这里。第五句在这里。第六句也在这里。",
+    });
+    for (let i = 0; i < 30; i++) { await sleep(200); if (await busyOf(slow2.id)) break; }
+    await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click(); true`);
+    return await waitPhase2("speaking", 30000);
+  };
+  const setMode = (label) => ev2(`[...document.querySelectorAll('.call-mode-btn')].find((b) => b.textContent.trim() === '${label}')?.click(); true`);
+  await api("PUT", "/api/settings", { call: { bargeSensitivity: 100, interruptMode: "voice" } });   // would barge instantly
+
+  const modes = await modesOf();
+  check("the interrupt-mode switch lives on the CALL (always visible), not inside the settings sheet",
+    modes.present === true && modes.inSheet === false, JSON.stringify(modes));
+  check("both ends are named and the active one is marked",
+    JSON.stringify(modes.labels) === JSON.stringify(["语音打断", "按键打断"]) && modes.on === "语音打断"
+      && JSON.stringify(modes.pressed) === JSON.stringify(["true", "false"]), JSON.stringify(modes));
+
+  check("a fresh reply is being read out (so a barge is a real claim)", (await speakWindow()) === true, `phase=${await phase2()}`);
+  // flip WHILE it is talking: this is the situation the switch exists for, and the whole reason it
+  // is on the call rather than behind the gear — one tap, no sheet, mid-reply.
+  await setMode("按键打断");
+  await sleep(600);
+  check("tapping 按键打断 mid-reply is saved to the server (one tap, no sheet)",
+    (await api("GET", "/api/settings")).body?.call?.interruptMode === "button");
+  check("the switch reports the mode it is in", (await modesOf()).dataMode === "button");
+
+  const cancelsBeforeBtn = await frameCount("cancel");
+  await feed(0.35, "");                    // the level that barged a moment ago, at 100 % sensitivity
+  await sleep(1400);
+  check("…and that same voice no longer takes the floor while 按键打断 is on",
+    (await phase2()) === "speaking" && (await frameCount("cancel")) === cancelsBeforeBtn,
+    JSON.stringify({ phase: await phase2(), cancelsBefore: cancelsBeforeBtn, cancels: await frameCount("cancel") }));
+
+  // the receipt: the switch as the operator sees it, on a phone (the case the mode exists for)
+  fs.writeFileSync(`${SHOTS}/call-modes.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await openSheet(); await sleep(400);
+  const sheetInButton = await ev2(`(() => ({ warn: document.querySelector('.call-sheet-warn')?.textContent?.trim() ?? null,
+    knobs: [...document.querySelectorAll('.call-knob')].map((k) => ({ name: k.querySelector('.call-knob-name')?.textContent,
+      off: k.classList.contains('off'), dis: k.querySelector('input[type=range]')?.disabled })) }))()`);
+  await closeSheet(); await sleep(300);
+  check("in 按键打断 the two barge knobs are visibly off and disabled (a control that cannot do anything says so)",
+    sheetInButton.warn !== null
+      && sheetInButton.knobs.filter((k) => k.name?.includes("抢话")).every((k) => k.dis === true && k.off === true)
+      && sheetInButton.knobs.filter((k) => k.name === "说完停顿" || k.name === "最少字数").every((k) => k.dis === false),
+    JSON.stringify(sheetInButton.knobs));
+
+  await tapOrb2();
+  check("…but the orb still interrupts in 按键打断: one tap takes the floor back",
+    (await waitPhase2("listening", 3000)) === true, `phase=${await phase2()}`);
+
+  // back to 语音打断: the same voice must barge again, live (the switch is wired to the running
+  // loop, not read once at join time).
+  await setMode("语音打断");
+  await sleep(600);
+  check("switching back to 语音打断 on the call is saved too",
+    (await api("GET", "/api/settings")).body?.call?.interruptMode === "voice",
+    JSON.stringify((await modesOf())));
+  check("…and a fresh reply is being read out again", (await speakWindow()) === true, `phase=${await phase2()}`);
+  await feed(0.35, "");
+  check("…and with 语音打断 back on the SAME voice takes the floor again (live apply, both directions)",
+    (await waitPhase2("listening", 4000)) === true, `phase=${await phase2()}`);
+  check("the server refuses a mode it does not know",
+    (await api("PUT", "/api/settings", { call: { interruptMode: "banana" } })).status === 400);
+
   const savedBarge = (await api("GET", "/api/settings")).body?.call?.bargeSensitivity;
   check("the sensitivity the panel set is what the server holds", savedBarge === 100, `bargeSensitivity=${savedBarge}`);
   fs.writeFileSync(`${SHOTS}/call-settings.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));

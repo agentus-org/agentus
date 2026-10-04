@@ -12,7 +12,14 @@
 // instead of the defaults — the same dance theme.ts does.
 import { useSyncExternalStore } from "react";
 
+export type InterruptMode = "voice" | "button";
+
 export interface CallSettings {
+  /** WHO gets to interrupt the agent. This one is a SWITCH ON THE CALL, not a knob in the panel:
+   *  it changes with the room (a phone on a table hears itself), so it has to be one tap away
+   *  WHILE the call is misbehaving — digging into a sheet to flip a mode is the wrong gesture.
+   *  The orb tap works in both modes; it is the one control that always means "the floor is mine". */
+  interruptMode: InterruptMode;
   /** HOW EASY it is to talk over the reply, 0..100 (high = easy). The panel is a sensitivity
    *  because that is what an operator can reason about; the mic level it maps to is
    *  `bargeLevelOf` below. The first version stored the raw level, which made "灵敏度 80%"
@@ -26,10 +33,21 @@ export interface CallSettings {
   minChars: number;
 }
 
-export const CALL_DEFAULT: CallSettings = { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3 };
+export const CALL_DEFAULT: CallSettings = {
+  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3,
+};
+
+/** The switch's two ends, in the operator's words. */
+export const INTERRUPT_MODES: { id: InterruptMode; label: string; hint: string }[] = [
+  { id: "voice", label: "语音打断", hint: "说一句就能打断它（灵敏度、持续时间在设置里调）" },
+  { id: "button", label: "按键打断", hint: "只有点圆球才打断——外放串音、环境吵的时候用它" },
+];
+
+/** The NUMERIC knobs (slider ends live here). `interruptMode` is a two-way choice, not a slider. */
+export type CallKnobKey = Exclude<keyof CallSettings, "interruptMode">;
 
 /** The slider ends. The server validates against the same ranges (settings.ts CALL_RANGE). */
-export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
+export const CALL_RANGE: Record<CallKnobKey, [number, number]> = {
   bargeSensitivity: [0, 100],
   bargeMs: [100, 1000],
   silenceMs: [400, 4000],
@@ -38,7 +56,7 @@ export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
 
 /** One row per knob: the panel renders straight off this, so a new knob is one entry. */
 export interface CallKnob {
-  key: keyof CallSettings;
+  key: CallKnobKey;
   label: string;
   /** how to read the number back to the operator */
   show: (v: number) => string;
@@ -49,6 +67,7 @@ export interface CallKnob {
 
 export const CALL_KNOBS: CallKnob[] = [
   {
+    /** voice mode only: with the interrupt on the button there is no threshold to tune */
     key: "bargeSensitivity",
     label: "抢话灵敏度",
     show: (v) => `${Math.round(v)}%`,
@@ -87,9 +106,10 @@ export function bargeLevelOf(sensitivity: number): number {
 }
 
 const KEY = "agentslot.call";
-const FIELDS = Object.keys(CALL_DEFAULT) as (keyof CallSettings)[];
+/** numeric knobs only — clamping `interruptMode` as a number would erase the choice */
+const NUMERIC = Object.keys(CALL_RANGE) as CallKnobKey[];
 
-function clamp(key: keyof CallSettings, v: unknown): number {
+function clamp(key: CallKnobKey, v: unknown): number {
   const [lo, hi] = CALL_RANGE[key];
   const n = Number(v);
   if (!Number.isFinite(n)) return CALL_DEFAULT[key];
@@ -100,9 +120,9 @@ function clamp(key: keyof CallSettings, v: unknown): number {
 export function normalizeCall(raw: unknown): CallSettings {
   const out = { ...CALL_DEFAULT };
   if (!raw || typeof raw !== "object") return out;
-  for (const k of FIELDS) {
-    if (k in (raw as Record<string, unknown>)) out[k] = clamp(k, (raw as Record<string, unknown>)[k]);
-  }
+  const r = raw as Record<string, unknown>;
+  if (INTERRUPT_MODES.some((m) => m.id === r.interruptMode)) out.interruptMode = r.interruptMode as InterruptMode;
+  for (const k of NUMERIC) if (k in r) out[k] = clamp(k, r[k]);
   return out;
 }
 
@@ -157,7 +177,7 @@ export async function patchCallSettings(patch: Partial<CallSettings>): Promise<s
 /** Adopt what the server says without pushing it back (used at boot / after login). */
 export function adoptServerCall(raw: unknown): void {
   const next = normalizeCall(raw);
-  if (FIELDS.every((k) => next[k] === current[k])) return;
+  if (Object.keys(CALL_DEFAULT).every((k) => next[k as keyof CallSettings] === current[k as keyof CallSettings])) return;
   setCurrent(next);
 }
 
