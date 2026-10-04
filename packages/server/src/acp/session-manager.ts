@@ -798,7 +798,24 @@ export class SessionManager {
     return info;
   }
 
-  /** Fork the session, ask the FORK for a title, throw the fork away. */
+  /**
+   * Fork the session, ask the FORK for a title, throw the fork away.
+   *
+   * WHY THIS IS CHEAP (measured against real `hermes acp`, 2026-10-04): the title turn billed
+   * **147 fresh input tokens + 51 output**, with **12,544 tokens served from the provider's
+   * prefix cache** — i.e. ~12.5k of the ~12.9k prompt was a cache read, not fresh tokens.
+   *
+   * The reason is the SHAPE of what we send: the fork deep-copies the parent's history and we
+   * append exactly ONE small user message at the END. The front — system prompt, tool
+   * definitions, the whole conversation — is byte-identical to the parent's last request, so
+   * the prefix cache matches.
+   *
+   * Therefore: NEVER put anything in front of the copied history. A "you are a titling
+   * assistant" system message, a rewritten or reordered history, a different cwd/model, or
+   * forking from a fresh process would invalidate the entire prefix and turn this cheap click
+   * into a full-context re-read (~12.9k today, growing with the session). The instruction text
+   * is deliberately at the tail for that reason.
+   */
   async #titleFromFork(s: LiveSession): Promise<string | null> {
     const conn = s.conn!;
     const fork = await conn.unstable_forkSession({
