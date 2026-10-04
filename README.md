@@ -331,14 +331,23 @@ to your production memory daemon), and `.env` copied 0600.
   announced to a screen reader), the reply read sentence by sentence as it streams, and
   **barge-in that actually takes the floor**: talking over the reply stops our playback,
   *cancels the agent's turn* and hands the microphone back. Its thresholds are knobs on the
-  call itself (⚙ in the corner): 抢话灵敏度, 抢话持续时间, 说完停顿 and 最少字数 — a phone on a
-  table leaks its own loudspeaker into its own microphone, a headset does not, so these are
-  per-installation settings (`settings.json`, server-side, shared across devices) rather than
-  constants. `最少字数` gates only the automatic send; a tap on the orb always sends
+  call itself (⚙ in the corner): 抢话灵敏度 (0-100 %, higher = easier to interrupt, 60 % by
+  default), 抢话持续时间, 说完停顿 and 最少字数 (3 by default) — a phone on a table leaks its
+  own loudspeaker into its own microphone, a headset does not, so these are per-installation
+  settings (stored server-side, shared across devices) rather than constants. `最少字数` gates
+  only the automatic send; a tap on the orb always sends. While a call is open it owns the
+  voice: the auto-read of the same reply stands down, and a call reads **this turn's** answer
+  only — never the answer to the question before it
 - **settings page** (⚙ in the rail): theme (light / dark / follow-the-OS, plus an accent
   colour that retints the whole cockpit), the speech provider, endpoint and key, the
   models (picked from the endpoint's own list), the hotword list, and a test button for
-  each direction. Server side it is one JSON file; the theme also caches in the browser so
+  each direction. Everything the operator chooses — theme, speech endpoint, the call's
+  thresholds, and the talk-to-agent preferences (read replies aloud, voice, speed,
+  language, recogniser, server-side synthesis) — is a **row in the store's `settings`
+  table** (`voice` / `theme` / `call` / `prefs`, one row per section), not a file beside it
+  and not a browser's localStorage: settings follow the operator from the phone to the
+  laptop, and two tabs of one instance cannot disagree. A pre-store `settings.json` is
+  imported once and kept as `.imported`; the browser keeps a copy of each section only so
   the first frame is already right
 - **百炼 (DashScope) speech, first-class**: streaming recognition over its inference
   WebSocket (`qwen-audio-3.1-asr-flash-streaming` — words appear as they are spoken),
