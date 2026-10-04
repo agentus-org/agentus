@@ -1217,3 +1217,111 @@ code.inline {
   /* message actions without a hover state need a real hit box (measured 27x22 before) */
   .bubble-btn { width: 34px; height: 30px; }
 }
+
+/* ---- voice call mode (full screen, the ChatGPT/豆包 shape) -------------------------- */
+/* portalled to <body> — the off-canvas rail's transform would otherwise become the
+   containing block for a fixed overlay (a bug this repo has already paid for). */
+.call-mode {
+  position: fixed; inset: 0; z-index: 60;
+  /* A call is its own surface (like a video-call screen): it keeps its own dark palette
+     instead of inheriting the app's, or a light-theme switch turns the controls white on a
+     near-black background (measured — that is exactly how it looked). */
+  --bg-panel: rgba(255,255,255,0.07);
+  --bg-raised: rgba(255,255,255,0.14);
+  --line: rgba(255,255,255,0.16);
+  --text: #eef2f7;
+  --text-dim: rgba(238,242,247,0.60);
+  --err: #f2555a;
+  --on-accent: #0b1220;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px;
+  padding: max(20px, env(safe-area-inset-top)) 18px calc(20px + env(safe-area-inset-bottom));
+  background: radial-gradient(120% 90% at 50% 33%, #111827 0%, #080a12 60%, #05060b 100%);
+  color: var(--text);
+  overflow: hidden;                 /* the controls must never end up off-screen */
+  animation: call-in 240ms ease-out;
+}
+@keyframes call-in { from { opacity: 0; transform: scale(1.015); } to { opacity: 1; transform: none; } }
+/* one tone per phase: input and output are deliberately different colours */
+.call-mode[data-phase="connecting"] { --call-tone: #7d91c8; }
+.call-mode[data-phase="listening"]  { --call-tone: #38bdf8; }
+.call-mode[data-phase="thinking"]   { --call-tone: #a78bfa; }
+.call-mode[data-phase="speaking"]   { --call-tone: #fbbf24; }
+.call-mode[data-phase="error"]      { --call-tone: #f87171; }
+
+/* the room light: a wide tint in the phase's colour, so the screen does not read as an
+   empty box with a small ball in it */
+.call-mode::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  /* the wide light lives here, off-canvas limits: two stops, a tight core glow and a room
+     tint, so the ball sits in light instead of on a flat field */
+  background:
+    radial-gradient(26% 19% at 50% 37%, color-mix(in srgb, var(--call-tone, #38bdf8) 26%, transparent) 0%, transparent 100%),
+    radial-gradient(62% 44% at 50% 37%, color-mix(in srgb, var(--call-tone, #38bdf8) 15%, transparent) 0%, transparent 74%);
+  transition: background 500ms ease;
+}
+.call-head, .call-orb, .call-lines, .call-wave, .call-controls { position: relative; }
+
+.call-head { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.call-title { font-size: 17px; font-weight: 600; letter-spacing: 0.03em; color: var(--call-tone, var(--text)); text-shadow: 0 0 18px color-mix(in srgb, var(--call-tone, #38bdf8) 45%, transparent); }
+.call-sub { font-size: 11.5px; color: var(--text-dim); letter-spacing: 0.04em; }
+
+/* the orb: one tappable target that means "the floor changes hands" */
+.call-orb {
+  /* height-driven: on a short landscape screen a width-only size pushed the controls out
+     of the viewport (measured), and on a phone the vw term keeps it thumb-sized */
+  height: min(46vh, 76vw, 380px); aspect-ratio: 1; flex: 0 1 auto;
+  padding: 0; border: none; background: transparent; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.call-orb-canvas { display: block; width: 100%; height: 100%; }
+.call-orb:focus-visible { outline: 2px solid var(--call-tone, var(--accent)); outline-offset: 6px; border-radius: 50%; }
+
+.call-lines {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: min(560px, 92vw); min-height: 60px; flex: 0 1 auto; overflow: hidden;
+}
+.call-heard { margin: 0; font-size: 15px; line-height: 1.45; text-align: center; }
+.call-reply {
+  margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--text-dim); text-align: center;
+  max-height: 24vh; overflow-y: auto; white-space: pre-wrap;
+}
+.call-hint { margin: 0; font-size: 12.5px; color: var(--text-dim); }
+.call-err { margin: 0; font-size: 12.5px; color: var(--err); }
+
+/* input vs output waveform: its colour follows the phase (see the canvas) */
+.call-wave {
+  /* a faint floor, so the trace sits on something instead of floating in the void */
+  width: min(420px, 80vw); height: 46px; display: block; flex: 0 1 auto; min-height: 34px;
+  border-radius: 12px;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.01), rgba(255,255,255,0.035));
+}
+
+.call-controls { display: flex; align-items: center; gap: 16px; margin-top: 2px; }
+.call-btn {
+  width: 52px; height: 52px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--bg-panel); color: var(--text); cursor: pointer;
+}
+.call-btn:hover { background: var(--bg-raised); border-color: var(--text-dim); }
+.call-btn.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.call-btn.hangup { width: 60px; height: 60px; background: var(--err); border-color: transparent; color: #fff; }
+.call-btn.hangup:hover { background: var(--err); filter: brightness(1.1); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+@media (max-width: 720px) {
+  .call-mode { gap: 8px; }
+  .call-orb { height: min(42vh, 72vw, 300px); }
+  .call-lines { min-height: 88px; }
+  .call-reply { max-height: 20vh; }
+  .call-btn { width: 56px; height: 56px; }
+  .call-btn.hangup { width: 64px; height: 64px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call-mode { animation: none; }
+}

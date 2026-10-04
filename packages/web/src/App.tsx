@@ -4,6 +4,7 @@ import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
+import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
@@ -14,7 +15,7 @@ import {
 import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
-  IconPause, IconPencil, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconSettings, IconShield,
+  IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
 import type { ClientCommand, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
@@ -1684,6 +1685,9 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
   const dict = useDictation();
   const spoken = useSpeaker();
   const ta = useRef<HTMLTextAreaElement>(null);
+  // the voice call takes the whole screen; the composer stays mounted underneath so
+  // "改用键盘" lands back in the prompt box with the draft intact
+  const [call, setCall] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const addFiles = async (files: FileList | File[]): Promise<void> => {
@@ -2070,6 +2074,21 @@ function Composer({ v }: { v: SessionView }): JSX.Element {
             >
               <IconMic size={16} />
             </button>
+            <button
+              className={`icon-btn ${call ? "on" : ""}`}
+              title="语音通话 —— 像打电话一样跟这个会话说话"
+              aria-label="开始语音通话"
+              onClick={() => { dictation.stop(); setCall(true); }}
+            >
+              <IconPhone size={16} />
+            </button>
+            {call ? (
+              <CallMode
+                sessionId={v.info.id}
+                onClose={() => setCall(false)}
+                onKeyboard={() => { setCall(false); window.setTimeout(() => ta.current?.focus(), 30); }}
+              />
+            ) : null}
             {v.busy ? (
               <button
                 className="send-btn stop"

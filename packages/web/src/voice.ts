@@ -183,6 +183,39 @@ export async function unlockAudio(): Promise<boolean> {
   }
 }
 
+/** The analyser of whatever is playing right now (server TTS path only — the browser voice
+ *  cannot be tapped, so callers fall back to their procedural animation there). The call
+ *  UI reads this every animation frame: level and waveform must never go through React
+ *  state, or a 60 fps visual turns into 60 renders/second. */
+const PLAYBACK: { analyser: AnalyserNode | null } = { analyser: null };
+// typed over ArrayBuffer (not ArrayBufferLike): getFloatTimeDomainData insists on it
+let playbackBuf: Float32Array<ArrayBuffer> | null = null;
+
+/** Live output amplitude 0..1, or -1 when there is nothing to measure. */
+export function playbackLevel(): number {
+  const a = PLAYBACK.analyser;
+  if (!a) return -1;
+  const buf: Float32Array<ArrayBuffer> = playbackBuf && playbackBuf.length === a.fftSize
+    ? playbackBuf
+    : new Float32Array(new ArrayBuffer(a.fftSize * 4));
+  playbackBuf = buf;
+  a.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  return Math.min(1, Math.sqrt(sum / buf.length) * 4);
+}
+
+/** Copy the newest time-domain samples into `out` (for a waveform). False = nothing playing. */
+export function playbackWave(out: Float32Array): boolean {
+  const a = PLAYBACK.analyser;
+  if (!a) return false;
+  const buf = new Float32Array(new ArrayBuffer(a.fftSize * 4));
+  a.getFloatTimeDomainData(buf);
+  const step = Math.max(1, Math.floor(buf.length / out.length));
+  for (let j = 0, i = 0; j < out.length; j++, i += step) out[j] = buf[i] ?? 0;
+  return true;
+}
+
 /** Playback was stopped by the operator. Distinct from a failure on purpose: a stop must
  *  never trigger the "server voice failed, use the browser voice" fallback. */
 export class SpeechStopped extends Error {
@@ -201,9 +234,16 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
       await new Promise<void>((resolve, reject) => {
         const src = audioCtx!.createBufferSource();
         src.buffer = buf;
-        src.connect(audioCtx!.destination);
-        src.onended = () => resolve();
+        // route through an analyser so the call UI can ride the real output — the voice
+        // mode is worthless if the orb only fakes it from a timer
+        const analyser = audioCtx!.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        analyser.connect(audioCtx!.destination);
+        PLAYBACK.analyser = analyser;
+        src.onended = () => { if (PLAYBACK.analyser === analyser) PLAYBACK.analyser = null; resolve(); };
         const abort = (): void => {
+          if (PLAYBACK.analyser === analyser) PLAYBACK.analyser = null;
           try { src.stop(); } catch { /* already stopped */ }
           reject(new SpeechStopped());
         };
@@ -504,6 +544,41 @@ class Dictation {
   #proc: ScriptProcessorNode | null = null;
   #mic: MediaStream | null = null;
   #committed = "";
+  /** Live amplitude 0..1 with a fast attack / slow release, plus a rolling snapshot of the
+   *  newest samples. The voice-mode orb reads both every frame (never through React). */
+  #level = 0;
+  #wave = new Float32Array(256);
+  #relay = true;
+
+  /** Live microphone amplitude 0..1 — read per animation frame. */
+  level = (): number => this.#level;
+  /** Newest input snapshot for the waveform (a flat line while not capturing). */
+  wave = (): Float32Array => this.#wave;
+  /** While false the mic stays OPEN (levels keep flowing, barge-in keeps working) but PCM
+   *  is not relayed to the recogniser — the call speaks without feeding our own TTS back
+   *  into the ASR. */
+  setRelay(on: boolean): void {
+    this.#relay = on;
+  }
+  /** Start a fresh listening turn without rebuilding the capture graph. */
+  resetText(): void {
+    this.#committed = "";
+    this.#set({ text: "", interim: "" });
+  }
+
+  #measure(chan: Float32Array): void {
+    let sum = 0;
+    for (let i = 0; i < chan.length; i++) sum += chan[i] * chan[i];
+    // speech sits around 0.02–0.2 RMS; ×6 + clamp puts normal speech near the top
+    const target = Math.min(1, Math.sqrt(sum / chan.length) * 6);
+    // fast attack, slow release: snap to a syllable, settle gently — a symmetric filter
+    // makes the orb look like a level meter instead of something alive
+    this.#level = target > this.#level
+      ? this.#level + (target - this.#level) * 0.6
+      : this.#level * 0.72 + target * 0.28;
+    const step = Math.max(1, Math.floor(chan.length / this.#wave.length));
+    for (let j = 0, i = 0; j < this.#wave.length && i < chan.length; j++, i += step) this.#wave[j] = chan[i];
+  }
 
   subscribe = (fn: () => void): (() => void) => {
     this.#listeners.add(fn);
@@ -615,6 +690,7 @@ class Dictation {
     if (!Ctor) throw new Error("this browser cannot process audio");
     // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
     this.#set({ status: "requesting", engine: "stream", error: "" });
+    this.#relay = true;          // a fresh capture always relays until the call says otherwise
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
@@ -666,7 +742,12 @@ class Dictation {
     mute.gain.value = 0; // keeps the graph pulled without echoing the mic to the speakers
     this.#proc = proc;
     proc.onaudioprocess = (ev: AudioProcessingEvent) => {
-      const pcm = resampleToPcm16(ev.inputBuffer.getChannelData(0), ctx.sampleRate, 16000);
+      const raw = ev.inputBuffer.getChannelData(0);
+      // the call UI's only source of live input: measured BEFORE the relay gate, so the
+      // orb still moves and barge-in still fires while we are speaking
+      this.#measure(raw);
+      if (!this.#relay) return;
+      const pcm = resampleToPcm16(raw, ctx.sampleRate, 16000);
       if (!pcm.length) return;
       // typed arrays are generic over ArrayBufferLike in TS; a fresh Int16Array's buffer
       // is always a plain ArrayBuffer
@@ -713,6 +794,10 @@ class Dictation {
       window.clearInterval(this.#timer);
       this.#timer = null;
     }
+    // the capture graph is gone: a stale level would leave the orb pulsing at nothing
+    this.#level = 0;
+    this.#wave.fill(0);
+    this.#relay = true;
   }
 
   #finishStream(): void {

@@ -120,6 +120,20 @@ export const IconVolume = (p: IconProps = {}): JSX.Element =>
 export const IconVolumeOff = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M11 5 6 9H3v6h3l5 4z" /><path d="m16 9 5 6M21 9l-5 6" /></>, p);
 
+/** start a voice call (the handset: one shape, rotated for "hang up") */
+const HANDSET = <path d="M6.6 3.5h1.9c.8 0 1.5.6 1.7 1.4l.7 2.6c.2.8-.1 1.7-.8 2.2l-1.2.8a12.5 12.5 0 0 0 5.6 5.6l.8-1.2c.5-.7 1.4-1 2.2-.8l2.6.7c.8.2 1.4.9 1.4 1.7v1.9c0 1.2-1 2.2-2.2 2.1C11 20.9 3.1 13 3.2 5.7c0-1.2 1-2.2 2.2-2.2z" />;
+export const IconPhone = (p: IconProps = {}): JSX.Element => svg(HANDSET, p);
+export const IconPhoneDown = (p: IconProps = {}): JSX.Element =>
+  svg(<g transform="rotate(135 12 12)">{HANDSET}</g>, p);
+
+/** microphone muted */
+export const IconMicOff = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M9 9v2a3 3 0 0 0 4.6 2.5M15 11.5V6a3 3 0 0 0-5.7-1.3" /><path d="M5 11a7 7 0 0 0 10.8 5.9M19 11v.5" /><path d="M12 18v3M9 21h6" /><path d="m4 4 16 16" /></>, p);
+
+/** keyboard */
+export const IconKeyboard = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></>, p);
+
 export const IconPause = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="7" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" /><rect x="13.5" y="5" width="3.5" height="14" rx="1" fill="currentColor" stroke="none" /></>, p);
 
