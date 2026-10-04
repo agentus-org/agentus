@@ -37,6 +37,10 @@ const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 
 // timeout. Env-tunable so a sweep can exercise the timeout path in seconds.
 const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTSLOT_TITLE_TIMEOUT_MS || 90_000);
 
+// How long a cancelled turn may take to actually stop before an interrupting prompt gives up
+// (an agent that ignores session/cancel must not hang the operator's next sentence forever).
+const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTSLOT_SETTLE_TIMEOUT_MS || 15_000);
+
 interface LiveSession {
   info: SessionInfo;
   child?: ReturnType<typeof spawn>;
@@ -48,6 +52,10 @@ interface LiveSession {
   /** What the agent says it can do (initialize.agentCapabilities), kept because the title
    *  regeneration is only possible when it advertises `session/fork`. */
   caps: { fork: boolean; load: boolean };
+  /** Incremented when a turn STARTS. An interrupt waits for the specific turn it cancelled,
+   *  so a second interrupting utterance that already started its own turn is not mistaken for
+   *  "the one I cancelled is still running". */
+  turnSeq: number;
   /** Text sinks for sessions that live on this connection but are NOT the one in the rail —
    *  today only the throwaway fork used to summarise the conversation for a title. Anything
    *  whose sessionId is not `info.acpSessionId` is routed here and never persisted. */
@@ -149,7 +157,7 @@ export class SessionManager {
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, collectors: new Map(),
+      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
     };
     this.#sessions.set(id, live);
     this.#store.upsertSession(sessionRow(live.info));
@@ -250,7 +258,7 @@ export class SessionManager {
         commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, collectors: new Map(),
+      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
     };
     this.#sessions.set(id, live);
     this.#store.upsertSession(sessionRow(live.info));
@@ -356,12 +364,38 @@ export class SessionManager {
       }));
   }
 
-  async prompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): Promise<void> {
+  async prompt(
+    sessionId: string,
+    text: string,
+    attachments: PromptAttachment[] = [],
+    opts: { interrupt?: boolean } = {},
+  ): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
-    if (s.busy) throw new Error("turn already running");
+    if (s.busy) {
+      // Someone is talking over the agent. Plain prompts are refused (the operator's send
+      // button is a stop button), but a call utterance carries `interrupt: true`: give the
+      // floor back by cancelling, then WAIT for the running turn to really end before
+      // starting the new one. Without the wait, the cancel (async) races the new prompt and
+      // the operator got "turn already running" for doing exactly what a call invites.
+      if (!opts.interrupt) throw new Error("turn already running");
+      // Take the floor: cancel whatever is running and wait for THE TURN WE CANCELLED to
+      // really stop. Another interrupting utterance may have started a turn meanwhile — this
+      // call is an interrupt too, so it takes that one as well rather than failing with
+      // "still running". (A plain sleep would guess; the per-turn counter knows.)
+      const deadline = Date.now() + TURN_SETTLE_TIMEOUT_MS;
+      do {
+        await this.cancel(sessionId);
+        const mine = s.turnSeq;
+        while (s.busy && s.turnSeq === mine && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 40));
+        }
+      } while (s.busy && Date.now() < deadline);
+      if (s.busy) throw new Error("上一个回合没能停下来（agent 未响应取消），请稍后再试");
+    }
     const blocks = buildPromptBlocks(text, attachments);
     if (!blocks.length) throw new Error("empty prompt");
+    s.turnSeq += 1;
     s.busy = true;
     s.info.status = "running";
     this.#updateSession(s);

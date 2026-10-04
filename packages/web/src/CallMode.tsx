@@ -162,15 +162,23 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
           setHeard(text);
           // stop feeding our own audio to the recogniser while the turn runs
           dictation.setRelay(false);
-          cockpit.send({ t: "prompt", sessionId, text });
+          // `interrupt`: if the agent is somehow still finishing the previous turn (the
+          // cancel we send below is async), the server cancels it and queues this utterance
+          // instead of refusing it. Without this the operator got "turn already running" for
+          // doing exactly what a call invites.
+          cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
         }
       } else if (phaseRef.current === "speaking") {
-        // barge-in: the operator talking over the reply takes the floor back
+        // barge-in: the operator talking over the reply takes the floor back. Two things have
+        // to happen — stop reading aloud (our own output goes quiet) AND cancel the agent's
+        // turn. Stopping only the speaker left the turn running, so the sentence the operator
+        // said next was refused with "turn already running": barge-in that doesn't hand the
+        // floor over isn't barge-in.
         const over = dictation.level() > BARGE_LEVEL;
         bargeRef.current = over ? bargeRef.current + 250 : 0;
         if (bargeRef.current >= BARGE_MS) {
           bargeRef.current = 0;
-          void backToListening(true);
+          void bargeIn();
         }
       } else {
         bargeRef.current = 0;
@@ -234,6 +242,13 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, reply, busy]);
 
+  /** Talking over the agent: drop our playback, cancel ITS turn, listen again. */
+  const bargeIn = async (): Promise<void> => {
+    speaker.stop();
+    cockpit.send({ t: "cancel", sessionId });
+    await backToListening(false);
+  };
+
   /** Back to the operator's turn: fresh transcript, mic relaying again. */
   const backToListening = async (interrupted: boolean): Promise<void> => {
     if (interrupted) speaker.stop();
@@ -290,17 +305,12 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         sentRef.current = true;
         setPhase("thinking");
         dictation.setRelay(false);
-        cockpit.send({ t: "prompt", sessionId, text });
+        cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
       }
       return;
     }
-    if (p === "speaking") { await backToListening(true); return; }
-    if (p === "thinking") {                       // stop the turn, take the floor back
-      speaker.stop();
-      cockpit.send({ t: "cancel", sessionId });
-      await backToListening(true);
-      return;
-    }
+    if (p === "speaking") { await bargeIn(); return; }
+    if (p === "thinking") { await bargeIn(); return; }   // stop the turn, take the floor back
     if (p === "error") await backToListening(false);
   };
 

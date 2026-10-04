@@ -149,7 +149,11 @@ export interface AttachmentSummary {
 
 export type ClientCommand =
   | { t: "resume"; lastSeq: Record<string, number> }
-  | { t: "prompt"; sessionId: string; text: string; attachments?: PromptAttachment[] }
+  /** `interrupt: true` = "I am taking the floor": if a turn is still running, cancel it and
+   *  wait for it to actually stop before sending this prompt. Call mode sends every utterance
+   *  this way (the operator speaking over the agent IS the interrupt), which is also what
+   *  removes the race between an async cancel and the next prompt. */
+  | { t: "prompt"; sessionId: string; text: string; attachments?: PromptAttachment[]; interrupt?: boolean }
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }

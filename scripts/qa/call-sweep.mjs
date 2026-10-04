@@ -298,6 +298,142 @@ try {
   check("prefers-reduced-motion turns the CSS animation off (and the orb stays)", rm.name === "none" && rm.orb === true, JSON.stringify(rm));
   await send("Emulation.setEmulatedMedia", { features: [] });
 
+  // ---- 说话打断 / barge-in: taking the floor while the agent is still talking ------------
+  // The operator's report: saying something over the reply produced
+  // {"text":"turn failed: turn already running"}. Root cause was ours: barge-in stopped our
+  // playback but never cancelled the agent's turn, so the sentence that followed arrived at a
+  // busy session and was refused. Two things are checked here — the SERVER accepts an
+  // interrupting prompt mid-turn (cancel, settle, then run), and the CALL cancels the turn
+  // when the operator takes the floor back.
+  const token = (await import("node:fs")).readFileSync(path.join(dataDir, "auth.token"), "utf8").trim();
+  const api = async (method, url, body) => {
+    const res = await fetch(BASE + url, {
+      method, headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let json = null;
+    try { json = await res.json(); } catch { /* empty */ }
+    return { status: res.status, body: json };
+  };
+  const msgsOf = async (sid) => (await api("GET", `/api/sessions/${sid}/messages?limit=500`)).body?.messages ?? [];
+  const busyOf = async (sid) => {
+    const d = (await api("GET", "/api/sessions")).body;
+    const row = [...(d?.live ?? []), ...(d?.archived ?? [])].find((r) => r.id === sid);
+    return row?.status === "running";
+  };
+
+  const slow = (await api("POST", "/api/sessions", { backend: "mock", cwd: "/tmp" })).body;
+  await api("POST", `/api/sessions/${slow.id}/prompt`, { text: "[slow] 这是一段很长的回答，会慢慢地说下去" });
+  let sawBusy = false;
+  for (let i = 0; i < 40 && !sawBusy; i++) { await sleep(150); sawBusy = await busyOf(slow.id); }
+  check("a turn really is running (the barge-in has something to interrupt)", sawBusy === true, `busy=${sawBusy}`);
+
+  // The refusal bubble ("turn failed: turn already running") is emitted over WS and never
+  // persisted, so the durable evidence is the server's own log line. This is also the direct
+  // reproduction of the operator's report: this is exactly what barge-in used to send.
+  const refusals = () => (log.match(new RegExp(`prompt failed for ${slow.id}`, "g")) ?? []).length;
+  await api("POST", `/api/sessions/${slow.id}/prompt`, { text: "普通发送" });
+  await sleep(700);
+  check("…and a plain prompt during a turn IS still refused (the button-as-stop contract)",
+    refusals() === 1, `refusals=${refusals()}`);
+  const before = (await msgsOf(slow.id)).length;
+
+  // …but an INTERRUPTING prompt (what the call sends) takes the floor instead of failing
+  const t0 = Date.now();
+  const intRes = await api("POST", `/api/sessions/${slow.id}/prompt`, { text: "打断一下，换个话题", interrupt: true });
+  let started = false;
+  for (let i = 0; i < 40 && !started; i++) {
+    await sleep(200);
+    started = (await msgsOf(slow.id)).some((m) => m.kind === "user"
+      && String((m.payload ?? {}).text ?? "").includes("打断一下"));
+  }
+  const dt = Date.now() - t0;
+  check("an interrupting prompt is ACCEPTED mid-turn (no refusal, no error bubble)",
+    intRes.status === 202 && started === true, JSON.stringify({ http: intRes.status, started, tookMs: dt }));
+  let idleAt = false;
+  for (let i = 0; i < 80 && !idleAt; i++) { await sleep(250); idleAt = !(await busyOf(slow.id)); }
+  const after = await msgsOf(slow.id);
+  const failed = after.filter((m) => m.kind === "meta" && /turn failed/.test(String((m.payload ?? {}).text ?? "")));
+  check("the interrupt leaves NO 'turn failed' bubble behind (the operator's report)",
+    failed.length === 0, JSON.stringify(failed.map((m) => m.payload?.text)));
+  check("the interrupted turn really stopped (reply ends, session goes idle)",
+    idleAt === true && after.length >= before, `messages ${before} -> ${after.length}`);
+  check("an interrupting prompt never lands in the failure path (no refusal was logged)",
+    refusals() === 1, `refusals=${refusals()}`);
+  // The mock echoes the prompt text back, so grepping for words proves nothing: the observable
+  // is that the transcript STOPS GROWING once the interrupted turn has ended.
+  const n1 = (await msgsOf(slow.id)).length;
+  await sleep(2500);
+  const n2 = (await msgsOf(slow.id)).length;
+  check("the interrupted turn stopped streaming for good (transcript stops growing)",
+    n2 === n1, `${n1} -> ${n2}`);
+
+  // the CLIENT half: the call cancels the turn when the floor is taken back
+  const tab2 = await (await fetch(`${CDP}/json/new?about:blank`, { method: "PUT" })).json();
+  const ws2 = new WebSocket(tab2.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws2.onopen = res; ws2.onerror = rej; });
+  let id2 = 0; const waiting2 = new Map();
+  ws2.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && waiting2.has(m.id)) { const x = waiting2.get(m.id); waiting2.delete(m.id); m.error ? x.rej(new Error(JSON.stringify(m.error))) : x.res(m.result); }
+  };
+  const send2 = (method, params = {}, to = 30000) => new Promise((res, rej) => {
+    const mid = ++id2; const timer = setTimeout(() => { waiting2.delete(mid); rej(new Error("TIMEOUT " + method)); }, to);
+    waiting2.set(mid, { res: (v) => { clearTimeout(timer); res(v); }, rej: (e) => { clearTimeout(timer); rej(e); } });
+    ws2.send(JSON.stringify({ id: mid, method, params }));
+  });
+  const ev2 = async (expr, to = 30000) => {
+    const r = await send2("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }, to);
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? "eval failed");
+    return r.result.value;
+  };
+  // record every frame the app puts on the wire, installed BEFORE the app opens its socket
+  await send2("Page.addScriptToEvaluateOnNewDocument", { source: `
+    window.__frames = [];
+    const rawSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      try { window.__frames.push(JSON.parse(String(data))); } catch { /* not json */ }
+      return rawSend.call(this, data);
+    };
+    window.__need = (what) => window.__frames.filter((f) => f && f.t === what).map((f) => f.text ?? null);
+  ` });
+  await send2("Page.enable");
+  await send2("Page.navigate", { url: BASE });
+  await sleep(3200);
+  // a slow turn, then open the call so it joins it (the mic is not available in automation)
+  const slow2 = (await api("POST", "/api/sessions", { backend: "mock", cwd: "/tmp" })).body;
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, { text: "[slow] 慢慢说，我要在你说的时候抢话" });
+  await sleep(700);
+  await ev2(`(() => { const rows = [...document.querySelectorAll('.session-item')];
+    const row = rows.find((r) => r.dataset.session === ${JSON.stringify(slow2.id)}) ?? rows[0];
+    row?.click(); return true; })()`);
+  await sleep(500);
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click()`);
+  await sleep(1500);
+  const beforeTap2 = await ev2(`(() => { const el = document.querySelector('.call-mode');
+    return { open: !!el, phase: el?.dataset.phase ?? null }; })()`);
+  const orbBox = await ev2(`(() => { const el = document.querySelector('.call-orb-canvas'); if (!el) return null;
+    const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (orbBox) {
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await send2("Input.dispatchMouseEvent", { type, x: orbBox.x, y: orbBox.y, button: "left", clickCount: 1 });
+    }
+  }
+  await sleep(900);
+  const cancels = await ev2(`window.__frames.filter((f) => f && f.t === "cancel").length`);
+  const afterTap2 = await ev2(`(() => { const el = document.querySelector('.call-mode');
+    return { phase: el?.dataset.phase ?? null, open: !!el }; })()`);
+  check("the call was showing the agent's turn when the orb was tapped",
+    beforeTap2.open === true, JSON.stringify(beforeTap2));
+  check("taking the floor back in the call CANCELS the agent's turn (not just our playback)",
+    cancels >= 1, JSON.stringify({ cancels, before: beforeTap2.phase, after: afterTap2.phase }));
+  check("…and the call goes back to listening for the operator", afterTap2.phase === "listening",
+    JSON.stringify(afterTap2));
+  let slow2Idle = false;
+  for (let i = 0; i < 60 && !slow2Idle; i++) { await sleep(250); slow2Idle = !(await busyOf(slow2.id)); }
+  check("the cancelled turn really stopped on the server", slow2Idle === true);
+  try { await fetch(`${CDP}/json/close/${tab2.id}`); } catch { /* gone */ }
+
 } catch (e) {
   check("sweep ran to completion", false, String(e?.stack ?? e));
 } finally {

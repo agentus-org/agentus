@@ -110,8 +110,13 @@ function dictationContext(sessionId?: string): { role: "user" | "assistant"; tex
  * "-32603 Internal error" with nothing in the server log, and it also never
  * emitted turn-end, so the bubble stayed "running" forever (QA#11).
  */
-function runPrompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
-  void mgr.prompt(sessionId, text, attachments).catch((e: unknown) => {
+function runPrompt(
+  sessionId: string,
+  text: string,
+  attachments: PromptAttachment[] = [],
+  interrupt = false,
+): void {
+  void mgr.prompt(sessionId, text, attachments, { interrupt }).catch((e: unknown) => {
     const msg = String((e as Error)?.message ?? e);
     const tail = mgr.stderrTail(sessionId);
     console.error(`[agentslot] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
@@ -559,7 +564,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const attachments = Array.isArray(body.attachments) ? (body.attachments as PromptAttachment[]) : [];
         if (!text && !attachments.length) return send(res, 400, { error: "empty prompt" });
         // fire & forget: stream arrives via WS; client watches turn-start/end
-        void runPrompt(id, text, attachments);
+        void runPrompt(id, text, attachments, body.interrupt === true);
         return send(res, 202, { ok: true });
       }
       if (req.method === "POST" && sub === "/workspace") {
@@ -766,7 +771,7 @@ wss.on("connection", (ws) => {
           break;
         }
         case "prompt":
-          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? []);
+          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true);
           break;
         case "cancel":
           await mgr.cancel(cmd.sessionId);
