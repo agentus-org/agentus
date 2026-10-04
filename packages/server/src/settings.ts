@@ -49,9 +49,39 @@ export interface ThemeSettings {
 
 export const THEME_DEFAULT: ThemeSettings = { mode: "system", accent: "" };
 
+/** Call-mode tuning. These are operator-visible because they are environment-dependent —
+ *  what a phone's own loudspeaker leaks back into its microphone is nothing like a headset
+ *  in a quiet room — so the defaults are a starting point, not a truth. The call page owns
+ *  the panel; the settings page reads the same numbers. */
+export interface CallSettings {
+  /** mic level that counts as "the operator is taking the floor" (0.05 = very sensitive,
+   *  0.8 = you have to raise your voice over the reply). */
+  bargeLevel: number;
+  /** how long that level has to hold before the floor changes hands (ms) */
+  bargeMs: number;
+  /** silence that ends the operator's sentence (ms) */
+  silenceMs: number;
+  /** an AUTOMATIC send shorter than this many characters is dropped instead of being sent
+   *  as a turn (1 = no limit). A tap on the orb always sends what is there — that gesture
+   *  is an explicit instruction, not a guess about where a sentence ended. */
+  minChars: number;
+}
+
+export const CALL_DEFAULT: CallSettings = { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 };
+
+/** What each knob may be. The ranges are the panel's slider ends; the server is the one
+ *  that enforces them, so a hand-written request cannot store a nonsense value. */
+export const CALL_RANGE: Record<keyof CallSettings, [number, number]> = {
+  bargeLevel: [0.05, 0.8],
+  bargeMs: [100, 1000],
+  silenceMs: [400, 4000],
+  minChars: [1, 20],
+};
+
 export interface Settings {
   voice: VoiceSettings;
   theme: ThemeSettings;
+  call: CallSettings;
   updatedAt: number;
 }
 
@@ -71,7 +101,7 @@ const DEFAULTS: VoiceSettings = {
 };
 
 let file = "";
-let cache: Settings = { voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, updatedAt: 0 };
+let cache: Settings = { voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT }, updatedAt: 0 };
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
 
@@ -114,6 +144,7 @@ export function initSettings(dataDir: string): Settings {
   cache = {
     voice: { ...DEFAULTS, ...(stored.voice ?? {}) },
     theme: { ...THEME_DEFAULT, ...(stored.theme ?? {}) },
+    call: { ...CALL_DEFAULT, ...(stored.call ?? {}) },
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -152,6 +183,9 @@ export function publicSettings(): Record<string, unknown> {
     apiKeySource: envCreds?.source ?? null,
     theme: cache.theme,
     themeDefaults: THEME_DEFAULT,
+    call: cache.call,
+    callDefaults: CALL_DEFAULT,
+    callRange: CALL_RANGE,
     // The 百炼 system voices shipped with qwen-audio-3.0-tts-flash. A dropdown cannot be
     // complete (tenants add voices), so the page also accepts a typed id.
     ttsVoices: ["longanhuan_v3.6", "longjielidou_v3.6", "loongeva_v3.6", "loongjohn"],
@@ -222,6 +256,25 @@ export function saveTheme(patch: Record<string, unknown>): Settings {
     t.accent = accent;
   }
   cache = { ...cache, theme: t, updatedAt: Date.now() };
+  persist();
+  return cache;
+}
+
+/** Call tuning is a separate update for the same reason theme is: a bad number here must
+ *  not be able to lock the operator out of the page that would fix it. Every key is checked
+ *  against CALL_RANGE before it is stored. */
+export function saveCall(patch: Record<string, unknown>): Settings {
+  const c = { ...cache.call };
+  for (const key of Object.keys(CALL_DEFAULT) as (keyof CallSettings)[]) {
+    if (!(key in patch)) continue;
+    const raw = typeof patch[key] === "number" ? patch[key] as number : Number(patch[key]);
+    const [lo, hi] = CALL_RANGE[key];
+    if (!Number.isFinite(raw) || raw < lo || raw > hi) {
+      throw new Error(`invalid ${key}: ${JSON.stringify(patch[key])} (expected ${lo}…${hi})`);
+    }
+    c[key] = raw;
+  }
+  cache = { ...cache, call: c, updatedAt: Date.now() };
   persist();
   return cache;
 }

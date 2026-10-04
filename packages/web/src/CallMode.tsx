@@ -19,12 +19,19 @@
 //   · barge-in is level-driven with a high threshold plus a tap; a phone speaker leaking into
 //     its own mic is a real risk, so the threshold is conservative and the sustained window
 //     is 300 ms;
-//   · tapping during `thinking` cancels the turn (that is what people expect from a "stop").
+//   · tapping during `thinking` cancels the turn (that is what people expect from a "stop");
+//   · the four thresholds the loop runs on (barge level/duration, silence, minimum length)
+//     are OPERATOR settings, not constants — a phone on a table and a headset in a quiet
+//     room need different numbers, and only the person in the room knows which. The panel
+//     is on the call (the ⚙ in the corner); callSettings.ts holds the values.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit } from "./state";
 import { dictation, playbackLevel, playbackWave, speaker, useVoicePrefs } from "./voice";
-import { IconKeyboard, IconMic, IconMicOff, IconPhoneDown } from "./Icons";
+import { IconClose, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
+import {
+  CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, patchCallSettings, useCallSettings, type CallSettings,
+} from "./callSettings";
 
 export type CallPhase = "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -46,14 +53,18 @@ const PHASE_LABEL: Record<CallPhase, string> = {
   error: "出错了",
 };
 
-/** Speech threshold for "the operator is talking" (mic RMS is already ×6 + clamped). */
+/** Speech threshold for "the operator is talking" (mic RMS is already ×6 + clamped).
+ *  Not a knob: this only answers "was there a voice at all", and both the utterance end and
+ *  the minimum length are operator-tunable on top of it. */
 const VOICE_LEVEL = 0.06;
-/** Silence that ends a turn. Long enough to survive a thinking pause mid-sentence. */
-const SILENCE_MS = 1200;
-/** Barge-in: louder, and sustained. Our own TTS leaks into the mic, so this is deliberately
- *  well above speech-in-a-quiet-room and needs 300 ms of it. */
-const BARGE_LEVEL = 0.2;
-const BARGE_MS = 300;
+/** How often the loop samples the mic. The knobs are quantised by this, so it is a
+ *  120 ms tick rather than a lazy 250 ms one — "说完停顿 1.2 秒" has to mean 1.2 s. */
+const LOOP_MS = 120;
+
+/** Code points, not UTF-16 units: "最少字数" must not count an emoji as two. */
+function charCount(text: string): number {
+  return [...text].length;
+}
 
 function splitSentences(text: string): { done: string[]; tail: string } {
   const done: string[] = [];
@@ -80,6 +91,16 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   const [err, setErr] = useState("");
   const [heard, setHeard] = useState("");     // what the recogniser has so far
   const [reply, setReply] = useState("");     // what the agent is saying right now
+  // The tunables (callSettings.ts) live in the call, not in a settings page: a threshold
+  // only means anything while you are on the call that is misbehaving.
+  const [cfg] = useCallSettings();
+  const [showCfg, setShowCfg] = useState(false);
+  const [cfgErr, setCfgErr] = useState("");
+  const cfgRef = useRef(cfg);
+  cfgRef.current = cfg;
+  const applyCfg = (patch: Partial<CallSettings>): void => {
+    void patchCallSettings(patch).then(setCfgErr);
+  };
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const waveRef = useRef<HTMLCanvasElement | null>(null);
@@ -149,6 +170,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   // listening → (silence after speech) → thinking → speaking → listening …
   useEffect(() => {
     const iv = window.setInterval(() => {
+      const c = cfgRef.current;
       const st = dictation.getSnapshot();
       const lvl = dictation.level();
       if (lvl > VOICE_LEVEL) voiceAtRef.current = Date.now();
@@ -156,7 +178,9 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
         const quietFor = Date.now() - voiceAtRef.current;
-        if (text && quietFor > SILENCE_MS && !sentRef.current) {
+        // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
+        // "send this" and refusing it would read as a broken button.
+        if (text && charCount(text) >= c.minChars && quietFor > c.silenceMs && !sentRef.current) {
           sentRef.current = true;
           setPhase("thinking");
           setHeard(text);
@@ -174,16 +198,16 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         // turn. Stopping only the speaker left the turn running, so the sentence the operator
         // said next was refused with "turn already running": barge-in that doesn't hand the
         // floor over isn't barge-in.
-        const over = dictation.level() > BARGE_LEVEL;
-        bargeRef.current = over ? bargeRef.current + 250 : 0;
-        if (bargeRef.current >= BARGE_MS) {
+        const over = lvl > c.bargeLevel;
+        bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
+        if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
           void bargeIn();
         }
       } else {
         bargeRef.current = 0;
       }
-    }, 250);
+    }, LOOP_MS);
     return () => window.clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -544,12 +568,32 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reduced]);
 
+  // Saying something short and having nothing happen is the worst kind of silence: the hint
+  // names the reason instead of leaving the operator to guess (the minChars knob).
+  const heardCount = charCount(heard);
+  // …and it stays on screen: the reason a short utterance was not sent has to be visible
+  // while the words themselves are, or the silence is unexplained.
+  const tooShort = phase === "listening" && heardCount > 0 && heardCount < cfg.minChars;
   const hint = phase === "listening"
-    ? (heard ? "点一下直接发送，或说完停一下" : muted ? "麦克风已静音" : "说点什么…")
+    ? (heard
+      ? (heardCount < cfg.minChars
+        ? `太短了（少于 ${cfg.minChars} 字，不会自动发送）——继续说，或点一下圆球直接发送`
+        : "点一下直接发送，或说完停一下")
+      : muted ? "麦克风已静音" : "说点什么…")
     : phase === "speaking" ? "点一下打断，自己说" : phase === "thinking" ? "点一下停止它" : "";
 
   return createPortal(
     <div className="call-mode" data-phase={phase} role="dialog" aria-modal="true" aria-label="语音通话">
+      <button
+        type="button"
+        className="call-gear"
+        onClick={() => setShowCfg(true)}
+        aria-label="通话设置"
+        title="通话设置"
+      >
+        <IconSettings size={18} />
+      </button>
+
       <div className="call-head">
         <span className="call-title">{PHASE_LABEL[phase]}</span>
         <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
@@ -569,7 +613,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         {heard ? <p className="call-heard">{heard}</p> : null}
         {reply ? <p className="call-reply">{reply}</p> : null}
         {err ? <p className="call-err">{err}</p> : null}
-        {!heard && !reply && !err ? <p className="call-hint">{hint}</p> : null}
+        {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
       </div>
 
       <canvas ref={waveRef} className="call-wave" aria-hidden="true" />
@@ -591,6 +635,45 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
           <IconKeyboard size={18} />
         </button>
       </div>
+
+      {showCfg ? (
+        <div className="call-sheet" role="dialog" aria-label="通话设置">
+          <div className="call-sheet-card">
+            <div className="call-sheet-head">
+              <span>通话设置</span>
+              <button type="button" className="call-sheet-x" onClick={() => setShowCfg(false)} aria-label="关闭设置">
+                <IconClose size={16} />
+              </button>
+            </div>
+            <p className="call-sheet-note">
+              {cfgErr ? `保存失败：${cfgErr}（已在本机生效）` : "调整立即生效，并保存到服务器（换设备也一样）"}
+            </p>
+            {CALL_KNOBS.map((k) => (
+              <label className="call-knob" key={k.key}>
+                <span className="call-knob-top">
+                  <span className="call-knob-name">{k.label}</span>
+                  <span className="call-knob-val">{k.show(cfg[k.key])}</span>
+                </span>
+                <input
+                  type="range"
+                  min={CALL_RANGE[k.key][0]}
+                  max={CALL_RANGE[k.key][1]}
+                  step={k.key === "bargeLevel" ? 0.01 : k.key === "silenceMs" ? 100 : k.key === "minChars" ? 1 : 50}
+                  value={cfg[k.key]}
+                  onChange={(e) => applyCfg({ [k.key]: Number(e.target.value) } as Partial<CallSettings>)}
+                  aria-label={k.label}
+                />
+                <span className="call-knob-ends"><span>{k.ends[0]}</span><span>{k.ends[1]}</span></span>
+                <span className="call-knob-hint">{k.hint}</span>
+              </label>
+            ))}
+            <div className="call-sheet-foot">
+              <button type="button" className="call-sheet-btn" onClick={() => applyCfg(CALL_DEFAULT)}>恢复默认</button>
+              <button type="button" className="call-sheet-btn primary" onClick={() => setShowCfg(false)}>完成</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* the state is announced, not just drawn: a screen reader gets the whole call */}
       <p className="sr-only" aria-live="polite">{PHASE_LABEL[phase]}</p>

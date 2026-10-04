@@ -18,7 +18,7 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
-import { initSettings, publicSettings, saveSettings, saveTheme } from "./settings.js";
+import { initSettings, publicSettings, saveCall, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
 
@@ -428,7 +428,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
         if (body.voice && typeof body.voice === "object") saveSettings(body.voice as Record<string, unknown>);
         if (body.theme && typeof body.theme === "object") saveTheme(body.theme as Record<string, unknown>);
-        if (!body.voice && !body.theme) saveSettings(body);
+        if (body.call && typeof body.call === "object") saveCall(body.call as Record<string, unknown>);
+        if (!body.voice && !body.theme && !body.call) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
         return send(res, 400, { error: String((e as Error)?.message ?? e) });

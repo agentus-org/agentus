@@ -389,6 +389,10 @@ try {
   };
   // record every frame the app puts on the wire, installed BEFORE the app opens its socket
   await send2("Page.addScriptToEvaluateOnNewDocument", { source: `
+    localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
+    // the injected microphone (voice.ts's test seam): automation has no device, and a
+    // threshold is only observable if something is making a sound
+    window.__asFeed = { level: 0, text: '', interim: '' };
     window.__frames = [];
     const rawSend = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
@@ -432,7 +436,225 @@ try {
   let slow2Idle = false;
   for (let i = 0; i < 60 && !slow2Idle; i++) { await sleep(250); slow2Idle = !(await busyOf(slow2.id)); }
   check("the cancelled turn really stopped on the server", slow2Idle === true);
+  // ---- 通话设置：面板 + 四个阈值真的改变行为 --------------------------------------------
+  // A threshold only means something in the room it is used in (a phone on a table leaks its
+  // own loudspeaker into its own microphone; a headset does not), so the panel lives ON the
+  // call. Two claims have to hold: the values reach the SERVER (they are settings, shared
+  // across devices), and they change what the running loop DOES — a slider that writes to a
+  // variable nobody reads is decoration. Everything below therefore goes through the REAL
+  // loop, with `window.__asFeed` standing in for the missing microphone.
+  const feed = (level, text = "", interim = "") => ev2(`(() => { window.__asFeed = { level: ${level}, text: ${JSON.stringify(text)}, interim: ${JSON.stringify(interim)} }; return true; })()`);
+  const phase2 = () => ev2(`document.querySelector('.call-mode')?.dataset.phase ?? null`);
+  const frameCount = (t) => ev2(`window.__frames.filter((f) => f && f.t === ${JSON.stringify(t)}).length`);
+  const waitPhase2 = async (want, ms) => {
+    for (let i = 0; i < ms / 150; i++) { if ((await phase2()) === want) return true; await sleep(150); }
+    return false;
+  };
+  const waitFrames = async (t, n, ms) => {
+    for (let i = 0; i < ms / 150; i++) { if ((await frameCount(t)) >= n) return true; await sleep(150); }
+    return false;
+  };
+  /** Wait for a selector: "not there yet" must be a reported check, never a null.click(). */
+  const waitEl2 = async (sel, ms) => {
+    for (let i = 0; i < ms / 150; i++) { if (await ev2(`!!document.querySelector(${JSON.stringify(sel)})`)) return true; await sleep(150); }
+    return false;
+  };
+  const openSheet = () => ev2(`document.querySelector('.call-gear')?.click(); true`);
+  const closeSheet = () => ev2(`document.querySelector('.call-sheet-x')?.click(); true`);
+  // React's onChange for a range input is the DOM `input` event, and React reads the value
+  // through a native setter — a plain `input.value = "6"` updates its tracker and the event
+  // is then swallowed as "no change" (which would look exactly like a broken slider here).
+  const setRange = (label, value) => ev2(`(() => {
+    const input = [...document.querySelectorAll('.call-sheet input[type=range]')].find((i) => i.getAttribute('aria-label') === ${JSON.stringify(label)});
+    if (!input) return null;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, String(${value}));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return Number(input.value); })()`);
+  const knobsNow = () => ev2(`(() => [...document.querySelectorAll('.call-sheet .call-knob')].map((k) => {
+    const i = k.querySelector('input[type=range]');
+    return { label: i.getAttribute('aria-label'), value: Number(i.value), shown: k.querySelector('.call-knob-val').textContent }; }))()`);
+
+  const gear = await ev2(`(() => { const b = document.querySelector('.call-gear'); if (!b) return null;
+    const r = b.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top),
+      right: Math.round(innerWidth - r.right), hits: !!hit && (hit === b || b.contains(hit)) }; })()`);
+  check("the call carries a settings button in its corner (thumb-sized, not covered)",
+    Boolean(gear) && gear.w >= 38 && gear.h >= 38 && gear.hits === true, JSON.stringify(gear));
+  await openSheet();
+  await sleep(500);
+  const sheet = await ev2(`(() => { const el = document.querySelector('.call-sheet'); if (!el) return null;
+    const card = el.querySelector('.call-sheet-card').getBoundingClientRect();
+    const knobs = [...el.querySelectorAll('.call-knob')].map((k) => {
+      const i = k.querySelector('input[type=range]'); const r = i.getBoundingClientRect();
+      return { label: i.getAttribute('aria-label'), value: Number(i.value), h: Math.round(r.height), w: Math.round(r.width) };
+    });
+    return { knobs, card: { l: Math.round(card.left), t: Math.round(card.top), r: Math.round(card.right), b: Math.round(card.bottom) },
+      inside: card.left >= -1 && card.right <= innerWidth + 1 && card.top >= -1 && card.bottom <= innerHeight + 1 }; })()`);
+  const LABELS = ["抢话灵敏度", "抢话持续时间", "说完停顿", "最少字数"];
+  check("the panel offers exactly the four thresholds, at their defaults",
+    Boolean(sheet) && sheet.knobs.length === 4
+    && sheet.knobs.every((k, i) => k.label === LABELS[i])
+    && sheet.knobs[0].value === 0.2 && sheet.knobs[1].value === 300 && sheet.knobs[2].value === 1200 && sheet.knobs[3].value === 1,
+    JSON.stringify(sheet?.knobs));
+  check("every slider is draggable and the panel fits the screen",
+    Boolean(sheet) && sheet.inside && sheet.knobs.every((k) => k.h >= 30 && k.w >= 180), JSON.stringify(sheet?.card));
+  const typed = await setRange("最少字数", 6);
+  await sleep(800);
+  const savedCall = (await api("GET", "/api/settings")).body?.call;
+  check("moving a slider SAVES TO THE SERVER (a threshold is a setting, not a local pref)",
+    typed === 6 && savedCall?.minChars === 6, JSON.stringify({ typed, savedCall }));
+  check("the slider reads its value back in words the operator understands",
+    (await knobsNow()).find((k) => k.label === "最少字数")?.shown === "6 字",
+    JSON.stringify((await knobsNow()).find((k) => k.label === "最少字数")));
+  await closeSheet();
+  await sleep(400);
+  check("closing the panel returns to the call (the overlay is not a trap)",
+    (await ev2(`!document.querySelector('.call-sheet')`)) === true && (await phase2()) === "listening",
+    `phase=${await phase2()}`);
+
+  // 最少字数: an automatic send below the limit is dropped …
+  const promptsBefore = await frameCount("prompt");
+  await feed(0.4, "嗯");
+  await sleep(200);
+  await feed(0, "嗯");
+  await sleep(2600);                                   // well past 说完停顿
+  check("a too-short utterance is NOT auto-sent (最少字数 6 blocks it)",
+    (await frameCount("prompt")) === promptsBefore && (await phase2()) === "listening",
+    `prompts=${promptsBefore} → ${await frameCount("prompt")} phase=${await phase2()}`);
+  // the reason has to be readable while the words are still on screen, and it is also what a
+  // screen reader gets (the orb's label), so accept either — both are "the call told you"
+  const why = await ev2(`(() => { const t = document.querySelector('.call-hint')?.textContent ?? '';
+    const orb = document.querySelector('.call-orb');
+    return t || orb?.getAttribute('title') || orb?.getAttribute('aria-label') || ''; })()`);
+  check("…and the call says WHY nothing happened instead of going quiet",
+    /太短/.test(why), JSON.stringify(why));
+
+  // … while a full sentence still goes, and it takes the floor (the barge-in contract)
+  await feed(0.4, "这是一句完整的话");
+  await sleep(300);
+  await feed(0, "这是一句完整的话");
+  const sentFull = await waitFrames("prompt", promptsBefore + 1, 5000);
+  const fullFrame = await ev2(`window.__frames.filter((f) => f && f.t === "prompt").slice(-1)[0] ?? null`);
+  check("a full sentence IS auto-sent, and it carries interrupt (说话即接管)",
+    sentFull === true && fullFrame?.interrupt === true && String(fullFrame?.text ?? "").includes("完整"),
+    JSON.stringify(fullFrame));
+  check("the call goes to thinking once the sentence is out", await waitPhase2("thinking", 2000));
+  await feed(0, "");       // the injected transcript is the harness's to clear, not the app's
+  const busyNow = await (async () => { for (let i = 0; i < 30; i++) { if (await busyOf(slow2.id)) return true; await sleep(150); } return false; })();
+  check("…and the server really started that turn", busyNow === true);
+  const tapOrb2 = async () => {
+    const box = await ev2(`(() => { const el = document.querySelector('.call-orb-canvas'); if (!el) return null;
+      const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!box) return;
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await send2("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
+    }
+  };
+  await tapOrb2();                                     // thinking → take the floor back
+  check("tapping the orb takes the floor back to listening", await waitPhase2("listening", 3000), `phase=${await phase2()}`);
+
+  // 说完停顿: raise it and the same kind of utterance waits longer before it is sent
+  await openSheet();
+  await sleep(400);
+  await setRange("说完停顿", 3000);
+  await sleep(800);
+  await closeSheet();
+  await sleep(300);
+  const savedSilence = (await api("GET", "/api/settings")).body?.call?.silenceMs;
+  const promptsBefore2 = await frameCount("prompt");
+  await feed(0.4, "这句话要等三秒才会发出去");
+  await sleep(250);
+  await feed(0, "这句话要等三秒才会发出去");
+  await sleep(1500);
+  check("with 说完停顿 at 3 s, a 1.5 s pause is NOT yet a finished sentence",
+    (await frameCount("prompt")) === promptsBefore2 && (await phase2()) === "listening",
+    `saved=${savedSilence} prompts=${promptsBefore2} → ${await frameCount("prompt")}`);
+  const sentLate = await waitFrames("prompt", promptsBefore2 + 1, 3500);
+  check("…and it IS sent once the pause really is that long", sentLate === true && savedSilence === 3000,
+    `silenceMs=${savedSilence}`);
+  await feed(0, "");
+  await tapOrb2();
+  await waitPhase2("listening", 3000);
+
+  // 抢话灵敏度: the SAME voice either may or may not take the floor, depending on the knob.
+  // The reply has to be long enough to talk over, so the prompt carries sentence enders the
+  // mock echoes straight back (the call reads them one at a time).
+  await openSheet(); await sleep(300);
+  await setRange("最少字数", 1); await setRange("说完停顿", 1200); await sleep(600);
+  await closeSheet();
+  await ev2(`document.querySelector('.call-btn.hangup').click(); true`);   // reopen to JOIN the turn
+  await sleep(500);
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, {
+    text: "第一句在这里。第二句在这里。第三句在这里。第四句也在这里。第五句在这里。第六句也在这里。",
+  });
+  for (let i = 0; i < 30; i++) { await sleep(200); if (await busyOf(slow2.id)) break; }
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click(); true`);
+  const spoke2 = await waitPhase2("speaking", 30000);
+  check("the call is speaking (there is something to talk over)", spoke2 === true, `phase=${await phase2()}`);
+
+  await openSheet();
+  await sleep(300);
+  const insensitive = await setRange("抢话灵敏度", 0.8);      // least sensitive
+  await sleep(700);
+  await closeSheet();
+  await sleep(200);
+  const cancelsBefore = await frameCount("cancel");
+  const phaseAtQuiet = await phase2();
+  await feed(0.35, "");                                      // loud enough to barge at the default
+  await sleep(1400);
+  check("with 抢话灵敏度 at its least sensitive, that voice does NOT take the floor",
+    (await frameCount("cancel")) === cancelsBefore,
+    JSON.stringify({ set: insensitive, cancelsBefore, now: await frameCount("cancel"), phaseAtStart: phaseAtQuiet }));
+
+  await openSheet();
+  await sleep(300);
+  const sensitive = await setRange("抢话灵敏度", 0.05);       // most sensitive, applied live
+  await sleep(300);
+  const barged = await waitFrames("cancel", cancelsBefore + 1, 3000);
+  check("…and at its most sensitive the SAME voice takes the floor immediately (live apply)",
+    barged === true, JSON.stringify({ set: sensitive, cancelsBefore, now: await frameCount("cancel") }));
+  check("…leaving the call listening for the operator again",
+    await waitPhase2("listening", 3000), `phase=${await phase2()}`);
+  const savedBarge = (await api("GET", "/api/settings")).body?.call?.bargeLevel;
+  check("the sensitivity the panel set is what the server holds", savedBarge === 0.05, `bargeLevel=${savedBarge}`);
+  fs.writeFileSync(`${SHOTS}/call-settings.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+
+  // persistence: wipe the browser's copy and reload — the numbers come back from the server
+  await closeSheet();
+  await ev2(`(() => { localStorage.removeItem('agentslot.call');
+    localStorage.setItem('agentslot.active', ${JSON.stringify(slow2.id)}); return true; })()`);
+  await send2("Page.reload", { ignoreCache: true });
+  await sleep(3200);
+  await waitEl2('button[aria-label="开始语音通话"]', 12000);
+  await feed(0, "");
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]')?.click(); true`);
+  await sleep(1200);
+  await openSheet();
+  await sleep(600);
+  const afterReload = await knobsNow();
+  check("the thresholds come back after a reload with local storage wiped (they live on the server)",
+    afterReload?.find((k) => k.label === "抢话灵敏度")?.value === 0.05
+    && afterReload?.find((k) => k.label === "说完停顿")?.value === 1200
+    && afterReload?.find((k) => k.label === "最少字数")?.value === 1,
+    JSON.stringify(afterReload));
+  await send2("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await send2("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await sleep(600);
+  const phoneSheet = await ev2(`(() => { const card = document.querySelector('.call-sheet-card')?.getBoundingClientRect(); if (!card) return null;
+    const h = [...document.querySelectorAll('.call-sheet .call-knob input[type=range]')].map((i) => Math.round(i.getBoundingClientRect().height));
+    return { card: { l: Math.round(card.left), t: Math.round(card.top), w: Math.round(card.width), b: Math.round(card.bottom) },
+      knobs: h, overflowX: document.documentElement.scrollWidth - innerWidth,
+      inside: [...document.querySelectorAll('.call-sheet button, .call-sheet input')].every((b) => { const r = b.getBoundingClientRect();
+        return r.left >= -1 && r.right <= innerWidth + 1 && r.top >= -1 && r.bottom <= innerHeight + 1; }) }; })()`);
+  check("on a phone the panel is a bottom sheet: full width, thumb-sized sliders, nothing off-screen",
+    Boolean(phoneSheet) && phoneSheet.card.w === 390 && phoneSheet.overflowX === 0 && phoneSheet.inside === true
+    && phoneSheet.knobs.every((h) => h >= 34), JSON.stringify(phoneSheet));
+  fs.writeFileSync(`${SHOTS}/call-settings-phone.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+
   try { await fetch(`${CDP}/json/close/${tab2.id}`); } catch { /* gone */ }
+
 
 } catch (e) {
   check("sweep ran to completion", false, String(e?.stack ?? e));

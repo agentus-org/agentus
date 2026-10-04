@@ -550,8 +550,23 @@ class Dictation {
   #wave = new Float32Array(256);
   #relay = true;
 
+  /** Test seam — automation has no microphone, and the call's thresholds (how loud a
+   *  barge-in must be, how long a silence ends a sentence, how short an utterance may be)
+   *  are only observable by driving a level and a transcript through the real loop.
+   *  `window.__asFeed = { level, text, interim }` makes start() succeed with no device and
+   *  makes level()/getSnapshot() report exactly that. The product never sets it, and with
+   *  nothing set every branch below is the plain microphone path. */
+  #feed = (): { level?: number; text?: string; interim?: string } | null => {
+    const f = (globalThis as { __asFeed?: unknown }).__asFeed;
+    return f && typeof f === "object" ? (f as { level?: number; text?: string; interim?: string }) : null;
+  };
   /** Live microphone amplitude 0..1 — read per animation frame. */
-  level = (): number => this.#level;
+  level = (): number => {
+    const f = this.#feed();
+    if (!f) return this.#level;
+    const n = Number(f.level);
+    return Number.isFinite(n) ? n : 0;
+  };
   /** Newest input snapshot for the waveform (a flat line while not capturing). */
   wave = (): Float32Array => this.#wave;
   /** While false the mic stays OPEN (levels keep flowing, barge-in keeps working) but PCM
@@ -585,7 +600,25 @@ class Dictation {
     return () => this.#listeners.delete(fn);
   };
 
-  getSnapshot = (): DictationState => this.#state;
+  /** The fed snapshot is CACHED: useSyncExternalStore compares snapshots by identity, and a
+   *  fresh object per call is an infinite render loop (the page mounts, React bails out and
+   *  the tree comes back empty — which is exactly how this seam first broke the QA tab). A
+   *  test seam has to honour the same contracts as the real path. */
+  #fedSnap: DictationState | null = null;
+  getSnapshot = (): DictationState => {
+    const f = this.#feed();
+    if (!f) return this.#state;
+    const text = String(f.text ?? "");
+    const interim = String(f.interim ?? "");
+    const cur = this.#fedSnap;
+    if (cur && cur.text === text && cur.interim === interim
+      && cur.status === this.#state.status && cur.error === this.#state.error
+      && cur.engine === this.#state.engine && cur.seconds === this.#state.seconds) {
+      return cur;
+    }
+    this.#fedSnap = { ...this.#state, text, interim };
+    return this.#fedSnap;
+  };
 
   #set(patch: Partial<DictationState>): void {
     this.#state = { ...this.#state, ...patch };
@@ -598,6 +631,13 @@ class Dictation {
     if (this.#state.status !== "idle" && this.#state.status !== "error") return false;
     this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
     this.#committed = "";
+    const fed = this.#feed();
+    if (fed) {
+      // automation: no device, no socket — the injected signal is the microphone
+      this.#relay = true;
+      this.#set({ status: "listening", engine: "stream", error: "", text: String(fed.text ?? ""), interim: String(fed.interim ?? "") });
+      return true;
+    }
     const want = prefs.stt;
     const serverOk = voiceCaps().stt.server;
     const streamOk = voiceCaps().stt.streaming;

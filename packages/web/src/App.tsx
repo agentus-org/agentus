@@ -6,6 +6,7 @@ import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
+import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
@@ -36,7 +37,11 @@ export function App(): JSX.Element {
   useEscape(drawer, () => setDrawer(false));
   // The server's palette is the source of truth; the localStorage copy only made the
   // first frame right. Adopted once the operator is in (the endpoint needs a session).
-  useEffect(() => { if (snap.auth === "in") void loadServerTheme(); }, [snap.auth]);
+  useEffect(() => {
+    if (snap.auth !== "in") return;
+    void loadServerTheme();
+    void loadServerCallSettings();   // the call panel's knobs live on the server too
+  }, [snap.auth]);
 
   if (snap.auth !== "in") return <AuthScreen />;
 

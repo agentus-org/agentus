@@ -326,6 +326,15 @@ to your production memory daemon), and `.env` copied 0600.
   A server endpoint is optional and only a proxy (`AGENTSLOT_TTS_BASE_URL` /
   `AGENTSLOT_STT_BASE_URL`); with nothing configured, the browser does the work and the
   UI says so
+- **voice call mode** (📞 in the chat header): a full-screen call with the session — a canvas
+  orb that rides real audio, one colour per phase (listening / thinking / speaking / error,
+  announced to a screen reader), the reply read sentence by sentence as it streams, and
+  **barge-in that actually takes the floor**: talking over the reply stops our playback,
+  *cancels the agent's turn* and hands the microphone back. Its thresholds are knobs on the
+  call itself (⚙ in the corner): 抢话灵敏度, 抢话持续时间, 说完停顿 and 最少字数 — a phone on a
+  table leaks its own loudspeaker into its own microphone, a headset does not, so these are
+  per-installation settings (`settings.json`, server-side, shared across devices) rather than
+  constants. `最少字数` gates only the automatic send; a tap on the orb always sends
 - **settings page** (⚙ in the rail): theme (light / dark / follow-the-OS, plus an accent
   colour that retints the whole cockpit), the speech provider, endpoint and key, the
   models (picked from the endpoint's own list), the hotword list, and a test button for
