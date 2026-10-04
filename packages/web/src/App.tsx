@@ -186,8 +186,8 @@ function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
       type="button"
       className={`bubble-btn fork ${state}`}
       disabled={busy || state === "working"}
-      title={err || "从这里 fork —— agent 把这段上下文复制到一个新会话"}
-      aria-label="fork from this message"
+      title={err || (state === "failed" ? "fork 失败" : "从这里 fork —— agent 把这段上下文复制到一个新会话")}
+      aria-label={state === "failed" ? "fork 失败" : "从这里 fork"}
       onClick={async (e) => {
         e.stopPropagation();
         setState("working");
@@ -201,7 +201,7 @@ function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
         }
       }}
     >
-      <IconFork size={13} /> {state === "working" ? "forking…" : state === "failed" ? "fork 失败" : "fork"}
+      <IconFork size={13} />
     </button>
   );
 }
@@ -1147,7 +1147,7 @@ function SpeakButton({ id, text }: { id: string; text: string }): JSX.Element | 
   }
   return (
     <button
-      className={`icon-btn tiny ${playing ? "on" : ""}`}
+      className={`bubble-btn speak ${playing ? "on" : ""}`}
       title={playing ? "stop reading" : "read this reply aloud"}
       aria-label={playing ? "stop reading" : "read aloud"}
       onClick={() => {

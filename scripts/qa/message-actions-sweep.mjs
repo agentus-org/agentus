@@ -67,6 +67,27 @@ check("every user message has a copy button", shape.users > 0 && shape.userCopie
 check("every agent message has a copy button", shape.agents > 0 && shape.agentCopies === shape.agents, JSON.stringify({ agents: shape.agents, copies: shape.agentCopies }));
 check("fork appears on the LAST message only", shape.forks === 1 && shape.forkOnLast && !shape.forkOnFirst, JSON.stringify({ forks: shape.forks, last: shape.forkOnLast, first: shape.forkOnFirst }));
 
+// the reported jumble: three different shapes at three different heights, and a fork that
+// spelled out its own name. They are peers now — same box, same row, icon only.
+const rowShape = await ev(`(() => {
+  const rows = [...document.querySelectorAll('.bubble-actions')];
+  const row = rows[rows.length - 1];
+  const kids = [...row.children].map((b) => {
+    const r = b.getBoundingClientRect();
+    return { cls: b.className, w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top),
+      text: (b.textContent || '').trim(), icon: !!b.querySelector('svg') };
+  });
+  return { kids };
+})()`);
+const kids = rowShape.kids;
+check("the action row holds three buttons", kids.length === 3, JSON.stringify(kids.map((k) => k.cls)));
+check("the action buttons are one uniform row (equal height AND equal top)",
+  new Set(kids.map((k) => k.h)).size === 1 && (Math.max(...kids.map((k) => k.top)) - Math.min(...kids.map((k) => k.top))) <= 1,
+  JSON.stringify(kids.map((k) => ({ cls: k.cls, h: k.h, top: k.top }))));
+check("every action shows an icon and no text label",
+  kids.every((k) => k.icon) && kids.every((k) => k.text === ""),
+  JSON.stringify(kids.map((k) => k.text)));
+
 // the copy button must put the RIGHT text on the clipboard — on this origin (plain http,
 // LAN-style) navigator.clipboard is undefined, so the textarea fallback is what runs. Hook
 // execCommand to capture exactly what the page handed to the clipboard.
@@ -155,6 +176,26 @@ const phone = await ev(`(() => {
 check("message actions are visible without hover on a phone", Number(phone.actionsOpacity) > 0.5, `opacity=${phone.actionsOpacity}`);
 check("the copy/fork hit areas are thumb-sized", phone.copyVisible >= 28 && phone.copyH >= 20, JSON.stringify({ w: phone.copyVisible, h: phone.copyH }));
 check("no horizontal overflow at 390px", phone.overflowX === 0, `overflow=${phone.overflowX}`);
+// the same uniformity must survive the phone sizing (the old CSS resized only one of the three)
+const phoneRow = await ev(`(() => {
+  const rows = [...document.querySelectorAll('.bubble-actions')];
+  const row = rows[rows.length - 1];
+  return { kids: [...row.children].map((b) => { const r = b.getBoundingClientRect();
+    return { cls: b.className, w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) }; }) };
+})()`);
+check("on a phone the three actions are still one uniform, thumb-sized row",
+  phoneRow.kids.length === 3
+  && new Set(phoneRow.kids.map((k) => k.w)).size === 1
+  && new Set(phoneRow.kids.map((k) => k.h)).size === 1
+  && phoneRow.kids[0].w >= 28 && phoneRow.kids[0].h >= 28
+  && (Math.max(...phoneRow.kids.map((k) => k.top)) - Math.min(...phoneRow.kids.map((k) => k.top))) <= 1,
+  JSON.stringify(phoneRow.kids));
+// the shot must show the TAIL bubble's action row — that row is the whole point of this
+// sweep, and the transcript starts at the top after a reload
+const scrolled = await ev(`(() => { const el = document.querySelector('.stream');
+  if (!el) return false; el.scrollTop = el.scrollHeight; return true; })()`);
+if (!scrolled) throw new Error("no .stream container to scroll");
+await sleep(500);
 const shot2 = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-msg-actions.png`, Buffer.from(shot2.data, "base64"));
 
