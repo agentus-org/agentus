@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Normal permission, declared at install time: required for the system to promote a
+         notification into a Live Update (the Android 16 "island" / status-bar chip). -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- The cockpit's dictation / call mode runs on the page, and the WebView asks the app for the
+         microphone through WebChromeClient.onPermissionRequest. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Normal permission, and NOT optional for the WebView's microphone: Chromium's audio input
+         switches the AudioManager mode / audio route before it opens the source, and on ROMs that
+         refuse that without this permission getUserMedia dies with
+         `NotReadableError: Could not start audio source` — the exact failure this device reported
+         while the app's own AudioRecord (which does not touch the mode) recorded fine. Multiple
+         independent reports of the same symptom name this line as the fix
+         (react-native-webview#3658, capacitor#802: "RECORD_AUDIO is not enough"). -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_notify"
+        android:allowBackup="false"
+        android:resizeableActivity="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <!-- Foldable continuity: Xiaomi's HyperOS ignores an app's own configChanges and forces a
+             relaunch on fold/unfold (their words: "我们忽略了这部分 app 的 configChanges"). So this
+             app does NOT pretend to handle the size change itself: it declares continuity, lets the
+             activity be recreated, and restores the half-typed form in onSaveInstanceState.
+             See dev.mi.com/xiaomihyperos "折叠屏适配说明". -->
+        <meta-data android:name="android.supports_size_changes" android:value="true" />
+        <meta-data android:name="miui.supportAppContinuity" android:value="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- agentslot://pair?u=<base>&c=<code> — the same string the test bed prints -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="agentslot" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".NotifyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Holds one WebSocket to the operator's own self-hosted AgentSlot server so task notifications keep arriving; it is the product feature, not a background trick." />
+        </service>
+
+        <receiver
+            android:name=".ActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.agentslot.companion.ACTION" />
+                <action android:name="app.agentslot.companion.REPLY" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

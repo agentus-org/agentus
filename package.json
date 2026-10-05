@@ -1,29 +1,36 @@
 {
-  "name": "agentslot",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence \u2014 the agent lives in spawned CLI subprocesses.",
-  "license": "Apache-2.0",
-  "workspaces": [
-    "packages/*"
-  ],
-  "scripts": {
-    "dev": "npm run dev -w @agentslot/server & npm run dev -w @agentslot/web & wait",
-    "dev:server": "npm run dev -w @agentslot/server",
-    "dev:web": "npm run dev -w @agentslot/web",
-    "build": "npm run build -ws --if-present",
-    "typecheck": "npm run typecheck -ws --if-present",
-    "lint": "npm run lint -ws --if-present",
-    "test": "npm run test -ws --if-present",
-    "start": "bash scripts/start.sh",
-    "smoke": "node scripts/smoke.mjs",
-    "auth-smoke": "node scripts/auth-smoke.mjs",
-    "workspace-smoke": "node scripts/workspace-smoke.mjs",
-    "voice-smoke": "node scripts/voice-smoke.mjs",
-    "sentence-units": "tsx scripts/qa/sentence-units.mts",
-    "tls-smoke": "node scripts/tls-smoke.mjs"
-  },
-  "engines": {
-    "node": ">=22"
-  }
+ "name": "agentslot",
+ "version": "0.0.0",
+ "private": true,
+ "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
+ "license": "Apache-2.0",
+ "workspaces": [
+  "packages/*"
+ ],
+ "scripts": {
+  "dev": "npm run dev -w @agentslot/server & npm run dev -w @agentslot/web & wait",
+  "dev:server": "npm run dev -w @agentslot/server",
+  "dev:web": "npm run dev -w @agentslot/web",
+  "build": "npm run build -ws --if-present",
+  "typecheck": "npm run typecheck -ws --if-present",
+  "lint": "npm run lint -ws --if-present",
+  "test": "npm run test -ws --if-present",
+  "start": "bash scripts/start.sh",
+  "smoke": "node scripts/smoke.mjs",
+  "auth-smoke": "node scripts/auth-smoke.mjs",
+  "workspace-smoke": "node scripts/workspace-smoke.mjs",
+  "voice-smoke": "node scripts/voice-smoke.mjs",
+  "sentence-units": "tsx scripts/qa/sentence-units.mts",
+  "tls-smoke": "node scripts/tls-smoke.mjs",
+  "notify-testbed": "tsx scripts/notify-testbed.mts",
+  "notify-smoke": "tsx scripts/notify-smoke.mts",
+  "apk": "bash scripts/build-apk.sh",
+  "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
+  "store-fold": "tsx scripts/qa/store-fold.mts",
+  "live-stream": "tsx scripts/qa/live-stream.mts",
+  "open-target": "tsx scripts/qa/open-target.mts"
+ },
+ "engines": {
+  "node": ">=22"
+ }
 }

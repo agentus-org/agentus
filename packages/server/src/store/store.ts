@@ -5,6 +5,60 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { BackendId, SessionStatus, StoredMessage } from "@agentslot/shared";
 
+/** Text that is genuinely NEW in `incoming`, given what we already accumulated.
+ *
+ *  Borrowed from hermes-studio (`agent-runner/coding-agent-run-manager.appendedTextDelta`), which
+ *  hit the same upstream behaviour: the agent re-sends text it has already sent — a full snapshot of
+ *  the message so far, or a re-emission of an earlier message as one block — so a naive append both
+ *  duplicates content and splits one message into several rows.
+ *
+ *   · `next` starts with `existing`      → a snapshot: the new part is the tail
+ *   · `next` overlaps `existing`'s end   → drop the overlap (≥16 chars, so a coincidence is not one)
+ *   · otherwise                          → a genuine delta
+ */
+function appendedTextDelta(existing: string, next: string): string {
+  if (!existing || !next) return next;
+  if (next.startsWith(existing)) return next.slice(existing.length);
+  const max = Math.min(existing.length, next.length);
+  for (let length = max; length >= 16; length--) {
+    if (existing.endsWith(next.slice(0, length))) return next.slice(length);
+  }
+  return next;
+}
+
+/** All whitespace removed: the agent's re-emissions differ from our accumulation by formatting only
+ *  (a leading blank line, a trailing space), so containment has to be tested on the content. */
+function normalizeText(s: string): string {
+  return s.replace(/\s+/g, "");
+}
+
+/** Below this, an id-less frame is a fragment, not a re-sent message — see `reemissionTarget`. */
+const ANON_MIN = 24;
+/** …and it has to cover this much of the block it matches, or it is a coincidence, not a re-send. */
+const ANON_COVER = 0.6;
+/** How far back an anonymous re-emission is looked for. */
+const ANON_SCAN_ROWS = 80;
+
+/**
+ * Is `incoming` the same block as `blockText` rather than new content?
+ *
+ * Both directions matter: the agent re-sends an earlier message untouched (the incoming is contained
+ * in what we hold) and sometimes re-sends it with a little more text (it contains what we hold). A
+ * SHORT id-less frame is never folded — "好的" arriving twice is two messages, and it would otherwise
+ * match every long block that happens to contain it.
+ */
+function reemissionTarget(blockText: string, incoming: string): "same" | "grew" | null {
+  const a = normalizeText(blockText);
+  const b = normalizeText(incoming);
+  if (b.length < ANON_MIN) return null;
+  if (a === b) return "same";
+  if (a.includes(b) && b.length >= ANON_COVER * a.length) return "same";
+  if (b.includes(a) && a.length >= ANON_COVER * b.length) return "grew";
+  return null;
+}
+/** A page also stops on bytes, so one 30 KB message cannot overflow a phone-sized fetch. */
+const PAGE_BYTES = 256 * 1024;
+
 export interface SessionRow {
   id: string;
   backend: BackendId;
@@ -57,6 +111,49 @@ function parseJson(v: string | null | undefined): unknown {
   }
 }
 
+/** One row of `messages`, as it comes back from SQLite. */
+interface RawMessageRow {
+  seq: number; session_id: string; kind: StoredMessage["kind"];
+  payload: string; tool_call_id: string | null; block_key?: string | null; created_at: number;
+}
+
+function rowToMessage(r: RawMessageRow): StoredMessage {
+  return {
+    seq: r.seq,
+    sessionId: r.session_id,
+    kind: r.kind,
+    payload: parseJson(r.payload),
+    toolCallId: r.tool_call_id ?? undefined,
+    createdAt: r.created_at,
+  };
+}
+
+/** The streamed text inside an `agent`/`thought` payload (ACP: `content.text`). */
+export function textOf(payload: unknown): string {
+  const c = (payload as { content?: unknown } | null)?.content;
+  if (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string") {
+    return (c as { text: string }).text;
+  }
+  // some frames put the text at the top level
+  const t = (payload as { text?: unknown } | null)?.text;
+  return typeof t === "string" ? t : "";
+}
+
+/** Same payload with the streamed text replaced (everything else preserved). */
+export function withText(payload: unknown, text: string): unknown {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const c = p.content;
+  if (c && typeof c === "object") return { ...p, content: { ...(c as object), text } };
+  return { ...p, content: { type: "text", text } };
+}
+
+/** The identity of one logical message: `kind:messageId`. Absent when the agent sent no id (its
+ *  history recaps arrive that way) — those are folded by content instead (see `#rowContaining`). */
+function blockKeyOf(kind: string, payload: unknown): string | null {
+  const mid = (payload as { messageId?: unknown } | null)?.messageId;
+  return typeof mid === "string" && mid ? `${kind}:${mid}` : null;
+}
+
 function rowToSession(r: RawSessionRow): SessionRow {
   return {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
@@ -72,8 +169,11 @@ function rowToSession(r: RawSessionRow): SessionRow {
 
 export class Store {
   #db: DatabaseSync;
+  /** Kept for the one-time fold's backup file (see #foldStreamedChunks). */
+  #path: string;
 
   constructor(path: string) {
+    this.#path = path;
     this.#db = new DatabaseSync(path);
     this.#db.exec(`
       pragma journal_mode = wal;
@@ -118,6 +218,96 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // messages: the identity of one streamed block, so the chunks of one message accumulate into one
+    // row instead of one row per token (see appendTextChunk).
+    const mcols = new Set(
+      (this.#db.prepare("pragma table_info(messages)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!mcols.has("block_key")) this.#db.exec("alter table messages add column block_key text");
+    this.#db.exec("create index if not exists idx_messages_block on messages (session_id, block_key)");
+    this.#foldStreamedChunks();
+  }
+
+  /**
+   * One-time repair of transcripts written by the chunk-per-row era.
+   *
+   * Until `appendTextChunk` existed, every `agent_message_chunk` (1–3 characters) was its own row: a
+   * single reply was 1259 rows, which made "show earlier messages" cut a markdown table in half at an
+   * arbitrary byte offset, and made the agent's re-emissions of its own text show up as extra
+   * messages. This folds those rows in place — the surviving row keeps its `seq`, so paging anchors
+   * stay valid and nothing is renumbered — after copying the DB aside once.
+   *
+   * Deliberately conservative: a row is only folded away when it is provably the same block (same
+   * `messageId`) or a whitespace-insensitive re-emission of a block we already hold. Anything else is
+   * left exactly as it is.
+   */
+  #foldStreamedChunks(): void {
+    // v2: the anonymous-re-emission rule got sharper (a short block is no longer a fold candidate,
+    // but a ≥24-char one that covers most of a block is) — an already-folded DB is worth re-walking.
+    const FOLD_VERSION = 2;
+    const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
+    if (Number(v?.user_version ?? 0) >= FOLD_VERSION) return;
+    try {
+      const bak = `${this.#path}.pre-fold.bak`;
+      if (!fs.existsSync(bak)) {
+        this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
+        console.log(`[store] 折叠前已备份：${bak}`);
+      }
+    } catch (e) {
+      console.log(`[store] 备份失败，跳过折叠以免损坏历史：${String(e)}`);
+      return;
+    }
+    const sessions = this.#db.prepare("select distinct session_id as id from messages").all() as unknown as { id: string }[];
+    let before = 0;
+    let after = 0;
+    const upd = this.#db.prepare("update messages set payload = ?, block_key = ? where session_id = ? and seq = ?");
+    const del = this.#db.prepare("delete from messages where session_id = ? and seq = ?");
+    for (const { id } of sessions) {
+      const rows = this.#db
+        .prepare("select * from messages where session_id = ? order by seq asc")
+        .all(id) as unknown as RawMessageRow[];
+      before += rows.length;
+      const kept: { row: RawMessageRow; text: string | null }[] = [];
+      const doomed: number[] = [];
+      for (const r of rows) {
+        if (r.kind !== "agent" && r.kind !== "thought") {
+          kept.push({ row: r, text: null });
+          continue;
+        }
+        const payload = parseJson(r.payload);
+        const text = textOf(payload);
+        const key = blockKeyOf(r.kind, payload);
+        // Walk back to the block this row belongs to: the same messageId, or a block whose text
+        // already contains this one (the agent replays its own text without an id).
+        let hitIdx = -1;
+        for (let i = kept.length - 1; i >= 0; i--) {
+          const cand = kept[i];
+          if (cand.text === null || cand.row.kind !== r.kind) continue;
+          const candText: string = cand.text;
+          if (key && blockKeyOf(cand.row.kind, parseJson(cand.row.payload)) === key) { hitIdx = i; break; }
+          if (!key && reemissionTarget(candText, text)) { hitIdx = i; break; }
+          if (kept.length - i > ANON_SCAN_ROWS) break;
+        }
+        if (hitIdx >= 0) {
+          const target = kept[hitIdx];
+          const delta = key ? appendedTextDelta(target.text ?? "", text) : "";
+          if (delta) target.text = (target.text ?? "") + delta;
+          doomed.push(r.seq);
+          continue;
+        }
+        kept.push({ row: r, text });
+      }
+      for (const seq of doomed) del.run(id, seq);
+      for (const k of kept) {
+        if (k.text === null) continue;
+        const payload = withText(parseJson(k.row.payload), k.text);
+        const key = blockKeyOf(k.row.kind, payload);
+        upd.run(JSON.stringify(payload), key, id, k.row.seq);
+      }
+      after += kept.length;
+    }
+    this.#db.prepare(`pragma user_version = ${FOLD_VERSION}`).run();
+    console.log(`[store] 历史分片已折叠：${before} 行 → ${after} 行`);
   }
 
   upsertSession(s: SessionRow): void {
@@ -212,11 +402,86 @@ export class Store {
     const seq = this.nextSeq(m.sessionId);
     this.#db
       .prepare(
-        `insert into messages (seq, session_id, kind, payload, tool_call_id, created_at)
-         values (?,?,?,?,?,?)`,
+        `insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at)
+         values (?,?,?,?,?,?,?)`,
       )
-      .run(seq, m.sessionId, m.kind, JSON.stringify(m.payload), m.toolCallId ?? null, m.createdAt);
+      .run(seq, m.sessionId, m.kind, JSON.stringify(m.payload), m.toolCallId ?? null, null, m.createdAt);
     return { ...m, seq };
+  }
+
+  /**
+   * The streaming half of the transcript: one logical message, one row.
+   *
+   * The agent emits `agent_message_chunk` / `agent_thought_chunk` per token, so appending a row per
+   * frame is what made a single reply 1259 rows and made "show earlier messages" cut a markdown table
+   * in half (the page boundary was a byte offset inside a 3.8-character row). Chunks of the SAME
+   * `messageId` therefore accumulate into the row that already holds that message, and a frame that
+   * re-sends text we already have adds nothing.
+   *
+   * Returns the row to hand to the client plus the text that is genuinely new. `delta === ""` means
+   * the frame was a pure re-emission (nothing to emit); an existing row with a non-empty delta means
+   * "this row grew" — the client appends instead of inserting a second bubble.
+   */
+  appendTextChunk(m: Omit<StoredMessage, "seq"> & { kind: "agent" | "thought" }): {
+    message: StoredMessage;
+    delta: string;
+    isNew: boolean;
+  } {
+    const text = textOf(m.payload);
+    const key = blockKeyOf(m.kind, m.payload);
+    if (!text) {
+      const stored = this.appendMessage(m);
+      return { message: stored, delta: "", isNew: true };
+    }
+    // 1. the same logical message: fold into its row, wherever that row is
+    if (key) {
+      const row = this.#rowByKey(m.sessionId, key);
+      if (row) return this.#foldInto(row, text);
+    }
+    // 2. an anonymous block that re-sends something we already hold. Hermes replays its own text as
+    //    complete blocks with no messageId (a recap on every re-attach); persisted naively that is
+    //    the same answer stored — and rendered — six times.
+    if (!key) {
+      const row = this.#rowContaining(m.sessionId, m.kind, text);
+      if (row) return this.#foldInto(row, text);   // "grew" appends the tail, "same" is a no-op
+    }
+    const stored = this.appendMessage(m);
+    if (key) this.#db.prepare("update messages set block_key = ? where session_id = ? and seq = ?")
+      .run(key, m.sessionId, stored.seq);
+    return { message: stored, delta: text, isNew: true };
+  }
+
+  /** Append to the row that already accumulates this message (or report it as a re-emission). */
+  #foldInto(row: StoredMessage, incoming: string): { message: StoredMessage; delta: string; isNew: boolean } {
+    const existing = textOf(row.payload);
+    // the same block with different whitespace (a re-send with an extra blank line) is NOT growth:
+    // appendedTextDelta is whitespace-sensitive and would otherwise re-append the whole text
+    if (normalizeText(existing) === normalizeText(incoming)) return { message: row, delta: "", isNew: false };
+    const delta = appendedTextDelta(existing, incoming);
+    if (!delta) return { message: row, delta: "", isNew: false };
+    const payload = withText(row.payload, existing + delta);
+    this.#db
+      .prepare("update messages set payload = ? where session_id = ? and seq = ?")
+      .run(JSON.stringify(payload), row.sessionId, row.seq);
+    return { message: { ...row, payload }, delta, isNew: false };
+  }
+
+  #rowByKey(sessionId: string, key: string): StoredMessage | undefined {
+    const r = this.#db
+      .prepare("select * from messages where session_id = ? and block_key = ? order by seq desc limit 1")
+      .get(sessionId, key) as unknown as RawMessageRow | undefined;
+    return r ? rowToMessage(r) : undefined;
+  }
+
+  /** A recent row of the same kind that this id-less block re-sends. */
+  #rowContaining(sessionId: string, kind: string, text: string): StoredMessage | undefined {
+    const rows = this.#db
+      .prepare("select * from messages where session_id = ? and kind = ? order by seq desc limit ?")
+      .all(sessionId, kind, ANON_SCAN_ROWS) as unknown as RawMessageRow[];
+    for (const r of rows) {
+      if (reemissionTarget(textOf(parseJson(r.payload)), text)) return rowToMessage(r);
+    }
+    return undefined;
   }
 
   upsertToolMessage(sessionId: string, toolCallId: string, payload: unknown): StoredMessage | null {
@@ -258,35 +523,27 @@ export class Store {
     return { messages: page.messages, hasOlder: page.hasMore };
   }
 
-  /** Page BACKWARDS: the `limit` newest rows strictly before `beforeSeq`, returned
-   *  oldest-first so the client can prepend without re-sorting. `hasMore` tells the
-   *  UI whether an older page still exists. */
+  /** Page BACKWARDS: the newest rows strictly before `beforeSeq`, returned oldest-first so the
+   *  client can prepend without re-sorting, capped by BOTH a row count and a byte budget (one
+   *  accumulated message can be tens of KB, so "500 rows" means nothing on its own).
+   *  `hasMore` tells the UI whether an older page still exists. */
   messagesBefore(sessionId: string, beforeSeq: number, limit = 200): { messages: StoredMessage[]; hasMore: boolean } {
     const rows = this.#db
       .prepare(
         `select * from messages where session_id = ? and seq < ? order by seq desc limit ?`,
       )
-      .all(sessionId, beforeSeq, limit + 1) as unknown as {
-      seq: number;
-      session_id: string;
-      kind: StoredMessage["kind"];
-      payload: string;
-      tool_call_id: string | null;
-      created_at: number;
-    }[];
+      .all(sessionId, beforeSeq, limit + 1) as unknown as RawMessageRow[];
     const hasMore = rows.length > limit;
-    const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
-    return {
-      hasMore,
-      messages: page.map((r) => ({
-        seq: r.seq,
-        sessionId: r.session_id,
-        kind: r.kind,
-        payload: JSON.parse(r.payload),
-        toolCallId: r.tool_call_id ?? undefined,
-        createdAt: r.created_at,
-      })),
-    };
+    const capped = hasMore ? rows.slice(0, limit) : rows;
+    // then the byte budget: always keep at least one row, so a single huge message is still readable
+    const page: RawMessageRow[] = [];
+    let bytes = 0;
+    for (const r of capped) {
+      bytes += r.payload.length;
+      page.push(r);
+      if (bytes > PAGE_BYTES) break;
+    }
+    return { hasMore: hasMore || page.length < capped.length, messages: page.reverse().map(rowToMessage) };
   }
 
   messagesAfter(sessionId: string, afterSeq: number, limit = 500): StoredMessage[] {
@@ -294,22 +551,8 @@ export class Store {
       .prepare(
         `select * from messages where session_id = ? and seq > ? order by seq asc limit ?`,
       )
-      .all(sessionId, afterSeq, limit) as unknown as {
-      seq: number;
-      session_id: string;
-      kind: StoredMessage["kind"];
-      payload: string;
-      tool_call_id: string | null;
-      created_at: number;
-    }[];
-    return rows.map((r) => ({
-      seq: r.seq,
-      sessionId: r.session_id,
-      kind: r.kind,
-      payload: JSON.parse(r.payload),
-      toolCallId: r.tool_call_id ?? undefined,
-      createdAt: r.created_at,
-    }));
+      .all(sessionId, afterSeq, limit) as unknown as RawMessageRow[];
+    return rows.map(rowToMessage);
   }
 
   close(): void {

@@ -115,7 +115,14 @@ export type ServerEvent =
   | { t: "sessions"; sessions: SessionInfo[] }
   | { t: "session"; session: SessionInfo }
   | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean; partial?: boolean }
-  | { t: "message"; message: StoredMessage } // one appended/updated row
+  | { t: "message"; message: StoredMessage; /** text to APPEND for a streamed block that grew (absent
+   *  for a plain append/replay row, where `message` is the whole truth). The row is authoritative on
+   *  reads; the delta only exists so a live turn does not re-send the accumulated text every frame. */
+      delta?: string;
+      /** the block's TOTAL length after this frame. A row that grew KEEPS its seq, so this — not the
+       *  seq — is what tells a client whether it has already applied this frame (see the web
+       *  transcript's `planTextFrame`: dedup by seq swallowed every chunk after a reply's first). */
+      n?: number }
   | { t: "permission"; request: PermissionRequestView }
   | { t: "permission-resolved"; requestId: string; decision: PermissionDecision }
   | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string }

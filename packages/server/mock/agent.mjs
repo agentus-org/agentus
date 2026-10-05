@@ -8,6 +8,7 @@
 //   MOCK_THINK=1       -> emits agent_thought_chunk before the answer
 //   MOCK_SLOW_MS=n     -> delay between chunks (default 60)
 //   MOCK_SINK=1        -> exit the process mid-turn (crash path for AC5/QA)
+import { randomUUID } from "node:crypto";
 import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
@@ -276,12 +277,16 @@ const agent = () => ({
       });
     }
     const effort = s.config?.reasoning_effort || "medium";
+    // One id per logical message, exactly like the real backend: the cockpit (and the store) fold the
+    // chunks of a message by this id, so a mock that omits it would test a path nobody runs.
+    const messageId = randomUUID();
     const words = `Mock echo (${effort} effort) to: "${text}". `.repeat(2).split(" ");
     for (const w of words) {
       if (s.cancelled) return { stopReason: "cancelled" };
       if (willSink && w.length > 15) process.exit(7);
       await send(agent._conn, sessionId, {
         sessionUpdate: "agent_message_chunk",
+        messageId,
         content: { type: "text", text: w + " " },
       });
       await sleep(slow);
@@ -291,6 +296,7 @@ const agent = () => ({
     // of the renderer needs no real model.
     await send(agent._conn, sessionId, {
       sessionUpdate: "agent_message_chunk",
+      messageId,
       content: { type: "text", text: MOCK_MARKDOWN },
     });
     // Context gauge data, shaped like a real agent's usage_update (AionUi F-DISPLAY-07).

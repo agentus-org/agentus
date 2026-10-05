@@ -1,0 +1,18 @@
+// The Android companion app is its own Gradle build: it has nothing to do with the
+// npm workspace, and coupling them would mean a Gradle install for every web change.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "AgentSlotCompanion"
+include ":app"

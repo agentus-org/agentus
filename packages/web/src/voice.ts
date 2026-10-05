@@ -234,6 +234,37 @@ function audioContextCtor(): typeof AudioContext | null {
   return (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) ?? null;
 }
 
+/** Ask for the microphone, degrading the constraints when the platform cannot honour them.
+ *
+ * Why this exists: on some Android vendor WebViews (seen on HyperOS 3 / Android 16) `getUserMedia`
+ * with the WebRTC audio processing switched on fails to start the source —
+ * `NotReadableError: Could not start audio source` — while a plain capture on the same device works.
+ * The app's own native `AudioRecord` probe records fine there, so the permission and the device are
+ * not the problem: it is the processed pipeline that will not open. Retrying with the processing off
+ * (and finally with no constraints at all) turns that into a working microphone instead of an error
+ * the operator can do nothing about. A refusal is never retried — that would just re-prompt. */
+async function openMic(preferred: MediaStreamConstraints): Promise<MediaStream> {
+  const attempts: MediaStreamConstraints[] = [
+    preferred,
+    { audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } },
+    { audio: true },
+  ];
+  let last: unknown = null;
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(attempts[i]);
+      if (i > 0) console.warn("[voice] microphone opened only with degraded constraints", attempts[i]);
+      return stream;
+    } catch (e) {
+      last = e;
+      const name = (e as Error)?.name ?? "";
+      if (name === "NotAllowedError" || name === "SecurityError") throw e;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
+}
+
 /** Call from the click handler itself (not after an await). */
 export async function unlockAudio(): Promise<boolean> {
   const Ctor = audioContextCtor();
@@ -687,6 +718,33 @@ export function browserDictationAvailable(): boolean {
   return Boolean(recognitionCtor());
 }
 
+/** The Android app's native microphone, injected as `window.AgentSlotMic`.
+ *
+ *  It only exists inside the AgentSlot companion app, and only for a page that is one of the
+ *  operator's saved servers (the app checks). When it is there, the page records with it instead of
+ *  getUserMedia: Chromium's own capture never opens on that ROM, while the app's AudioRecord does. */
+interface NativeMicBridge {
+  available(): boolean;
+  /** "ok" | "already" | "permission" | "denied" | "error: …" */
+  start(rate: number): string;
+  stop(): void;
+}
+
+function bridgeMic(): NativeMicBridge | null {
+  const b = (window as unknown as { AgentSlotMic?: NativeMicBridge }).AgentSlotMic;
+  return b && typeof b.start === "function" && typeof b.stop === "function" ? b : null;
+}
+
+export function nativeMicAvailable(): boolean {
+  const b = bridgeMic();
+  if (!b) return false;
+  try {
+    return Boolean(b.available());
+  } catch {
+    return false;
+  }
+}
+
 class Dictation {
   #state: DictationState = { status: "idle", text: "", interim: "", error: "", engine: null, seconds: 0 };
   #listeners = new Set<() => void>();
@@ -699,6 +757,8 @@ class Dictation {
   #ctx: AudioContext | null = null;
   #proc: ScriptProcessorNode | null = null;
   #mic: MediaStream | null = null;
+  /** The app's native microphone when the page is using it instead of getUserMedia. */
+  #bridge: NativeMicBridge | null = null;
   #committed = "";
   /** Live amplitude 0..1 with a fast attack / slow release, plus a rolling snapshot of the
    *  newest samples. The voice-mode orb reads both every frame (never through React). */
@@ -881,25 +941,25 @@ class Dictation {
    *  browser engine, the same connection carries the operator's hotwords and the model
    *  they configured — and unlike the batch path, words appear as they are spoken. */
   async #startStream(prefs: VoicePrefs, sessionId?: string): Promise<void> {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
+    const bridge = nativeMicAvailable() ? bridgeMic() : null;
+    if (!bridge && !navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
     const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
-    if (!Ctor) throw new Error("this browser cannot process audio");
+    if (!bridge && !Ctor) throw new Error("this browser cannot process audio");
     // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
     this.#set({ status: "requesting", engine: "stream", error: "" });
     this.#relay = true;          // a fresh capture always relays until the call says otherwise
-    const mic = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
-    this.#mic = mic;
-    // 16 kHz mono s16le is what the model takes. Ask the context for 16 kHz (Chromium
-    // honours it) and resample when the browser insists on 44.1/48 kHz (Safari).
-    const ctx = new Ctor({ sampleRate: 16000 });
-    this.#ctx = ctx;
+    // The socket comes FIRST, before the source: the source starts pushing frames the moment it is
+    // open, and a frame with nowhere to go is a word the operator said that nothing heard.
     const q = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/asr${q}`);
     ws.binaryType = "arraybuffer";
     this.#ws = ws;
     const pending: ArrayBuffer[] = [];
+    /** One place where a captured frame leaves the page, whichever source produced it. */
+    const send = (frame: ArrayBuffer): void => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      else if (ws.readyState === WebSocket.CONNECTING && pending.length < 300) pending.push(frame);
+    };
     ws.onopen = () => {
       for (const buf of pending) ws.send(buf);
       pending.length = 0;
@@ -930,6 +990,22 @@ class Dictation {
     ws.onclose = () => {
       if (this.#ws === ws) this.#ws = null;
     };
+    if (bridge) await this.#startBridgeCapture(bridge, send);
+    else await this.#startWebCapture(Ctor, send);
+    this.#set({ status: "listening", engine: "stream", seconds: 0 });
+    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  /** The page's own capture: getUserMedia → graph → 16 kHz mono s16le. */
+  async #startWebCapture(Ctor: typeof AudioContext, send: (frame: ArrayBuffer) => void): Promise<void> {
+    const mic = await openMic({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    this.#mic = mic;
+    // 16 kHz mono s16le is what the model takes. Ask the context for 16 kHz (Chromium
+    // honours it) and resample when the browser insists on 44.1/48 kHz (Safari).
+    const ctx = new Ctor({ sampleRate: 16000 });
+    this.#ctx = ctx;
     const src = ctx.createMediaStreamSource(mic);
     // ScriptProcessor is deprecated but universally available, which matters more here
     // than the AudioWorklet's tidier lifecycle: this runs for one utterance.
@@ -947,15 +1023,49 @@ class Dictation {
       if (!pcm.length) return;
       // typed arrays are generic over ArrayBufferLike in TS; a fresh Int16Array's buffer
       // is always a plain ArrayBuffer
-      const frame = pcm.buffer as ArrayBuffer;
-      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
-      else if (ws.readyState === WebSocket.CONNECTING && pending.length < 300) pending.push(frame);
+      send(pcm.buffer as ArrayBuffer);
     };
     src.connect(proc);
     proc.connect(mute);
     mute.connect(ctx.destination);
-    this.#set({ status: "listening", engine: "stream", seconds: 0 });
-    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  /** The app's own AudioRecord, into the very same relay.
+   *
+   *  Why: on this device the WebView's own capture will not open at all — `NotReadableError:
+   *  Could not start audio source` after 18 granted page requests — while the app's plain
+   *  AudioRecord records fine. The bridge hands the page 16 kHz mono s16le frames instead, so the
+   *  socket, the level, the relay gate and the transcripts stay exactly as they are. */
+  async #startBridgeCapture(bridge: NativeMicBridge, send: (frame: ArrayBuffer) => void): Promise<void> {
+    let status = "permission";
+    for (let attempt = 0; attempt < 12; attempt++) {
+      status = String(bridge.start(16000));
+      if (status === "ok" || status === "already") break;
+      if (status === "permission") {
+        // The app raised its own RECORD_AUDIO dialog; keep asking until it is answered.
+        this.#set({ status: "requesting", engine: "stream" });
+        await new Promise((r) => setTimeout(r, 600));
+        continue;
+      }
+      throw new Error(`手机上的原生麦克风打不开（${status}）`);
+    }
+    if (status !== "ok" && status !== "already") throw new Error(`手机上的原生麦克风打不开（${status}）`);
+    this.#bridge = bridge;
+    (window as unknown as { __asMic?: (b64: string) => void }).__asMic = (b64: string): void => {
+      const bin = atob(b64);
+      const n = bin.length >> 1;
+      const pcm = new Int16Array(n);
+      for (let i = 0; i < n; i++) {
+        const lo = bin.charCodeAt(2 * i);
+        const hi = bin.charCodeAt(2 * i + 1);
+        pcm[i] = ((hi << 8) | lo) << 16 >> 16;
+      }
+      const level = new Float32Array(n);
+      for (let i = 0; i < n; i++) level[i] = pcm[i] / 32768;
+      this.#measure(level);
+      if (!this.#relay) return;
+      send(pcm.buffer as ArrayBuffer);
+    };
   }
 
   /** Tears the capture graph + socket down. Idempotent. */
@@ -986,6 +1096,17 @@ class Dictation {
       for (const t of this.#mic.getTracks()) t.stop();
       this.#mic = null;
     }
+    if (this.#bridge) {
+      // The native recorder is the app's, so it must be told: an AudioRecord left running would keep
+      // the microphone indicator on and the next start() would answer "already".
+      try {
+        this.#bridge.stop();
+      } catch {
+        /* the app is gone */
+      }
+      this.#bridge = null;
+    }
+    (window as unknown as { __asMic?: unknown }).__asMic = undefined;
     if (this.#timer) {
       window.clearInterval(this.#timer);
       this.#timer = null;
@@ -1007,7 +1128,7 @@ class Dictation {
     // not resolve until the operator answers the permission prompt, and without this
     // the button looked dead for as long as the prompt was up (QA R53).
     this.#set({ status: "requesting", engine: "server", error: "" });
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await openMic({ audio: true });
     const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
     const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     this.#chunks = [];

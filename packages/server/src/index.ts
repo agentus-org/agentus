@@ -3,7 +3,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { Duplex } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -20,6 +20,7 @@ import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
 import { initSettings, publicSettings, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
+import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
 
 const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
@@ -30,6 +31,9 @@ const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
 const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.resolve(HERE, "../.data");
 const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
+// The Android companion artifact (/notify links to it, /agentslot-companion.apk streams it).
+// Path is relative to THIS FILE: src → packages/server → packages → repo root.
+const APK_FILE = process.env.AGENTSLOT_APK ?? path.resolve(HERE, "../../../android/artifacts/agentslot-companion.apk");
 // Optional second listener, TLS (see the block right before listen). Declared up here
 // because the request handler also serves the public cert — a phone that has to trust a
 // self-signed issuer needs to fetch the cert from somewhere, and that somewhere should
@@ -80,9 +84,65 @@ function emit(evt: ServerEvent): void {
   for (const { ws } of clients.values()) {
     if (ws.readyState === WebSocket.OPEN) ws.send(wire);
   }
+  // The same event stream that feeds the browser feeds the notify channel: turn-start/end,
+  // permission requests and errors become activities. One source of truth, no second
+  // observation path that could drift from what the operator sees.
+  notify.observe(evt);
 }
 
 const mgr = new SessionManager(store, emit);
+
+// ---- notify channel (docs/android-notify-contract.md) ----------------------------
+// Owns pairing, the device websocket, the activity lifecycle and the button callbacks.
+// It holds no agent logic: what an event MEANS is decided in notify/center.ts §ACP mapping,
+// and everything it sends goes through one wire format.
+const notify = new NotifyCenter({
+  dataDir: DATA_DIR,
+  log: (line: string) => console.log(line),
+  sessionTitle: (id: string) => mgr.list().find((s) => s.id === id)?.title ?? store.getSession(id)?.title ?? null,
+  // Operator credential = whatever already unlocks the cockpit (session cookie or machine token).
+  operator: (req, url) => Boolean(auth.authenticate(req.headers, url)),
+  // The companion artifact, so the phone panel in 设置 can show its size without a second request.
+  apkPath: APK_FILE,
+  // Username+password pairing: the phone types the same login the browser uses. The check and
+  // its rate limit stay here, in auth.ts, so a phone cannot have a laxer door than the UI.
+  credentials: (username, password, ip) => {
+    const gate = auth.loginAllowed(ip);
+    if (!gate.allowed) {
+      return { ok: false, reason: `too many attempts, retry in ${Math.ceil(gate.retryAfterMs / 1000)}s` };
+    }
+    if (!auth.verifyCredentials(username, password)) {
+      auth.recordLoginFailure(ip);
+      return { ok: false, reason: "wrong username or password" };
+    }
+    auth.recordLoginSuccess(ip);
+    return { ok: true };
+  },
+});
+
+// One row per interaction. A notification button carries an opaque actionId plus the ref the
+// publisher attached; the cockpit is the only place that knows what it means. Adding a new
+// interaction is therefore a case here (or a new ref.type), never an app rebuild.
+notify.onAction(({ ref, action, activity, device }) => {
+  console.log(`[notify] action device=${device.name} activity=${activity.activityId} action=${action.actionId} type=${ref?.type ?? "none"}`);
+  if (!ref) return; // the button existed but nobody claimed it: log and drop, never guess
+  switch (ref.type) {
+    case "permission":
+      // The lock screen answering an agent's permission prompt — the whole point of the channel.
+      mgr.respondPermission(String(ref.sessionId), String(ref.requestId), {
+        outcome: "selected",
+        optionId: String(ref.optionId),
+      }, {
+        optionKind: typeof ref.optionKind === "string" ? ref.optionKind : undefined,
+        signature: typeof ref.signature === "string" ? ref.signature : undefined,
+      });
+      return;
+    case "open":
+      return; // the app already opened the deeplink; nothing to do server-side
+    default:
+      console.log(`[notify] no handler for ref.type=${ref.type}`);
+  }
+});
 
 // Operator settings (voice, theme, call knobs, talk-to-agent prefs) live in the store's
 // `settings` table: the UI owns them and env only bootstraps them (settings.ts). Read
@@ -190,7 +250,13 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
     ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json",
     ".json": "application/json", ".ico": "image/x-icon",
   };
-  res.writeHead(200, { "content-type": types[ext] ?? "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": types[ext] ?? "application/octet-stream",
+    // The HTML must never be cached: it names the hashed bundle, so a cached index.html keeps serving
+    // the OLD app after a rebuild — which is how a shipped fix fails to reach the phone (the WebView
+    // keeps the page for days otherwise). The hashed assets themselves are immutable and cacheable.
+    "cache-control": ext === ".html" ? "no-cache, must-revalidate" : "public, max-age=31536000, immutable",
+  });
   fs.createReadStream(file).pipe(res);
 }
 
@@ -200,6 +266,11 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", "http://x");
   try {
+    // The notify channel authenticates by itself — a rotating pairing code for /pair, the
+    // device token for everything else — so it runs AHEAD of the operator gate. That is the
+    // whole point: a phone tapping "allow" on the lock screen has no browser session.
+    if (url.pathname.startsWith("/api/notify") && (await notify.handleHttp(req, res, url))) return undefined;
+
     // ---- outer lock: optional HTTP Basic, in front of EVERYTHING (static, /healthz,
     // /api, login page). This is the layer that a public tunnel needs, because a
     // tunnel's own "auth_pass" does not necessarily gate HTTP (see auth.ts).
@@ -224,6 +295,68 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         "content-length": String(der.length),
       });
       return res.end(der);
+    }
+
+    // ---- the phone's onboarding page + the APK, both behind the operator login ----------
+    // The pairing code lives on this page, so it is NOT public: an unauthenticated visitor is
+    // sent to the login screen (the SPA at /) and comes back with a session cookie.
+    if (url.pathname === "/notify" || url.pathname === "/notify/" || url.pathname === "/agentslot-companion.apk") {
+      const who = auth.authenticate(req.headers, url);
+      if (!who) {
+        res.writeHead(302, { location: "/" });
+        return res.end("login required\n");
+      }
+      if (url.pathname === "/agentslot-companion.apk") {
+        if (!fs.existsSync(APK_FILE)) return send(res, 404, { error: "no apk built yet" });
+        res.writeHead(200, {
+          "content-type": "application/vnd.android.package-archive",
+          "content-length": String(fs.statSync(APK_FILE).size),
+          "content-disposition": 'attachment; filename="agentslot-companion.apk"',
+          "cache-control": "no-store",
+        });
+        fs.createReadStream(APK_FILE).pipe(res);
+        return undefined;
+      }
+      const secure = Boolean((req.socket as { encrypted?: boolean }).encrypted)
+        || String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
+      const host = String(req.headers.host ?? "localhost");
+      const origin = `${secure ? "https" : "http"}://${host}`;
+      const pairUri = `agentslot://pair?u=${encodeURIComponent(origin)}&c=${notify.code}`;
+      const apkPath = APK_FILE;
+      const apkSize = fs.existsSync(apkPath) ? `${(fs.statSync(apkPath).size / 1048576).toFixed(1)} MB` : "尚未构建";
+      const rows = notify.devices().map((d) =>
+        `<tr><td>${d.name}</td><td>${d.platform} ${d.sdkInt}</td><td>${d.capabilities.join(" ")}</td>` +
+        `<td>${d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : "—"}</td></tr>`).join("");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      return res.end(`<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentSlot 手机通知</title>
+<style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;margin:24px auto;max-width:40em;padding:0 16px}
+code{background:#f2f2ef;padding:3px 7px;border-radius:5px;word-break:break-all;font-size:13px}
+button{font:inherit;padding:7px 12px;margin:4px 6px 4px 0;border-radius:8px;border:1px solid #ccc;background:#fff}
+td{padding:3px 12px 3px 0;font-size:12px;font-family:ui-monospace,monospace}
+h1{font-size:20px} h3{font-size:15px;margin-top:28px} li{margin:6px 0}</style>
+<h1>手机通知（Android 伴侣）</h1>
+<ol>
+<li>装 App：<a href="/agentslot-companion.apk">agentslot-companion.apk</a> (${apkSize})<br>
+    <small>手机浏览器会提示"安装未知应用"，允许一次即可。${fs.existsSync(apkPath) ? `<br>sha256 <code>${createHash("sha256").update(fs.readFileSync(apkPath)).digest("hex")}</code>` : ""}</small></li>
+<li>打开 App，把这一行粘进首屏（或直接填地址 ${origin} + 你的用户名密码）：<br>
+    <code id="uri">${pairUri}</code>
+    <button onclick="navigator.clipboard.writeText(document.getElementById('uri').textContent)">复制</button></li>
+<li>授予通知权限。上岛（灵动岛）两条路：<b>Android 16</b> 打开 App 里那个「实时动态」系统开关；
+    <b>小米/澎湃</b>点 App 里的「小米焦点通知权限」看是否放行（澎湃默认不给三方应用焦点通知，不放行就只有普通通知）。</li>
+<li>折叠屏（MIX Fold 4 之类）：展开/合上都会自适应——外屏单栏、内屏双栏，正在填的表单不会丢。</li>
+<li>手机用蜂窝网连不上：多半是 safe-nat 白名单没放行（表现是连接被重置，或运营商代理伪装成 502）。
+    在 <code>http://i207f47592.wicp.vip:10086</code> 面板「白名单 → 当前访问者 → 加入白名单」把自己加上。</li>
+</ol>
+<p><button onclick="post('/api/notify/probe')">发一条探针通知到我的手机</button>
+   <button onclick="post('/api/notify/pair-code/rotate').then(()=>location.reload())">换一个配对码</button></p>
+<h3>已配对设备</h3>
+<table>${rows || "<tr><td>（还没有设备配对）</td></tr>"}</table>
+<p style="color:#888;font-size:12px">配对码 <b>${notify.code}</b> · 服务端 ${origin}</p>
+<script>
+async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'已发送':'失败 '+r.status)}
+</script>`);
     }
 
     // ---- auth gate. Everything under /api except the login/me endpoints is
@@ -722,6 +855,13 @@ const wss = new WebSocketServer({ noServer: true });
 // needs its wss sockets too, and this handler reads the cookie / ?token=, never the scheme.
 const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   const url = new URL(req.url ?? "/", "http://x");
+  // The companion's socket carries its own device token in the query — a phone cannot set
+  // headers on a handshake any more than a browser can — so it is checked before the
+  // operator's cookie/Basic gate.
+  if (url.pathname === "/api/notify/ws") {
+    notify.handleUpgrade(req, socket, head);
+    return;
+  }
   if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr") {
     socket.destroy();
     return;

@@ -1,0 +1,10 @@
+// AGP 8.13 is the first release that supports compileSdk 36.1 (what this machine has
+// installed) and it is also what the notify contract needs: Notification.ProgressStyle
+// and setRequestPromotedOngoing are API 36.
+plugins {
+    id 'com.android.application' version '8.13.0' apply false
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}

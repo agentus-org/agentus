@@ -15,6 +15,7 @@ import {
   cleanAgentTitle, deriveTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
 import type { Store, SessionRow } from "../store/store.js";
+import { textOf, withText } from "../store/store.js";
 import type {
   AttachmentSummary,
   BackendId,
@@ -616,6 +617,28 @@ export class SessionManager {
         return; // unknown update kinds are ignored (protocol may grow)
     }
     if (msg) {
+      // The streaming kinds accumulate into one row per message (see Store.appendTextChunk): a reply
+      // is ONE row, not 1259. The client gets the row plus the part that is genuinely new, so a live
+      // turn stays a small delta on the wire while the store stays the source of truth.
+      if (msg.kind === "agent" || msg.kind === "thought") {
+        const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind });
+        this.#touch(live, r.message.createdAt);
+        if (r.delta || r.isNew) {
+          // One message = one row, so a row that GREW keeps its seq. A client that deduplicated frames
+          // by seq therefore dropped every chunk after the first one (measured: a phone bubble showing
+          // "不是" with the rest of the reply nowhere, and the next frame landing in an empty bubble).
+          // The frame carries `n` — the block's total length — as its version, and a growth ships ONLY
+          // the new part, so a long reply is never re-sent whole on every token.
+          const n = textOf(r.message.payload).length;
+          this.#emit({
+            t: "message",
+            message: r.isNew ? r.message : { ...r.message, payload: withText(r.message.payload, r.delta) },
+            delta: r.isNew ? undefined : r.delta,
+            n,
+          });
+        }
+        return;
+      }
       const stored = this.#store.appendMessage(msg);
       this.#touch(live, stored.createdAt);
       this.#emit({ t: "message", message: stored });

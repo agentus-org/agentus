@@ -6,11 +6,12 @@ import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
+import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import {
-  browserDictationAvailable, dictation, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
+  browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
@@ -323,6 +324,64 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
   settingsOpen: boolean;
 }): JSX.Element {
   const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  // ---- presence: tell the server which session is on screen, so the phone can stay quiet while
+  // I am looking at it (设置 → 手机通知 → 我正在看这个会话时不推). "Looking at it" means the tab is
+  // visible AND I touched the machine recently — a laptop left open with the cockpit on screen is
+  // not somebody watching, and treating it as such would silently swallow every notification.
+  // Best-effort throughout: presence must never break the cockpit.
+  //
+  // Deliberately NOT one effect with a cleanup: the first version nulled the presence in the
+  // cleanup on every session change, and that write raced its own follow-up ("I am watching X"),
+  // leaving the server believing nobody was looking (caught by recording what the page actually
+  // sent). So: a plain report per session change with no teardown, and a separate long-lived
+  // effect that owns the interval and the "I am leaving" write.
+  const lastInput = useRef(Date.now());
+  useEffect(() => {
+    const bump = (): void => { lastInput.current = Date.now(); };
+    const events = ["pointerdown", "keydown", "mousemove", "wheel", "touchstart"];
+    for (const e of events) window.addEventListener(e, bump, { passive: true });
+    return () => { for (const e of events) window.removeEventListener(e, bump); };
+  }, []);
+  /** True when a human is plausibly at this screen right now (see presence.ts for why it is not
+   *  merely "the tab is visible"). */
+  const amWatching = (): boolean =>
+    watchingNow({ visible: document.visibilityState === "visible", lastInputAt: lastInput.current, now: Date.now() });
+  /** Are we ON A CALL with the session on screen? A call is not "watching": the hands are free and the
+   *  screen is not being touched, so the idle rule above would drop presence mid-conversation — and the
+   *  completion card ("跑完了") then arrived WITH A SOUND, into the microphone the agent is listening on. */
+  const amOnCall = (): boolean => isCallActive() && document.visibilityState === "visible";
+  const reportPresence = (sessionId: string | null, visible: boolean, keepalive = false, call = false): void => {
+    void fetch("/api/notify/presence", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      keepalive,
+      body: JSON.stringify({ sessionId, visible, call }),
+    }).catch(() => { /* presence is a hint, never a requirement */ });
+  };
+  useEffect(() => {
+    // A call keeps the session reported even while nothing is touched: the server treats that as
+    // "watching" (suppress the duplicate) and as "a call is live" (send anything else silently).
+    if (amOnCall()) reportPresence(activeId ?? null, true, false, true);
+    else if (amWatching()) reportPresence(activeId ?? null, true);
+    else reportPresence(null, false);
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const activeRef = useRef<string | null>(activeId ?? null);
+  activeRef.current = activeId ?? null;
+  useEffect(() => {
+    const tick = (): void => {
+      if (amOnCall()) reportPresence(activeRef.current, true, false, true);
+      else if (amWatching()) reportPresence(activeRef.current, true);
+      else reportPresence(null, false);
+    };
+    const t = window.setInterval(tick, 30_000); // server-side TTL is 90s
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", tick);
+      reportPresence(null, false, true); // leaving the page means nobody is looking
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [q, setQ] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [busyId, setBusyId] = useState("");

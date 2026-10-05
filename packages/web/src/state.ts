@@ -9,6 +9,7 @@ import type {
   StoredMessage,
   TurnTrace,
 } from "@agentslot/shared";
+import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
 
 export type MsgView =
   | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[] }
@@ -42,6 +43,10 @@ export interface SessionView {
    *  key off this instead. Without it a streamed chunk could land with nobody noticing. */
   rev: number;
   seen: Set<number>; // ingested seqs — dedup between REST replay & WS live (QA#3)
+  /** `kind:messageId` → index in `msgs`: how a chunk finds ITS OWN block even when other messages
+   *  (thinking, tool cards) arrived in between, or when it came from a history page (see
+   *  transcript.ts). Rebuilt whenever the list is rebuilt or prepended to. */
+  blocks: Map<string, number>;
   /** latest turn's provenance (model/effort/mode) — shown once per turn */
   trace?: TurnTrace | null;
 }
@@ -116,7 +121,30 @@ class Cockpit {
     }
   }
 
+  /** `?session=<id>` — the slot a notification tap (or a shared link) asked for.
+   *
+   *  Read ONCE and then dropped from the URL: the parameter decides where we land, but the operator
+   *  switching slots afterwards must not be overridden by a stale query string on a later reconnect.
+   *  This is the other half of the tap-to-open contract — the app navigates here, the page picks it up. */
+  #openTarget(): string | null {
+    try {
+      const here = new URL(location.href);
+      const want = here.searchParams.get("session");
+      if (!want) return null;
+      here.searchParams.delete("session");
+      history.replaceState(null, "", here.toString());
+      return want;
+    } catch {
+      return null;
+    }
+  }
+
   #restoreActive(): string | null {
+    const target = this.#openTarget();
+    if (target) {
+      this.#rememberActive(target);
+      return target;
+    }
     try {
       return localStorage.getItem("agentslot.active");
     } catch {
@@ -420,6 +448,7 @@ class Cockpit {
       const v = this.#view(id);
       v.seen.clear();
       v.msgs = [];
+      v.blocks.clear();
       v.minSeq = null;
       for (const m of messages) this.#ingest(v, m);
       v.loaded = true;
@@ -443,11 +472,27 @@ class Cockpit {
       const { messages, hasOlder } = await this.#req<{ messages: StoredMessage[]; hasOlder?: boolean }>(
         `/api/sessions/${id}/messages?before=${v.minSeq}`,
       );
-      // ingest into an empty list, then prepend: keeps #ingest's upsert/dedup intact
-      const tail = v.msgs;
-      v.msgs = [];
-      for (const m of messages) this.#ingest(v, m);
-      v.msgs = [...v.msgs, ...tail];
+      // Fold the page into a scratch list, then merge it in BY BLOCK KEY: a message that straddles
+      // the page boundary (or that we already hold live) must stay ONE bubble — the older page only
+      // adds what the view does not have yet.
+      const page: MsgView[] = [];
+      const pageIndex = new Map<string, number>();
+      for (const m of messages) this.#ingest(v, m, { list: page, index: pageIndex });
+      const fresh: MsgView[] = [];
+      for (const b of page) {
+        const at = v.blocks.get(b.key);
+        const have = at === undefined ? undefined : v.msgs[at];
+        if (have && have.kind === b.kind && (b.kind === "agent" || b.kind === "thought") && have.kind === b.kind) {
+          // the store's row is the truth, but a live block can be ahead of a stale page
+          const live = have as Extract<MsgView, { kind: "agent" | "thought" }>;
+          const older = b as Extract<MsgView, { kind: "agent" | "thought" }>;
+          if (older.text.length > live.text.length) live.text = older.text;
+          continue;
+        }
+        fresh.push(b);
+      }
+      if (fresh.length) v.msgs = [...fresh, ...v.msgs];
+      v.blocks = reindexBlocks(v.msgs);
       v.hasOlder = Boolean(hasOlder);
     } catch {
       /* keep hasOlder so the affordance stays for a retry */
@@ -660,7 +705,7 @@ class Cockpit {
       v = {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
         msgs: [], perms: [], busy: false, loaded: false, hasOlder: false, loadingOlder: false,
-        minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(),
+        minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(), blocks: new Map(),
       };
       this.byId.set(id, v);
     }
@@ -711,6 +756,7 @@ class Cockpit {
         // to SQLite before emitting, so snapshot ⊇ anything we saw live)
         v.seen.clear();
         v.msgs = [];
+        v.blocks.clear();
         this.#endOpenBubbles(v);
         for (const m of e.messages) this.#ingest(v, m);
         v.loaded = true;
@@ -718,7 +764,10 @@ class Cockpit {
       }
       case "message": {
         const v = this.#view(e.message.sessionId);
-        this.#ingest(v, e.message);
+        // `delta` is present when this frame GREW a block we already hold (the store accumulates one
+        // row per message now); without it the row is the whole truth and replaces the block's text.
+        // `n` is that block's total length — the frame's version, since a grown row keeps its seq.
+        this.#ingest(v, e.message, { delta: e.delta, n: e.n });
         v.lastAt = Date.now();
         this.lastSeq[e.message.sessionId] = Math.max(this.lastSeq[e.message.sessionId] ?? 0, e.message.seq);
         break;
@@ -772,12 +821,26 @@ class Cockpit {
     if (l && (l.kind === "agent" || l.kind === "thought") && v.busy) l.open = true;
   }
 
-  #ingest(v: SessionView, m: StoredMessage): void {
+  #ingest(
+    v: SessionView,
+    m: StoredMessage,
+    opts?: { delta?: string; n?: number; list?: MsgView[]; index?: Map<string, number> },
+  ): void {
+    // A page of older rows is folded into a scratch list first (so it can be merged by block key
+    // with what is already on screen), the live stream folds into the view itself.
+    const list = opts?.list ?? v.msgs;
+    const index = opts?.index ?? v.blocks;
+    const delta = opts?.delta;
     // Dedup REST-replay vs WS-live (QA#3) — but ONLY for append-only rows.
     // Tool rows are upserted server-side keeping their original seq, so a
     // seq-based guard would swallow every tool_call_update (QA#12: the card
     // stayed "pending" live while a reload showed "completed").
-    const upsertRow = m.kind === "tool" || m.kind === "meta" || m.seq <= 0;
+    // A streamed text block that GREW is the same story: the store folds one message into ONE row and
+    // that row KEEPS ITS SEQ, so a seq guard dropped every chunk after the first (measured on a phone:
+    // a bubble reading "不是" and the rest of the reply nowhere). Growing frames carry `n` — the
+    // block's total length — and are guarded by that instead (transcript.planTextFrame).
+    const grew = delta !== undefined;
+    const upsertRow = m.kind === "tool" || m.kind === "meta" || m.seq <= 0 || grew;
     if (!upsertRow) {
       if (v.seen.has(m.seq)) return;
       v.seen.add(m.seq);
@@ -787,10 +850,10 @@ class Cockpit {
     if (m.seq > 0 && (v.minSeq == null || m.seq < v.minSeq)) v.minSeq = m.seq;
     const p = m.payload as Record<string, unknown>;
     const text = extractText(p);
-    const last = v.msgs[v.msgs.length - 1];
+    const last = list[list.length - 1];
     switch (m.kind) {
       case "user":
-        v.msgs.push({
+        list.push({
           key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""),
           // names only — the bytes were never persisted (AttachmentSummary)
           files: Array.isArray(p.attachments)
@@ -799,17 +862,30 @@ class Cockpit {
             : [],
         });
         break;
+      // Streamed text: one message is one bubble, found by its `messageId` — a history page can no
+      // longer split a reply (or a markdown table) in half, and a re-sent block does not become a
+      // second bubble. See transcript.ts for why both of those needed their own rule.
       case "agent":
-        if (last && last.kind === "agent" && last.open) last.text += text;
-        else v.msgs.push({ key: `m${m.seq}`, kind: "agent", text, open: true });
+      case "thought": {
+        const kind = m.kind;
+        const key = blockKeyOf(kind, p);
+        const { at } = foldTextRow(
+          list,
+          index,
+          { key, kind, text, delta, n: opts?.n },
+          (k, row) => ({ key: k, kind: row.kind, text: row.text, open: true }),
+        );
+        // A live frame keeps ITS bubble marked as the growing one, even when a tool card or a
+        // thinking block arrived after it: that flag is what draws the streaming state.
+        const block = list[at];
+        if (delta !== undefined && block && (block.kind === "agent" || block.kind === "thought")) {
+          block.open = true;
+        }
         break;
-      case "thought":
-        if (last && last.kind === "thought" && last.open) last.text += text;
-        else v.msgs.push({ key: `m${m.seq}`, kind: "thought", text, open: true });
-        break;
+      }
       case "tool": {
         const tcId = String(p.toolCallId ?? m.toolCallId ?? m.seq);
-        const existing = v.msgs.find(
+        const existing = list.find(
           (x) => x.kind === "tool" && x.toolCallId === tcId,
         ) as Extract<MsgView, { kind: "tool" }> | undefined;
         const detail = extractToolDetail(p);
@@ -822,7 +898,7 @@ class Cockpit {
           if (detail) existing.detail = detail;
           if (input) existing.input = input;
         } else {
-          v.msgs.push({
+          list.push({
             key: `tc-${tcId}`, kind: "tool", toolCallId: tcId,
             title: String(p.title ?? "tool call"), status: String(p.status ?? "pending"),
             kind2: String(p.kind ?? ""), detail, input,
@@ -832,13 +908,13 @@ class Cockpit {
       }
       case "plan": {
         const items = ((p.entries ?? []) as { content: string; status: string; priority?: string }[]);
-        const existing = v.msgs.find((x) => x.kind === "plan");
+        const existing = list.find((x) => x.kind === "plan");
         if (existing && existing.kind === "plan") existing.items = items;
-        else v.msgs.push({ key: `m${m.seq}`, kind: "plan", items });
+        else list.push({ key: `m${m.seq}`, kind: "plan", items });
         break;
       }
       case "meta":
-        v.msgs.push({ key: `m${m.seq}`, kind: "meta", text: text || JSON.stringify(p) });
+        list.push({ key: `m${m.seq}`, kind: "meta", text: text || JSON.stringify(p) });
         break;
     }
     this.lastSeq[v.info.id] = Math.max(this.lastSeq[v.info.id] ?? 0, m.seq);

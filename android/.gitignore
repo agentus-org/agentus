@@ -1,0 +1,8 @@
+# Android build outputs + the local SDK path (machine-specific, never committed)
+.gradle/
+build/
+app/build/
+local.properties
+artifacts/
+*.jks
+*.keystore

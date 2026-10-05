@@ -193,6 +193,19 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   useEffect(() => {
     let dead = false;
     setCallActive(true);            // the call owns the voice while it is open (see voice.ts)
+    // …and tell the server immediately, not "within 30 s at the next presence tick": from the second
+    // the call is up, nothing may make a sound (a notification tone goes into this call's own
+    // microphone — the native capture has no echo cancellation), and this session's turn-end card is a
+    // duplicate of what the call is already saying out loud.
+    const reportCall = (active: boolean): void => {
+      void fetch("/api/notify/presence", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: active ? sessionId : null, visible: active, call: active }),
+      }).catch(() => { /* presence is a hint, never a requirement */ });
+    };
+    reportCall(true);
     const boot = async (): Promise<void> => {
       try {
         const snap = cockpit.getSnapshot();
@@ -227,6 +240,10 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       speaker.stop();
       dictation.stop();
       setCallActive(false);
+      // Hang up = nobody watching. Reporting "not watching" is the safe direction: for up to one tick
+      // the phone may still notify while the operator is in fact back at the screen, which is a missed
+      // suppression, never a lost notification.
+      reportCall(false);
     };
     // prefs/sessionId are fixed for the lifetime of a call on purpose
     // eslint-disable-next-line react-hooks/exhaustive-deps

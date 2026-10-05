@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Two deliberate choices, both because this app only ever talks to the operator's own
+  self-hosted AgentSlot server:
+
+  * cleartext is OFF by default and only allowed for the LAN addresses (a test bed over
+    http://192.168.x.x). Everything else must be wss/https.
+  * https to a self-signed issuer is handled in code (Http.java pins the bundled CA and
+    accepts it for whatever host the operator typed) — the cert is issued for a DDNS name,
+    which a LAN IP is not, so system trust + hostname verification cannot be used as-is.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.0.109</domain>
+        <domain includeSubdomains="false">192.168.0.108</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
