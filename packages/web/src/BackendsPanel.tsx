@@ -192,12 +192,10 @@ export function BackendsPanel(): JSX.Element {
 
   return (
     <section className="set-card" id="set-backends" data-setgroup="agent">
-      <h3>后端（用哪个 hermes）</h3>
+      <h3>后端</h3>
       <p className="set-hint">
-        一条后端 = <b>用哪个命令</b>（+ 额外环境变量，例如 <code>PYTHONPATH</code> 指向源码树）·
-        <b> 哪个 HERMES_HOME</b> · <b>哪个 profile</b>（<code>-p</code>）。
-        新建会话时按行选择，因此每个槽位可以各自隔离。指向 live <code>~/.hermes</code> 默认会被拒绝，
-        除非在这一行显式勾选。
+        一条后端 = <b>用哪个命令</b> · <b>哪套环境变量</b> · <b>哪个主目录</b> · <b>哪套配置</b>。
+        新建会话时按行选择，所以每个槽位可以各自隔离。
       </p>
 
       <div className="be-list">
@@ -312,6 +310,15 @@ export function BackendsPanel(): JSX.Element {
               <option value="mock">mock（QA）</option>
             </select>
           </div>
+          {(draft.kind ?? "hermes") === "hermes" ? (
+            <p className="set-hint be-kind-help">
+              hermes 行的四件事：<b>命令</b> 填 <code>hermes</code>，或指向某份源码树的启动器
+              （如 <code>~/.local/bin/hermes-dev</code>）；<b>HERMES_HOME</b> 是这一行读写的
+              <code>~/.hermes</code> 目录 —— 默认给隔离的 home，指向 live <code>~/.hermes</code>
+              会被拒绝（除非勾选下面的 live home）；<b>profile</b> 以 <code>-p</code> 传给命令；
+              <b>额外环境</b> 里放 <code>PYTHONPATH</code> 就能让这一行跑那份源码树。
+            </p>
+          ) : null}
           <div className="set-row">
             <label>命令</label>
             <input className="set-input" value={draft.cmd ?? ""} spellCheck={false} onChange={(e) => field("cmd", e.target.value)} placeholder="hermes 或 /path/to/hermes-dev" />

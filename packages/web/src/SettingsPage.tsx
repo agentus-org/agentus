@@ -39,7 +39,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
   },
   {
     id: "agent", label: "智能体", hint: "槽位跑哪个后端",
-    items: [{ anchor: "set-backends", label: "后端（用哪个 hermes）" }],
+    items: [{ anchor: "set-backends", label: "后端" }],
   },
   {
     id: "notify", label: "通知", hint: "手机上怎么收到",

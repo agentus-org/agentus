@@ -517,7 +517,7 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
         <span className="tagline">keep your agents on the track</span>
         <button
           className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
-          title="设置 — 后端（用哪个 hermes）、主题、语音识别、语音合成、热词"
+          title="设置 — 后端、主题、语音识别、语音合成、热词"
           aria-label="settings"
           aria-pressed={settingsOpen}
           onClick={onSettings}
