@@ -1485,3 +1485,53 @@ code.inline {
 @media (prefers-reduced-motion: reduce) {
   .call-mode { animation: none; }
 }
+
+/* ---- backend registry panel (M6): "which command / which home / which profile" ---------- */
+.be-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.be-row {
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.be-row.blocked { border-color: var(--err); }
+.be-row-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.be-row-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.be-row-sub { font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); word-break: break-all; }
+.be-row-note { font-size: 11.5px; color: var(--text-dim); }
+.be-row-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
+.be-badge {
+  font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--text-dim); background: var(--chip-bg);
+}
+.be-badge.be-warn { color: var(--accent); border-color: var(--accent-dim); }
+.be-badge.be-danger, .be-danger { color: var(--err); }
+.be-badge.be-dim { opacity: 0.75; }
+/* health (M6.1): the last check the server ran on this row, and the handshake a real session
+   observed. Kept visually below the definition lines: it is evidence ABOUT the row. */
+.be-badge.be-ok { color: var(--ok, #3fb950); border-color: var(--ok, #3fb950); }
+.be-health {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 5px; font-size: 11.5px;
+}
+.be-code {
+  font-family: var(--mono); font-size: 10.5px; padding: 0 4px;
+  border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim);
+}
+.be-guidance { flex-basis: 100%; color: var(--text-dim); font-size: 11.5px; }
+.be-handshake { margin-top: 4px; font-size: 11.5px; color: var(--text-dim); }
+.be-handshake code { font-family: var(--mono); }
+.be-dim { color: var(--text-dim); font-size: 11.5px; }
+.hint-warn { color: var(--accent); font-size: 11.5px; margin-top: 4px; }
+.be-hint { display: block; }
+.be-hint code, .be-inspect code, .be-inspect-out { font-family: var(--mono); }
+.be-hint code { word-break: break-all; }
+.be-inspect {
+  margin-top: 12px; border: 1px dashed var(--line); border-radius: 10px;
+  padding: 10px 12px; font-size: 12px; background: var(--bg-raised);
+}
+.be-inspect-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.be-inspect ul { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.be-inspect-out {
+  margin-top: 4px; font-size: 11px; color: var(--text-dim); white-space: pre-wrap; word-break: break-all;
+}
+.be-editor { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; }
+@media (max-width: 720px) { .be-row { flex-direction: column; } }

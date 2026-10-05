@@ -13,6 +13,7 @@ import { IconArrowLeft, IconClose, IconMic, IconRefresh, IconSettings, IconStop,
 import { pushTheme, useTheme, type ThemeConfig } from "./theme";
 import { AccountPanels, type AccountInfo } from "./Account";
 import { NotifySettings } from "./NotifySettings";
+import { BackendsPanel } from "./BackendsPanel";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -269,6 +270,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           account={acc}
           onChanged={(next) => setAcc((cur) => (cur ? { ...cur, ...next } : cur))}
         />
+
+        {/* ---------- 后端：用哪个命令 / 哪个 home / 哪个 profile（M6） ---------- */}
+        <BackendsPanel />
 
         {/* ---------- 手机通知（Android 伴侣 + 推送规则） ---------- */}
         <NotifySettings sessionId={sessionId} />

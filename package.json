@@ -17,6 +17,7 @@
   "test": "npm run test -ws --if-present",
   "start": "bash scripts/start.sh",
   "smoke": "node scripts/smoke.mjs",
+  "backend-smoke": "node scripts/backend-registry-smoke.mjs",
   "auth-smoke": "node scripts/auth-smoke.mjs",
   "workspace-smoke": "node scripts/workspace-smoke.mjs",
   "voice-smoke": "node scripts/voice-smoke.mjs",

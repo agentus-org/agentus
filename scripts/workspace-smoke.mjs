@@ -365,7 +365,11 @@ try {
   const jsonExport = await j(await fetch(`${base}/api/sessions/${created.id}/export?format=json`, { headers: H }));
   check("the json export is the lossless row dump",
     jsonExport.format === "agentslot-session/1" && Array.isArray(jsonExport.messages)
-    && jsonExport.messages.length >= 3 && jsonExport.messages.every((m) => m.payload && m.seq > 0),
+    // One row per MESSAGE now (streamed chunks fold into the row they belong to), so this flow is
+    // user + agent. The floor proves the dump carries the transcript; the invariants below are what
+    // make it "lossless" — and they are asserted harder than the old row-count guess.
+    && jsonExport.messages.length >= 2 && jsonExport.messages.every((m) => m.payload && m.seq > 0)
+    && jsonExport.messages.every((m, i, a) => i === 0 || a[i - 1].seq < m.seq),
     `rows=${jsonExport.messages?.length}`);
   check("export refuses an unknown session",
     (await fetch(`${base}/api/sessions/nope-export/export`, { headers: H })).status === 404);

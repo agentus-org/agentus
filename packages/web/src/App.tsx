@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
-import { cockpit, type MsgView, type SessionView } from "./state";
+import { cockpit, type BackendView, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { CallMode } from "./CallMode";
@@ -517,7 +517,7 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
         <span className="tagline">keep your agents on the track</span>
         <button
           className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
-          title="设置 — 主题、语音识别、语音合成、热词"
+          title="设置 — 后端（用哪个 hermes）、主题、语音识别、语音合成、热词"
           aria-label="settings"
           aria-pressed={settingsOpen}
           onClick={onSettings}
@@ -2240,7 +2240,9 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   );
 }
 
-type BackendRow = { id: string; label: string; home?: string | null; blocked?: string | null };
+/** The registry row shape lives with the client store (state.ts) — one type, one place.
+ *  The dialog only reads it; editing happens on the settings page. */
+type BackendRow = BackendView;
 
 function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
   useEscape(true, onClose);
@@ -2301,9 +2303,37 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
           ))}
           <button className="retry" title="reload backend list" onClick={load}>⟳</button>
         </div>
-        {backends.find((b) => b.id === backend)?.home && (
-          <div className="hint">isolated home: {backends.find((b) => b.id === backend)!.home}</div>
-        )}
+        {(() => {
+          // What this row will actually be: which code (cmd + env), which home, which profile.
+          // It is the operator's one chance to notice "oh, this one writes into my LIVE home".
+          const sel = backends.find((b) => b.id === backend);
+          if (!sel) return null;
+          return (
+            <div className="hint be-hint">
+              <div>
+                runs: <code>{sel.cmd} {(sel.args ?? []).join(" ")}</code>
+                {sel.profile ? <> · profile <code>{sel.profile}</code></> : null}
+              </div>
+              {sel.home ? (
+                <div>
+                  home: <code>{sel.home}</code>
+                  {sel.allowLiveHome ? <b className="be-danger"> · live home 已放行（危险）</b> : null}
+                </div>
+              ) : null}
+              {(sel.env ?? []).length ? <div>env: <code>{(sel.env ?? []).join(", ")}</code></div> : null}
+              {sel.health?.at ? (
+                <div className={sel.health.status === "online" ? "be-dim" : "err"}>
+                  上次检查：{sel.health.status}
+                  {sel.health.kind ? ` · ${sel.health.kind}` : ""}
+                  {sel.health.errorCode ? ` · ${sel.health.errorCode}` : ""}
+                  {sel.health.status !== "online" && sel.health.guidance ? <div className="be-guidance">{sel.health.guidance}</div> : null}
+                </div>
+              ) : null}
+              {sel.blocked ? <div className="err">blocked: {sel.blocked}</div> : null}
+              {(sel.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
+            </div>
+          );
+        })()}
         <label>working directory</label>
         <WorkspacePicker value={cwd} onChange={setCwd} />
         <label>title (optional)</label>

@@ -10,7 +10,9 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
-import { BACKENDS, buildSpawnEnv } from "./backends.js";
+import { BACKENDS, buildSpawnEnv, type BackendSpec } from "./backends.js";
+import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
+import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
   cleanAgentTitle, deriveTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
@@ -132,18 +134,65 @@ export class SessionManager {
     await Promise.allSettled(kills);
   }
 
+  /**
+   * A session's backend spec + argv. The registry row (what the operator edits) wins; an id
+   * that only exists among the builtin seeds still resolves, so a session created before the
+   * row was touched never breaks. argv comes from registry.effectiveArgs — that is where the
+   * hermes profile flag (`-p <profile>`) is composed.
+   */
+  #spawnShape(id: string): { spec: BackendSpec; args: string[] } | null {
+    const row = this.#store.getBackend(id);
+    if (row) return { spec: rowToSpec(row), args: effectiveArgs(row) };
+    const builtin = BACKENDS[id];
+    return builtin ? { spec: builtin, args: builtin.args } : null;
+  }
+
+  /**
+   * Fold a REAL session outcome back onto the backend row (kind=session). This is the only
+   * check that proves a row works (`acp --check` returns before the adapter's server module is
+   * even imported), so it is worth remembering: the settings list can then say "online, session,
+   * 2m ago" for a row that has actually run a slot, and a row that dies in the handshake keeps
+   * the reason instead of losing it with the failed session. The handshake is stored for the same
+   * reason — it is a property of (command, env, home, profile), not of one conversation.
+   *
+   * Bookkeeping must never fail a session: a throw in here is swallowed.
+   */
+  #noteBackendCheck(
+    backendId: string,
+    outcome: { ok: boolean; error?: string | null; errorCode?: CheckErrorCode; latencyMs?: number | null },
+    handshake?: BackendHandshake | null,
+  ): void {
+    try {
+      const row = this.#store.getBackend(backendId);
+      if (!row) return; // a builtin-only id that was never seeded: nothing to write to
+      const health = outcome.ok
+        ? checkedHealth(row.health, { status: "online", kind: "session", latencyMs: outcome.latencyMs ?? null })
+        : checkedHealth(row.health, {
+            status: "offline",
+            kind: "session",
+            errorCode: outcome.errorCode ?? classifyError(outcome.error ?? "unknown"),
+            message: outcome.error ?? null,
+            latencyMs: outcome.latencyMs ?? null,
+          });
+      this.#store.recordBackendCheck(backendId, health, handshake ?? null);
+    } catch { /* the row is evidence, not control flow */ }
+  }
+
   async create(backend: BackendId, cwd: string, title?: string): Promise<SessionInfo> {
-    const spec = BACKENDS[backend];
-    if (!spec) throw new Error(`unknown backend: ${backend}`);
+    const shape = this.#spawnShape(backend);
+    if (!shape) throw new Error(`unknown backend: ${backend}`);
+    const { spec, args } = shape;
     const id = randomUUID().slice(0, 8);
     const now = Date.now();
 
     // isolation: never let a child inherit its way back into the live runtime home
     const plan = buildSpawnEnv(spec);
+    // measured once per spawn: how long the row took to reach `ready` (or to die trying)
+    const spawnStarted = Date.now();
 
     // detached:true => killing our node process does NOT kill the child,
     // so we MUST track pid for startup reclaim (reclaimOrphans). See design.md §8-1.
-    const child = spawn(spec.cmd, spec.args, {
+    const child = spawn(spec.cmd, args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
@@ -211,6 +260,8 @@ export class SessionManager {
       // `models` is on the wire but not in the SDK's published types (see shared/index.ts),
       // so read it defensively instead of trusting a typed field that does not exist.
       live.info.models = readModels(res);
+      // the row just proved itself: remember that, plus what the agent said it can do
+      this.#noteBackendCheck(String(backend), { ok: true, latencyMs: Date.now() - spawnStarted }, handshakeFrom(init, res));
       this.#updateSession(live);
       return live.info;
     } catch (err) {
@@ -219,6 +270,10 @@ export class SessionManager {
       live.info.lastError = errMessage(err) + stderrTail(live);
       this.#sessions.delete(id); // failed handshake => don't keep zombie session rows
       this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
+      this.#noteBackendCheck(String(backend), {
+        ok: false, error: live.info.lastError, errorCode: classifyError(err),
+        latencyMs: Date.now() - spawnStarted,
+      });
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -234,14 +289,16 @@ export class SessionManager {
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`unknown session: ${id}`);
     if (!row.acpSessionId) throw new Error(`session ${id} was never handed to an agent`);
-    const spec = BACKENDS[row.backend];
-    if (!spec) throw new Error(`unknown backend: ${row.backend}`);
+    const shape = this.#spawnShape(row.backend);
+    if (!shape) throw new Error(`unknown backend: ${row.backend}`);
+    const { spec, args } = shape;
 
     // Resume in the operator's workspace when they picked one: that is the whole
     // point of the workspace being a separate field (see shared/index.ts).
     const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
-    const child = spawn(spec.cmd, spec.args, {
+    const resumeStarted = Date.now();
+    const child = spawn(spec.cmd, args, {
       cwd: resumeCwd,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
@@ -291,7 +348,7 @@ export class SessionManager {
         ),
       );
       live.conn = conn;
-      await conn.initialize({
+      const reloadInit = await conn.initialize({
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
@@ -335,6 +392,12 @@ export class SessionManager {
       }
       live.info.status = "ready";
       this.#updateSession(live);
+      // a resumed slot is the same evidence as a fresh one: the row does work
+      this.#noteBackendCheck(
+        String(row.backend),
+        { ok: true, latencyMs: Date.now() - resumeStarted },
+        handshakeFrom(reloadInit, loaded),
+      );
       this.#emit({ t: "sessions", sessions: this.list() });
       return live.info;
     } catch (err) {
@@ -343,6 +406,10 @@ export class SessionManager {
       live.info.lastError = errMessage(err) + stderrTail(live);
       this.#sessions.delete(id);
       this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
+      this.#noteBackendCheck(String(row.backend), {
+        ok: false, error: live.info.lastError, errorCode: classifyError(err),
+        latencyMs: Date.now() - resumeStarted,
+      });
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -803,7 +870,7 @@ export class SessionManager {
 
   /** The name a slot wears before anything is known about it ("Hermes @ tmp"). */
   #placeholder(row: SessionRow): string {
-    const label = BACKENDS[row.backend]?.label ?? row.backend;
+    const label = this.#store.getBackend(row.backend)?.label ?? BACKENDS[row.backend]?.label ?? row.backend;
     return `${label} @ ${shortCwd(row.cwd)}`;
   }
 
