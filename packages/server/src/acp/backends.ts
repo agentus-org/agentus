@@ -25,12 +25,27 @@ export interface HomeIsolation {
 }
 
 export interface BackendSpec {
+  /** registry row id (M6); the builtin seeds carry theirs, spawn does not need it */
+  id?: string;
+  /** spawn family, so callers can reason about the arg shape without matching on the id */
+  kind?: "hermes" | "qoder" | "mock";
   label: string;
   cmd: string;
   args: string[];
   check: string[] | null; // args for a quick `--check` self test
   needsLoginHint?: string;
   isolation?: HomeIsolation;
+  /** Extra env for the child — e.g. `PYTHONPATH=<the operator's fork tree>` so a row can run
+   *  a source checkout while the box's default `hermes` runs the installed runtime. Merged
+   *  BEFORE the isolation home, so a row cannot smuggle `HERMES_HOME` in through here. */
+  env?: Record<string, string>;
+  /** hermes profile, composed into argv by registry.effectiveArgs (`hermes -p <profile> acp`) */
+  profile?: string | null;
+  /** free-form note shown next to the row in the UI */
+  notes?: string;
+  /** This row deliberately drives the LIVE home. Per-row opt-in; `AGENTSLOT_ALLOW_LIVE_HOME=1`
+   *  still works for scripts/QA. The old rule stands: sharing the live home is a hard error. */
+  allowLiveHome?: boolean;
 }
 
 const liveHermesHome = path.join(homedir(), ".hermes");
@@ -95,7 +110,9 @@ export interface SpawnPlan {
  * Throws (fail-closed) when a backend would share the live runtime home.
  */
 export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  // A row's extra env (e.g. PYTHONPATH choosing the fork tree) is merged FIRST; the isolation
+  // home below overwrites `HERMES_HOME` unconditionally, so no row can smuggle a home in.
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(spec.env ?? {}) };
   const warnings: string[] = [];
   if (!spec.isolation) return { env, home: null, warnings };
 
@@ -104,27 +121,33 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
   // HERMES_HOME (the live one) down to us, and inheriting that is exactly the
   // bug we are guarding against. Only the explicit AGENTSLOT_* knob chooses the
   // child's home; an ambient HERMES_HOME is reported, never obeyed.
-  const ambient = env[homeVar] ? expandHome(env[homeVar]!) : null;
+  const ambient = process.env[homeVar] ? expandHome(process.env[homeVar]!) : null;
   const home = path.resolve(expandHome(homeDefault));
   const live = path.resolve(liveHome);
+  // Two deliberate opt-ins, same meaning: the row says so (UI, red badge) or the server was
+  // started with the flag (scripts/QA). Anything else is still a hard error.
+  const allowed = spec.allowLiveHome === true || process.env[allowEnv] === "1";
 
   if (ambient && path.resolve(ambient) !== home) {
     warnings.push(
       `ignored inherited ${homeVar}=${ambient} (parent env, not authoritative); ` +
-        `child gets ${home}. Set AGENTSLOT_HERMES_HOME to choose a different home.`,
+        `child gets ${home}. Set a home on the backend row to choose a different one.`,
     );
   }
 
-  if (home === live && env[allowEnv] !== "1") {
+  if (home === live && !allowed) {
     throw new Error(
       `isolation refused: ${spec.label} would run against the live home ${live} ` +
-        `(its state.db is the running runtime's). Spawn with ${homeVar} set to an ` +
-        `isolated directory (default ${homeDefault}) or set ${allowEnv}=1 if you ` +
+        `(its state.db is the running runtime's). Give the row an isolated home ` +
+        `(e.g. ${homeDefault}) or mark it "allow live home" / set ${allowEnv}=1 if you ` +
         `really mean to drive the live runtime.`,
     );
   }
   if (home === live) {
-    warnings.push(`${homeVar} points at the live home ${live} (${allowEnv}=1).`);
+    warnings.push(
+      `${homeVar} points at the live home ${live} ` +
+        `(${spec.allowLiveHome ? "the backend row opts in" : `${allowEnv}=1`}).`,
+    );
   }
   env[homeVar] = home;
 

@@ -2,7 +2,10 @@
 // and behavioral rules studied from AionUi/hermes-studio (see docs/refs/),
 // but types are our own minimal surface for the WS envelope between
 // server <-> browser.
-export type BackendId = "hermes" | "qoder";
+/** Backend ids are registry rows now (M6): the three builtin ones plus anything the operator
+ *  adds in the cockpit ("hermes-fork", "hermes-live", …). The literal union keeps autocomplete
+ *  for the builtins while letting a row id through. */
+export type BackendId = "hermes" | "qoder" | "mock" | (string & {});
 
 export type SessionStatus =
   | "starting" // subprocess spawned, initialize/newSession in flight

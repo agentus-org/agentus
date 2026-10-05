@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { BackendId, SessionStatus, StoredMessage } from "@agentslot/shared";
+import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 
 export interface SessionRow {
   id: string;
@@ -70,6 +71,50 @@ function rowToSession(r: RawSessionRow): SessionRow {
   };
 }
 
+interface RawBackendRow {
+  id: string; label: string; kind: string; cmd: string; args: string; env: string;
+  home: string | null; profile: string | null; cwd: string | null; notes: string;
+  allow_live_home: number; builtin: number; created_at: number; updated_at: number;
+  // health snapshot (M6.1) — system-written, see registry.BackendHealth
+  last_check_status: string | null; last_check_kind: string | null;
+  last_check_error_code: string | null; last_check_error_message: string | null;
+  last_check_guidance: string | null; last_check_latency_ms: number | null;
+  last_check_at: number | null; last_success_at: number | null; last_failure_at: number | null;
+  // cached ACP handshake (M6.1) — what the agent advertised the last time a slot started
+  handshake: string | null; handshake_at: number | null;
+}
+
+function rowToBackend(r: RawBackendRow): BackendRow {
+  return {
+    id: r.id,
+    label: r.label,
+    kind: r.kind as BackendKind,
+    cmd: r.cmd,
+    args: (parseJson(r.args) as string[] | null) ?? [],
+    env: (parseJson(r.env) as Record<string, string> | null) ?? {},
+    home: r.home ?? null,
+    profile: r.profile ?? null,
+    cwd: r.cwd ?? null,
+    notes: r.notes ?? "",
+    allowLiveHome: r.allow_live_home === 1,
+    builtin: r.builtin === 1,
+    health: {
+      status: (r.last_check_status as BackendHealth["status"] | null) ?? "unchecked",
+      kind: (r.last_check_kind as BackendHealth["kind"]) ?? null,
+      errorCode: (r.last_check_error_code as BackendHealth["errorCode"]) ?? null,
+      message: r.last_check_error_message ?? null,
+      guidance: r.last_check_guidance ?? null,
+      latencyMs: r.last_check_latency_ms ?? null,
+      at: r.last_check_at ?? null,
+      lastSuccessAt: r.last_success_at ?? null,
+      lastFailureAt: r.last_failure_at ?? null,
+    },
+    handshake: (parseJson(r.handshake) as BackendRow["handshake"]) ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
 export class Store {
   #db: DatabaseSync;
 
@@ -100,6 +145,18 @@ export class Store {
       create table if not exists settings (
         key text primary key, value text not null, updated_at integer not null
       );
+      -- Operator-managed backends (M6): which COMMAND to spawn, which HERMES_HOME it gets and
+      -- which hermes profile it runs as (hermes -p PROFILE acp). Before this, "which hermes"
+      -- was two env vars fixed at server start (AGENTSLOT_HERMES_CMD / AGENTSLOT_HERMES_HOME),
+      -- so isolating a slot meant restarting the cockpit. Seeded once from the builtin rows, so
+      -- an existing cockpit keeps behaving exactly as before until a row is edited.
+      create table if not exists backends (
+        id text primary key, label text not null, kind text not null,
+        cmd text not null, args text not null default '[]', env text not null default '{}',
+        home text, profile text, cwd text, notes text not null default '',
+        allow_live_home integer not null default 0, builtin integer not null default 0,
+        created_at integer not null, updated_at integer not null
+      );
     `);
     // The DB now holds the speech endpoint's key, so it is the operator's secret material:
     // 0600 like the file it replaced (a default 0644 sqlite file would be a downgrade).
@@ -118,6 +175,22 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // additive migration (M6.1): the health snapshot + cached handshake on a backend row. Kept
+    // as its own column block so a row insert/update never has to carry them (they are written
+    // by recordBackendCheck alone, and by nothing else).
+    const beCols = new Set(
+      (this.#db.prepare("pragma table_info(backends)").all() as { name: string }[]).map((c) => c.name),
+    );
+    for (const col of [
+      "last_check_status", "last_check_kind", "last_check_error_code", "last_check_error_message",
+      "last_check_guidance", "last_check_at", "last_success_at", "last_failure_at",
+      "handshake", "handshake_at",
+    ]) {
+      if (!beCols.has(col)) this.#db.exec(`alter table backends add column ${col} text`);
+    }
+    if (!beCols.has("last_check_latency_ms")) {
+      this.#db.exec("alter table backends add column last_check_latency_ms integer");
+    }
   }
 
   upsertSession(s: SessionRow): void {
@@ -430,6 +503,105 @@ export class Store {
       .prepare("update sessions set context_limit = ? where id = ?")
       .run(limit && limit > 0 ? Math.floor(limit) : null, id);
     return Number(info.changes ?? 0) > 0;
+  }
+
+  // ---- backends (M6): the operator-managed "which command / which home / which profile" -----
+
+  listBackends(): BackendRow[] {
+    const rows = this.#db
+      .prepare("select * from backends order by builtin desc, id")
+      .all() as unknown as RawBackendRow[];
+    return rows.map(rowToBackend);
+  }
+
+  getBackend(id: string): BackendRow | null {
+    const row = this.#db.prepare("select * from backends where id = ?").get(id) as unknown as
+      | RawBackendRow
+      | undefined;
+    return row ? rowToBackend(row) : null;
+  }
+
+  upsertBackend(row: BackendRow): void {
+    this.#db
+      .prepare(
+        `insert into backends (id, label, kind, cmd, args, env, home, profile, cwd, notes,
+                               allow_live_home, builtin, created_at, updated_at,
+                               last_check_status, last_check_kind, last_check_error_code,
+                               last_check_error_message, last_check_guidance, last_check_latency_ms,
+                               last_check_at, last_success_at, last_failure_at, handshake, handshake_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         on conflict(id) do update set
+           label = excluded.label, kind = excluded.kind, cmd = excluded.cmd, args = excluded.args,
+           env = excluded.env, home = excluded.home, profile = excluded.profile, cwd = excluded.cwd,
+           notes = excluded.notes, allow_live_home = excluded.allow_live_home,
+           updated_at = excluded.updated_at,
+           -- the evidence travels with the row: a spawn-relevant edit replaces it with a cleared
+           -- snapshot (coerceRow decides that), and a row that was never checked writes nulls.
+           last_check_status = excluded.last_check_status, last_check_kind = excluded.last_check_kind,
+           last_check_error_code = excluded.last_check_error_code,
+           last_check_error_message = excluded.last_check_error_message,
+           last_check_guidance = excluded.last_check_guidance,
+           last_check_latency_ms = excluded.last_check_latency_ms,
+           last_check_at = excluded.last_check_at, last_success_at = excluded.last_success_at,
+           last_failure_at = excluded.last_failure_at,
+           handshake = excluded.handshake, handshake_at = excluded.handshake_at`,
+      )
+      .run(
+        row.id, row.label, row.kind, row.cmd, JSON.stringify(row.args), JSON.stringify(row.env ?? {}),
+        row.home, row.profile, row.cwd, row.notes ?? "", row.allowLiveHome ? 1 : 0,
+        row.builtin ? 1 : 0, row.createdAt, row.updatedAt,
+        row.health?.status ?? null, row.health?.kind ?? null, row.health?.errorCode ?? null,
+        row.health?.message ?? null, row.health?.guidance ?? null, row.health?.latencyMs ?? null,
+        row.health?.at ?? null, row.health?.lastSuccessAt ?? null, row.health?.lastFailureAt ?? null,
+        row.handshake ? JSON.stringify(row.handshake) : null, row.handshake?.at ?? null,
+      );
+  }
+
+  deleteBackend(id: string): boolean {
+    const info = this.#db.prepare("delete from backends where id = ?").run(id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  /**
+   * Write back a health snapshot (and optionally a handshake) for one row. Deliberately a
+   * column-scoped UPDATE rather than upsertBackend: a check must never resurrect a stale copy of
+   * the row (the operator may be editing cmd/home in the UI while the probe runs), and it must
+   * not touch updated_at — "the row changed" and "the row was measured" are different facts.
+   */
+  recordBackendCheck(id: string, health: BackendHealth, handshake?: BackendHandshake | null): void {
+    this.#db
+      .prepare(
+        `update backends set
+           last_check_status = ?, last_check_kind = ?, last_check_error_code = ?,
+           last_check_error_message = ?, last_check_guidance = ?, last_check_latency_ms = ?,
+           last_check_at = ?, last_success_at = ?, last_failure_at = ?,
+           handshake = coalesce(?, handshake), handshake_at = coalesce(?, handshake_at)
+         where id = ?`,
+      )
+      .run(
+        health.status, health.kind, health.errorCode, health.message, health.guidance,
+        health.latencyMs, health.at, health.lastSuccessAt, health.lastFailureAt,
+        handshake ? JSON.stringify(handshake) : null,
+        handshake ? handshake.at : null,
+        id,
+      );
+  }
+
+  /** Sessions still OPEN on this backend — a closed (archived) session keeps its backend id
+   *  for display, so only open ones make a row undeletable. */
+  countOpenSessionsForBackend(id: string): number {
+    const row = this.#db
+      .prepare("select count(*) as n from sessions where backend = ? and status != 'closed'")
+      .get(id) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  /** First boot on an empty registry: copy the builtin rows in (0 rows = already seeded). */
+  seedBackendsIfEmpty(rows: BackendRow[]): number {
+    const row = this.#db.prepare("select count(*) as n from backends").get() as { n: number } | undefined;
+    if (Number(row?.n ?? 0) > 0) return 0;
+    for (const r of rows) this.upsertBackend(r);
+    return rows.length;
   }
 
 }

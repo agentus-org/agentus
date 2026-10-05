@@ -21,6 +21,9 @@ jobs:
       # so no service is needed
       - run: npm run auth-smoke
       - run: npm run workspace-smoke
+      # the backend registry: rows, the isolation guard, and one real slot spawned from a row
+      # (it inherits the operator's test home when present, and self-skips what is not there)
+      - run: npm run backend-smoke
       - run: npm run voice-smoke
       # the reader's utterance rule is pure text logic: unit-checked, no browser
       - run: npm run sentence-units

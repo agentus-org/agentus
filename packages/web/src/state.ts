@@ -24,6 +24,103 @@ export type MsgView =
   | { key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[] }
   | { key: string; kind: "meta"; text: string };
 
+/** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
+ *  choices — which COMMAND (and env, e.g. PYTHONPATH at a source tree), which HERMES_HOME, and
+ *  which hermes profile — so a row is the unit the operator edits and the dialog picks. */
+export interface BackendView {
+  id: string;
+  label: string;
+  kind: "hermes" | "qoder" | "mock" | string;
+  cmd: string;
+  args: string[];
+  /** env VAR NAMES this row injects (values are not echoed back by the server) */
+  env?: string[];
+  home?: string | null;
+  profile?: string | null;
+  cwd?: string | null;
+  notes?: string;
+  builtin?: boolean;
+  allowLiveHome?: boolean;
+  warnings?: string[];
+  /** set when the isolation guard refused this row — it cannot spawn until fixed */
+  blocked?: string | null;
+  /** last known health (system-written; see BackendHealth on the server) */
+  health?: BackendHealthView;
+  /** what the agent advertised the last time a slot really started from this row */
+  handshake?: BackendHandshakeView | null;
+}
+
+/** Last known health of a row. `kind` matters: a `startup` check only resolves the command,
+ *  `manual` runs --version (+ acp --check), and only `session` proves a slot really starts. */
+export interface BackendHealthView {
+  status: "online" | "offline" | "missing" | "unchecked";
+  kind: "startup" | "manual" | "session" | null;
+  errorCode: string | null;
+  message: string | null;
+  /** what to do about it, in the operator's language */
+  guidance: string | null;
+  latencyMs: number | null;
+  at: number | null;
+  lastSuccessAt: number | null;
+  lastFailureAt: number | null;
+}
+
+/** Cached ACP handshake — the controls this backend advertised at its last real start. */
+export interface BackendHandshakeView {
+  at: number;
+  protocolVersion: number | null;
+  loadSession: boolean | null;
+  fork: boolean | null;
+  modes: { currentModeId: string | null; available: string[] } | null;
+  configOptions: { id: string; name: string | null; currentValue: string | null }[];
+  models: { currentModelId: string | null; available: string[] } | null;
+  commands: string[];
+}
+
+/** What a row will actually run, answered by probing the real command. */
+export interface BackendInspect {
+  ok: boolean;
+  id: string;
+  cmd: string;
+  resolved: string | null;
+  args: string[];
+  home: string | null;
+  homeExists: boolean;
+  homeEntries: number | null;
+  stateDb: { path: string; bytes: number; mtime: number } | null;
+  profile: string | null;
+  envKeys: string[];
+  /** first line of `<cmd> --version` */
+  version: string | null;
+  /** the `Install directory:` line — WHICH code tree the process will import from */
+  installDir: string | null;
+  /** NOT a gate: it returns OK before the adapter's server module is imported */
+  acpCheck: { ok: boolean; output: string } | null;
+  blocked: string | null;
+  warnings: string[];
+  error: string | null;
+  /** structured verdict (persisted onto the row by the server) */
+  status: "online" | "offline" | "missing" | "unchecked";
+  errorCode: string | null;
+  guidance: string | null;
+  latencyMs: number;
+}
+
+/** What the settings page sends when creating/updating a row. */
+export interface BackendInput {
+  id?: string;
+  label?: string;
+  kind?: string;
+  cmd?: string;
+  args?: string[] | string;
+  env?: Record<string, string> | string;
+  home?: string | null;
+  profile?: string | null;
+  cwd?: string | null;
+  notes?: string;
+  allowLiveHome?: boolean;
+}
+
 export interface SessionView {
   info: SessionInfo;
   msgs: MsgView[];
@@ -457,13 +554,40 @@ class Cockpit {
     }
   }
 
-  /** Backend list for the new-slot dialog; surfaces failures instead of
-   *  silently degrading to a single fallback button (QA#6). */
-  async loadBackends(): Promise<
-    { id: string; label: string; home?: string | null; blocked?: string | null }[]
-  > {
-    return await this.#req<{ id: string; label: string; home?: string | null; blocked?: string | null }[]>(
-      "/api/backends",
+  /** Backend registry rows (M6) for the new-slot dialog and the settings page; surfaces
+   *  failures instead of silently degrading to a single fallback button (QA#6). */
+  async loadBackends(): Promise<BackendView[]> {
+    return await this.#req<BackendView[]>("/api/backends");
+  }
+
+  /** Create a registry row (the id is part of the payload). */
+  async createBackend(input: BackendInput): Promise<void> {
+    await this.#req("/api/backends", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateBackend(id: string, patch: BackendInput): Promise<void> {
+    await this.#req(`/api/backends/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async deleteBackend(id: string): Promise<void> {
+    await this.#req(`/api/backends/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  /** "What will this row actually run?" — resolved command, code tree, home, profile.
+   *  Boots a python process (`--version` + `acp --check`), so: long timeout, never retry. */
+  async inspectBackend(id: string): Promise<BackendInspect> {
+    return await this.#req<BackendInspect>(
+      `/api/backends/${encodeURIComponent(id)}/inspect`,
+      { method: "POST" },
+      { timeoutMs: 60_000, retry: false },
     );
   }
 

@@ -12,7 +12,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { SessionManager } from "./acp/session-manager.js";
-import { BACKENDS, buildSpawnEnv } from "./acp/backends.js";
+import { BACKENDS } from "./acp/backends.js";
+import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, seedRows, startupCheck } from "./acp/registry.js";
 import { FsError, listDirs, readTextFile } from "./fs.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
@@ -45,6 +46,26 @@ const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_K
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const store = new Store(path.join(DATA_DIR, "agentslot.sqlite"));
+// M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
+// the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
+// empty registry means "first boot", a non-empty one means the operator owns those rows.
+{
+  const seeded = store.seedBackendsIfEmpty(seedRows());
+  if (seeded) console.log(`[agentslot] backend registry seeded with ${seeded} row(s)`);
+}
+// Boot sweep (M6.1): one cheap, side-effect-free pass (does the command resolve?) behind the
+// first tick, so the list never opens with every row "unchecked". It deliberately does NOT
+// spawn anything: a real check belongs to 探测 (kind=manual) and, for proof, to a session
+// (kind=session). One bad row must not take the cockpit down, hence the per-row catch.
+setTimeout(() => {
+  for (const row of store.listBackends()) {
+    try {
+      store.recordBackendCheck(row.id, startupCheck(row));
+    } catch (e) {
+      console.warn(`[agentslot] startup check failed for ${row.id}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+}, 1200);
 
 // Auth key material next to the store: a restart must NOT log the operator out,
 // and the machine token has to stay stable for scripts/CI.
@@ -360,26 +381,98 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return res.end(JSON.stringify({ ok: true, revoked }));
     }
     if (url.pathname === "/healthz") {
-      return send(res, 200, { ok: true, ts: Date.now(), backends: Object.keys(BACKENDS) });
+      return send(res, 200, { ok: true, ts: Date.now(), backends: store.listBackends().map((r) => r.id) });
     }
+    // ---- backend registry (M6) --------------------------------------------------------------
+    // A row says which COMMAND, which HERMES_HOME and which profile a slot spawns with; `plan`
+    // is the isolation verdict computed with the very guard the spawn uses, so a row can be
+    // seen (and refused) before anything is spawned.
     if (url.pathname === "/api/backends" && req.method === "GET") {
       return send(
         res,
         200,
-        Object.entries(BACKENDS).map(([id, b]) => {
-          let home: string | null = null;
-          let warnings: string[] = [];
-          let blocked: string | null = null;
-          try {
-            const plan = buildSpawnEnv(b);
-            home = plan.home;
-            warnings = plan.warnings;
-          } catch (e) {
-            blocked = e instanceof Error ? e.message : String(e);
-          }
-          return { id, label: b.label, home, warnings, blocked };
+        store.listBackends().map((row) => {
+          const plan = planFor(row);
+          return {
+            id: row.id, label: row.label, kind: row.kind, cmd: row.cmd, args: row.args,
+            env: Object.keys(row.env ?? {}), home: plan.home, profile: row.profile,
+            cwd: row.cwd, notes: row.notes, builtin: row.builtin, allowLiveHome: row.allowLiveHome,
+            warnings: plan.warnings, blocked: plan.blocked,
+            health: row.health, handshake: row.handshake,
+          };
         }),
       );
+    }
+    if (url.pathname === "/api/backends" && req.method === "POST") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const { row, error } = coerceRow(body);
+      if (!row) return send(res, 400, { error });
+      if (store.getBackend(row.id)) return send(res, 409, { error: `backend ${row.id} already exists` });
+      store.upsertBackend(row);
+      const plan = planFor(row);
+      return send(res, 201, { ok: true, id: row.id, warnings: plan.warnings, blocked: plan.blocked });
+    }
+    const beMatch = url.pathname.match(/^\/api\/backends\/([\w.-]+)(\/.*)?$/);
+    if (beMatch) {
+      const beId = beMatch[1];
+      const beSub = beMatch[2] ?? "";
+      const existing = store.getBackend(beId);
+      if (!existing) return send(res, 404, { error: `unknown backend: ${beId}` });
+      if (req.method === "GET" && beSub === "") {
+        const plan = planFor(existing);
+        return send(res, 200, { ...existing, home: plan.home, warnings: plan.warnings, blocked: plan.blocked });
+      }
+      if ((req.method === "PATCH" || req.method === "PUT") && beSub === "") {
+        const body = (await readJson(req)) as Record<string, unknown>;
+        const { row, error } = coerceRow({ ...body, id: beId }, existing);
+        if (!row) return send(res, 400, { error });
+        store.upsertBackend(row);
+        const plan = planFor(row);
+        return send(res, 200, { ok: true, id: row.id, warnings: plan.warnings, blocked: plan.blocked });
+      }
+      if (req.method === "DELETE" && beSub === "") {
+        // A row that OPEN sessions still name must stay: deleting it would leave them pointing
+        // at nothing and still expected to resume. Closed (archived) sessions keep the id for
+        // display only, so they do not block deletion.
+        const used = store.countOpenSessionsForBackend(beId);
+        if (used > 0) {
+          return send(res, 409, { error: `backend ${beId} is used by ${used} open session(s) — close or delete them first` });
+        }
+        store.deleteBackend(beId);
+        return send(res, 200, { ok: true, deleted: beId });
+      }
+      if (req.method === "POST" && beSub === "/inspect") {
+        // "Which tree does this row actually run?" — resolved command + the `Install directory:`
+        // line that names the code tree + the home it will write into. Blocked rows are NOT
+        // probed (probing would run the command the guard just refused).
+        //
+        // The verdict is also written back onto the row (kind=manual) so it survives the tab:
+        // the list can say "checked 3m ago, manual, 412ms" and a failure stays visible instead
+        // of disappearing with the panel that produced it.
+        try {
+          const report = await inspectRow(existing);
+          store.recordBackendCheck(
+            beId,
+            checkedHealth(existing.health, {
+              status: report.status,
+              kind: "manual",
+              errorCode: report.errorCode,
+              message: report.error ?? report.acpCheck?.output ?? null,
+              latencyMs: report.latencyMs,
+            }),
+          );
+          return send(res, 200, report);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          store.recordBackendCheck(
+            beId,
+            checkedHealth(existing.health, {
+              status: "offline", kind: "manual", errorCode: classifyError(e), message,
+            }),
+          );
+          return send(res, 500, { error: message });
+        }
+      }
     }
     if (url.pathname === "/api/sessions" && req.method === "GET") {
       return send(res, 200, { live: mgr.list(), archived: mgr.archived() });
@@ -510,11 +603,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);
       const backendRaw = String(body.backend ?? "");
+      const beRow = store.getBackend(backendRaw);
+      const backend = beRow || Object.prototype.hasOwnProperty.call(BACKENDS, backendRaw)
+        ? (backendRaw as BackendId)
+        : null;
+      if (!backend) return send(res, 400, { error: `unknown backend: ${backendRaw}` });
       let cwd = String(body.cwd ?? "").trim();
+      // A row may carry a default working directory: that is where its kind of work belongs
+      // (e.g. a "hermes fork, dev tree" row that should always start in the checkout).
+      if (!cwd && beRow?.cwd) cwd = beRow.cwd;
       if (!cwd || cwd === "~") cwd = homedir();
       else if (cwd.startsWith("~/")) cwd = path.join(homedir(), cwd.slice(2));
-      const backend = Object.prototype.hasOwnProperty.call(BACKENDS, backendRaw) ? (backendRaw as BackendId) : null;
-      if (!backend) return send(res, 400, { error: `unknown backend: ${backendRaw}` });
       if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
         return send(res, 400, { error: `cwd not a directory: ${cwd}` });
       }
