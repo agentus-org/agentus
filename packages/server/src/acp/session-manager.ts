@@ -199,6 +199,19 @@ export class SessionManager {
       env: plan.env,
     });
     child.unref();
+    // `spawn` reports an unrunnable command (ENOENT/EACCES) through an 'error' event instead of
+    // throwing, and leaves `child.pid` undefined. Left alone that becomes an uncaught exception
+    // plus a caller awaiting a handshake that can never arrive — so it is turned into a normal
+    // failure here, carrying the code the settings page shows for it.
+    let spawnError: Error | null = null;
+    child.on("error", (err: Error) => { spawnError = err; });
+    if (child.pid === undefined) {
+      const why = `failed to spawn ${spec.cmd}${spawnError ? `: ${(spawnError as Error).message}` : " (no pid)"}`;
+      this.#noteBackendCheck(String(backend), {
+        ok: false, errorCode: "spawn_failed", error: why, latencyMs: Date.now() - spawnStarted,
+      });
+      throw new Error(why);
+    }
 
     const live: LiveSession = {
       info: {
@@ -305,6 +318,16 @@ export class SessionManager {
       env: plan.env,
     });
     child.unref();
+    // same guard as create(): an unrunnable command must fail normally, with a code attached
+    let resumeSpawnError: Error | null = null;
+    child.on("error", (err: Error) => { resumeSpawnError = err; });
+    if (child.pid === undefined) {
+      const why = `failed to spawn ${spec.cmd}${resumeSpawnError ? `: ${(resumeSpawnError as Error).message}` : " (no pid)"}`;
+      this.#noteBackendCheck(String(row.backend), {
+        ok: false, errorCode: "spawn_failed", error: why, latencyMs: Date.now() - resumeStarted,
+      });
+      throw new Error(why);
+    }
 
     const live: LiveSession = {
       info: {

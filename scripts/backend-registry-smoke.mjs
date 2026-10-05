@@ -16,6 +16,10 @@
 //      failure survives the panel that found it;
 //   8. a real session also caches the ACP handshake on the row;
 //   9. editing a spawn-relevant field invalidates that evidence; editing a note does not.
+//
+// Runs anywhere: the checks that need the operator's `hermes` (or their source fork) are shipped
+// only where those exist and are announced as `skip`; everything else — including the session-kind
+// health and the handshake, via the in-repo mock agent — is covered on a bare CI runner too.
 import { spawn, execFileSync } from "node:child_process";
 import fs, { mkdtempSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -99,6 +103,29 @@ function psEnv(pid) {
   return env;
 }
 
+/** Is a command runnable on THIS machine? A bare CI runner has neither the operator's `hermes`
+ *  nor their source fork, so checks that need one are shipped only where they exist — and
+ *  everything provable without an external CLI (registry CRUD, the isolation guard, session-kind
+ *  health + the handshake via the in-repo mock agent) runs everywhere. Skips are announced. */
+function commandResolves(cmd) {
+  const bin = cmd.split(" ")[0];
+  if (bin.includes("/")) return fs.existsSync(bin);
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (dir && fs.existsSync(path.join(dir, bin))) return true;
+  }
+  return false;
+}
+
+const LOCAL = {
+  hermes: commandResolves(HERMES_CMD),
+  fork: fs.existsSync(path.join(FORK, "acp_adapter/server.py")),
+};
+let skipped = 0;
+function skip(name, why) {
+  skipped++;
+  console.log(`  skip  ${name} — ${why}`);
+}
+
 async function main() {
   const port = await freePort();
   const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-backreg-"));
@@ -169,30 +196,35 @@ async function main() {
       `home=${row?.home} profile=${row?.profile} env=${(row?.env ?? []).join(",")}`);
     check("the new row is not blocked", !row?.blocked, String(row?.blocked ?? ""));
 
-    // 3. inspect: which tree will it actually run?
-    const insp = await api("POST", "/api/backends/qa-fork/inspect");
-    check("inspect resolves the command", Boolean(insp.json?.resolved), String(insp.json?.resolved));
-    check("inspect names the code tree (Install directory = the PYTHONPATH tree)",
-      typeof insp.json?.installDir === "string" && insp.json.installDir === FORK,
-      `installDir=${insp.json?.installDir}`);
-    check("inspect reports the isolated home (and that it is empty)", insp.json?.home === home && insp.json?.stateDb === null,
-      `home=${insp.json?.home} stateDb=${insp.json?.stateDb ? "present" : "none"}`);
-    check("inspect ran acp --check", insp.json?.acpCheck?.ok === true, String(insp.json?.acpCheck?.output ?? "").slice(0, 120));
+    // 3. inspect: which tree will it actually run? (needs the operator's hermes to exist)
+    if (LOCAL.hermes && LOCAL.fork) {
+      const insp = await api("POST", "/api/backends/qa-fork/inspect");
+      check("inspect resolves the command", Boolean(insp.json?.resolved), String(insp.json?.resolved));
+      check("inspect names the code tree (Install directory = the PYTHONPATH tree)",
+        typeof insp.json?.installDir === "string" && insp.json.installDir === FORK,
+        `installDir=${insp.json?.installDir}`);
+      check("inspect reports the isolated home (and that it is empty)", insp.json?.home === home && insp.json?.stateDb === null,
+        `home=${insp.json?.home} stateDb=${insp.json?.stateDb ? "present" : "none"}`);
+      check("inspect ran acp --check", insp.json?.acpCheck?.ok === true, String(insp.json?.acpCheck?.output ?? "").slice(0, 120));
 
-    // 3b. the verdict is PERSISTED, with a code the UI can act on
-    const afterInsp = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork");
-    check("a manual probe is written back onto the row (kind=manual)",
-      afterInsp?.health?.kind === "manual" && Boolean(afterInsp.health.at),
-      `kind=${afterInsp?.health?.kind} at=${afterInsp?.health?.at}`);
-    check("a healthy probe reads online with no error code",
-      afterInsp?.health?.status === "online" && !afterInsp.health.errorCode,
-      `status=${afterInsp?.health?.status} code=${afterInsp?.health?.errorCode}`);
-    check("the probe records how long it took",
-      typeof afterInsp?.health?.latencyMs === "number" && afterInsp.health.latencyMs >= 0,
-      String(afterInsp?.health?.latencyMs));
-    check("the inspect report carries the same structured verdict",
-      insp.json?.status === "online" && insp.json?.errorCode === null && typeof insp.json?.latencyMs === "number",
-      `status=${insp.json?.status} code=${insp.json?.errorCode} ms=${insp.json?.latencyMs}`);
+      // 3b. the verdict is PERSISTED, with a code the UI can act on
+      const afterInsp = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork");
+      check("a manual probe is written back onto the row (kind=manual)",
+        afterInsp?.health?.kind === "manual" && Boolean(afterInsp.health.at),
+        `kind=${afterInsp?.health?.kind} at=${afterInsp?.health?.at}`);
+      check("a healthy probe reads online with no error code",
+        afterInsp?.health?.status === "online" && !afterInsp.health.errorCode,
+        `status=${afterInsp?.health?.status} code=${afterInsp?.health?.errorCode}`);
+      check("the probe records how long it took",
+        typeof afterInsp?.health?.latencyMs === "number" && afterInsp.health.latencyMs >= 0,
+        String(afterInsp?.health?.latencyMs));
+      check("the inspect report carries the same structured verdict",
+        insp.json?.status === "online" && insp.json?.errorCode === null && typeof insp.json?.latencyMs === "number",
+        `status=${insp.json?.status} code=${insp.json?.errorCode} ms=${insp.json?.latencyMs}`);
+    } else {
+      skip("manual probe of a hermes row",
+        `no ${HERMES_CMD}${LOCAL.fork ? "" : ` and no source tree at ${FORK}`} on this machine`);
+    }
 
     // 3c. a missing command is a CODE plus advice, not a sentence to parse
     await api("POST", "/api/backends", {
@@ -211,8 +243,14 @@ async function main() {
         && Boolean(missRow.health.lastFailureAt),
       `status=${missRow?.health?.status} lastFailureAt=${missRow?.health?.lastFailureAt}`);
 
-    // 4. a real slot from that row gets exactly that env
-    const sess = await api("POST", "/api/sessions", { backend: "qa-fork", cwd: tmpdir(), title: "backend registry smoke" });
+    // 4. a real slot, with no external CLI involved: the in-repo mock agent speaks ACP, so the
+    //    whole spawn → ready → session-kind health → handshake path is covered on any machine.
+    await api("POST", "/api/backends", {
+      id: "qa-mock", label: "QA mock", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      notes: "smoke: in-repo ACP mock (no external CLI needed)",
+    });
+    const sess = await api("POST", "/api/sessions", { backend: "qa-mock", cwd: tmpdir(), title: "backend registry smoke" });
     check("POST /api/sessions accepts a registry row id", sess.status === 201, `status=${sess.status} ${sess.text.slice(0, 160)}`);
     const sid = sess.json?.id;
     let liveRow = null;
@@ -224,43 +262,57 @@ async function main() {
     }
     check("the slot reached a non-starting state", Boolean(liveRow) && liveRow.status !== "starting",
       `status=${liveRow?.status} ${liveRow?.lastError ?? ""}`);
-    const env = liveRow?.pid ? psEnv(liveRow.pid) : {};
-    // The home is the isolation proof that must hold every time (the child writes there, not
-    // into the live runtime). PYTHONPATH is printed, not asserted: the hermes CLI may drop it
-    // while re-execing into its own interpreter, so its absence in `ps` says nothing about
-    // which tree got imported — the option check below answers that instead.
-    console.log(`  info  child env: HERMES_HOME=${env.HERMES_HOME ?? "(unset)"} PYTHONPATH=${env.PYTHONPATH ?? "(unset)"}`);
-    check("the spawned child really got HERMES_HOME = the row's home", env.HERMES_HOME === home, String(env.HERMES_HOME ?? "(unset)"));
-    // Which CODE did it actually import? Ask the agent: a tree that carries the fork-only ACP
-    // session option will advertise it, so the advertisement is evidence the row's env chose
-    // that tree. (This is the same trick the operator's live slots were checked with.)
-    const forkServerPy = path.join(FORK, "acp_adapter/server.py");
-    const forkHasEffort = fs.existsSync(forkServerPy)
-      && fs.readFileSync(forkServerPy, "utf8").includes("_REASONING_EFFORT_CONFIG_ID");
-    if (forkHasEffort) {
-      const optIds = (liveRow?.configOptions ?? []).map((c) => c.id);
-      check("the slot imported the code tree the row named (it advertises that tree's fork-only ACP option)",
-        optIds.includes("reasoning_effort"), `configOptions=${optIds.join(",") || "(none)"}`);
-    } else {
-      console.log(`  skip  fork-only option check (${FORK}/acp_adapter/server.py has no marker)`);
-    }
 
-    // 4b. a real session is the only PROOF — and it is remembered, with the handshake
-    const forkAfter = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork");
+    // 4b. session-kind health + handshake, recorded on the ROW (not on the session)
+    const mockAfter = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-mock");
     check("a real slot records a session-kind check on its row",
-      forkAfter?.health?.kind === "session" && forkAfter.health.status === "online",
-      `kind=${forkAfter?.health?.kind} status=${forkAfter?.health?.status}`);
+      mockAfter?.health?.kind === "session" && mockAfter.health.status === "online",
+      `kind=${mockAfter?.health?.kind} status=${mockAfter?.health?.status}`);
     check("the session check keeps how long the row took to reach ready",
-      typeof forkAfter?.health?.latencyMs === "number" && forkAfter.health.latencyMs > 0,
-      String(forkAfter?.health?.latencyMs));
+      typeof mockAfter?.health?.latencyMs === "number" && mockAfter.health.latencyMs > 0,
+      String(mockAfter?.health?.latencyMs));
     check("the row now carries the ACP handshake the agent advertised",
-      Boolean(forkAfter?.handshake?.at) && Array.isArray(forkAfter.handshake.configOptions),
-      `at=${forkAfter?.handshake?.at} options=${(forkAfter?.handshake?.configOptions ?? []).length}`);
+      Boolean(mockAfter?.handshake?.at) && Array.isArray(mockAfter.handshake.configOptions),
+      `at=${mockAfter?.handshake?.at} options=${(mockAfter?.handshake?.configOptions ?? []).length}`);
     check("the cached handshake is the real one (protocol v1, capability flags, modes)",
-      forkAfter?.handshake?.protocolVersion === 1
-        && typeof forkAfter.handshake.loadSession === "boolean"
-        && Array.isArray(forkAfter.handshake.commands),
-      `protocol=${forkAfter?.handshake?.protocolVersion} load=${forkAfter?.handshake?.loadSession} modes=${Boolean(forkAfter?.handshake?.modes)}`);
+      mockAfter?.handshake?.protocolVersion === 1
+        && typeof mockAfter.handshake.loadSession === "boolean"
+        && Array.isArray(mockAfter.handshake.commands),
+      `protocol=${mockAfter?.handshake?.protocolVersion} load=${mockAfter?.handshake?.loadSession} modes=${Boolean(mockAfter?.handshake?.modes)}`);
+
+    // 4c. a row that really spawns the operator's tree (only where that tree exists)
+    if (LOCAL.hermes) {
+      const hs = await api("POST", "/api/sessions", { backend: "qa-fork", cwd: tmpdir(), title: "hermes row smoke" });
+      check("a hermes row spawns too", hs.status === 201, `status=${hs.status} ${hs.text.slice(0, 140)}`);
+      const hid = hs.json?.id;
+      let hLive = null;
+      for (let i = 0; i < 90 && !hLive; i++) {
+        await sleep(1000);
+        hLive = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === hid) ?? null;
+        if (hLive && hLive.status !== "starting") break;
+      }
+      check("the hermes slot reached a non-starting state", Boolean(hLive) && hLive.status !== "starting",
+        `status=${hLive?.status} ${hLive?.lastError ?? ""}`);
+      const env = hLive?.pid ? psEnv(hLive.pid) : {};
+      // The home is the isolation proof that must hold every time (the child writes there, not into
+      // the live runtime). PYTHONPATH is printed, not asserted: the hermes CLI may drop it while
+      // re-execing into its own interpreter, so "which tree" is answered by the option check below.
+      console.log(`  info  hermes child env: HERMES_HOME=${env.HERMES_HOME ?? "(unset)"} PYTHONPATH=${env.PYTHONPATH ?? "(unset)"}`);
+      check("the spawned child really got HERMES_HOME = the row's home", env.HERMES_HOME === home, String(env.HERMES_HOME ?? "(unset)"));
+      const forkHasEffort = LOCAL.fork
+        && fs.readFileSync(path.join(FORK, "acp_adapter/server.py"), "utf8").includes("_REASONING_EFFORT_CONFIG_ID");
+      if (forkHasEffort) {
+        const optIds = (hLive?.configOptions ?? []).map((c) => c.id);
+        check("the slot imported the code tree the row named (it advertises that tree's fork-only ACP option)",
+          optIds.includes("reasoning_effort"), `configOptions=${optIds.join(",") || "(none)"}`);
+      } else {
+        skip("fork-only option check", `${FORK}/acp_adapter/server.py has no marker`);
+      }
+      // closed before the delete-rule checks below, which use the mock row
+      await api("DELETE", `/api/sessions/${hid}`);
+    } else {
+      skip("spawning a hermes row", `no ${HERMES_CMD} on this machine`);
+    }
 
     // 5. the live home is refused by the guard, not by convention
     const liveRowDef = { id: "qa-live", label: "QA live", kind: "hermes", cmd: HERMES_CMD, args: "acp", home: LIVE_HOME };
@@ -277,39 +329,53 @@ async function main() {
     check("spawning the blocked row fails instead of touching the live home", liveSpawn.status >= 400,
       `status=${liveSpawn.status} ${liveSpawn.text.slice(0, 140)}`);
 
+    // 5b. a command that does not exist must fail FAST and cleanly. `spawn` reports ENOENT through
+    //     an 'error' event (not a throw) and leaves no pid, so without the guard this is an uncaught
+    //     exception and a caller waiting on a handshake that can never arrive.
+    const badSpawn = await api("POST", "/api/sessions", { backend: "qa-missing", cwd: tmpdir(), title: "bad command" });
+    check("spawning a row whose command is missing fails cleanly",
+      badSpawn.status >= 400 && /failed to spawn|ENOENT/.test(badSpawn.text),
+      `status=${badSpawn.status} ${badSpawn.text.slice(0, 120)}`);
+    const badRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-missing");
+    check("...and the row records it as spawn_failed (session-kind)",
+      badRow?.health?.errorCode === "spawn_failed" && badRow.health.kind === "session",
+      `code=${badRow?.health?.errorCode} kind=${badRow?.health?.kind}`);
+
     // 6. a row in use cannot be deleted (its sessions would be orphaned)
-    const del = await api("DELETE", "/api/backends/qa-fork");
+    const del = await api("DELETE", "/api/backends/qa-mock");
     check("DELETE refuses a row that sessions still name", del.status === 409, `status=${del.status} ${del.text.slice(0, 120)}`);
 
     // 7. evidence is invalidated by a spawn-relevant edit — and only by one
-    await api("PATCH", "/api/backends/qa-fork", { notes: "smoke: renamed a note" });
-    const keptRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork");
+    await api("PATCH", "/api/backends/qa-mock", { notes: "smoke: renamed a note" });
+    const keptRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-mock");
     check("editing only a note keeps the health + handshake evidence",
       keptRow?.health?.kind === "session" && Boolean(keptRow?.handshake?.at),
       `kind=${keptRow?.health?.kind} handshake=${Boolean(keptRow?.handshake?.at)}`);
-    await api("PATCH", "/api/backends/qa-fork", { env: { PYTHONPATH: FORK, EXTRA_FLAG: "1" } });
-    const clearedRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork");
+    await api("PATCH", "/api/backends/qa-mock", { args: [path.join(ROOT, "packages/server/mock/agent.mjs")] });
+    const clearedRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-mock");
     check("changing the spawn definition clears the stale evidence",
       clearedRow?.health?.at === null && clearedRow?.health?.status === "unchecked",
       `at=${clearedRow?.health?.at} status=${clearedRow?.health?.status}`);
     check("clearing also drops the handshake (it described the old definition)",
       !clearedRow?.handshake, `handshake=${Boolean(clearedRow?.handshake)}`);
 
-    // cleanup the session, then the row deletes cleanly
+    // cleanup the session, then the rows delete cleanly
     await api("DELETE", `/api/sessions/${sid}`);
     await sleep(500);
-    const del2 = await api("DELETE", "/api/backends/qa-fork");
+    const del2 = await api("DELETE", "/api/backends/qa-mock");
     check("DELETE works once the session is gone", del2.status === 200, `status=${del2.status} ${del2.text.slice(0, 120)}`);
     const del3 = await api("DELETE", "/api/backends/qa-live");
     check("a blocked row can be deleted", del3.status === 200, `status=${del3.status}`);
     const del4 = await api("DELETE", "/api/backends/qa-missing");
     check("a row that only ever failed can be deleted too", del4.status === 200, `status=${del4.status}`);
+    const del5 = await api("DELETE", "/api/backends/qa-fork");
+    check("the hermes row deletes once nothing runs on it", del5.status === 200, `status=${del5.status} ${del5.text.slice(0, 100)}`);
   } finally {
     killGroup(child);
     if (failed) {
       console.log(`\n--- server log (tail) ---\n${log().split("\n").slice(-25).join("\n")}`);
     }
-    console.log(`\n${failed ? `${failed} check(s) FAILED` : "all checks passed"}  (${results.length} checks)`);
+    console.log(`\n${failed ? `${failed} check(s) FAILED` : "all checks passed"}  (${results.length} checks${skipped ? `, ${skipped} skipped — needs the operator's CLI/source tree` : ""})`);
   }
   process.exit(failed ? 1 : 0);
 }
