@@ -258,7 +258,7 @@ export function AccountPanels({ account, onChanged }: {
   return (
     <>
       {/* ---------- 账号 ---------- */}
-      <section className="set-card">
+      <section className="set-card" id="set-account">
         <h3>账号</h3>
         <p className="set-hint">
           {account?.credentialSource === "default" ? (
@@ -284,7 +284,7 @@ export function AccountPanels({ account, onChanged }: {
       </section>
 
       {/* ---------- 登录会话 ---------- */}
-      <section className="set-card">
+      <section className="set-card" id="set-sessions">
         <h3><IconDevice size={14} /> 登录会话</h3>
         <p className="set-hint">
           每个浏览器/脚本各占一行；会话有效期 {ttlMs ? Math.round(ttlMs / 86400000) : 7} 天，
@@ -328,7 +328,7 @@ export function AccountPanels({ account, onChanged }: {
       </section>
 
       {/* ---------- 登录失败锁定 ---------- */}
-      <section className="set-card">
+      <section className="set-card" id="set-locks">
         <h3><IconLock size={14} /> 登录失败锁定</h3>
         <p className="set-hint">
           同一个 IP 连续失败 {limits.maxFails} 次会被锁定 {Math.round(limits.lockMs / 1000)} 秒

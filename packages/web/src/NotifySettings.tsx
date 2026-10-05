@@ -121,7 +121,7 @@ export function NotifySettings({ sessionId }: { sessionId?: string }): JSX.Eleme
   };
 
   return (
-    <section className="set-card">
+    <section className="set-card" id="set-notify">
       <h3>手机通知（Android 伴侣）</h3>
       <p className="set-hint">
         App 只是一个通用渲染器——它显示什么、什么时候响，全由这里的规则决定，
