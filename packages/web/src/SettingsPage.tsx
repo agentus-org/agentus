@@ -377,7 +377,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             </div>
           ))}
         </nav>
-        <div className="set-body" ref={bodyRef} data-cat={navCat}>
+        <div className="set-body" ref={bodyRef} data-cat={navCat} data-set-scroll>
         {err ? (
           <div className="set-err" role="alert">
             {err}

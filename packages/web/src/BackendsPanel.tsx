@@ -9,7 +9,8 @@
 // A row is that triple, and the new-slot dialog picks a row. The isolation guard
 // (buildSpawnEnv) still runs per spawn, so a row can never smuggle the live home past it:
 // the server reports such a row as `blocked` and the dialog refuses to launch it.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { cockpit, type BackendInspect, type BackendInput, type BackendView } from "./state";
 
 const EMPTY: BackendInput = {
@@ -135,6 +136,52 @@ export function BackendsPanel(): JSX.Element {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  // ---- the row editor is a dialog -----------------------------------------------------------
+  // It used to be a block appended after the list, so clicking 编辑 on the top row put the form a
+  // screen below the fold with nothing on screen saying so (measured: the row at y=165, the form
+  // at y=604 in a 577px viewport, no scroll, focus left on <body>). A dialog sits where the
+  // operator's attention already is, and its position stops depending on how many rows exist.
+  const openerRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  /** Open the editor on a row, on a copy of a row, or on a new row. */
+  const openEditor = (row: BackendView | null, preset?: BackendInput, note = "") => {
+    // remember what had focus: closing hands it back instead of dumping the operator at the top
+    openerRef.current = (document.activeElement as HTMLElement | null) ?? null;
+    setErr(""); setMsg(note);
+    if (preset) { setEditing(null); setDraft(preset); return; }
+    if (row) { setEditing(row.id); setDraft(draftOf(row)); return; }
+    setEditing(null); setDraft({ ...EMPTY });
+  };
+
+  const closeEditor = () => {
+    setDraft(null); setEditing(null);
+    const el = openerRef.current;
+    openerRef.current = null;
+    if (el && document.body.contains(el)) el.focus();
+  };
+
+  // While it is open: Escape closes it, the first field takes focus (the keyboard and
+  // screen-reader path must land inside the form, not on the page behind it), and the settings
+  // scroll container stops scrolling so a wheel over the backdrop cannot drag the list.
+  const editorOpen = draft !== null;
+  useEffect(() => {
+    if (!editorOpen) return;
+    const scroller = document.querySelector<HTMLElement>("[data-set-scroll]");
+    const prevOverflow = scroller ? scroller.style.overflow : "";
+    if (scroller) scroller.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeEditor(); };
+    window.addEventListener("keydown", onKey);
+    const t = window.setTimeout(() => {
+      dialogRef.current?.querySelector<HTMLElement>("input:not([disabled]), select, textarea")?.focus();
+    }, 0);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(t);
+      if (scroller) scroller.style.overflow = prevOverflow;
+    };
+  }, [editorOpen]);
+
 
   const field = <K extends keyof BackendInput>(k: K, v: BackendInput[K]) =>
     setDraft((d) => ({ ...(d ?? EMPTY), [k]: v }));
@@ -227,16 +274,18 @@ export function BackendsPanel(): JSX.Element {
               <button className="set-mini" onClick={() => void probe(row)} disabled={busy === `probe:${row.id}`}>
                 {busy === `probe:${row.id}` ? "探测中…" : "探测"}
               </button>
-              <button className="set-mini" onClick={() => { setEditing(row.id); setDraft(draftOf(row)); setMsg(""); }}>
+              <button className="set-mini" onClick={() => openEditor(row)}>
                 编辑
               </button>
               <button
                 className="set-mini"
-                onClick={() => {
-                  setEditing(null);
-                  setDraft({ ...draftOf(row), id: `${row.id}-copy`, label: `${row.label} copy` });
-                  setMsg("复制为新行：确认 id 后保存");
-                }}
+                onClick={() =>
+                  openEditor(
+                    null,
+                    { ...draftOf(row), id: `${row.id}-copy`, label: `${row.label} copy` },
+                    "复制为新行：确认 id 后保存",
+                  )
+                }
               >
                 复制
               </button>
@@ -287,95 +336,119 @@ export function BackendsPanel(): JSX.Element {
           </ul>
         </div>
       ) : null}
-
-      {draft ? (
-        <div className="be-editor">
-          <div className="set-row">
-            <label>id</label>
-            <input
-              className="set-input" value={draft.id ?? ""} spellCheck={false}
-              disabled={Boolean(editing)} placeholder="hermes-fork"
-              onChange={(e) => field("id", e.target.value.trim())}
-            />
-          </div>
-          <div className="set-row">
-            <label>名称</label>
-            <input className="set-input" value={draft.label ?? ""} onChange={(e) => field("label", e.target.value)} placeholder="Hermes（源码树）" />
-          </div>
-          <div className="set-row">
-            <label>类型</label>
-            <select className="set-select" value={draft.kind ?? "hermes"} onChange={(e) => field("kind", e.target.value)}>
-              <option value="hermes">hermes（ACP + home 隔离）</option>
-              <option value="qoder">qoder</option>
-              <option value="mock">mock（QA）</option>
-            </select>
-          </div>
-          {(draft.kind ?? "hermes") === "hermes" ? (
-            <p className="set-hint be-kind-help">
-              hermes 行的四件事：<b>命令</b> 填 <code>hermes</code>，或指向某份源码树的启动器
-              （如 <code>~/.local/bin/hermes-dev</code>）；<b>HERMES_HOME</b> 是这一行读写的
-              <code>~/.hermes</code> 目录 —— 默认给隔离的 home，指向 live <code>~/.hermes</code>
-              会被拒绝（除非勾选下面的 live home）；<b>profile</b> 以 <code>-p</code> 传给命令；
-              <b>额外环境</b> 里放 <code>PYTHONPATH</code> 就能让这一行跑那份源码树。
-            </p>
-          ) : null}
-          <div className="set-row">
-            <label>命令</label>
-            <input className="set-input" value={draft.cmd ?? ""} spellCheck={false} onChange={(e) => field("cmd", e.target.value)} placeholder="hermes 或 /path/to/hermes-dev" />
-          </div>
-          <div className="set-row">
-            <label>参数</label>
-            <input className="set-input" value={argsToText(draft.args)} spellCheck={false} onChange={(e) => field("args", e.target.value)} placeholder="acp" />
-          </div>
-          <div className="set-row">
-            <label>HERMES_HOME</label>
-            <input className="set-input" value={draft.home ?? ""} spellCheck={false} onChange={(e) => field("home", e.target.value)} placeholder="~/.agentslot-test/home" />
-          </div>
-          <div className="set-row">
-            <label>profile</label>
-            <input className="set-input" value={draft.profile ?? ""} spellCheck={false} onChange={(e) => field("profile", e.target.value)} placeholder="留空 = 该 home 的默认 profile" />
-          </div>
-          <div className="set-row">
-            <label>额外环境</label>
-            <textarea
-              className="set-textarea" value={typeof draft.env === "string" ? draft.env : ""} spellCheck={false}
-              placeholder={"每行 KEY=VALUE，例如\nPYTHONPATH=/Users/liang/Project/hermes-agent"}
-              onChange={(e) => field("env", e.target.value)}
-            />
-          </div>
-          <div className="set-row">
-            <label>默认工作目录</label>
-            <input className="set-input" value={draft.cwd ?? ""} spellCheck={false} onChange={(e) => field("cwd", e.target.value)} placeholder="留空 = 新建会话时再选" />
-          </div>
-          <div className="set-row">
-            <label>备注</label>
-            <input className="set-input" value={draft.notes ?? ""} onChange={(e) => field("notes", e.target.value)} />
-          </div>
-          <div className="set-row">
-            <label>live home</label>
-            <label className="set-check">
-              <input type="checkbox" checked={Boolean(draft.allowLiveHome)} onChange={(e) => field("allowLiveHome", e.target.checked)} />
-              允许这一行直接驱动 live <code>~/.hermes</code>（危险：与运行时同开一个 state.db）
-            </label>
-          </div>
-          <div className="row">
-            <button className="set-mini" onClick={() => { setDraft(null); setEditing(null); }}>取消</button>
-            <button className="set-save" onClick={() => void save()} disabled={busy === "save" || !(draft.id || "").trim()}>
-              {busy === "save" ? "保存中…" : editing ? "保存" : "创建"}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="row">
-          <button className="set-mini" onClick={() => { setEditing(null); setDraft({ ...EMPTY }); setMsg(""); }}>
-            新建后端
-          </button>
-          <button className="set-mini" onClick={() => void load()}>刷新</button>
-        </div>
-      )}
+      <div className="row">
+        <button className="set-mini" onClick={() => openEditor(null)}>新建后端</button>
+        <button className="set-mini" onClick={() => void load()}>刷新</button>
+      </div>
 
       {msg ? <span className="set-toast">{msg}</span> : null}
-      {err ? <div className="set-err" role="alert">{err}</div> : null}
+      {!draft && err ? <div className="set-err" role="alert">{err}</div> : null}
+
+      {/* The row editor, portalled to body so no ancestor transform or overflow can clip it. */}
+      {draft
+        ? createPortal(
+            <div
+              className="be-backdrop"
+              onMouseDown={(e) => { if (e.target === e.currentTarget) closeEditor(); }}
+            >
+              <div
+                className="be-modal"
+                role="dialog"
+                aria-modal="true"
+                ref={dialogRef}
+                aria-label={editing ? `编辑后端 ${draft.label || editing}` : "新建后端"}
+              >
+                <div className="be-modal-head">
+                  <b>{editing ? "编辑后端" : "新建后端"}</b>
+                  {editing ? <code>{editing}</code> : null}
+                  <button className="set-mini be-modal-x" onClick={closeEditor} aria-label="关闭">✕</button>
+                </div>
+                <div className="be-modal-body">
+                  <div className="set-row">
+                    <label>id</label>
+                    <input
+                      className="set-input" value={draft.id ?? ""} spellCheck={false}
+                      disabled={Boolean(editing)} placeholder="hermes-fork"
+                      onChange={(e) => field("id", e.target.value.trim())}
+                    />
+                  </div>
+                  <div className="set-row">
+                    <label>名称</label>
+                    <input className="set-input" value={draft.label ?? ""} onChange={(e) => field("label", e.target.value)} placeholder="Hermes（源码树）" />
+                  </div>
+                  <div className="set-row">
+                    <label>类型</label>
+                    <select className="set-select" value={draft.kind ?? "hermes"} onChange={(e) => field("kind", e.target.value)}>
+                      <option value="hermes">hermes（ACP + home 隔离）</option>
+                      <option value="qoder">qoder</option>
+                      <option value="mock">mock（QA）</option>
+                    </select>
+                  </div>
+                  {(draft.kind ?? "hermes") === "hermes" ? (
+                    <p className="set-hint be-kind-help">
+                      hermes 行的四件事：<b>命令</b> 填 <code>hermes</code>，或指向某份源码树的启动器
+                      （如 <code>~/.local/bin/hermes-dev</code>）；<b>HERMES_HOME</b> 是这一行读写的
+                      <code>~/.hermes</code> 目录 —— 默认给隔离的 home，指向 live <code>~/.hermes</code>
+                      会被拒绝（除非勾选下面的 live home）；<b>profile</b> 以 <code>-p</code> 传给命令；
+                      <b>额外环境</b> 里放 <code>PYTHONPATH</code> 就能让这一行跑那份源码树。
+                    </p>
+                  ) : null}
+                  <div className="set-row">
+                    <label>命令</label>
+                    <input className="set-input" value={draft.cmd ?? ""} spellCheck={false} onChange={(e) => field("cmd", e.target.value)} placeholder="hermes 或 /path/to/hermes-dev" />
+                  </div>
+                  <div className="set-row">
+                    <label>参数</label>
+                    <input className="set-input" value={argsToText(draft.args)} spellCheck={false} onChange={(e) => field("args", e.target.value)} placeholder="acp" />
+                  </div>
+                  <div className="set-row">
+                    <label>HERMES_HOME</label>
+                    <input className="set-input" value={draft.home ?? ""} spellCheck={false} onChange={(e) => field("home", e.target.value)} placeholder="~/.agentslot-test/home" />
+                  </div>
+                  <div className="set-row">
+                    <label>profile</label>
+                    <input className="set-input" value={draft.profile ?? ""} spellCheck={false} onChange={(e) => field("profile", e.target.value)} placeholder="留空 = 该 home 的默认 profile" />
+                  </div>
+                  <div className="set-row">
+                    <label>额外环境</label>
+                    <textarea
+                      className="set-textarea" value={typeof draft.env === "string" ? draft.env : ""} spellCheck={false}
+                      placeholder={"每行 KEY=VALUE，例如\nPYTHONPATH=/Users/liang/Project/hermes-agent"}
+                      onChange={(e) => field("env", e.target.value)}
+                    />
+                  </div>
+                  <div className="set-row">
+                    <label>默认工作目录</label>
+                    <input className="set-input" value={draft.cwd ?? ""} spellCheck={false} onChange={(e) => field("cwd", e.target.value)} placeholder="留空 = 新建会话时再选" />
+                  </div>
+                  <div className="set-row">
+                    <label>备注</label>
+                    <input className="set-input" value={draft.notes ?? ""} onChange={(e) => field("notes", e.target.value)} />
+                  </div>
+                  <div className="set-row">
+                    <label>live home</label>
+                    <label className="set-check">
+                      <input type="checkbox" checked={Boolean(draft.allowLiveHome)} onChange={(e) => field("allowLiveHome", e.target.checked)} />
+                      允许这一行直接驱动 live <code>~/.hermes</code>（危险：与运行时同开一个 state.db）
+                    </label>
+                  </div>
+                </div>
+                <div className="be-modal-foot">
+                  {err ? <span className="set-err be-modal-err" role="alert">{err}</span> : null}
+                  <button className="set-mini" onClick={closeEditor} disabled={busy === "save"}>取消</button>
+                  <button
+                    className="set-save"
+                    onClick={() => void save()}
+                    disabled={busy === "save" || !(draft.id || "").trim()}
+                  >
+                    {busy === "save" ? "保存中…" : editing ? "保存" : "创建"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </section>
   );
 }

@@ -1593,5 +1593,34 @@ code.inline {
 .be-inspect-out {
   margin-top: 4px; font-size: 11px; color: var(--text-dim); white-space: pre-wrap; word-break: break-all;
 }
-.be-editor { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; }
+/* the row editor is a dialog: it used to be a block appended after the list, which put it below
+   the fold with no sign on screen that it had appeared (see references/ux-conventions.md) */
+.be-backdrop {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.be-modal {
+  background: var(--bg-panel); border: 1px solid var(--line); border-radius: 14px;
+  width: min(560px, 100%); max-height: min(86vh, 780px);
+  display: flex; flex-direction: column; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+.be-modal-head {
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); font-size: 13.5px;
+}
+.be-modal-head b { font-size: 13.5px; }
+.be-modal-head code { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+.be-modal-x { margin-left: auto; }
+.be-modal-body { overflow: auto; overscroll-behavior: contain; padding: 2px 16px 14px; }
+.be-modal-foot {
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.be-modal-foot button { flex: 0 0 auto; white-space: nowrap; }
+.be-modal-foot .set-mini { margin-left: auto; }   /* error text pushes the buttons right */
+.be-modal-err { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--err); border: none; padding: 0; background: none; }
+@media (max-width: 720px) {
+  .be-backdrop { padding: 0; align-items: flex-end; }
+  .be-modal { width: 100%; max-height: 92vh; border-radius: 14px 14px 0 0; }
+}
 @media (max-width: 720px) { .be-row { flex-direction: column; } }
