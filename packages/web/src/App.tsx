@@ -528,7 +528,9 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
       {net === "degraded" || conn === "offline" ? (
         <div className="net-banner" title={netError}>
           <span>
-            {conn === "offline" ? "⚠ 与服务的连接已断开 — 正在重连（指令会排队）" : "⚠ 服务不可达 — 请求超时"}
+            {conn === "offline"
+              ? "⚠ 与服务的连接已断开 — 正在重连（指令会排队）"
+              : `⚠ 服务不可达 — ${netError || "请求超时"}`}
           </span>
           <button onClick={() => location.reload()}>reload</button>
         </div>

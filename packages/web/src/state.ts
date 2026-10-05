@@ -277,13 +277,19 @@ class Cockpit {
         const body = res.status === 204 ? null : await res.json().catch(() => null);
         if (!res.ok) {
           const msg = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
-          throw new Error(msg);
+          // Tag it: an HTTP status means the server ANSWERED. It is not an outage, so it must not
+          // be retried and must not raise the "服务不可达" banner (a 409 on a duplicate backend id
+          // used to be reported as a network failure — the operator would chase the network).
+          const httpErr = new Error(msg) as Error & { httpStatus?: number };
+          httpErr.httpStatus = res.status;
+          throw httpErr;
         }
         this.#setNet(true, "");
         return body as T;
       } catch (e) {
         clearTimeout(timer);
         if (e instanceof AuthRequired) throw e; // already handled above
+        if ((e as { httpStatus?: number }).httpStatus !== undefined) throw e; // server said no
         lastErr = e;
         const why = (e as Error)?.name === "AbortError" ? `请求超时 ${TIMEOUT_MS / 1000}s` : String((e as Error)?.message ?? e);
         if (attempt === attempts - 1) {
