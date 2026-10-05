@@ -191,7 +191,7 @@ export function BackendsPanel(): JSX.Element {
   };
 
   return (
-    <section className="set-card" id="set-backends">
+    <section className="set-card" id="set-backends" data-setgroup="agent">
       <h3>后端（用哪个 hermes）</h3>
       <p className="set-hint">
         一条后端 = <b>用哪个命令</b>（+ 额外环境变量，例如 <code>PYTHONPATH</code> 指向源码树）·

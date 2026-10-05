@@ -287,9 +287,24 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
   const listening = dict.status === "listening" || dict.status === "requesting" || dict.status === "recording";
 
-  // ---- the category rail: click to jump, and follow the reader's scroll ----
+  // ---- the category rail: one page at a time (AionUi's settings shape) ----
+  //
+  // Switching category hides the other groups rather than unmounting them: these cards hold
+  // in-flight state (a backend row being edited, a loaded device list, the account snapshot), and
+  // a settings page that throws a draft away because you glanced at another category is worse than
+  // one that keeps a few hidden nodes around. Hiding is CSS; the anchor ids stay live, so a link
+  // into a specific card still works from outside.
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [navCat, setNavCat] = useState<string>(SET_NAV[0].id);
   const [navActive, setNavActive] = useState<string>(SET_NAV[0].items[0].anchor);
+
+  const openCat = useCallback((id: string): void => {
+    const group = SET_NAV.find((g) => g.id === id);
+    setNavCat(id);
+    setNavActive(group?.items[0]?.anchor ?? "");
+    // a category is a page: it opens at its top, not at wherever the last one was scrolled to
+    bodyRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
 
   const jump = useCallback((anchor: string): void => {
     document.getElementById(anchor)?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -299,25 +314,26 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    const anchors = SET_NAV.flatMap((g) => g.items.map((i) => i.anchor));
-    // "Which category am I reading" = the last card whose top has passed the container's top.
-    // Measured against the scroll container, not the window: the settings page scrolls itself.
+    // Only the OPEN category's cards can be "the one being read": the others are hidden (a hidden
+    // card reports a zero-height rect), and including them would make the spy jump to the last
+    // anchor of the whole page.
+    const anchors = (SET_NAV.find((g) => g.id === navCat)?.items ?? []).map((i) => i.anchor);
+    if (!anchors.length) return;
     const onScroll = (): void => {
       const top = body.getBoundingClientRect().top;
       let current = anchors[0];
       for (const a of anchors) {
         const el = document.getElementById(a);
-        if (el && el.getBoundingClientRect().top - top <= 32) current = a;
+        if (el && el.getBoundingClientRect().height > 0 && el.getBoundingClientRect().top - top <= 32) current = a;
       }
-      // The end of the page reads as the LAST category: a short final card never crosses the fold,
-      // so without this it could never light up.
+      // The end of the page reads as the last card: a short final one never crosses the fold.
       if (body.scrollTop + body.clientHeight >= body.scrollHeight - 4) current = anchors[anchors.length - 1];
       setNavActive((prev) => (prev === current ? prev : current));
     };
     body.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
     return () => body.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [navCat]);
 
   return (
     <div className="main">
@@ -334,24 +350,34 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         <nav className="set-nav" aria-label="设置分类">
           {SET_NAV.map((g) => (
             <div className="set-nav-group" key={g.id}>
-              <button type="button" className="set-nav-cat" onClick={() => jump(`grp-${g.id}`)} title={g.hint}>
+              <button
+                type="button"
+                className={`set-nav-cat ${navCat === g.id ? "on" : ""}`}
+                aria-current={navCat === g.id ? "page" : undefined}
+                onClick={() => openCat(g.id)}
+                title={g.hint}
+              >
                 {g.label}
               </button>
-              {g.items.map((item) => (
-                <button
-                  type="button"
-                  key={item.anchor}
-                  className={`set-nav-item ${navActive === item.anchor ? "on" : ""}`}
-                  aria-current={navActive === item.anchor ? "true" : undefined}
-                  onClick={() => jump(item.anchor)}
-                >
-                  {item.label}
-                </button>
-              ))}
+              {/* sub-entries of the OPEN category only: with one page at a time, a closed
+                  category's items would have nowhere to point */}
+              {navCat === g.id
+                ? g.items.map((item) => (
+                    <button
+                      type="button"
+                      key={item.anchor}
+                      className={`set-nav-item ${navActive === item.anchor ? "on" : ""}`}
+                      aria-current={navActive === item.anchor ? "true" : undefined}
+                      onClick={() => jump(item.anchor)}
+                    >
+                      {item.label}
+                    </button>
+                  ))
+                : null}
             </div>
           ))}
         </nav>
-        <div className="set-body" ref={bodyRef}>
+        <div className="set-body" ref={bodyRef} data-cat={navCat}>
         {err ? (
           <div className="set-err" role="alert">
             {err}
@@ -359,24 +385,24 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
         ) : null}
 
-        <h4 className="set-group" id="grp-account">账号与安全</h4>
+        <h4 className="set-group" id="grp-account" data-setgroup="account">账号与安全</h4>
         {/* ---------- 账号 / 登录会话 / 登录失败锁定 ---------- */}
         <AccountPanels
           account={acc}
           onChanged={(next) => setAcc((cur) => (cur ? { ...cur, ...next } : cur))}
         />
 
-        <h4 className="set-group" id="grp-agent">智能体</h4>
+        <h4 className="set-group" id="grp-agent" data-setgroup="agent">智能体</h4>
         {/* ---------- 后端：用哪个命令 / 哪个 home / 哪个 profile（M6） ---------- */}
         <BackendsPanel />
 
-        <h4 className="set-group" id="grp-notify">通知</h4>
+        <h4 className="set-group" id="grp-notify" data-setgroup="notify">通知</h4>
         {/* ---------- 手机通知（Android 伴侣 + 推送规则） ---------- */}
         <NotifySettings sessionId={sessionId} />
 
-        <h4 className="set-group" id="grp-look">外观</h4>
+        <h4 className="set-group" id="grp-look" data-setgroup="look">外观</h4>
         {/* ---------- 主题 ---------- */}
-        <section className="set-card" id="set-theme">
+        <section className="set-card" id="set-theme" data-setgroup="look">
           <h3>主题</h3>
           <p className="set-hint">
             亮/暗跟随系统；强调色会重新给整套驾驶舱上色（按钮、链接、流式光标、用量环）。
@@ -424,9 +450,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
         </section>
 
-        <h4 className="set-group" id="grp-voice">语音</h4>
+        <h4 className="set-group" id="grp-voice" data-setgroup="voice">语音</h4>
         {/* ---------- 语音识别 ---------- */}
-        <section className="set-card" id="set-asr">
+        <section className="set-card" id="set-asr" data-setgroup="voice">
           <h3>语音识别（ASR）</h3>
           <p className="set-hint">
             当前生效：<b>{caps.provider}</b>
@@ -500,7 +526,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 热词 ---------- */}
-        <section className="set-card" id="set-hotwords">
+        <section className="set-card" id="set-hotwords" data-setgroup="voice">
           <h3>热词</h3>
           <p className="set-hint">
             固定热词每行一个，可写 <code>词=权重</code>（1–5，<code>50</code> 是超级热词）；
@@ -549,7 +575,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 语音合成 ---------- */}
-        <section className="set-card" id="set-tts">
+        <section className="set-card" id="set-tts" data-setgroup="voice">
           <h3>语音合成（TTS）</h3>
           <p className="set-hint">
             走百炼的 <code>SpeechSynthesizer</code>（合成结果由服务端取回，密钥不出服务端）。
@@ -589,7 +615,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 这个浏览器 ---------- */}
-        <section className="set-card" id="set-browser">
+        <section className="set-card" id="set-browser" data-setgroup="voice">
           <h3>这个浏览器</h3>
           <p className="set-hint">听写引擎与朗读声音是本机设置：手机和电脑的麦克风/声音本来就不一样。</p>
           <div className="set-row">
