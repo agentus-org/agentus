@@ -144,7 +144,7 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
           warnings.push(
             `Hindsight instance name is the shared default "hermes" — this home ` +
               `would reuse the live memory daemon (${path.join(homedir(), ".pg0/instances/hindsight-embed-hermes")}). ` +
-              `Set {"profile":"agentslot-test"} in ${cfgPath} or disable memory.`,
+              `Set {"profile":"agentslot"} in ${cfgPath} or disable memory.`,
           );
         }
       }

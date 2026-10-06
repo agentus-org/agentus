@@ -24,14 +24,14 @@ agents: open several sessions in the browser, each one backed by a real
 git clone https://github.com/agent-slot/agentslot.git
 cd agentslot
 
-# 1) build the isolated Hermes home your test agents will use (see SECURITY note)
-python3 scripts/setup-hermes-test-home.py
-
-# 2) run it — installs if needed, builds, serves
+# 1) run it — installs if needed, builds, serves
 npm start
 # open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
 # then "+ new session", pick a backend + working directory
 ```
+
+The first slot you start will use the Hermes home **your own agent already uses**
+(`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
@@ -256,10 +256,9 @@ writers shared one WAL file (2026-10-02). The runtime now links SQLite 3.53.1, a
 one home is what Hermes itself already does all day (gateway + Studio bridge), so the
 cockpit no longer gets in the way.
 
-`scripts/setup-hermes-test-home.py` still builds a separate home (config derived from
-yours with `mcp_servers: {}`, memory off). One trap survives when a row points elsewhere:
-a fresh home whose `hindsight/config.json` keeps the default profile name `"hermes"` would
-attach to your production memory daemon, so the row shows a warning when it would.
+A row that points at its own home needs no permission — only a name. One trap survives when
+a row points elsewhere: a fresh home whose `hindsight/config.json` keeps the default profile
+name `"hermes"` would attach to your production memory daemon, so the row warns when it would.
 
 ## What it does today (M0 → M4)
 
