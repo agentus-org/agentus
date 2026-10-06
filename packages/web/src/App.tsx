@@ -1205,6 +1205,21 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     });
   };
 
+  // The transcript is FOLDED now (a turn's tool calls are one row, finished thinking is one
+  // line), so one page of history can fit on a screen with more still on disk — and a
+  // "load earlier messages" button with empty space under it is the one thing the operator
+  // cannot read anything into. Keep pulling pages while there is room. Bounded: a slot with
+  // hundreds of messages must not load forever in the background.
+  const autoPages = useRef(0);
+  useEffect(() => { autoPages.current = 0; }, [v.info.id]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !v.hasOlder || v.loadingOlder || autoPages.current >= 4) return;
+    if (el.scrollHeight > el.clientHeight + 80) return;
+    autoPages.current += 1;
+    void cockpit.loadEarlier(v.info.id);
+  }, [v.rev, v.hasOlder, v.loadingOlder, v.info.id]);
+
   // idle hint: running but silent for >3min => "still waiting" (AionUi F-RELIABILITY-02 lite)
   useEffect(() => {
     if (!v.busy) return;
@@ -1225,9 +1240,9 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               </button>
             </div>
           )}
-          {v.msgs.map((m, i) => (
-            <Bubble key={m.key} m={m} sid={v.info.id} busy={v.busy} last={i === v.msgs.length - 1} />
-          ))}
+          {foldToolRuns(v.msgs, v.busy).map((row) => (row.kind === "run"
+            ? <ToolRun key={row.key} tools={row.tools} />
+            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
@@ -1257,7 +1272,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
 /** One message. `last` marks the transcript tail — that is where the fork action lives
  *  (a fork means "carry this work on as a new session", which only makes sense from the
  *  end of what the agent currently holds), and copy is on every message. */
-function Bubble({ m, sid, last, busy }: { m: MsgView; sid: string; last: boolean; busy: boolean }): JSX.Element | null {
+function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: boolean; busy: boolean; live?: boolean }): JSX.Element | null {
   switch (m.kind) {
     case "user":
       return (
@@ -1296,7 +1311,7 @@ function Bubble({ m, sid, last, busy }: { m: MsgView; sid: string; last: boolean
         </div>
       );
     case "thought":
-      return <Thought m={m} />;
+      return <Thought m={m} live={Boolean(live)} />;
     case "tool":
       return <ToolCard m={m} />;
     case "plan":
@@ -1373,26 +1388,130 @@ function statusOf(raw: string): "running" | "ok" | "err" | "idle" {
   return "idle";
 }
 
-function Thought({ m }: { m: Extract<MsgView, { kind: "thought" }> }): JSX.Element {
+/** Thinking, folded to keep the transcript readable — the operator's report was "老是刷屏".
+ *
+ *  While this block is the one still being written it stays open, but inside a small window
+ *  that scrolls itself (about six lines: enough to see it think, not enough to take the
+ *  screen). As soon as the agent moves on — a tool call, a reply — the block folds itself to
+ *  its header line, and a click is what opens it from then on. That is hermes-studio's shape
+ *  (`thinkingStreamingNow` keeps only the live one open; `thinkingOverride` for a click),
+ *  with the scrolling window the operator asked for on top. */
+function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: boolean }): JSX.Element {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? m.open;
+  const open = userOpen ?? live;
+  const body = useRef<HTMLDivElement>(null);
+  // a live window follows its own tail: text arrives in chunks and the reader should be at
+  // the newest line without touching anything (deps by value, so this runs as the text grows)
+  useEffect(() => {
+    if (live && body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [m.text, live]);
   return (
-    <div className="msg thought">
-      <div
-        className="role"
-        style={{ cursor: "pointer" }}
+    <div className={`msg thought${live ? " live" : ""}`}>
+      <button
+        type="button"
+        className="role thought-head"
+        aria-expanded={open}
+        aria-label={`${open ? "fold" : "open"} the agent's thinking`}
         onClick={() => setUserOpen(!open)}
       >
-        💭 thinking {open ? "▾" : "▸"}
-      </div>
+        <IconChevronRight size={11} className={`thought-chev${open ? " open" : ""}`} />
+        💭 {live ? "思考中…" : "思考"}
+        <span className="thought-meta">{m.text.length} 字</span>
+      </button>
       {open && (
-        <div className="bubble">
+        <div className={`bubble${live ? " live" : ""}`} ref={body}>
           {m.text}
-          <div className="bubble-actions">
-            <CopyButton text={m.text} what="这段思考" />
-          </div>
+          {live ? null : (
+            <div className="bubble-actions">
+              <CopyButton text={m.text} what="这段思考" />
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** One row of the transcript: a message as it stands, or a turn's tool calls folded into a
+ *  single line (hermes-studio's `ToolRunSummary`). */
+type ToolMsg = Extract<MsgView, { kind: "tool" }>;
+type StreamRow =
+  | { kind: "msg"; m: MsgView; live: boolean; tail: boolean }
+  | { kind: "run"; key: string; tools: ToolMsg[]; tail: boolean };
+
+/** Fold each turn's FINISHED tool calls into one row; the call still running stays out as its
+ *  own line, because that dot is the live progress the operator is actually watching.
+ *
+ *  A turn is the run — a new prompt starts the next one (studio keys this on a `runMarker`, the
+ *  same idea with an id we do not need: messages arrive in order and a user row closes the run).
+ *  Fewer than two calls is not worth a click: one tool reads better as itself. */
+function foldToolRuns(msgs: MsgView[], busy: boolean): StreamRow[] {
+  const byTurn = new Map<number, ToolMsg[]>();
+  const turnOf = new Map<MsgView, number>();
+  let turn = 0;
+  for (const m of msgs) {
+    if (m.kind === "user") turn++;
+    turnOf.set(m, turn);
+    if (m.kind === "tool" && statusOf(m.status) !== "running") {
+      const list = byTurn.get(turn) ?? [];
+      list.push(m);
+      byTurn.set(turn, list);
+    }
+  }
+  const rows: StreamRow[] = [];
+  const emitted = new Set<number>();
+  msgs.forEach((m) => {
+    const t = turnOf.get(m) ?? 0;
+    if (m.kind === "tool") {
+      const folded = byTurn.get(t) ?? [];
+      if (folded.length >= 2) {
+        if (folded.includes(m)) {
+          if (!emitted.has(t)) {
+            emitted.add(t);
+            rows.push({ kind: "run", key: `run-${t}`, tools: folded, tail: false });
+          }
+          return;
+        }
+      }
+    }
+    rows.push({ kind: "msg", m, live: busy && m === msgs[msgs.length - 1], tail: false });
+  });
+  if (rows.length) rows[rows.length - 1].tail = true;
+  return rows;
+}
+
+/** A turn's tool calls as one line: count, the names it touched, and how it went. Every call
+ *  keeps its own card inside — click the row, then click the call (studio's two levels). */
+function ToolRun({ tools }: { tools: ToolMsg[] }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const errs = tools.filter((t) => statusOf(t.status) === "err").length;
+  const frozen = tools.filter((t) => statusOf(t.status) === "idle").length;
+  const names = [...new Set(tools.map((t) => t.title.replace(/\s+/g, " ").trim()))];
+  const shown = names.slice(0, 2).map((n) => (n.length > 34 ? `${n.slice(0, 33)}…` : n)).join(" · ");
+  return (
+    <div className="msg">
+      <div className="tool-run">
+        <button
+          type="button"
+          className="tool-run-head"
+          aria-expanded={open}
+          title={tools.map((t) => `· ${t.title}`).join("\n")}
+          onClick={() => setOpen((x) => !x)}
+        >
+          <IconChevronRight size={11} className={`tool-chev${open ? " open" : ""}`} />
+          <span className="tool-run-icon" aria-hidden="true">⚙</span>
+          <span className="tool-run-count">{tools.length} 次工具调用</span>
+          <span className="tool-run-names">{names.length > 2 ? `${shown} +${names.length - 2}` : shown}</span>
+          <span className={`tool-run-state ${errs ? "err" : frozen ? "run" : "ok"}`} aria-hidden="true">
+            {errs ? `✗ ${errs}` : frozen ? "•••" : "✓"}
+          </span>
+        </button>
+        {open && (
+          <div className="tool-run-items">
+            {tools.map((t) => <ToolCard key={t.key} m={t} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -271,6 +271,51 @@ button { font: inherit; }
   background: rgba(143, 123, 215, 0.07); border-left: 3px solid var(--thought);
   color: var(--text-dim); font-size: 13.5px; white-space: pre-wrap;
 }
+/* ---- thinking folds itself -------------------------------------------------------------
+   Only the block still being written is open, and it lives in a small window that scrolls
+   (operator: "五六行…滚动完成…结束了就折叠起来"): a long reasoning burst used to take the
+   whole screen and stay there. Once the agent moves on, the header line is all that is left —
+   clicking it opens the full text. */
+.thought-head {
+  display: flex; align-items: center; gap: 5px; background: none; border: none;
+  padding: 2px 4px; border-radius: 6px; cursor: pointer;
+  color: var(--text-dim); font: inherit; font-size: 11px; letter-spacing: 0.4px;
+}
+.thought-head:hover { background: var(--bg-raised); color: var(--text); }
+.thought-chev, .tool-chev { flex: 0 0 auto; color: var(--text-dim); transition: transform 0.15s ease; }
+.thought-chev.open, .tool-chev.open { transform: rotate(90deg); }
+.thought-meta { color: var(--text-dim); opacity: 0.75; font-variant-numeric: tabular-nums; }
+.msg.thought.live .thought-head { color: var(--thought); }
+.msg.thought .bubble.live { max-height: 6.6em; overflow-y: auto; overscroll-behavior: contain; }
+/* ---- a turn's tool calls, folded into one row (studio's ToolRunSummary) -----------------
+   Ten calls in a turn used to be ten lines; now they are one — count, the names it touched,
+   and how it went — and the two levels of detail are behind clicks (row → call → its I/O). */
+.tool-run-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 4px 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
+  color: var(--text-dim); font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.tool-run-head:hover, .tool-run-head:focus-visible {
+  outline: none; border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.055);
+}
+.tool-run-icon { flex: 0 0 auto; color: var(--accent-text); }
+.tool-run-count { flex: 0 0 auto; font-weight: 600; color: var(--text); }
+.tool-run-names {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.tool-run-state { flex: 0 0 auto; }
+.tool-run-state.ok { color: var(--ok); }
+.tool-run-state.err { color: var(--err); }
+.tool-run-state.run { color: var(--accent-text); }
+.tool-run-items {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 4px 0 0 11px; padding: 3px 4px 3px 12px; border-left: 1px solid var(--line);
+}
+.tool-run-items .msg { margin-bottom: 4px; }
+@media (max-width: 700px) {
+  .tool-run-head { min-height: 34px; } /* a thumb, not a mouse */
+  .msg.thought .bubble.live { max-height: 7.4em; }
+}
 .msg.meta .bubble { color: var(--err); font-size: 13px; background: rgba(229, 115, 115, 0.08); }
 .msg.plan .bubble { border-left: 3px solid var(--ok); background: rgba(78, 201, 160, 0.06); font-size: 13.5px; }
 pre.code {

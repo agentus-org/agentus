@@ -269,6 +269,43 @@ const agent = () => ({
       }
     }
 
+    // A turn that does real work: N tool calls with a reasoning burst before each — the
+    // transcript-flood case (ten calls + ten bursts). `[tools:10]` drives it with no permission
+    // prompts: the point is the SHAPE of the transcript, not the approval.
+    const many = /\[tools:(\d+)\]/.exec(text);
+    if (many) {
+      const n = Math.min(20, Math.max(1, Number(many[1]) || 1));
+      for (let i = 1; i <= n; i++) {
+        const burst = (`step ${i}: reading the file, checking the surrounding code, then writing `
+          + "the change back. This sentence is deliberately long so the reasoning block is taller "
+          + "than the small window the cockpit draws for it, which is what makes the scrolling "
+          + "behaviour measurable at all. ").repeat(3);
+        for (const word of burst.split(" ")) {
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: word + " " },
+          });
+          await sleep(10);
+        }
+        const id = `tc-${sessionId}-multi-${i}`;
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: id,
+          title: i % 3 === 0 ? `bash: run the suite (step ${i})` : i % 2 === 0 ? `read_file src/app-${i}.ts` : `grep -n TODO src/ (step ${i})`,
+          kind: i % 3 === 0 ? "execute" : "read",
+          status: "in_progress",
+          rawInput: { step: i },
+        });
+        await sleep(25);
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: id,
+          status: "completed",
+          rawOutput: `step ${i} done (${i * 7} bytes)`,
+        });
+      }
+    }
+
     if (wantTool) {
       const toolCallId = `tc-${sessionId}-${Date.now()}`;
       const edit = wantHermes ? MOCK_HERMES_EDIT : MOCK_EDIT;
