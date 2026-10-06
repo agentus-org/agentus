@@ -97,7 +97,47 @@ export function App(): JSX.Element {
           }}
         />
       ) : null}
+      <StaleBanner />
     </div>
+  );
+}
+
+/** Is this page still the bundle the server is serving?
+ *
+ *  A WebView (the Android app) or a tab left open across a deploy keeps running the JS it once
+ *  loaded: the new code is deployed, the old code is on screen, and "the fix isn't there" is
+ *  indistinguishable from "the fix is broken". Poll a small endpoint and say it out loud. */
+function StaleBanner(): JSX.Element | null {
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    const loaded = document
+      .querySelector<HTMLScriptElement>('script[src*="/assets/index-"]')
+      ?.src.match(/index-([A-Za-z0-9_-]+)\.js/)?.[1] ?? null;
+    if (!loaded) return;
+    let live = true;
+    const check = async (): Promise<void> => {
+      try {
+        const r = await fetch("/api/version", { cache: "no-store" });
+        const j = (await r.json()) as { asset?: string | null };
+        if (live && j.asset && j.asset !== loaded) setStale(true);
+      } catch { /* offline, or an old server without the endpoint: say nothing */ }
+    };
+    void check();
+    const t = window.setInterval(() => void check(), 60_000);
+    const onVis = (): void => { if (document.visibilityState === "visible") void check(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { live = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  if (!stale) return null;
+  return (
+    <button
+      type="button"
+      className="stale-banner"
+      title="服务端已经换成新的一组前端资源，这个页面还跑着旧的"
+      onClick={() => window.location.reload()}
+    >
+      已有新版本 · 点这里刷新（这个页面跑的还是旧代码）
+    </button>
   );
 }
 
@@ -1375,9 +1415,11 @@ function PermCard({ sid, req }: { sid: string; req: PermissionRequestView }): JS
   );
 }
 
-/** What the request is about, when the agent said: the file, and (in the dialog) the change. */
+/** What the request is about, when the agent said: the file, and (when it sent one) the change. */
 function PermSubject({ req }: { req: PermissionRequestView }): JSX.Element | null {
-  const file = req.diff?.path ?? req.path ?? null;
+  // With a change attached the subject IS the change row: file + `＋N −M`, diff on click.
+  if (req.diff) return <PermChanges diff={req.diff} />;
+  const file = req.path ?? null;
   if (!file) return null;
   return (
     <div className="perm-file" title={file}>
@@ -1425,25 +1467,120 @@ function PermOptions({ sid, req, onAnswered }: {
   );
 }
 
-/** The bounded before/after the agent sent with the request. Bounded by the SERVER (4 kB a
- *  side, `truncated` says so): an edit proposal carries the whole file twice, and this view
- *  also travels to a phone. */
-function PermPreview({ diff }: { diff: PermissionDiff }): JSX.Element {
+/** Unified, hunk-only line diff of the agent's before/after.
+ *
+ *  Hermes' edit approval hands over the WHOLE file twice (`acp.tool_diff_content`: old_text and
+ *  new_text are entire file contents), and the operator's question is never "what is in this
+ *  file" — it is "what changes". So: drop the common head and tail, diff the middle, then keep
+ *  only changed lines plus 3 lines of context and collapse the rest into a counted gap. */
+type DiffLine = { kind: "ctx" | "add" | "del" | "gap"; text: string; oldNo: number | null; newNo: number | null };
+
+function diffLines(oldText: string, newText: string): DiffLine[] {
+  const a = oldText.length ? oldText.replace(/\n$/, "").split("\n") : [];
+  const b = newText.length ? newText.replace(/\n$/, "").split("\n") : [];
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const headCtx: DiffLine[] = [];
+  const CTX = 3;
+  if (head > CTX) headCtx.push({ kind: "gap", text: `⋯ 上面 ${head - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
+  for (let i = Math.max(0, head - CTX); i < head; i++) headCtx.push({ kind: "ctx", text: a[i], oldNo: i + 1, newNo: i + 1 });
+
+  const midA = a.slice(head, a.length - tail);
+  const midB = b.slice(head, b.length - tail);
+  const pairs: DiffLine[] = [];
+  // LCS over the middle; a pathological pair of files would blow up memory, so fall back to
+  // "the whole middle was replaced" — coarser, but still honest about what the request does.
+  if (midA.length * midB.length > 250_000) {
+    midA.forEach((t, i) => pairs.push({ kind: "del", text: t, oldNo: head + i + 1, newNo: null }));
+    midB.forEach((t, i) => pairs.push({ kind: "add", text: t, oldNo: null, newNo: head + i + 1 }));
+  } else {
+    const n = midA.length, m = midB.length;
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = midA[i] === midB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (midA[i] === midB[j]) { pairs.push({ kind: "ctx", text: midA[i], oldNo: head + i + 1, newNo: head + j + 1 }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
+      else { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
+    }
+    while (i < n) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
+    while (j < m) { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
+  }
+  const tailCtx: DiffLine[] = [];
+  for (let i = 0; i < Math.min(tail, CTX); i++) {
+    tailCtx.push({ kind: "ctx", text: a[a.length - tail + i], oldNo: a.length - tail + i + 1, newNo: b.length - tail + i + 1 });
+  }
+  if (tail > CTX) tailCtx.push({ kind: "gap", text: `⋯ 下面 ${tail - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
+
+  // hunk selection over the middle: changed lines ±3, everything else becomes a counted gap
+  const keep = new Array(pairs.length).fill(false);
+  pairs.forEach((p, k) => {
+    if (p.kind === "ctx") return;
+    for (let c = Math.max(0, k - CTX); c <= Math.min(pairs.length - 1, k + CTX); c++) keep[c] = true;
+  });
+  const body: DiffLine[] = [];
+  let skipped = 0;
+  pairs.forEach((p, k) => {
+    if (!keep[k]) { skipped++; return; }
+    if (skipped) { body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null }); skipped = 0; }
+    body.push(p);
+  });
+  if (skipped) body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null });
+  return [...headCtx, ...body, ...tailCtx];
+}
+
+/** 「变更」 as a ROW you click, not a wall of text — the shape AionUi's FileChangesPanel uses
+ *  for the same question (`＋N −M` stats, diff on demand). Collapsed by default because the
+ *  payload is two whole files, and an operator deciding on an edit needs the change, not the file. */
+function PermChanges({ diff }: { diff: PermissionDiff }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const oldText = diff.oldText ?? "";
+  const newText = diff.newText ?? "";
+  const isNew = newText.length > 0 && oldText.length === 0;
+  const lines = diffLines(oldText, newText);
+  const added = lines.filter((l) => l.kind === "add").length;
+  const removed = lines.filter((l) => l.kind === "del").length;
   return (
-    <div className="perm-preview">
-      {diff.oldText != null ? (
-        <>
-          <div className="lbl">之前</div>
-          <pre className="perm-side old">{diff.oldText}</pre>
-        </>
+    <div className="perm-changes">
+      <button
+        type="button"
+        className="perm-change-row"
+        aria-expanded={open}
+        aria-label={`${open ? "收起" : "查看"} ${diff.path ?? "这份文件"} 的变更`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconFile size={13} />
+        <code title={diff.path ?? ""}>{diff.path ?? "（未命名文件）"}</code>
+        <span className="perm-counts">
+          {isNew
+            ? <span className="add">新文件 · {added} 行</span>
+            : <><span className="add">+{added}</span><span className="del">−{removed}</span></>}
+        </span>
+        <span className="perm-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="perm-diff" role="region" aria-label="变更内容">
+          {lines.map((l, i) => (l.kind === "gap" ? (
+            <div className="perm-diff-gap" key={i}>{l.text}</div>
+          ) : (
+            <div className={`perm-diff-line ${l.kind}`} key={i}>
+              <span className="no">{l.oldNo ?? ""}</span>
+              <span className="no">{l.newNo ?? ""}</span>
+              <span className="sig">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
+              <span className="txt">{l.text || " "}</span>
+            </div>
+          )))}
+        </div>
       ) : null}
-      {diff.newText != null ? (
-        <>
-          <div className="lbl">之后</div>
-          <pre className="perm-side new">{diff.newText}</pre>
-        </>
+      {diff.truncated ? (
+        <div className="perm-cut">agent 发来的是整份文件，这里只保留了改动附近的部分</div>
       ) : null}
-      {diff.truncated ? <div className="perm-cut">预览只显示前 4000 个字符（agent 发的是整份文件）</div> : null}
     </div>
   );
 }
@@ -1472,27 +1609,27 @@ function PermDialog({ req, sessionTitle, onSkip }: {
     return () => window.clearInterval(t);
   }, [req.requestId]);
   const waited = Math.max(0, Math.round((now - req.createdAt) / 1000));
-  const file = req.diff?.path ?? req.path ?? null;
   return (
-    <div className="modal-bg perm-bg">
+    /* Clicking the backdrop means "not now", not "nothing happened": the card stays in the
+       transcript with the same buttons, and the ⚿ chip in the header reopens this dialog. A
+       backdrop that swallows the click reads as a broken window — the operator's own words
+       ("弹窗点击不了") — and it also blocks the rail, so a request in one session made every
+       OTHER session unreachable until it was answered. */
+    <div className="modal-bg perm-bg" onClick={onSkip}>
       <div
         className="modal perm-dialog"
         role="dialog"
         aria-modal="true"
         aria-label="agent 请求授权"
+        data-request-id={req.requestId}
+        data-session-id={req.sessionId}
         onClick={(e) => e.stopPropagation()}
       >
         <h3>Agent 请求授权</h3>
         <div className="perm-ask">
           「{sessionTitle}」里的 agent 停在这里等你答复 —— 它要执行 <b>{req.toolCallTitle}</b>（{req.kind}）。
         </div>
-        {file ? (
-          <div className="perm-file" title={file}>
-            <IconFile size={13} />
-            <code>{file}</code>
-          </div>
-        ) : null}
-        {req.diff ? <PermPreview diff={req.diff} /> : null}
+        <PermSubject req={req} />
         <div className="opts perm-opts">
           <PermOptions sid={req.sessionId} req={req} />
         </div>
@@ -2029,6 +2166,17 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   // which toolbar popover is open: "effort" | "model" | null (settings has its own flag)
   const [pop, setPop] = useState<"effort" | "model" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+
+  // Grow with the content on EVERY value change — not only on keystrokes: dictation, the slash
+  // palette and a restored draft all set `text` programmatically, and a box frozen at 42px is
+  // what "字数多的时候编辑不方便" looks like. Same shape as hermes-studio's ChatInput
+  // (`autoSizeTextarea`: height = min(scrollHeight, cap), overflow beyond the cap).
+  useEffect(() => {
+    const el = ta.current;
+    if (!el) return;
+    el.style.height = "42px";
+    el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
+  }, [text]);
   const [switching, setSwitching] = useState(false);
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
@@ -2249,8 +2397,6 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               setText(e.target.value);
               setPaletteHidden(false);
               setPick(0);
-              e.target.style.height = "42px";
-              e.target.style.height = Math.min(e.target.scrollHeight, window.innerHeight * 0.4) + "px";
             }}
             onKeyDown={(e) => {
               if (paletteOpen && matches.length) {

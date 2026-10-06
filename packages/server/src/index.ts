@@ -113,6 +113,13 @@ function emit(evt: ServerEvent): void {
 
 const mgr = new SessionManager(store, emit);
 
+/** The session list every client stays current with: the rows PLUS what is already waiting for
+ *  an answer. Pending approvals are STATE, not just an event — a page that connects or refreshes
+ *  after the request was raised still has to be able to show it. */
+const sessionsEvent = (): ServerEvent => ({
+  t: "sessions", sessions: mgr.list(), pending: mgr.pendingPermissions(),
+});
+
 // ---- notify channel (docs/android-notify-contract.md) ----------------------------
 // Owns pairing, the device websocket, the activity lifecycle and the button callbacks.
 // It holds no agent logic: what an event MEANS is decided in notify/center.ts §ACP mapping,
@@ -608,7 +615,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       }
     }
     if (url.pathname === "/api/sessions" && req.method === "GET") {
-      return send(res, 200, { live: mgr.list(), archived: mgr.archived() });
+      // `pending` rides along because it is STATE, not an event: a page that loads or refreshes
+      // after the request was raised never saw the event, and would otherwise show nothing.
+      return send(res, 200, { live: mgr.list(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
     }
     // Directory browser for the new-slot workspace picker (dirs only, one level).
     if (url.pathname === "/api/fs/dirs" && req.method === "GET") {
@@ -751,7 +760,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         return send(res, 400, { error: `cwd not a directory: ${cwd}` });
       }
       const info = await mgr.create(backend, cwd, body.title ? String(body.title) : undefined);
-      emit({ t: "sessions", sessions: mgr.list() });
+      emit(sessionsEvent());
       return send(res, 201, info);
     }
     const sessMatch = url.pathname.match(/^\/api\/sessions\/([\w-]+)(\/.*)?$/);
@@ -768,7 +777,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // not live: either a cold slot the operator wants gone, or an unknown id.
         // Purging is what makes the rail's "on disk · N" list manageable (M4).
         if (store.deleteSession(id)) {
-          emit({ t: "sessions", sessions: mgr.list() });
+          emit(sessionsEvent());
           return send(res, 200, { purged: id });
         }
         return send(res, 404, { error: `no such session: ${id}` });
@@ -777,7 +786,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // AC5's other half: bring a cold slot back to life (respawn + loadSession)
         try {
           const info = await mgr.resume(id);
-          emit({ t: "sessions", sessions: mgr.list() });
+          emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
           // A cold slot the agent can no longer adopt is NOT a server fault and NOT an outage:
@@ -785,7 +794,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // useful action (delete it). Before this the operator got a slot that said "ready" and
           // silently ate every message (measured 2026-10-06 — see SessionUnavailable).
           if (e instanceof SessionUnavailable) {
-            emit({ t: "sessions", sessions: mgr.list() });
+            emit(sessionsEvent());
             return send(res, 409, {
               error: e.message,
               code: e.code,
@@ -837,7 +846,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           }
         }
         const info = mgr.setWorkspace(id, workspace);
-        emit({ t: "sessions", sessions: mgr.list() });
+        emit(sessionsEvent());
         return send(res, 200, info);
       }
       if (req.method === "GET" && sub === "/export") {
@@ -869,7 +878,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const title = raw == null ? null : String(raw);
         try {
           const info = mgr.rename(id, title);
-          emit({ t: "sessions", sessions: mgr.list() });
+          emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
@@ -882,7 +891,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // fork), falling back to the latest prompt when it cannot. The store's authority
           // rule decides whether the visible title moves; `via` says which producer answered.
           const info = await mgr.regenerateTitle(id);
-          emit({ t: "sessions", sessions: mgr.list() });
+          emit(sessionsEvent());
           return send(res, 200, { info, via: mgr.lastTitleVia });
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
@@ -894,7 +903,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         try {
           // forking a cold session resumes it first (the call has to reach a live agent)
           const info = await mgr.fork(id);
-          emit({ t: "sessions", sessions: mgr.list() });
+          emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
@@ -949,6 +958,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!ok) return send(res, 404, { error: `no pending permission: ${requestId}` });
         return send(res, 200, { ok: true });
       }
+    }
+    if (url.pathname === "/api/version" && req.method === "GET") {
+      // Which bundle the server is serving RIGHT NOW. A page compares this with the script it
+      // actually loaded: a WebView (the Android app) or a tab left open across a deploy keeps
+      // running the JS it loaded, and then "the fix isn't there" is indistinguishable from
+      // "the fix is broken" — measured, and it cost a whole round.
+      let asset: string | null = null;
+      try {
+        const html = fs.readFileSync(path.join(WEB_DIST, "index.html"), "utf8");
+        asset = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/)?.[1] ?? null;
+      } catch { /* no build on disk (dev server without dist) */ }
+      return send(res, 200, { asset });
     }
     if (url.pathname.startsWith("/api/")) return send(res, 404, { error: "not_found" });
     return serveStatic(req, res);
@@ -1012,7 +1033,7 @@ wss.on("connection", (ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(e));
   };
   sendEvt({ t: "hello", clientId, resumed: false });
-  sendEvt({ t: "sessions", sessions: mgr.list() });
+  sendEvt(sessionsEvent());
 
   ws.on("message", async (data) => {
     let cmd: ClientCommand;
@@ -1032,7 +1053,7 @@ wss.on("connection", (ws) => {
             const msgs = store.messagesAfter(sid, seq);
             if (msgs.length) sendEvt({ t: "messages", sessionId: sid, messages: msgs, hasMore: false, partial: true });
           }
-          sendEvt({ t: "sessions", sessions: mgr.list() });
+          sendEvt(sessionsEvent());
           break;
         }
         case "prompt":
@@ -1050,12 +1071,16 @@ wss.on("connection", (ws) => {
         case "set-model":
           await mgr.setModel(cmd.sessionId, cmd.modelId);
           break;
-        case "respond-permission":
-          mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {
+        case "respond-permission": {
+          const applied = mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {
             optionKind: cmd.optionKind,
             signature: cmd.signature,
           });
+          // The answer reached nobody: the request is gone (our own timeout, or the agent gave
+          // up first). Tell the page, so the click has a visible outcome either way.
+          if (!applied) sendEvt({ t: "permission-expired", requestId: cmd.requestId, sessionId: cmd.sessionId });
           break;
+        }
         default:
           break;
       }

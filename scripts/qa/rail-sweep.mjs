@@ -379,9 +379,29 @@ const scrollToTarget = async () => {
   // The rail is a long list: the group we test may be far below the fold, where a synthetic
   // pointer event cannot land on it (measured: hover at y=1184 in a 900px viewport did
   // nothing). Put it in the middle of the screen first — that is also what an operator does.
-  await ev(`(() => { const head = document.querySelector('.rail-group-head[data-workspace=${JSON.stringify(target)}]');
-    head?.scrollIntoView({ block: 'center' }); return true; })()`);
-  await sleep(400);
+  // scrollIntoView alone is not enough: the rail's own scroller is an ancestor, and the
+  // document does not scroll, so the call can be a no-op and the row stays off-screen
+  // (the failure is silent — the pointer just lands somewhere else). Scroll THAT element.
+  for (let i = 0; i < 4; i++) {
+    const box = await ev(`(() => {
+      const head = document.querySelector('.rail-group-head[data-workspace=${JSON.stringify(target)}]');
+      if (!head) return null;
+      let el = head.parentElement;
+      while (el && el.scrollHeight <= el.clientHeight + 2) el = el.parentElement;
+      if (el) {
+        const hr = head.getBoundingClientRect(), er = el.getBoundingClientRect();
+        el.scrollTop += (hr.top - er.top) - Math.max(0, (er.height - hr.height) / 2);
+      } else {
+        head.scrollIntoView({ block: 'center' });
+      }
+      const r = head.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight,
+        onScreen: r.top >= 0 && r.bottom <= innerHeight };
+    })()`);
+    if (!box) return;
+    if (box.onScreen) return;
+    await sleep(250);
+  }
 };
 const hoverAndRead = async () => {
   await scrollToTarget();
@@ -424,6 +444,17 @@ const hoverAndRead = async () => {
     };
   })()`);
 };
+// A pending request from a previous run leaves its dialog (and its backdrop) on the page: it
+// covers the rail, and this sweep is about the rail. Dismiss it the way the operator would.
+const permCleared = await ev(`(() => {
+  const bg = document.querySelector('.modal-bg.perm-bg');
+  if (!bg) return { had: false };
+  const btn = [...bg.querySelectorAll('button')].find((b) => /稍后处理|later/i.test(b.textContent || ''));
+  btn?.click();
+  return { had: true, via: btn ? 'later' : 'none' };
+})()`);
+if (permCleared.had) await sleep(500);
+
 const plus = await hoverAndRead();
 check("every workspace header carries a 「+」 next to the directory name", plus.ok,
   `target=${target} ${JSON.stringify(plus)}`);
@@ -518,6 +549,46 @@ check("on a 390x844 phone the 「+」 is visible without hovering and is a real 
 const phonePlusShot = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/phone-rail-add.png`, Buffer.from(phonePlusShot.data, "base64"));
 await setViewport(1440, 900);
+
+// --- the input box grows with what is in it (operator: "输入框能不能根据字数自动拉高") ----
+// Studio's ChatInput does `height = min(scrollHeight, 100px)`; a fixed 42px box is exactly what
+// makes editing a long multi-line message painful. Programmatic value changes count too
+// (dictation, the slash palette, a restored draft), so this drives the native setter, not keys.
+const grow = await ev(`(async () => {
+  const ta = document.querySelector('.composer textarea');
+  if (!ta) return { ok: false };
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+  const height = () => Math.round(ta.getBoundingClientRect().height);
+  const type = async (v) => { setter.call(ta, v); ta.dispatchEvent(new Event('input', { bubbles: true })); await new Promise((r) => setTimeout(r, 150)); };
+  const empty = height();
+  await type('one line');
+  const one = height();
+  await type(Array.from({ length: 12 }, (_, i) => 'line ' + (i + 1)).join('\\n'));
+  const many = height();
+  const cap = Math.round(window.innerHeight * 0.4);
+  const scrolls = ta.scrollHeight > ta.clientHeight + 2;
+  await type('');
+  return { empty, one, many, cap, scrolls, cleared: height() };
+})()`);
+check("the composer starts small and grows as lines are typed in",
+  typeof grow.many === "number" && grow.one <= grow.empty + 4 && grow.many >= grow.one + 40,
+  JSON.stringify(grow));
+check("…it stops at 40% of the screen and scrolls inside instead of eating the page",
+  grow.many <= grow.cap + 24 && (grow.scrolls || grow.many < grow.cap), JSON.stringify(grow));
+check("…and it shrinks back when the text is sent (or cleared)", grow.cleared <= grow.empty,
+  `cleared=${grow.cleared} empty=${grow.empty}`);
+
+// --- a page must be able to tell that it is running OLD code ---------------------------
+// A WebView keeps whatever bundle it loaded, so "the fix isn't there" and "the fix is broken"
+// look identical to the operator — this round's entire problem. One tiny endpoint says which.
+const ver = await ev(`fetch('/api/version').then((r) => r.json()).then((j) => ({
+  asset: j.asset,
+  loaded: ((document.querySelector('script[src*="/assets/index-"]') || {}).src || '').match(/index-([A-Za-z0-9_-]+)\\.js/)?.[1] ?? null,
+}))`);
+check("the server can say which bundle it is serving, and this page loaded that one",
+  Boolean(ver.asset) && ver.asset === ver.loaded, JSON.stringify(ver));
+const banner = await ev(`Boolean(document.querySelector('.stale-banner'))`);
+check("…so a page that is not stale shows no nagging banner", banner === false, `banner=${banner}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log("shots: desktop-rail-oneline.png, phone-session-menu.png");

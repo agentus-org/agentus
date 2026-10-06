@@ -132,7 +132,7 @@ export interface PermissionDiff {
 // ---- WS envelope (server -> browser) ----
 export type ServerEvent =
   | { t: "hello"; clientId: string; resumed: boolean }
-  | { t: "sessions"; sessions: SessionInfo[] }
+  | { t: "sessions"; sessions: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
   | { t: "session"; session: SessionInfo }
   | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean; partial?: boolean }
   | { t: "message"; message: StoredMessage; /** text to APPEND for a streamed block that grew (absent
@@ -145,6 +145,10 @@ export type ServerEvent =
       n?: number }
   | { t: "permission"; request: PermissionRequestView }
   | { t: "permission-resolved"; requestId: string; decision: PermissionDecision }
+  /** An answer arrived for a request the server no longer holds (its own timeout fired, or the
+   *  agent gave up first). Said out loud instead of dropped: a click that does nothing is the
+   *  worst failure shape there is — the operator cannot tell it from a broken button. */
+  | { t: "permission-expired"; requestId: string; sessionId: string }
   | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string;
       /** Wall time from the moment the turn was announced to the moment the agent answered (ms).
        *  Exists so a notification can say "用时 1m12s" instead of a protocol token like `end_turn`,

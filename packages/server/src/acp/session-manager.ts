@@ -44,6 +44,8 @@ const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 
 // flip. Sent BOUNDED: a patch proposal carries the entire file twice, and this view also
 // travels to a phone over a tunnel.
 const PREVIEW_LIMIT = 4000;
+// …but bounded AROUND the change, never from the front: see boundedDiff.
+const CONTEXT_KEEP = 400;
 
 interface PermissionToolCall {
   title?: string;
@@ -53,20 +55,42 @@ interface PermissionToolCall {
 }
 
 function permissionArtifacts(tc: PermissionToolCall): { path: string | null; diff: PermissionDiff | null } {
-  const cut = (t: string | null | undefined): { text: string | null; truncated: boolean } => {
-    if (typeof t !== "string") return { text: null, truncated: false };
-    return t.length > PREVIEW_LIMIT ? { text: t.slice(0, PREVIEW_LIMIT), truncated: true } : { text: t, truncated: false };
-  };
   const node = (tc.content ?? []).find((c) => c && typeof c.path === "string" && c.path);
   const rawPath = tc.rawInput?.arguments?.path ?? tc.rawInput?.path ?? null;
   const path = node?.path ?? (typeof rawPath === "string" && rawPath ? rawPath : null);
   if (!path) return { path: null, diff: null };
   if (!node || (node.oldText == null && node.newText == null)) return { path, diff: null };
-  const oldSide = cut(node.oldText);
-  const newSide = cut(node.newText);
+  return { path, diff: boundedDiff(path, node.oldText ?? "", node.newText ?? "") };
+}
+
+/** The before/after, bounded so the change survives — not sliced from the front.
+ *
+ *  A real edit approval carries the WHOLE file on each side (hermes: old_text/new_text are the
+ *  complete contents). Cutting both sides at the same offset keeps their shared head and tail,
+ *  drops the middle — which is exactly where the change is — and hands the client two texts that
+ *  differ at the cut, so it reports the truncation as a rewrite: an 83-line file with ONE edited
+ *  line showed up as ~60 changed lines (measured 2026-10-06, mock `[tool-hermes]`). Trim the
+ *  shared head and tail first, keep a little of each as context, and only then bound. */
+function boundedDiff(path: string, oldText: string, newText: string): PermissionDiff {
+  let head = 0;
+  const shared = Math.min(oldText.length, newText.length);
+  while (head < shared && oldText[head] === newText[head]) head++;
+  let tail = 0;
+  while (tail < shared - head && oldText[oldText.length - 1 - tail] === newText[newText.length - 1 - tail]) tail++;
+  const from = Math.max(0, head - CONTEXT_KEEP);
+  const upto = (s: string): number => Math.max(from, s.length - Math.max(0, tail - CONTEXT_KEEP));
+  const window = (s: string): string => s.slice(from, upto(s));
+  const oldSide = window(oldText);
+  const newSide = window(newText);
+  const clipped = oldSide.length > PREVIEW_LIMIT || newSide.length > PREVIEW_LIMIT;
   return {
     path,
-    diff: { path, oldText: oldSide.text, newText: newSide.text, truncated: oldSide.truncated || newSide.truncated },
+    oldText: oldSide.slice(0, PREVIEW_LIMIT),
+    newText: newSide.slice(0, PREVIEW_LIMIT),
+    // "truncated" means the operator is NOT looking at the whole proposal. Dropping a shared
+    // head/tail we kept in full inside CONTEXT_KEEP is not that — a two-line sample file would
+    // otherwise carry a "only part of it is shown" note and teach the operator to ignore it.
+    truncated: clipped || from > 0 || tail > CONTEXT_KEEP,
   };
 }
 
@@ -114,7 +138,13 @@ interface LiveSession {
   child?: ReturnType<typeof spawn>;
   conn?: ClientSideConnection;
   busy: boolean;
-  pendingPermissions: Map<string, { resolve: (r: RequestPermissionResponse) => void; timer: NodeJS.Timeout }>;
+  pendingPermissions: Map<string, {
+    /** The view the operator is looking at. Kept (not just the resolver) so a page that
+     *  connects or REFRESHES later can be told what is already waiting for it. */
+    view: PermissionRequestView;
+    resolve: (r: RequestPermissionResponse) => void;
+    timer: NodeJS.Timeout;
+  }>;
   alwaysAllow: Set<string>; // "allow_always" remembered per live session only (AionUi F-PERM-05)
   stderrBuf: string[];
   /** What the agent says it can do (initialize.agentCapabilities), kept because the title
@@ -537,7 +567,7 @@ export class SessionManager {
         { ok: true, latencyMs: Date.now() - resumeStarted },
         handshakeFrom(reloadInit, loaded),
       );
-      this.#emit({ t: "sessions", sessions: this.list() });
+      this.#emitSessions();
       return live.info;
     } catch (err) {
       child.kill("SIGKILL");
@@ -720,7 +750,23 @@ export class SessionManager {
     const row = this.#store.getSession(sessionId);
     if (row) this.#store.upsertSession({ ...row, status: "closed", closedAt: Date.now(), pid: null });
     this.#sessions.delete(sessionId);
-    this.#emit({ t: "sessions", sessions: this.list() });
+    this.#emitSessions();
+  }
+
+  /** The list every client needs to be current: the rows PLUS what is already waiting for an
+   *  answer. Sent on connect too, which is what makes a refreshed page show a live approval. */
+  #emitSessions(): void {
+    this.#emit({ t: "sessions", sessions: this.list(), pending: this.pendingPermissions() });
+  }
+
+  /** Every request currently waiting for an answer, across live sessions. Exists so a page
+   *  that connects or REFRESHES can be told what is already waiting: the operator asked to see
+   *  the approval card "even after refreshing another page", and an event-only design cannot
+   *  deliver that (the events happened before the page existed). */
+  pendingPermissions(): PermissionRequestView[] {
+    const out: PermissionRequestView[] = [];
+    for (const s of this.#sessions.values()) for (const p of s.pendingPermissions.values()) out.push(p.view);
+    return out;
   }
 
   respondPermission(
@@ -734,7 +780,12 @@ export class SessionManager {
       s.alwaysAllow.add(meta.signature);
     }
     const pending = s.pendingPermissions.get(requestId);
-    if (!pending) return false; // already timed out / resolved / never existed
+    if (!pending) {
+      // Someone answered a request we no longer hold (our timeout fired, or the agent gave up
+      // first). Silently returning false made a click look like a broken button.
+      console.log(`[agentslot] permission answer dropped for ${sessionId}: request ${requestId} is not pending`);
+      return false; // already timed out / resolved / never existed
+    }
     clearTimeout(pending.timer);
     s.pendingPermissions.delete(requestId);
     pending.resolve({ outcome: decision });
@@ -892,7 +943,7 @@ export class SessionManager {
         resolve({ outcome: d });
         this.#emit({ t: "permission-resolved", requestId, decision: d });
       }, PERMISSION_TIMEOUT_MS);
-      live.pendingPermissions.set(requestId, { resolve, timer });
+      live.pendingPermissions.set(requestId, { view, resolve, timer });
     });
   }
 
@@ -1053,7 +1104,7 @@ export class SessionManager {
       this.#updateSession(live);
     }
     // the rail lists cold slots too, so refresh the whole list rather than just this session
-    this.#emit({ t: "sessions", sessions: this.list() });
+    this.#emitSessions();
     return row;
   }
 
@@ -1169,7 +1220,7 @@ export class SessionManager {
     await s.conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
     if (s.info.models) s.info.models = { ...s.info.models, currentModelId: modelId };
     this.#updateSession(s);
-    this.#emit({ t: "sessions", sessions: this.list() });
+    this.#emitSessions();
     return s.info;
   }
 
@@ -1197,7 +1248,7 @@ export class SessionManager {
     } else {
       if (!this.#store.setContextLimit(id, clean)) throw new Error(`no such session: ${id}`);
     }
-    this.#emit({ t: "sessions", sessions: this.list() });
+    this.#emitSessions();
     const row = live?.info ?? this.#coldInfo(id);
     return row;
   }
@@ -1275,7 +1326,7 @@ export class SessionManager {
       commands: source.info.commands ?? [],
       workspace: source.info.workspace ?? null,
     });
-    this.#emit({ t: "sessions", sessions: this.list() });
+    this.#emitSessions();
     // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
     return await this.resume(newId);
   }

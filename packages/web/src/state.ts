@@ -903,6 +903,19 @@ class Cockpit {
         const live = new Set(e.sessions.map((s) => s.id));
         this.sessions = e.sessions;
         for (const s of e.sessions) this.#view(s.id).info = s;
+        // Requests still waiting for an answer are STATE, not only events: a page that loads or
+        // refreshes after they were raised never saw the event, and would show an empty screen
+        // while an agent sits there waiting for a human (the operator's exact complaint).
+        if (e.pending) {
+          const bySession = new Map<string, PermissionRequestView[]>();
+          for (const p of e.pending) {
+            const list = bySession.get(p.sessionId);
+            if (list) list.push(p);
+            else bySession.set(p.sessionId, [p]);
+          }
+          for (const [sid, list] of bySession) this.#view(sid).perms = list;
+          for (const v of this.byId.values()) if (!bySession.has(v.info.id)) v.perms = [];
+        }
         // prune views whose session vanished server-side (restart / close elsewhere)
         for (const id of [...this.byId.keys()]) if (!live.has(id)) this.byId.delete(id);
         if (this.activeId && !live.has(this.activeId)) {
@@ -981,6 +994,17 @@ class Cockpit {
         break;
       case "permission-resolved":
         for (const v of this.byId.values()) v.perms = v.perms.filter((p) => p.requestId !== e.requestId);
+        break;
+      case "permission-expired":
+        // The answer landed nowhere (the server's request was already gone — our own timeout, or
+        // the agent gave up first). Say so: a click that silently does nothing is the failure
+        // shape the operator cannot tell from a broken button.
+        for (const v of this.byId.values()) v.perms = v.perms.filter((p) => p.requestId !== e.requestId);
+        this.#view(e.sessionId).msgs.push({
+          key: `perm-exp-${e.requestId}`,
+          kind: "meta",
+          text: "这条审批已经过期：agent 等不到答复、先自己放过了（或它已经放弃这一轮）。你的点击没有生效。",
+        });
         break;
       case "error": {
         if (this.activeId) {

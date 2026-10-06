@@ -555,8 +555,11 @@ export function authenticate(
   return null;
 }
 
-/** `/api/auth/*` is reachable unauthenticated; the SPA shell and assets are public. */
-const PUBLIC_API = new Set(["/api/auth/login", "/api/auth/me", "/api/auth/logout"]);
+/** `/api/auth/*` is reachable unauthenticated; the SPA shell and assets are public.
+ *  `/api/version` too: it is one build hash, and the page that most needs it is the one whose
+ *  session has already expired (a WebView left open for days) — the "this page is old code"
+ *  banner must not depend on being logged in. */
+const PUBLIC_API = new Set(["/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/version"]);
 
 export function requiresAuth(pathname: string): boolean {
   if (!pathname.startsWith("/api/")) return false; // shell, assets, /healthz

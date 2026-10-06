@@ -366,16 +366,51 @@ code.inline {
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
 }
 .perm-file code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--accent-text); }
-.perm-preview { margin-top: 10px; }
-.perm-preview .lbl { font-size: 11px; color: var(--text-dim); margin: 6px 0 3px; }
-.perm-side {
-  margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--bg); font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
-  max-height: 22vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+.perm-changes { margin-top: 10px; }
+.perm-change-row {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; cursor: pointer;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
+  color: var(--text); font: inherit;
 }
-.perm-side.old { border-left: 3px solid var(--err); }
-.perm-side.new { border-left: 3px solid var(--ok); }
+.perm-change-row:hover { border-color: var(--accent-dim); }
+.perm-change-row code {
+  font-family: var(--mono); font-size: 12px; color: var(--accent-text);
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.perm-counts { display: flex; gap: 6px; font-family: var(--mono); font-size: 11.5px; flex: 0 0 auto; }
+.perm-counts .add { color: var(--ok); }
+.perm-counts .del { color: var(--err); }
+.perm-caret { color: var(--text-dim); font-size: 11px; flex: 0 0 auto; }
+.perm-diff {
+  margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+  max-height: 34vh; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+}
+.perm-diff-line {
+  display: grid; grid-template-columns: 3.2em 3.2em 1.2em 1fr; white-space: pre-wrap;
+  overflow-wrap: anywhere; padding: 0 6px;
+}
+.perm-diff-line .no { color: var(--text-dim); text-align: right; padding-right: 6px; user-select: none; }
+.perm-diff-line .sig { text-align: center; }
+.perm-diff-line.add { background: rgba(48, 164, 108, .12); }
+.perm-diff-line.add .sig { color: var(--ok); }
+.perm-diff-line.del { background: rgba(226, 90, 80, .12); }
+.perm-diff-line.del .sig { color: var(--err); }
+.perm-diff-line.ctx { color: var(--text-dim); }
+.perm-diff-gap {
+  color: var(--text-dim); font-size: 10.5px; text-align: center; padding: 3px 0;
+  background: rgba(127, 127, 127, .06);
+}
 .perm-cut { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+/* "this page is running old code" — the one thing a WebView user cannot otherwise notice.
+   Above every dialog layer (modal-bg is 35, the phone sheets 25–30): the point is to be seen. */
+.stale-banner {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 80; cursor: pointer; border: 1px solid var(--accent-dim); border-radius: 999px;
+  background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 12.5px;
+  padding: 9px 16px; box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.stale-banner:hover { filter: brightness(1.06); }
 .perm-opts { margin-top: 14px; }
 .perm-note { font-size: 11.5px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
 .ns-fixed-dir {
@@ -396,9 +431,14 @@ code.inline {
 }
 .composer-box:focus-within { border-color: var(--accent-dim); }
 .composer textarea {
-  flex: 1; resize: none; background: transparent; color: var(--text);
+  /* NOT `flex: 1`: .composer-box is a column flex container, so `flex: 1` (flex-basis: 0) hands
+     the item's main size — its HEIGHT — to the container and the inline height the composer sets
+     from scrollHeight is ignored. That is the whole "输入框一直固定，字数多的时候编辑不方便"
+     report: the box stayed 42px and the text scrolled inside it. `flex: 0 0 auto` gives the
+     height back to the element (and the container grows with it, since it is height:auto). */
+  flex: 0 0 auto; resize: none; background: transparent; color: var(--text);
   border: none; padding: 10px 12px 4px;
-  font: inherit; min-height: 42px; max-height: 40vh;
+  font: inherit; min-height: 42px; max-height: 40vh; overflow-y: auto;
 }
 .composer textarea:focus { outline: none; }
 .composer-bar { display: flex; align-items: center; gap: 3px; padding: 2px 6px 6px; }
@@ -585,7 +625,8 @@ code.inline {
   /* On a phone the dialog owns the screen: full height available, buttons a thumb can hit. */
   .perm-dialog { max-width: none; max-height: 100%; }
   .perm-dialog .perm-opts button { min-height: 44px; padding: 10px 14px; font-size: 14px; }
-  .perm-side { max-height: 26vh; }
+  .perm-diff { max-height: 42vh; }
+  .perm-change-row { min-height: 44px; }
   /* the rail's per-directory 「+」, always visible on touch (no hover to reveal it) */
   .rail-group .group-add { width: 32px; height: 30px; }
 

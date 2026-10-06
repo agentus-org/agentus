@@ -21,6 +21,20 @@ const MOCK_EDIT = {
   oldText: "const greeting = \"hello\";\nconsole.log(greeting);\n",
   newText: "const greeting = \"你好\";\nconsole.log(greeting, Date.now());\n",
 };
+/** A file long enough that reprinting it twice is exactly the "diff 太多了" complaint: 40 lines
+ *  of unchanged preamble, three changed ones, 40 unchanged lines after. Hermes' real edit
+ *  approval sends the whole file both ways, so the cockpit has to reduce this on its own. */
+const MOCK_HERMES_EDIT = await (async () => {
+  const preamble = Array.from({ length: 40 }, (_, i) => `// filler line ${i + 1}: unchanged context the operator never needs to read`);
+  const tail = Array.from({ length: 40 }, (_, i) => `// tail line ${i + 1}: also unchanged`);
+  const head = [...preamble, 'const greeting = "hello";', "console.log(greeting);", ""].join("\n");
+  return {
+    path: "/tmp/mock-approval/hermes-real-shape.txt",
+    oldText: head + tail.join("\n"),
+    newText: head.split("\n").map((l) => (l === 'const greeting = "hello";' ? 'const greeting = "你好";' : l))
+      .join("\n") + tail.join("\n"),
+  };
+})();
 let seq = 0;
 const sessions = new Map();
 
@@ -229,11 +243,16 @@ const agent = () => ({
     // QA triggers: prompt text flips behaviors per turn (env sets global defaults).
     // Declared up front — used by the blocks below (a hoisting mistake here shows
     // up as an opaque "-32603 Internal error" over ACP, QA#11).
-    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text) || /\[tool-diff\]/.test(text);
+    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text) || /\[tool-diff\]/.test(text) || /\[tool-hermes\]/.test(text);
     // A file EDIT, shaped like the real one: hermes' edit approval carries the whole file
     // before and after as a `diff` content item (`acp.tool_diff_content`), and the cockpit's
     // approval surface must be able to say WHICH file and WHAT changes from that alone.
     const wantDiff = process.env.MOCK_DIFF === "1" || /\[tool-diff\]/.test(text);
+    // Hermes' REAL edit approval, shape for shape: two options only (`allow_once` "Allow edit"
+    // and `deny` "Deny"), toolCall title `Approve edit: <path>`, and the whole file before and
+    // after as one `diff` item — which is why the cockpit must collapse it (read off
+    // acp_adapter/edit_approval.py, 2026-10-06).
+    const wantHermes = process.env.MOCK_HERMES_APPROVAL === "1" || /\[tool-hermes\]/.test(text);
     const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
     const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
     const wantPlan = process.env.MOCK_PLAN === "1" || /\[plan\]/.test(text);
@@ -252,19 +271,21 @@ const agent = () => ({
 
     if (wantTool) {
       const toolCallId = `tc-${sessionId}-${Date.now()}`;
-      const diffContent = wantDiff
+      const edit = wantHermes ? MOCK_HERMES_EDIT : MOCK_EDIT;
+      const withDiff = wantDiff || wantHermes;
+      const diffContent = withDiff
         ? [{
-            type: "diff", path: MOCK_EDIT.path, oldText: MOCK_EDIT.oldText, newText: MOCK_EDIT.newText,
+            type: "diff", path: edit.path, oldText: edit.oldText, newText: edit.newText,
           }]
         : undefined;
       await send(agent._conn, sessionId, {
         sessionUpdate: "tool_call", toolCallId,
-        title: wantDiff ? `Edit file: ${MOCK_EDIT.path}` : `Write file: ./demo-${Math.floor(Math.random() * 1e4)}.txt`,
+        title: withDiff ? `Edit file: ${edit.path}` : `Write file: ./demo-${Math.floor(Math.random() * 1e4)}.txt`,
         kind: "edit", status: "pending",
         // shaped like a real agent: input args on the call, output on the update
         ...(diffContent ? { content: diffContent } : {}),
-        rawInput: wantDiff
-          ? { tool: "patch", arguments: { path: MOCK_EDIT.path } }
+        rawInput: withDiff
+          ? { tool: "patch", arguments: { path: edit.path } }
           : { path: "./demo.txt", content: "hello from the mock agent" },
       });
       const mode = s.currentModeId || "default";
@@ -272,23 +293,30 @@ const agent = () => ({
         const resp = await agent._conn.requestPermission({
           sessionId,
           toolCall: {
-            toolCallId, title: wantDiff ? `Approve edit: ${MOCK_EDIT.path}` : "Write file", kind: "edit",
+            toolCallId,
+            title: wantHermes ? `Approve edit: ${edit.path}` : withDiff ? `Approve edit: ${edit.path}` : "Write file",
+            kind: "edit",
             ...(diffContent ? { content: diffContent } : {}),
           },
-          options: [
-            { optionId: "allow", name: "Allow", kind: "allow_once" },
-            { optionId: "allow_always", name: "Always Allow", kind: "allow_always" },
-            { optionId: "reject", name: "Reject", kind: "reject_once" },
-          ],
+          options: wantHermes
+            ? [
+                { optionId: "allow_once", name: "Allow edit", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ]
+            : [
+                { optionId: "allow", name: "Allow", kind: "allow_once" },
+                { optionId: "allow_always", name: "Always Allow", kind: "allow_always" },
+                { optionId: "reject", name: "Reject", kind: "reject_once" },
+              ],
         });
         const chosen = resp?.outcome?.optionId;
         await send(agent._conn, sessionId, {
           sessionUpdate: "tool_call_update", toolCallId,
-          status: chosen === "reject" ? "failed" : "completed",
+          status: chosen === "reject" || chosen === "deny" ? "failed" : "completed",
           // the output half of the card (AionUi F-DISPLAY-03 wants it viewable)
-          rawOutput: chosen === "reject"
+          rawOutput: chosen === "reject" || chosen === "deny"
             ? "rejected by the operator — nothing written"
-            : `wrote 24 bytes to ./demo.txt (via ${chosen === "allow_always" ? "always-allow" : "one-shot allow"})`,
+            : `wrote 24 bytes to ./demo.txt (chosen option: ${chosen})`,
         });
       }
     }
