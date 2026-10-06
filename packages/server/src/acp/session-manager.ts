@@ -44,6 +44,36 @@ const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTSLOT_TITLE_TIMEOUT_MS || 9
 // (an agent that ignores session/cancel must not hang the operator's next sentence forever).
 const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTSLOT_SETTLE_TIMEOUT_MS || 15_000);
 
+/** A cold slot the agent cannot adopt, and why — the only two answers there are.
+ *
+ *  Resuming has to *ask* the agent: `session/load` is "do you still have this session?", and the
+ *  agent answers for the home it was handed NOW. Nothing in ACP says "no" loudly — Hermes returns
+ *  a null result (just a log line) and its `prompt` answers `stop_reason:"refusal"` — so before
+ *  this the cockpit reported the slot `ready` and then swallowed every message: the operator wrote
+ *  into a slot that looked alive and heard nothing back (measured 2026-10-06, 5 minutes, no error).
+ *
+ *  Both cases are refusals the operator must SEE — with the two homes named — and the only useful
+ *  action for a slot that can never come back is to delete it. */
+export class SessionUnavailable extends Error {
+  readonly code: "home_mismatch" | "context_missing";
+  /** the home the session was created under (null for a row written before this was recorded) */
+  readonly sessionHome: string | null;
+  /** the home the backend row hands out today */
+  readonly rowHome: string | null;
+
+  constructor(
+    code: SessionUnavailable["code"],
+    message: string,
+    homes: { sessionHome?: string | null; rowHome?: string | null } = {},
+  ) {
+    super(message);
+    this.name = "SessionUnavailable";
+    this.code = code;
+    this.sessionHome = homes.sessionHome ?? null;
+    this.rowHome = homes.rowHome ?? null;
+  }
+}
+
 interface LiveSession {
   info: SessionInfo;
   child?: ReturnType<typeof spawn>;
@@ -228,7 +258,8 @@ export class SessionManager {
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
-    this.#store.upsertSession(sessionRow(live.info));
+    // the home is recorded with the row: it is the thing a later resume has to be checked against
+    this.#store.upsertSession(sessionRow(live.info, plan.home));
 
     child.stderr?.on("data", (d: Buffer) => {
       // stderr never touches the ndjson stream (design.md §8-2); keep tail for errors.
@@ -310,6 +341,19 @@ export class SessionManager {
     // point of the workspace being a separate field (see shared/index.ts).
     const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
+    // ── Can this slot come back AT ALL? ──────────────────────────────────────────────────────
+    // A session's agent-side state lives in the home it was CREATED under; a resume hands the
+    // agent whatever home the row names TODAY. If those differ, the agent is being asked about a
+    // session in a database it does not have — it will answer politely and do nothing (measured:
+    // `{}` from session/load, `refusal` from session/prompt, and the slot still said "ready").
+    // Refuse BEFORE spawning, so the operator gets a reason instead of a dead slot.
+    if (row.home && plan.home && row.home !== plan.home) {
+      throw new SessionUnavailable(
+        "home_mismatch",
+        `this session's agent-side state is in ${row.home}, but the backend row now uses ${plan.home}`,
+        { sessionHome: row.home, rowHome: plan.home },
+      );
+    }
     const resumeStarted = Date.now();
     const child = spawn(spec.cmd, args, {
       cwd: resumeCwd,
@@ -375,9 +419,43 @@ export class SessionManager {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
-      const loaded = (await conn.loadSession({
+      let loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: [],
-      })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | undefined;
+      })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
+      // ── Did the agent actually adopt it? ────────────────────────────────────────────────────
+      // Measured against the real CLI (scripts/probe-load-missing.mjs): for a session it does not
+      // have, hermes answers `session/load` with an EMPTY result and `session/prompt` with
+      // `stopReason:"refusal"` — no error either way, which is precisely how a dead slot came to
+      // look alive (it said "ready" and ate every message). An empty answer is the only "no" we
+      // get, so it is the one we act on.
+      const adopted = Boolean(loaded && typeof loaded === "object" && Object.keys(loaded).length > 0);
+      if (!adopted) {
+        // Two different things look the same here, and they are not equally bad:
+        //  · the slot never had a turn — the agent persists a session when it starts WORKING, so a
+        //    slot closed before its first message has nothing anywhere. There is no context to
+        //    lose and nothing to tell the operator: opening a fresh agent session in the same slot
+        //    is exactly what reopening it means;
+        //  · there IS a transcript — the operator's conversation is the thing that is gone, and
+        //    that must be said out loud rather than papered over with a session that starts blank.
+        if (this.#store.maxSeq(id) === 0) {
+          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: [] })) as typeof loaded;
+          const freshId = loaded?.sessionId;
+          if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
+          live.info.acpSessionId = freshId;
+        } else {
+          throw new SessionUnavailable(
+            "context_missing",
+            `the agent has no session ${row.acpSessionId} in ${plan.home ?? "its default home"}`,
+            { sessionHome: row.home ?? null, rowHome: plan.home },
+          );
+        }
+      }
+      // The agent has this session (or just opened one in the same slot), so THIS home is where the
+      // state lives: a row that predates the home column stops being ambiguous.
+      if (!row.home && plan.home) {
+        this.#store.setSessionHome(id, plan.home);
+        row.home = plan.home;
+      }
       const loadedModels = readModels(loaded);
       // The agent re-announces its modes/options on load — prefer that SET (capabilities can
       // differ after an upgrade), but keep the OPERATOR's pick for any option that still
@@ -402,14 +480,17 @@ export class SessionManager {
         live.info.modes = { ...live.info.modes, currentModeId: (row.modes as SessionModeState).currentModeId };
       }
       this.#updateSession(live);
+      // …against the session the agent is actually serving NOW (a re-minted one, if the slot had no
+      // state to restore): asking about the old id would be the same silent no-op all over again.
+      const acpId = live.info.acpSessionId as string;
       const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
-      if (modeId) await conn.setSessionMode({ sessionId: row.acpSessionId, modeId }).catch(() => {});
+      if (modeId) await conn.setSessionMode({ sessionId: acpId, modeId }).catch(() => {});
       for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
         // "" is a legitimate "unset / follow default" — replaying it can be rejected as an
         // invalid option value, so only re-apply real picks.
         if (cfg?.id && cfg.currentValue) {
           await conn
-            .setSessionConfigOption({ sessionId: row.acpSessionId, configId: cfg.id, value: String(cfg.currentValue) })
+            .setSessionConfigOption({ sessionId: acpId, configId: cfg.id, value: String(cfg.currentValue) })
             .catch(() => {});
         }
       }
@@ -428,6 +509,13 @@ export class SessionManager {
       live.info.status = "error";
       live.info.lastError = errMessage(err) + stderrTail(live);
       this.#sessions.delete(id);
+      if (err instanceof SessionUnavailable) {
+        // The ROW is not at fault — a brand-new slot on it works — so this is not a row failure and
+        // must not be recorded as one. Put the stored row back exactly as we read it: the early
+        // `upsertSession` above had already stamped it "starting" with a pid that is now dead.
+        this.#store.upsertSession(row);
+        throw err;
+      }
       this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
       this.#noteBackendCheck(String(row.backend), {
         ok: false, error: live.info.lastError, errorCode: classifyError(err),
@@ -1185,13 +1273,15 @@ function summarize(attachments: PromptAttachment[]): AttachmentSummary[] {
   }));
 }
 
-function sessionRow(i: SessionInfo) {
+function sessionRow(i: SessionInfo, home: string | null = null) {
   return {
     id: i.id, backend: i.backend, acpSessionId: i.acpSessionId, cwd: i.cwd,
     title: i.title, status: i.status, pid: i.pid, createdAt: i.createdAt, closedAt: null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
     models: i.models ?? null,
+    // only ever written by the insert (creation); see Store.upsertSession
+    home,
   };
 }
 

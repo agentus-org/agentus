@@ -11,7 +11,7 @@ import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
-import { SessionManager } from "./acp/session-manager.js";
+import { SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { BACKENDS } from "./acp/backends.js";
 import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, seedRows, startupCheck } from "./acp/registry.js";
 import { FsError, listDirs, readTextFile } from "./fs.js";
@@ -775,9 +775,26 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       }
       if (req.method === "POST" && sub === "/resume") {
         // AC5's other half: bring a cold slot back to life (respawn + loadSession)
-        const info = await mgr.resume(id);
-        emit({ t: "sessions", sessions: mgr.list() });
-        return send(res, 200, info);
+        try {
+          const info = await mgr.resume(id);
+          emit({ t: "sessions", sessions: mgr.list() });
+          return send(res, 200, info);
+        } catch (e) {
+          // A cold slot the agent can no longer adopt is NOT a server fault and NOT an outage:
+          // 409 with the reason and BOTH homes, so the client can say why and offer the only
+          // useful action (delete it). Before this the operator got a slot that said "ready" and
+          // silently ate every message (measured 2026-10-06 — see SessionUnavailable).
+          if (e instanceof SessionUnavailable) {
+            emit({ t: "sessions", sessions: mgr.list() });
+            return send(res, 409, {
+              error: e.message,
+              code: e.code,
+              sessionHome: e.sessionHome,
+              rowHome: e.rowHome,
+            });
+          }
+          throw e;
+        }
       }
       if (req.method === "GET" && sub === "/messages") {
         // Paging contract (M4):

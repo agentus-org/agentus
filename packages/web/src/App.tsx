@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
-import { cockpit, type BackendView, type MsgView, type SessionView } from "./state";
+import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { CallMode } from "./CallMode";
@@ -35,6 +35,10 @@ export function App(): JSX.Element {
   // unauthenticated upgrade is refused with 401.
   useEffect(() => { void cockpit.checkAuth(); }, []);
   useEffect(() => { setDrawer(false); }, [snap.activeId]);
+  // A refused resume is a dialog that needs the operator's attention, and the rail it was clicked
+  // from can be covering it (the phone drawer sits above the plain modal layer): close it. Measured
+  // on a 390px viewport — without this, tapping a dead slot in the drawer looked like nothing happened.
+  useEffect(() => { if (snap.blocked) setDrawer(false); }, [snap.blocked]);
   useEscape(drawer, () => setDrawer(false));
   // The server's palette is the source of truth; the localStorage copy only made the
   // first frame right. Adopted once the operator is in (the endpoint needs a session).
@@ -62,6 +66,45 @@ export function App(): JSX.Element {
         onCloseSettings={() => setSettings(false)}
       />
       {modal && <NewSessionModal onClose={() => setModal(false)} />}
+      {/* Rendered here, not in the rail: the operator may have triggered the resume from the
+          phone's bottom sheet and closed it, and this must still be on screen. */}
+      {snap.blocked && <BlockedSlotDialog slot={snap.blocked} />}
+    </div>
+  );
+}
+
+/** A cold slot the agent can no longer adopt. Not a banner and not a toast — it is a decision
+ *  (keep the transcript, or drop the slot), so it is a dialog, and it names the two agent homes
+ *  the resume failed between.
+ *
+ *  Why it exists: resuming such a slot used to look like a success from here. ACP has no loud "no"
+ *  — hermes answers an unknown session with an EMPTY load result and `refusal` on every prompt —
+ *  so the slot came up "ready" and silently ate every message the operator sent. The server now
+ *  refuses up front (409 + code); this is where the operator sees why and what can be done. */
+function BlockedSlotDialog({ slot }: { slot: BlockedSlot }): JSX.Element {
+  useEscape(true, () => cockpit.dismissBlocked());
+  const mismatch = slot.code === "home_mismatch";
+  return (
+    <div className="modal-bg" onClick={() => cockpit.dismissBlocked()}>
+      <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+        <h3>这个会话不能继续使用</h3>
+        <div className="hint">
+          {mismatch
+            ? "它是在另一个 agent home 里创建的，而这行后端现在指向另一个 home —— agent 那边没有这份会话，发消息不会有任何回复。"
+            : "agent 那边已经找不到这份会话了（它所在的 home 里没有这个会话），发消息不会有任何回复。"}
+        </div>
+        <div className="blocked-homes">
+          <div><span>会话所属 home</span><code>{slot.sessionHome ?? "（早期会话，未记录）"}</code></div>
+          <div><span>后端当前 home</span><code>{slot.rowHome ?? "（该后端没有 home）"}</code></div>
+        </div>
+        <div className="hint">
+          「{slot.title}」的历史消息在本地库里，删除会连同记录一起清掉且无法撤销；想留着就先取消，再从会话菜单里导出。
+        </div>
+        <div className="row">
+          <button className="cancel" onClick={() => cockpit.dismissBlocked()}>取消</button>
+          <button className="go danger" onClick={() => cockpit.deleteBlocked()}>删除会话</button>
+        </div>
+      </div>
     </div>
   );
 }

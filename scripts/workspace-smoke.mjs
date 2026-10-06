@@ -376,6 +376,124 @@ try {
   check("export needs credentials",
     (await fetch(`${base}/api/sessions/${created.id}/export`)).status === 401);
 
+  // ---- a cold slot the agent can no longer adopt ---------------------------------
+  // Why this exists at all: resuming one used to LOOK like a success from the cockpit's side. ACP
+  // has no loud "no" — hermes answers an unknown session with an EMPTY load result and `refusal` on
+  // every prompt (measured: scripts/probe-load-missing.mjs) — so the slot came up "ready" and then
+  // silently ate every message the operator sent. The server refuses up front now, names the two
+  // agent homes, and the only useful action (delete it) is offered. These checks pin the refusal,
+  // and that a healthy resume on the same row still works.
+  const homeA = mkdtempSync(path.join(tmpdir(), "agentslot-homeA-"));
+  const homeB = mkdtempSync(path.join(tmpdir(), "agentslot-homeB-"));
+  const probeRow = {
+    id: "qa-home", label: "QA home probe",
+    // kind=hermes is what gives a row a HERMES_HOME; the mock ignores it, so the suite stays
+    // hermetic (no real agent, no writes into anyone's home).
+    kind: "hermes", cmd: process.execPath, args: path.join(ROOT, "packages/server/mock/agent.mjs"),
+    env: {}, home: homeA, profile: "", notes: "smoke: which home a slot belongs to",
+  };
+  const patchRow = (body) => fetch(`${base}/api/backends/qa-home`, {
+    method: "PATCH", headers: { "content-type": "application/json", ...H }, body: JSON.stringify(body),
+  });
+  const made = await fetch(`${base}/api/backends`, {
+    method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify(probeRow),
+  });
+  check("a row can name its own home (kind=hermes → it gets a HERMES_HOME)",
+    made.status === 201, `${made.status} ${(await made.text()).slice(0, 120)}`);
+  const probe = await j(await fetch(`${base}/api/sessions`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ backend: "qa-home", cwd: ROOT }),
+  }));
+  check("a session on it starts", Boolean(probe.id) && probe.pid > 0, `${probe.id} pid=${probe.pid}`);
+  check("closing it leaves a cold slot",
+    (await fetch(`${base}/api/sessions/${probe.id}`, { method: "DELETE", headers: H })).status === 200);
+
+  // move the row to another home: the slot's agent-side state is now out of reach
+  check("the row's home can be changed", (await patchRow({ ...probeRow, home: homeB })).status === 200);
+  const refusedRes = await fetch(`${base}/api/sessions/${probe.id}/resume`, { method: "POST", headers: H });
+  const refused = await j(refusedRes);
+  check("resuming a slot created under another home is REFUSED (409), not a silent \"ready\"",
+    refusedRes.status === 409, `${refusedRes.status} ${JSON.stringify(refused).slice(0, 160)}`);
+  check("the refusal names the reason and BOTH homes",
+    refused.code === "home_mismatch" && refused.sessionHome === homeA && refused.rowHome === homeB,
+    JSON.stringify(refused));
+  const afterRefusal = await j(await fetch(`${base}/api/sessions`, { headers: H }));
+  check("nothing was spawned for it (no live slot) and the cold slot is still there",
+    !afterRefusal.live.some((s) => s.id === probe.id) && afterRefusal.archived.some((s) => s.id === probe.id),
+    `live=${afterRefusal.live.length} archived=${afterRefusal.archived.length}`);
+  check("a refusal is not recorded as a backend failure (the ROW is fine)",
+    !(await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health?.errorCode,
+    JSON.stringify((await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health));
+
+  // put the home back: the SAME slot resumes — the refusal was about the mismatch, not the slot
+  /** One real turn over the WebSocket path, waited out — what gives a slot a transcript (and, at
+   *  the agent's end, what makes it persist the session at all). */
+  const talkTo = async (sessionId, text) => {
+    const sock = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`);
+    const seen = [];
+    sock.on("message", (d) => seen.push(JSON.parse(String(d))));
+    await sleep(400);
+    sock.send(JSON.stringify({ t: "prompt", sessionId, text }));
+    for (let i = 0; i < 40; i++) {
+      if (seen.some((e) => e.t === "turn-end")) break;
+      await sleep(300);
+    }
+    sock.close();
+    return seen;
+  };
+
+  await patchRow({ ...probeRow, home: homeA });
+  const okResume = await fetch(`${base}/api/sessions/${probe.id}/resume`, { method: "POST", headers: H });
+  const okBody = await j(okResume);
+  check("with its own home back, the same slot resumes", okResume.status === 200,
+    `${okResume.status} ${JSON.stringify(okBody).slice(0, 160)}`);
+  check("and it is the SAME agent session it had — a resume must not quietly re-mint one",
+    okBody.acpSessionId === probe.acpSessionId, `${okBody.acpSessionId} vs ${probe.acpSessionId}`);
+
+  // a real turn: from here the slot HAS a transcript, which is what makes losing it bad
+  const spoke = await talkTo(probe.id, "say something");
+  check("the resumed slot answers a prompt (it is genuinely working)", spoke.some((e) => e.t === "turn-end"),
+    spoke.map((e) => e.t).join(","));
+  await fetch(`${base}/api/sessions/${probe.id}`, { method: "DELETE", headers: H });
+
+  // same home, but the agent has never seen this session (a home that was replaced, or a state.db
+  // that went away): the other refusal — same shape, its own code, and the operator gets a way out.
+  await patchRow({ ...probeRow, env: { MOCK_FORGET: "1" } });
+  const forgotRes = await fetch(`${base}/api/sessions/${probe.id}/resume`, { method: "POST", headers: H });
+  const forgotBody = await j(forgotRes);
+  check("a session the agent no longer has is refused with its own code (not a 500)",
+    forgotRes.status === 409 && forgotBody.code === "context_missing",
+    `${forgotRes.status} ${JSON.stringify(forgotBody).slice(0, 160)}`);
+  check("and that refusal is not a backend failure either",
+    (await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health?.status !== "offline",
+    JSON.stringify((await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health));
+  check("the refused slot is still cold (resumable retry is not blocked by state)",
+    (await j(await fetch(`${base}/api/sessions`, { headers: H }))).archived.some((s) => s.id === probe.id));
+  check("the operator's only useful action works: deleting the refused slot",
+    (await fetch(`${base}/api/sessions/${probe.id}`, { method: "DELETE", headers: H })).status === 200);
+  check("and it is gone from the cold list",
+    !(await j(await fetch(`${base}/api/sessions`, { headers: H }))).archived.some((s) => s.id === probe.id));
+
+  // A slot closed BEFORE its first message has no state anywhere (the agent persists a session when
+  // it starts working), and there is no conversation to lose: reopening it must give a working slot
+  // rather than a dead end. Refusing here would be a rule with nothing behind it.
+  await patchRow({ ...probeRow, env: { MOCK_FORGET: "1" } });
+  const empty = await j(await fetch(`${base}/api/sessions`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ backend: "qa-home", cwd: ROOT, title: "empty slot" }),
+  }));
+  await fetch(`${base}/api/sessions/${empty.id}`, { method: "DELETE", headers: H });
+  const reopenedRes = await fetch(`${base}/api/sessions/${empty.id}/resume`, { method: "POST", headers: H });
+  const reopened = await j(reopenedRes);
+  check("an EMPTY slot the agent never saw is reopened (200), not refused",
+    reopenedRes.status === 200 && Boolean(reopened.id) && reopened.pid > 0,
+    `${reopenedRes.status} ${JSON.stringify(reopened).slice(0, 160)}`);
+  const talked = await talkTo(empty.id, "still works?");
+  check("…and the reopened slot actually works (a stale agent-side id would answer nothing)",
+    talked.some((e) => e.t === "turn-end"), talked.map((e) => e.t).join(","));
+  await fetch(`${base}/api/sessions/${empty.id}`, { method: "DELETE", headers: H });
+  await fetch(`${base}/api/backends/qa-home`, { method: "DELETE", headers: H });
+
   // ---- voice endpoints -----------------------------------------------------------
   const caps = await j(await fetch(`${base}/api/voice`, { headers: H }));
   check("voice reports what is configured (nothing here)", caps?.tts?.server === false && caps?.stt?.server === false, JSON.stringify(caps));

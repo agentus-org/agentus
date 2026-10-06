@@ -143,6 +143,24 @@ export interface SessionView {
   trace?: TurnTrace | null;
 }
 
+/** A cold slot the agent can no longer adopt: it was created under a different agent home than
+ *  the backend row uses now (or its home no longer holds the session at all). Nothing can bring it
+ *  back — the UI says why, names both homes, and offers to delete the slot. */
+export interface BlockedSlot {
+  id: string;
+  title: string;
+  code: "home_mismatch" | "context_missing";
+  sessionHome: string | null;
+  rowHome: string | null;
+}
+
+/** The body of a 409 from POST /api/sessions/:id/resume. */
+interface ResumeRefusal {
+  code?: BlockedSlot["code"];
+  sessionHome?: string | null;
+  rowHome?: string | null;
+}
+
 /** Snapshot shape handed to useSyncExternalStore. */
 export interface StoreSnapshot {
   sessions: SessionInfo[];
@@ -156,6 +174,8 @@ export interface StoreSnapshot {
   authInfo: AuthInfo | null;
   authError: string;
   authBusy: boolean;
+  /** a resume the agent refused — rendered as a dialog, not a banner */
+  blocked: BlockedSlot | null;
   version: number;
 }
 
@@ -194,6 +214,7 @@ class Cockpit {
   authInfo: AuthInfo | null = null;
   authError = "";
   authBusy = false;
+  blocked: BlockedSlot | null = null;
   lastSeq: Record<string, number> = {};
   ws: WebSocket | null = null;
   #retry = 0;
@@ -275,8 +296,12 @@ class Cockpit {
           // Tag it: an HTTP status means the server ANSWERED. It is not an outage, so it must not
           // be retried and must not raise the "服务不可达" banner (a 409 on a duplicate backend id
           // used to be reported as a network failure — the operator would chase the network).
-          const httpErr = new Error(msg) as Error & { httpStatus?: number };
+          const httpErr = new Error(msg) as Error & { httpStatus?: number; httpBody?: unknown };
           httpErr.httpStatus = res.status;
+          // Keep the body too: a refusal carries the `code` and the detail a dialog needs (which
+          // agent homes a slot failed its resume between), and losing it would leave the caller
+          // showing a generic message for a case that has a specific one.
+          httpErr.httpBody = body;
           throw httpErr;
         }
         this.#setNet(true, "");
@@ -455,6 +480,7 @@ class Cockpit {
       authInfo: this.authInfo,
       authError: this.authError,
       authBusy: this.authBusy,
+      blocked: this.blocked,
       version: this.#version,
     };
   }
@@ -795,8 +821,40 @@ class Cockpit {
       this.setActive(id);
       await this.loadHistory(id);
     } catch (e) {
+      const status = (e as { httpStatus?: number }).httpStatus;
+      const body = (e as { httpBody?: ResumeRefusal }).httpBody;
+      // A refused resume is the server ANSWERING, not an outage, and no retry changes it: the
+      // slot's agent-side state is somewhere this backend row cannot reach. Say why, name both
+      // homes, and offer the only action that helps — delete it (the transcript is the operator's;
+      // the dead handoff is not).
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing")) {
+        const info = this.sessions.find((s) => s.id === id) ?? this.archived.find((s) => s.id === id);
+        this.blocked = {
+          id,
+          title: info?.title ?? id,
+          code: body.code,
+          sessionHome: body.sessionHome ?? null,
+          rowHome: body.rowHome ?? null,
+        };
+        this.bump();
+        return;
+      }
       this.#setNet(false, `恢复失败：${String((e as Error).message ?? e)}`);
     }
+  }
+
+  /** Close the refusal dialog without deleting anything (the slot stays cold in the rail). */
+  dismissBlocked(): void {
+    this.blocked = null;
+    this.bump();
+  }
+
+  /** Accept the only useful action for a slot that can never come back: purge it. */
+  deleteBlocked(): void {
+    const b = this.blocked;
+    this.blocked = null;
+    if (b) this.purgeCold(b.id);
+    this.bump();
   }
 
   /** Delete a cold slot for good (row + transcript). The rail only ever grows

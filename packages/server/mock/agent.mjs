@@ -136,6 +136,13 @@ const agent = () => ({
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
   async loadSession({ sessionId, cwd }) {
+    // MOCK_FORGET=1 answers like a REAL agent that has never seen this session: hermes returns an
+    // EMPTY load result for an unknown id, and `refusal` on every prompt after (measured with
+    // scripts/probe-load-missing.mjs). Without it, the mock's job is the friendly case — "a cold
+    // resume works" — so it restores anything. With it, the cockpit's refusal path (a slot that can
+    // never come back → 409 → the operator is told, and offered the delete) is testable in CI
+    // without a real agent installed.
+    if (process.env.MOCK_FORGET === "1" && !sessions.has(sessionId)) return {};
     // A resumed/forked session arrives in a FRESH process whose in-memory map is empty.
     // A real agent reads the transcript from its store, so the id it is asked for is the
     // id it ends up serving — the mock has to do the same, or every later call on that

@@ -488,7 +488,10 @@ code.inline {
 .empty .big { font-size: 42px; }
 .modal-bg {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
-  display: flex; align-items: center; justify-content: center; z-index: 20; padding: 16px;
+  /* Above the phone rail drawer (30) and its scrim (25): a modal opened from a drawer row —
+     today the "this session cannot be used" dialog — was painted UNDER the drawer, so on a phone
+     the tap looked like it did nothing. Below the call screen and the row editor (both 60). */
+  display: flex; align-items: center; justify-content: center; z-index: 35; padding: 16px;
 }
 .modal {
   background: var(--bg-panel); border: 1px solid var(--line); border-radius: 14px;
@@ -504,7 +507,15 @@ code.inline {
 .modal .row button { flex: 1; padding: 9px; border-radius: 8px; cursor: pointer; }
 .modal .row .cancel { background: transparent; border: 1px solid var(--line); color: var(--text-dim); }
 .modal .row .go { background: var(--accent); border: none; color: var(--on-accent); font-weight: 700; }
+/* a destructive confirm: it must not look like the safe button next to it */
+.modal .row .go.danger { background: var(--err); color: #fff; }
 .modal .err { color: var(--err); font-size: 12.5px; margin-top: 10px; }
+/* The two agent homes a refused resume failed between: paths are read character by character, so
+   they get their own monospace lines instead of being buried mid-sentence. */
+.blocked-homes { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.blocked-homes div { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.blocked-homes span { color: var(--text-dim); min-width: 104px; flex: none; }
+.blocked-homes code { font-family: var(--mono); word-break: break-all; }
 .backend-pick { display: flex; gap: 8px; }
 .backend-pick button {
   flex: 1; padding: 10px; border-radius: 8px; cursor: pointer;

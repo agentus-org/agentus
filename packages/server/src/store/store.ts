@@ -91,6 +91,13 @@ export interface SessionRow {
    *  the process. hermes-studio draws the same line (session.workspace).
    *  Empty/undefined = "same as cwd". */
   workspace?: string | null;
+  /** The agent HOME (HERMES_HOME) this session's agent-side state lives in — resolved at spawn
+   *  and written ONCE, at creation. It is what makes "can this cold slot come back?" answerable:
+   *  the agent looks its session up in whatever home it is given NOW, so a row whose home has
+   *  changed (or a session made under a home that is gone) can never be restored. Measured
+   *  2026-10-06: `session/load` answered nothing, `session/prompt` answered `refusal`, and the
+   *  slot sat there saying "ready" while every message vanished without a trace. */
+  home?: string | null;
 }
 
 interface RawSessionRow {
@@ -100,6 +107,7 @@ interface RawSessionRow {
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
   workspace?: string | null;
+  home?: string | null;
   models?: string | null; context_limit?: number | null;
 }
 
@@ -163,6 +171,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
     workspace: r.workspace ?? null,
+    home: r.home ?? null,
     models: parseJson(r.models),
     contextLimit: r.context_limit ?? null,
   };
@@ -224,7 +233,7 @@ export class Store {
       create table if not exists sessions (
         id text primary key, backend text not null, acp_session_id text,
         cwd text not null, title text not null, status text not null,
-        pid integer, created_at integer not null, closed_at integer
+        pid integer, created_at integer not null, closed_at integer, home text
       );
       create table if not exists messages (
         seq integer not null, session_id text not null, kind text not null,
@@ -266,7 +275,7 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title", "home"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
     // `title` is the DISPLAY title (the operator's name once they rename it);
@@ -385,6 +394,11 @@ export class Store {
   upsertSession(s: SessionRow): void {
     const exist = this.#db.prepare("select id from sessions where id = ?").get(s.id);
     if (exist) {
+      // `home` is deliberately NOT in this SET: which data directory a session's agent-side
+      // state lives in is decided once, at creation, and every later write happens while the
+      // session still lives there. Letting this update rewrite it would silently "re-home" a
+      // session whose agent has never seen it — the exact confusion the resume check exists to
+      // catch. (Same shape as `created_at`: written on insert only.)
       this.#db
         .prepare(
           `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=?, auto_title=coalesce(auto_title, ?) where id=?`,
@@ -396,14 +410,21 @@ export class Store {
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null), s.title);
+          JSON.stringify(s.models ?? null), s.title, s.home ?? null);
     }
+  }
+
+  /** Record (or adopt) the home a session was created under. Used when a legacy row — created
+   *  before the column existed — is resumed successfully: the successful load is itself the
+   *  proof of which home holds its state, so the row stops being ambiguous. */
+  setSessionHome(sessionId: string, home: string | null): void {
+    this.#db.prepare("update sessions set home = ? where id = ?").run(home, sessionId);
   }
 
   listSessions(includeClosed = true): SessionRow[] {
