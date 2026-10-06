@@ -23,6 +23,7 @@ import type {
   BackendId,
   ConfigOptionView,
   PermissionDecision,
+  PermissionDiff,
   PermissionRequestView,
   PromptAttachment,
   ServerEvent,
@@ -34,6 +35,40 @@ import type {
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
 const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 * 60_000);
+
+// ── What the request is ABOUT ─────────────────────────────────────────────────────────────────
+// An edit approval arrives as a `ToolCallUpdate` whose `content` carries a diff (path + the
+// whole text before and after), and the agent puts the tool's own arguments in `rawInput`. The
+// operator is being asked to let a file change, so the surface that asks must be able to say
+// WHICH file and WHAT changes — a bare title is the difference between a decision and a coin
+// flip. Sent BOUNDED: a patch proposal carries the entire file twice, and this view also
+// travels to a phone over a tunnel.
+const PREVIEW_LIMIT = 4000;
+
+interface PermissionToolCall {
+  title?: string;
+  kind?: string;
+  content?: { type?: string; path?: string; oldText?: string | null; newText?: string | null }[];
+  rawInput?: { path?: string; arguments?: { path?: string } };
+}
+
+function permissionArtifacts(tc: PermissionToolCall): { path: string | null; diff: PermissionDiff | null } {
+  const cut = (t: string | null | undefined): { text: string | null; truncated: boolean } => {
+    if (typeof t !== "string") return { text: null, truncated: false };
+    return t.length > PREVIEW_LIMIT ? { text: t.slice(0, PREVIEW_LIMIT), truncated: true } : { text: t, truncated: false };
+  };
+  const node = (tc.content ?? []).find((c) => c && typeof c.path === "string" && c.path);
+  const rawPath = tc.rawInput?.arguments?.path ?? tc.rawInput?.path ?? null;
+  const path = node?.path ?? (typeof rawPath === "string" && rawPath ? rawPath : null);
+  if (!path) return { path: null, diff: null };
+  if (!node || (node.oldText == null && node.newText == null)) return { path, diff: null };
+  const oldSide = cut(node.oldText);
+  const newSide = cut(node.newText);
+  return {
+    path,
+    diff: { path, oldText: oldSide.text, newText: newSide.text, truncated: oldSide.truncated || newSide.truncated },
+  };
+}
 
 // A title fork is a real model turn over a copy of the conversation: give it room, but never
 // let a stuck one hang the operator's click — the caller falls back to the derived name on
@@ -831,13 +866,15 @@ export class SessionManager {
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
     const requestId = randomUUID().slice(0, 8);
+    const tc = (params.toolCall ?? {}) as PermissionToolCall;
     const view: PermissionRequestView = {
       requestId,
       sessionId: live.info.id,
-      toolCallTitle: (params.toolCall as { title?: string })?.title ?? "tool call",
-      kind: (params.toolCall as { kind?: string })?.kind ?? "other",
+      toolCallTitle: tc.title ?? "tool call",
+      kind: tc.kind ?? "other",
       options: (params.options ?? []) as PermissionRequestView["options"],
       createdAt: Date.now(),
+      ...permissionArtifacts(tc),
     };
     const sig = `${view.kind}:${view.toolCallTitle}`;
     const remembered = view.options.find((o) => o.kind === "allow_always" || o.kind === "allow_once");

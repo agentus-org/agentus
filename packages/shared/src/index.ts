@@ -110,6 +110,23 @@ export interface PermissionRequestView {
   kind: string;
   options: { optionId: string; name: string; kind: string }[];
   createdAt: number;
+  /** The file the request is about, when the agent named one (its own diff content path,
+   *  else the tool call's `rawInput.path`). Null for a request that is not about a file. */
+  path?: string | null;
+  /** What the file looks like now and after, BOUNDED (an edit proposal carries the whole
+   *  file twice). Exists so the operator can decide about a file edit from the surface that
+   *  asks, instead of from a bare title. */
+  diff?: PermissionDiff | null;
+}
+
+/** A bounded before/after preview of the file a request proposes to write.
+ *  `truncated` is set when either side was cut, so the surface can say so instead of
+ *  showing a file whose tail silently went missing. */
+export interface PermissionDiff {
+  path: string;
+  oldText: string | null;
+  newText: string | null;
+  truncated: boolean;
 }
 
 // ---- WS envelope (server -> browser) ----

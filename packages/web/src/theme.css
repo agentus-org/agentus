@@ -355,6 +355,35 @@ code.inline {
 .perm-card.resolved { opacity: 0.55; }
 .perm-card.resolved .picked { font-size: 12px; color: var(--accent-text); margin-top: 8px; }
 
+/* ---- the approval dialog -------------------------------------------------------------
+   The file a request is about, and (when the agent sent one) the before/after. Both are
+   bounded: the server caps each side at 4 kB because an edit proposal carries the WHOLE
+   file twice, and this page may be a phone on a tunnel. */
+.perm-dialog { max-width: 560px; max-height: 92vh; overflow-y: auto; }
+.perm-ask { font-size: 13px; line-height: 1.5; color: var(--text); }
+.perm-file {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
+}
+.perm-file code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--accent-text); }
+.perm-preview { margin-top: 10px; }
+.perm-preview .lbl { font-size: 11px; color: var(--text-dim); margin: 6px 0 3px; }
+.perm-side {
+  margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
+  max-height: 22vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.perm-side.old { border-left: 3px solid var(--err); }
+.perm-side.new { border-left: 3px solid var(--ok); }
+.perm-cut { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.perm-opts { margin-top: 14px; }
+.perm-note { font-size: 11.5px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+.ns-fixed-dir {
+  display: flex; align-items: center; gap: 6px; padding: 9px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--bg-raised); color: var(--text-dim);
+}
+.ns-fixed-dir code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--accent-text); }
+
 .composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 8px 16px calc(10px + env(safe-area-inset-bottom)); }
 .composer.drop-active .composer-box { border-color: var(--accent-text); background: rgba(var(--accent-rgb), 0.06); }
 .composer-inner {
@@ -553,6 +582,12 @@ code.inline {
 
   /* permission cards must be tappable, not a thin strip */
   .perm-card button { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+  /* On a phone the dialog owns the screen: full height available, buttons a thumb can hit. */
+  .perm-dialog { max-width: none; max-height: 100%; }
+  .perm-dialog .perm-opts button { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+  .perm-side { max-height: 26vh; }
+  /* the rail's per-directory 「+」, always visible on touch (no hover to reveal it) */
+  .rail-group .group-add { width: 32px; height: 30px; }
 
   /* slash palette: full-width rows a thumb can hit while the keyboard is up */
   .slash-palette { max-height: 40vh; }
@@ -955,13 +990,21 @@ code.inline {
 
 /* ---- rail: sessions grouped by the directory they work in ------------------- */
 .rail-group { margin-bottom: 2px; }
+/* The head and its 「+」 are two buttons on one line: the head keeps the whole row (clicking
+   the directory still collapses it) and the + sits at its right edge, revealed on hover like
+   the row menu, always visible on a touch screen. They cannot be nested — a button inside a
+   button is invalid — hence the row wrapper. */
+.rail-group-row { display: flex; align-items: center; gap: 2px; }
 .rail-group-head {
-  display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
+  display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; text-align: left;
   background: transparent; border: none; color: var(--text-dim); cursor: pointer;
   font-family: inherit; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
   padding: 5px 6px; border-radius: 6px;
 }
 .rail-group-head:hover { background: var(--bg-raised); color: var(--text); }
+.group-add { flex: 0 0 auto; opacity: 0; transition: opacity 0.12s; }
+.rail-group:hover .group-add, .rail-group:focus-within .group-add { opacity: 1; }
+@media (hover: none) { .group-add { opacity: 0.7; } }
 .rail-group-chev { transition: transform 0.12s ease; opacity: 0.7; }
 .rail-group-chev.open { transform: rotate(90deg); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -13,6 +13,14 @@ import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
+
+// The file a `[tool-diff]` turn pretends to edit: hermes hands the cockpit the whole file
+// before and after, so the approval surface has a path and a real change to show.
+const MOCK_EDIT = {
+  path: "/tmp/mock-approval/demo-edit.txt",
+  oldText: "const greeting = \"hello\";\nconsole.log(greeting);\n",
+  newText: "const greeting = \"你好\";\nconsole.log(greeting, Date.now());\n",
+};
 let seq = 0;
 const sessions = new Map();
 
@@ -221,7 +229,11 @@ const agent = () => ({
     // QA triggers: prompt text flips behaviors per turn (env sets global defaults).
     // Declared up front — used by the blocks below (a hoisting mistake here shows
     // up as an opaque "-32603 Internal error" over ACP, QA#11).
-    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text);
+    const wantTool = process.env.MOCK_TOOL === "1" || /\[tool\]/.test(text) || /\[tool-diff\]/.test(text);
+    // A file EDIT, shaped like the real one: hermes' edit approval carries the whole file
+    // before and after as a `diff` content item (`acp.tool_diff_content`), and the cockpit's
+    // approval surface must be able to say WHICH file and WHAT changes from that alone.
+    const wantDiff = process.env.MOCK_DIFF === "1" || /\[tool-diff\]/.test(text);
     const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
     const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
     const wantPlan = process.env.MOCK_PLAN === "1" || /\[plan\]/.test(text);
@@ -240,18 +252,29 @@ const agent = () => ({
 
     if (wantTool) {
       const toolCallId = `tc-${sessionId}-${Date.now()}`;
+      const diffContent = wantDiff
+        ? [{
+            type: "diff", path: MOCK_EDIT.path, oldText: MOCK_EDIT.oldText, newText: MOCK_EDIT.newText,
+          }]
+        : undefined;
       await send(agent._conn, sessionId, {
         sessionUpdate: "tool_call", toolCallId,
-        title: `Write file: ./demo-${Math.floor(Math.random() * 1e4)}.txt`,
+        title: wantDiff ? `Edit file: ${MOCK_EDIT.path}` : `Write file: ./demo-${Math.floor(Math.random() * 1e4)}.txt`,
         kind: "edit", status: "pending",
         // shaped like a real agent: input args on the call, output on the update
-        rawInput: { path: "./demo.txt", content: "hello from the mock agent" },
+        ...(diffContent ? { content: diffContent } : {}),
+        rawInput: wantDiff
+          ? { tool: "patch", arguments: { path: MOCK_EDIT.path } }
+          : { path: "./demo.txt", content: "hello from the mock agent" },
       });
       const mode = s.currentModeId || "default";
       if (mode !== "dont_ask" && mode !== "accept_edits") {
         const resp = await agent._conn.requestPermission({
           sessionId,
-          toolCall: { toolCallId, title: "Write file", kind: "edit" },
+          toolCall: {
+            toolCallId, title: wantDiff ? `Approve edit: ${MOCK_EDIT.path}` : "Write file", kind: "edit",
+            ...(diffContent ? { content: diffContent } : {}),
+          },
           options: [
             { optionId: "allow", name: "Allow", kind: "allow_once" },
             { optionId: "allow_always", name: "Always Allow", kind: "allow_always" },

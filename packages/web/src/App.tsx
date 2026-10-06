@@ -20,12 +20,22 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff,
 } from "./Icons";
-import type { ClientCommand, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [drawer, setDrawer] = useState(false);
-  const [modal, setModal] = useState(false);
+  // The new-session dialog, with the workspace the operator already pointed at (the rail's
+  // per-directory 「+」) — no cwd means the standalone button, which browses for one.
+  const [modal, setModal] = useState<{ cwd?: string } | false>(false);
+  // ---- the approval dialog -----------------------------------------------------------
+  // A request needs an ANSWER, and the agent gives up on its own if it gets none (Hermes
+  // self-denies after `approvals.timeout`): so a fresh request OPENS a dialog on the session
+  // on screen. 「稍后处理」 puts it away (the request stays pending, and its card stays in the
+  // transcript); the header's ⚿ chip reopens it. Keyed by requestId, so a second request
+  // asks again instead of inheriting the first one's dismissal.
+  const [permSkipped, setPermSkipped] = useState<Record<string, boolean>>({});
+  const [permReopened, setPermReopened] = useState("");
   // Settings is a view, not a modal: it replaces the chat area (hermes-studio's shape),
   // so a half-read conversation is still there when the operator comes back.
   const [settings, setSettings] = useState(false);
@@ -50,13 +60,18 @@ export function App(): JSX.Element {
   }, [snap.auth]);
 
   if (snap.auth !== "in") return <AuthScreen />;
+  // The session on screen and the request waiting on it (the dialog reads the FIRST one;
+  // answering or dismissing it brings up the next).
+  const activeView = snap.activeId ? cockpit.byId.get(snap.activeId) : undefined;
+  const pendingPerm = activeView?.perms[0] ?? null;
 
   return (
     <div className="app">
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <Sidebar
         open={drawer}
-        onNew={() => setModal(true)}
+        onNew={() => setModal({})}
+        onNewIn={(cwd) => setModal({ cwd })}
         onSettings={() => { setSettings(true); setDrawer(false); }}
         settingsOpen={settings}
       />
@@ -64,11 +79,24 @@ export function App(): JSX.Element {
         onMenu={() => setDrawer(true)}
         settingsOpen={settings}
         onCloseSettings={() => setSettings(false)}
+        onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
       />
-      {modal && <NewSessionModal onClose={() => setModal(false)} />}
+      {modal && <NewSessionModal cwd={modal.cwd} onClose={() => setModal(false)} />}
       {/* Rendered here, not in the rail: the operator may have triggered the resume from the
           phone's bottom sheet and closed it, and this must still be on screen. */}
       {snap.blocked && <BlockedSlotDialog slot={snap.blocked} />}
+      {/* The request that is waiting on THIS session. Shown unless the operator just put it
+          away; a different request always asks again. */}
+      {pendingPerm && activeView && (permReopened === pendingPerm.requestId || !permSkipped[pendingPerm.requestId]) ? (
+        <PermDialog
+          req={pendingPerm}
+          sessionTitle={activeView.info.title}
+          onSkip={() => {
+            setPermSkipped((s) => ({ ...s, [pendingPerm.requestId]: true }));
+            setPermReopened("");
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -360,9 +388,11 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
   );
 }
 
-function Sidebar({ open, onNew, onSettings, settingsOpen }: {
+function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   open: boolean;
   onNew: () => void;
+  /** Create a session in the directory the operator already pointed at (a rail group's 「+」). */
+  onNewIn: (cwd: string) => void;
   onSettings: () => void;
   settingsOpen: boolean;
 }): JSX.Element {
@@ -603,6 +633,7 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
           const liveCount = g.items.filter((i) => !i.cold).length;
           return (
             <div className="rail-group" key={g.path}>
+              <div className="rail-group-row">
               <button
                 type="button"
                 className={`rail-group-head ${isOpen ? "open" : ""}`}
@@ -618,6 +649,25 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
                   {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
                 </span>
               </button>
+              {/* "start a session HERE" — the directory this group is, without re-picking it
+                  (AionUi's per-project 「+」 in `GroupedHistory`: the header carries the
+                  affordance, and the new-session screen opens pre-pointed at that folder).
+                  Hover-revealed on desktop like the row menu, always on a touch screen. */}
+              <button
+                type="button"
+                className="item-btn group-add"
+                title={`在 ${g.path} 新建会话`}
+                aria-label={`在 ${g.path} 新建会话`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setClosed((c) => ({ ...c, [g.path]: false }));
+                  onNewIn(g.path);
+                }}
+              >
+                <IconPlus size={12} />
+              </button>
+            </div>
               {isOpen ? (
                 <div className="rail-group-body">
                   {g.items.map(({ s, cold }) => (
@@ -743,10 +793,12 @@ function Sidebar({ open, onNew, onSettings, settingsOpen }: {
   );
 }
 
-function Main({ onMenu, settingsOpen, onCloseSettings }: {
+function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
   onMenu: () => void;
   settingsOpen: boolean;
   onCloseSettings: () => void;
+  /** Reopen the approval dialog for the request waiting on this session (the ⚿ chip). */
+  onPermClick: () => void;
 }): JSX.Element {
   const { active } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
@@ -789,6 +841,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings }: {
         onPickWorkspace={() => setPickWorkspace(true)}
         call={call}
         onCall={() => { dictation.stop(); setCall(true); }}
+        onPerm={onPermClick}
       />
       <div className="main-body">
         <div className="chat-col">
@@ -866,7 +919,7 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
   );
 }
 
-function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall }: {
+function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall, onPerm }: {
   v: SessionView;
   onMenu: () => void;
   panelOpen: boolean;
@@ -874,6 +927,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   onPickWorkspace: () => void;
   call: boolean;
   onCall: () => void;
+  onPerm: () => void;
 }): JSX.Element {
   const info = v.info;
   const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
@@ -901,9 +955,15 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
       <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
       <span className="title" title={info.title}>{info.title}</span>
       {v.perms.length > 0 ? (
-        <span className="chip perm-chip" title="requests waiting for your approval in this session">
+        <button
+          type="button"
+          className="chip perm-chip"
+          title="这个会话有请求等你的答复 —— 点一下打开授权弹窗"
+          aria-label={`有 ${v.perms.length} 个请求等你授权`}
+          onClick={onPerm}
+        >
           <span className="perm-pulse" />⚿ {v.perms.length}
-        </span>
+        </button>
       ) : null}
       <span className="head-spacer" />
       {/* One cluster: the way in to talking with this session (call, dictation-backed
@@ -1125,12 +1185,18 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               </button>
             </div>
           )}
-          {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
           {v.msgs.map((m, i) => (
             <Bubble key={m.key} m={m} sid={v.info.id} busy={v.busy} last={i === v.msgs.length - 1} />
           ))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
+          {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
+              eye already is. Rendering it above the whole transcript (the old place) put it
+              thousands of pixels out of sight in any conversation longer than a screen: the
+              operator saw nothing while the agent sat blocked, and Hermes self-denied after
+              its own `approvals.timeout`. Measured: rect.top = -7365px on a 20-message
+              transcript, -10600px at 390×844. */}
+          {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
         </div>
       </div>
       {!follow && (
@@ -1291,39 +1357,150 @@ function Thought({ m }: { m: Extract<MsgView, { kind: "thought" }> }): JSX.Eleme
   );
 }
 
-function PermCard({ sid, req }: { sid: string; req: SessionView["perms"][number] }): JSX.Element {
+/** The pending request as it sits in the transcript: durable, at the tail, and answering
+ *  from here is the same call the dialog makes (one implementation, one place that talks
+ *  to the server). It stays after the dialog is put away, and after a page reload the
+ *  request is replayed by the server, so a decision is never only-visible-once. */
+function PermCard({ sid, req }: { sid: string; req: PermissionRequestView }): JSX.Element {
   return (
     <div className="msg">
       <div className="perm-card">
-        <div className="q">🔑 <b>{req.kind}</b> wants to: <b>{req.toolCallTitle}</b></div>
-        <div className="tc">{req.toolCallTitle}</div>
+        <div className="q">🔑 agent 要执行：<b>{req.toolCallTitle}</b>（{req.kind}）</div>
+        <PermSubject req={req} />
         <div className="opts">
-          {req.options.map((o) => (
-            <button
-              key={o.optionId}
-              className={o.kind.startsWith("allow") ? "allow" : "reject"}
-              onClick={() =>
-                cockpit.send({
-                  t: "respond-permission", sessionId: sid, requestId: req.requestId,
-                  decision: { outcome: "selected", optionId: o.optionId },
-                  optionKind: o.kind, signature: `${req.kind}:${req.toolCallTitle}`,
-                })
-              }
-            >
-              {o.name}
-            </button>
-          ))}
-          <button
-            title="拒绝该请求：agent 会收到 cancelled，本轮就停在这里"
-            onClick={() =>
-              cockpit.send({
-                t: "respond-permission", sessionId: sid, requestId: req.requestId,
-                decision: { outcome: "cancelled" },
-              })
-            }
-          >
-            Dismiss (deny)
-          </button>
+          <PermOptions sid={sid} req={req} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** What the request is about, when the agent said: the file, and (in the dialog) the change. */
+function PermSubject({ req }: { req: PermissionRequestView }): JSX.Element | null {
+  const file = req.diff?.path ?? req.path ?? null;
+  if (!file) return null;
+  return (
+    <div className="perm-file" title={file}>
+      <IconFile size={12} />
+      <code>{file}</code>
+    </div>
+  );
+}
+
+/** The agent's own options, verbatim: the answer set comes from the AGENT (a control we
+ *  draw must be one it can honour), so nothing is invented or translated here. `取消这次
+ *  请求` is the protocol's own escape hatch — it answers `cancelled`, which is what the
+ *  agent already receives when nobody replies, and it is the only way out of a request
+ *  whose option list has no reject. */
+function PermOptions({ sid, req, onAnswered }: {
+  sid: string; req: PermissionRequestView; onAnswered?: () => void;
+}): JSX.Element {
+  const answer = (decision: PermissionDecision, option?: { optionId: string; kind: string }): void => {
+    cockpit.send({
+      t: "respond-permission", sessionId: sid, requestId: req.requestId, decision,
+      // `allow_always` is remembered per live session server-side; the signature is what
+      // makes the next identical request in this session pass without asking again.
+      ...(option ? { optionKind: option.kind, signature: `${req.kind}:${req.toolCallTitle}` } : {}),
+    });
+    onAnswered?.();
+  };
+  return (
+    <>
+      {req.options.map((o) => (
+        <button
+          key={o.optionId}
+          className={o.kind.startsWith("allow") ? "allow" : "reject"}
+          onClick={() => answer({ outcome: "selected", optionId: o.optionId }, o)}
+        >
+          {o.name}
+        </button>
+      ))}
+      <button
+        title="不选任何一项：agent 会收到 cancelled，这一轮就停在这里"
+        onClick={() => answer({ outcome: "cancelled" })}
+      >
+        取消这次请求
+      </button>
+    </>
+  );
+}
+
+/** The bounded before/after the agent sent with the request. Bounded by the SERVER (4 kB a
+ *  side, `truncated` says so): an edit proposal carries the whole file twice, and this view
+ *  also travels to a phone. */
+function PermPreview({ diff }: { diff: PermissionDiff }): JSX.Element {
+  return (
+    <div className="perm-preview">
+      {diff.oldText != null ? (
+        <>
+          <div className="lbl">之前</div>
+          <pre className="perm-side old">{diff.oldText}</pre>
+        </>
+      ) : null}
+      {diff.newText != null ? (
+        <>
+          <div className="lbl">之后</div>
+          <pre className="perm-side new">{diff.newText}</pre>
+        </>
+      ) : null}
+      {diff.truncated ? <div className="perm-cut">预览只显示前 4000 个字符（agent 发的是整份文件）</div> : null}
+    </div>
+  );
+}
+
+/** The approval DIALOG — the thing the operator asked for ("要改文件的时候弹出来让我点确认").
+ *
+ *  Why a dialog on top of the card: a request is a decision with a deadline, and the agent
+ *  gives up on its own if nobody answers (Hermes self-denies at `approvals.timeout`, 60 s on
+ *  this box). The card lives in the transcript — which is exactly where an operator who
+ *  scrolled away from the tail is not looking. This is the same shape as the blocked-slot
+ *  dialog: one decision, its cause, and the actions on it.
+ *
+ *  It reads the FIRST pending request of the session on screen; answering or dismissing it
+ *  brings up the next one. `稍后处理` closes the dialog WITHOUT answering — the request stays
+ *  pending, its card stays in the transcript, and the header's ⚿ chip brings this back. Esc
+ *  is that same "not now", never a deny: a keypress must not decide for the agent. */
+function PermDialog({ req, sessionTitle, onSkip }: {
+  req: PermissionRequestView; sessionTitle: string; onSkip: () => void;
+}): JSX.Element {
+  useEscape(true, onSkip);
+  // Elapsed time since the request arrived, measured (never a fabricated deadline): how long
+  // the AGENT has been sitting there is the operator's only real urgency signal here.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [req.requestId]);
+  const waited = Math.max(0, Math.round((now - req.createdAt) / 1000));
+  const file = req.diff?.path ?? req.path ?? null;
+  return (
+    <div className="modal-bg perm-bg">
+      <div
+        className="modal perm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="agent 请求授权"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3>Agent 请求授权</h3>
+        <div className="perm-ask">
+          「{sessionTitle}」里的 agent 停在这里等你答复 —— 它要执行 <b>{req.toolCallTitle}</b>（{req.kind}）。
+        </div>
+        {file ? (
+          <div className="perm-file" title={file}>
+            <IconFile size={13} />
+            <code>{file}</code>
+          </div>
+        ) : null}
+        {req.diff ? <PermPreview diff={req.diff} /> : null}
+        <div className="opts perm-opts">
+          <PermOptions sid={req.sessionId} req={req} />
+        </div>
+        <div className="perm-note">
+          已等待 {waited} 秒。一直不答复的话，agent 那边会自己放弃这次请求（等同拒绝），这一轮就停在这里。
+        </div>
+        <div className="row">
+          <button className="cancel" onClick={onSkip}>稍后处理</button>
         </div>
       </div>
     </div>
@@ -2289,10 +2466,14 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
  *  The dialog only reads it; editing happens on the settings page. */
 type BackendRow = BackendView;
 
-function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
+function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
-  const [cwd, setCwd] = useState("");
+  // A rail group's 「+」 hands its directory in (`initialCwd`): then the only thing left to
+  // choose is which agent runs there — the point of the + is that the folder is already
+  // decided, and re-picking it is the step the operator asked to be rid of.
+  const [dir, setDir] = useState(initialCwd ?? "");
+  const fixedDir = initialCwd ?? "";
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2316,7 +2497,7 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
   const create = async () => {
     setBusy(true); setErr("");
     try {
-      const id = await cockpit.createSession(backend, cwd.trim(), title.trim());
+      const id = await cockpit.createSession(backend, dir.trim(), title.trim());
       cockpit.setActive(id);
       onClose();
     } catch (e) {
@@ -2376,13 +2557,20 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
           );
         })()}
         <label>working directory</label>
-        <WorkspacePicker value={cwd} onChange={setCwd} />
+        {fixedDir ? (
+          <div className="ns-fixed-dir" title={fixedDir}>
+            <IconFolder size={13} />
+            <code>{fixedDir}</code>
+          </div>
+        ) : (
+          <WorkspacePicker value={dir} onChange={setDir} />
+        )}
         <label>title (optional)</label>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. fix flaky tests" />
         {err && <div className="err">{err}</div>}
         <div className="row">
           <button className="cancel" onClick={onClose}>cancel</button>
-          <button className="go" disabled={busy} onClick={create}>{busy ? "spawning…" : "launch"}</button>
+          <button className="go" disabled={busy || !dir.trim()} onClick={create}>{busy ? "spawning…" : "launch"}</button>
         </div>
       </div>
     </div>

@@ -371,6 +371,154 @@ await sleep(500);
 const shotOrder = await send("Page.captureScreenshot", { format: "png" }, 25000);
 fs.writeFileSync(`${SHOTS}/rail-order.png`, Buffer.from(shotOrder.data, "base64"));
 
+// --- the per-directory 「+」: start a session in the directory you are ALREADY looking at
+// (the operator's ask: "点这个加号就能直接在这个工作空间创建一个会话，最多再选一下 agent 类型")
+await setViewport(1440, 900);
+const target = ui.find((g) => g.path === "/tmp/as-order-A")?.path ?? ui[0]?.path ?? "/tmp";
+const scrollToTarget = async () => {
+  // The rail is a long list: the group we test may be far below the fold, where a synthetic
+  // pointer event cannot land on it (measured: hover at y=1184 in a 900px viewport did
+  // nothing). Put it in the middle of the screen first — that is also what an operator does.
+  await ev(`(() => { const head = document.querySelector('.rail-group-head[data-workspace=${JSON.stringify(target)}]');
+    head?.scrollIntoView({ block: 'center' }); return true; })()`);
+  await sleep(400);
+};
+const hoverAndRead = async () => {
+  await scrollToTarget();
+  // Hover the group row: the 「+」 is revealed on hover on a pointer device (AionUi's
+  // per-project + does the same; a touch screen shows it always). The pointer has to MOVE:
+  // a synthetic mouseMoved to the coordinates it already sits on is not a hover change and
+  // the reveal never fires (measured — the run after a long-press failed on exactly this).
+  const box = await ev(`(() => { const head = document.querySelector('.rail-group-head[data-workspace=${JSON.stringify(target)}]');
+    const r = head?.getBoundingClientRect(); return r ? { x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) } : null; })()`);
+  if (box) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 4, y: 4 });
+    await sleep(80);
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.max(1, box.x - 60), y: box.y });
+    await sleep(80);
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const o = await ev(`(() => { const g = [...document.querySelectorAll('.rail-group')].find((x) => x.querySelector('.rail-group-head')?.dataset.workspace === ${JSON.stringify(target)});
+        const add = g?.querySelector('.group-add'); return add ? getComputedStyle(add).opacity : ''; })()`);
+      if (Number(o) > 0.9) break;
+    }
+  }
+  return await ev(`(() => {
+    const g = [...document.querySelectorAll('.rail-group')].find((x) => x.querySelector('.rail-group-head')?.dataset.workspace === ${JSON.stringify(target)});
+    const head = g?.querySelector('.rail-group-head');
+    const add = g?.querySelector('.group-add');
+    if (!head || !add) return { ok: false };
+    const hr = head.getBoundingClientRect(), ar = add.getBoundingClientRect();
+    const el = document.elementFromPoint((ar.left + ar.right) / 2, (ar.top + ar.bottom) / 2);
+    const side = document.querySelector('.sidebar').getBoundingClientRect();
+    return {
+      ok: true,
+      rightOfHead: ar.left >= hr.right - 1,
+      insideSidebar: ar.right <= side.right + 1 && ar.left >= side.left - 1,
+      opacity: getComputedStyle(add).opacity,
+      reachable: Boolean(el) && (add.contains(el) || el.contains(add)),
+      label: add.getAttribute('aria-label') || '',
+      w: Math.round(ar.width), h: Math.round(ar.height),
+      x: Math.round((ar.left + ar.right) / 2), y: Math.round((ar.top + ar.bottom) / 2),
+    };
+  })()`);
+};
+const plus = await hoverAndRead();
+check("every workspace header carries a 「+」 next to the directory name", plus.ok,
+  `target=${target} ${JSON.stringify(plus)}`);
+check("it sits to the RIGHT of the directory row and inside the rail",
+  plus.ok && plus.rightOfHead && plus.insideSidebar, JSON.stringify(plus));
+check("it is really reachable once shown (not under something)", plus.ok && plus.reachable && Number(plus.opacity) > 0.9,
+  `opacity=${plus.opacity} reachable=${plus.reachable}`);
+
+// clicking it must OPEN the new-session dialog POINTED AT THAT DIRECTORY — not at an empty
+// picker: the whole point is that the folder is already decided.
+const clickPlus = async (p) => {
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button: "left", clickCount: 1 });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button: "left", clickCount: 1 });
+  await sleep(900);
+};
+await clickPlus(plus);
+const dialog = await ev(`(() => {
+  const modal = document.querySelector('.modal');
+  const fixed = modal?.querySelector('.ns-fixed-dir code')?.textContent ?? '';
+  return {
+    open: Boolean(modal),
+    heading: modal?.querySelector('h3')?.textContent ?? '',
+    fixed,
+    hasPicker: Boolean(modal?.querySelector('.wp')),
+    backends: [...(modal?.querySelectorAll('.backend-pick button') ?? [])].map((b) => (b.textContent || '').trim()),
+    groupOpen: Boolean(document.querySelector('.rail-group-head[data-workspace=${JSON.stringify(target)}]')?.classList.contains('open')),
+  };
+})()`);
+check("the 「+」 opens the new-session dialog", dialog.open, JSON.stringify(dialog));
+check("the dialog is POINTED AT that directory (no browsing step left)", dialog.fixed === target && !dialog.hasPicker,
+  JSON.stringify({ fixed: dialog.fixed, hasPicker: dialog.hasPicker, want: target }));
+check("only the agent type is left to choose, and the row it will run is named",
+  dialog.backends.length > 0, JSON.stringify(dialog.backends));
+
+// create it for real, on the MOCK backend (no tokens), and prove it landed in that directory
+// (a session that merely EXISTS in that directory proves nothing — it must be one this run made)
+const runStart = Date.now();
+let create = false;
+for (let attempt = 0; attempt < 3 && !create; attempt++) {
+  if (attempt > 0) { await hoverAndRead(); await clickPlus(plus); }
+  create = await ev(`(async () => {
+    const modal = document.querySelector('.modal');
+    if (!modal) return false;
+    const pick = [...modal.querySelectorAll('.backend-pick button')].find((b) => /mock/i.test(b.textContent || ''));
+    if (pick) pick.click();
+    await new Promise((r) => setTimeout(r, 250));
+    const go = modal.querySelector('.row .go');
+    if (!go) return false;
+    go.click();
+    return true;
+  })()`);
+  await sleep(600);
+}
+check("the dialog could actually be launched (no tokens: the mock backend)", create, `create=${create}`);
+let made = null;
+for (let i = 0; i < 40; i++) {
+  await sleep(500);
+  made = await ev(`fetch('/api/sessions').then((r) => r.json()).then((d) => {
+    const live = (d.live || []).filter((s) => (s.workspace || s.cwd) === ${JSON.stringify(target)} && (s.createdAt || 0) >= ${runStart});
+    live.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return live[0] ? { id: live[0].id, backend: live[0].backend, cwd: live[0].cwd, at: live[0].createdAt } : null; })`);
+  if (made) break;
+}
+check("the session it creates really runs IN that directory (and was made by THIS run)",
+  Boolean(made) && made.cwd === target, JSON.stringify(made));
+const after = await ev(`(() => {
+  const g = [...document.querySelectorAll('.rail-group')].find((x) => x.querySelector('.rail-group-head')?.dataset.workspace === ${JSON.stringify(target)});
+  return { rows: g ? g.querySelectorAll('.session-item').length : 0, modal: Boolean(document.querySelector('.modal')) };
+})()`);
+check("the new session shows up under that directory's group (and the dialog closed)",
+  after.rows >= 2 && !after.modal, JSON.stringify(after));
+
+// and the phone: the rail is an off-canvas drawer there, so open it the way the operator
+// does, then check the 「+」 is visible WITHOUT hovering and big enough for a thumb
+await setViewport(390, 844);
+await ev(`document.querySelector('.chat-head .menu-btn')?.click()`);
+await sleep(600);
+await scrollToTarget();
+const phonePlus = await ev(`(() => {
+  const g = [...document.querySelectorAll('.rail-group')].find((x) => x.querySelector('.rail-group-head')?.dataset.workspace === ${JSON.stringify(target)});
+  const add = g?.querySelector('.group-add');
+  if (!add) return { ok: false };
+  const r = add.getBoundingClientRect();
+  const el = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+  return { ok: true, opacity: getComputedStyle(add).opacity, w: Math.round(r.width), h: Math.round(r.height),
+    reachable: Boolean(el) && (add.contains(el) || el.contains(add)),
+    inViewport: r.top >= 0 && r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight }; })()`);
+check("on a 390x844 phone the 「+」 is visible without hovering and is a real tap target",
+  phonePlus.ok && Number(phonePlus.opacity) > 0.5 && phonePlus.w >= 28 && phonePlus.h >= 28
+    && phonePlus.inViewport && phonePlus.reachable,
+  JSON.stringify(phonePlus));
+const phonePlusShot = await send("Page.captureScreenshot", { format: "png" }, 25000);
+fs.writeFileSync(`${SHOTS}/phone-rail-add.png`, Buffer.from(phonePlusShot.data, "base64"));
+await setViewport(1440, 900);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log("shots: desktop-rail-oneline.png, phone-session-menu.png");
 await fetch(`${CDP}/json/close/${t.id}`).catch(() => {});
