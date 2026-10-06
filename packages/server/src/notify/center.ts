@@ -89,6 +89,44 @@ function tapTarget(url: string, prefer: OpenTarget["prefer"] = "app"): Pick<Acti
   return { deeplink: url, open: { url, prefer: prefer ?? "auto" } };
 }
 
+/** How a finished turn reads on a lock screen: 「用时 1m12s」.
+ *
+ *  The protocol's own answer (`stopReason: end_turn`) is a fact about the wire, not about the
+ *  operator's wait — the ecosystem's version of this line is agent-notify's "Done in 12s" / AionUi's
+ *  「已完成本轮回复」. Empty string when the duration is unknown, and then the card simply says less. */
+function durationText(durationMs?: number): string {
+  if (!durationMs || !Number.isFinite(durationMs) || durationMs < 0) return "";
+  const total = Math.round(durationMs / 1000);
+  if (total < 60) return `用时 ${Math.max(1, total)}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return total % 60 ? `用时 ${m}m ${total % 60}s` : `用时 ${m}m`;
+  return `用时 ${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** The session name rides FIRST IN THE BODY — never in `subtitle`.
+ *
+ *  Android draws `contentText` (our body) on the COLLAPSED row and `subText` (our subtitle) only on
+ *  the expanded card, so a name parked in subtitle is a name nobody sees when they glance at the
+ *  shade. Measured on the emulator: `android.title=跑完了` / `android.subText=hello` while the one
+ *  visible line read `stopReason: end_turn`. AionUi solved the same problem the same way (conversation
+ *  name at the front of the body). So every kind shares one shape: title = what happened,
+ *  body = `<会话名> · <detail>`. */
+function nameAndDetail(name: string, ...detail: Array<string | undefined | null>): string {
+  return [name, ...detail.filter((d): d is string => Boolean(d && d.trim()))].join(" · ");
+}
+
+/** The agent's own tool title, split at its first ": ".
+ *
+ *  The head goes on the state line (short — the Xiaomi island clips a title at 20 chars), and the
+ *  long half is nearly always the target (`Approve edit: /var/folders/…`), which belongs beside the
+ *  session name on the body line. Nothing is invented here: both halves are the agent's own words. */
+function splitToolTitle(raw: string | undefined): { head: string; target: string } {
+  const text = (raw ?? "").trim();
+  const at = text.indexOf(": ");
+  if (at > 0 && at <= 24) return { head: text.slice(0, at), target: text.slice(at + 2).trim() };
+  return { head: text, target: "" };
+}
+
 export class NotifyCenter {
   readonly dir: string;
   private readonly stateFile: string;
@@ -755,7 +793,9 @@ export class NotifyCenter {
     // "island": an ongoing promotable card, i.e. the shape that CAN be promoted at all — the one the
     // operator's island question is about. A finished notification is never an island on either path.
     const island = opts.kind === "island";
-    const subtitle = opts.sessionId
+    /** The session name (or 「驾驶舱」 for a session-less push). It goes FIRST IN THE BODY so the
+     *  collapsed row always says which conversation this is — see `nameAndDetail`. */
+    const name = opts.sessionId
       ? (this.sessionTitle?.(opts.sessionId) ?? opts.sessionId.slice(0, 8))
       : "驾驶舱";
     const deeplink = opts.sessionId ? `/?session=${encodeURIComponent(opts.sessionId)}` : "/";
@@ -764,8 +804,8 @@ export class NotifyCenter {
       kind: approval ? "approval" : island ? "agent_running" : "agent_done",
       priority: island ? "low" : "high",
       ongoing: island, promotable: island,
-      title: opts.title.slice(0, 80), subtitle,
-      body: opts.body ?? "在驾驶舱里手动推的一条",
+      title: opts.title.slice(0, 80),
+      body: nameAndDetail(name, opts.body),
       channel: island
         ? { id: "agent_running", name: "任务运行中", importance: "low", sound: false }
         : {
@@ -794,7 +834,7 @@ export class NotifyCenter {
       {
         schema: 1, op: "upsert", activityId: "probe:running", revision: 1, kind: "agent_running",
         priority: "low", ongoing: true, promotable: true,
-        title: "AgentSlot · 正在跑", subtitle: "探针会话", body: "第 1 步：读取代码",
+        title: "AgentSlot · 运行中", body: "探针会话 · 第 1 步：读取代码",
         progress: { indeterminate: true },
         channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
         smallIcon: "agentslot", ...tapTarget(link), visibility: "public",
@@ -802,7 +842,7 @@ export class NotifyCenter {
       {
         schema: 1, op: "upsert", activityId: "probe:running", revision: 2, kind: "agent_running",
         priority: "low", ongoing: true, promotable: true,
-        title: "AgentSlot · 正在跑", subtitle: "探针会话", body: "第 2 步：运行测试（进度 60%）",
+        title: "AgentSlot · 运行中", body: "探针会话 · 第 2 步：运行测试（进度 60%）",
         progress: { value: 0.6, segments: [{ length: 6, color: "#4f8" }, { length: 4, color: "#556" }] },
         channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
         smallIcon: "agentslot", ...tapTarget(link), visibility: "public",
@@ -810,7 +850,7 @@ export class NotifyCenter {
       {
         schema: 1, op: "upsert", activityId: "probe:approval", revision: 1, kind: "approval",
         priority: "high", ongoing: true, promotable: true,
-        title: "等你批准：写文件", subtitle: "探针会话", body: "edit /etc/hosts — 允许这次操作？",
+        title: "待你确认：写文件", body: "探针会话 · edit /etc/hosts — 允许这次操作？",
         channel: { id: "agent_approval", name: "权限请求", importance: "high", sound: true, vibration: true },
         actions: [
           { id: "allow_once", label: "仅此次", style: "primary" },
@@ -820,10 +860,12 @@ export class NotifyCenter {
         input: { enabled: true, placeholder: "或直接回一句" },
         smallIcon: "agentslot", ...tapTarget(link), visibility: "private",
       },
+      // A canned frame cannot know how long a real turn took, so this one carries no 「用时」: the
+      // duration is measured in the real `turn-end` path (see durationText).
       {
         schema: 1, op: "upsert", activityId: "probe:done", revision: 1, kind: "agent_done",
         priority: "high", ongoing: false, promotable: false,
-        title: "跑完了", subtitle: "探针会话", body: "探针序列结束（end_turn）",
+        title: "已完成", body: "探针会话 · 探针序列结束",
         channel: { id: "agent_done", name: "任务完成", importance: "high", sound: true },
         actions: [{ id: "open", label: "查看", style: "primary" }],
         smallIcon: "agentslot", ...tapTarget(link), visibility: "private",
@@ -866,8 +908,8 @@ export class NotifyCenter {
         this.publish({
           schema: 1, op: "upsert", activityId: `turn:${evt.sessionId}`, revision: this.nextRevision(`turn:${evt.sessionId}`),
           kind: "agent_running", priority: "low", ongoing: true, promotable: true,
-          title: "AgentSlot · 正在跑", subtitle: title(evt.sessionId),
-          body: [evt.trace?.model, evt.trace?.effort].filter(Boolean).join(" · ") || "处理中",
+          title: "AgentSlot · 运行中",
+          body: nameAndDetail(title(evt.sessionId), evt.trace?.model, evt.trace?.effort),
           progress: { indeterminate: true },
           channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
           smallIcon: "agentslot", ...tapTarget(link(evt.sessionId)), visibility: "public",
@@ -889,15 +931,16 @@ export class NotifyCenter {
         // than no card at all, even when the frame that started it was suppressed.
         this.dismiss(`turn:${evt.sessionId}`);
         // Both gates belong here and both were missing: `completion` was stored but never read, and
-        // presence was only consulted for turn-start — so "跑完了" fired while the operator was watching
+        // presence was only consulted for turn-start — so the completion card fired while the operator was watching
         // the very session (and, mid-call, with a sound: the reported bug).
         if (!this.rules().completion || this.watching(evt.sessionId)) return;
         const failed = Boolean(evt.error);
         this.publish({
           schema: 1, op: "upsert", activityId: `done:${evt.sessionId}:${Date.now()}`, revision: 1,
           kind: failed ? "error" : "agent_done", priority: "high", ongoing: false, promotable: false,
-          title: failed ? "出错了" : "跑完了", subtitle: title(evt.sessionId),
-          body: failed ? String(evt.error).slice(0, 160) : (evt.stopReason ? `stopReason: ${evt.stopReason}` : ""),
+          title: failed ? "执行失败" : "已完成",
+          body: nameAndDetail(title(evt.sessionId),
+            failed ? String(evt.error).slice(0, 140) : durationText(evt.durationMs)),
           channel: {
             id: failed ? "agent_error" : "agent_done",
             name: failed ? "任务出错" : "任务完成",
@@ -936,11 +979,12 @@ export class NotifyCenter {
         optionId: o.optionId, optionKind: o.kind, signature: `${o.kind}:${request.toolCallTitle}`,
       };
     }
+    const tool = splitToolTitle(request.toolCallTitle);
     this.publish({
       schema: 1, op: "upsert", activityId: `perm:${request.requestId}`, revision: 1, kind: "approval",
       priority: "high", ongoing: true, promotable: true,
-      title: request.toolCallTitle.slice(0, 80) || "等你批准",
-      subtitle: sessionTitle, body: request.kind,
+      title: tool.head ? `待你确认：${tool.head.slice(0, 60)}` : "待你确认",
+      body: nameAndDetail(sessionTitle, tool.target || request.kind),
       channel: { id: "agent_approval", name: "权限请求", importance: "high", sound: true, vibration: true },
       actions: actions.length ? actions : [{ id: "open", label: "查看", style: "primary" }],
       input: { enabled: true, placeholder: "或直接回一句" },

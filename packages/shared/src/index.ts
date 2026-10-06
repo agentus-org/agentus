@@ -128,7 +128,11 @@ export type ServerEvent =
       n?: number }
   | { t: "permission"; request: PermissionRequestView }
   | { t: "permission-resolved"; requestId: string; decision: PermissionDecision }
-  | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string }
+  | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string;
+      /** Wall time from the moment the turn was announced to the moment the agent answered (ms).
+       *  Exists so a notification can say "用时 1m12s" instead of a protocol token like `end_turn`,
+       *  which is a fact about the wire, not about the operator's wait (absent when unknowable). */
+      durationMs?: number }
   /** per-turn trace: what model/effort/mode this turn is actually running with
    *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
   | { t: "turn-start"; sessionId: string; trace?: TurnTrace }

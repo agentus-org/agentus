@@ -306,7 +306,7 @@ try {
   // Both were missing: `completion` was persisted and never read, and presence was only consulted for
   // turn-start — so 「跑完了」 arrived with a sound while the operator was looking at that session, and
   // in the middle of a voice call.
-  type Wire = { activityId?: string; op?: string; channel?: { sound?: boolean; vibration?: boolean; importance?: string; muted?: boolean } };
+  type Wire = { activityId?: string; op?: string; title?: string; subtitle?: string; body?: string; channel?: { sound?: boolean; vibration?: boolean; importance?: string; muted?: boolean } };
   const framesBy = (prefix: string): Wire[] =>
     (watcher.activities() as unknown as Wire[]).filter((a) => a.op !== "dismiss" && String(a.activityId ?? "").startsWith(prefix));
   const upserted = (id: string): Wire | undefined =>
@@ -370,6 +370,43 @@ try {
   const afterDone = framesBy("done:sess-c-after")[0];
   check("call over ⇒ the completion is loud again (the mute is tied to the call, not sticky)",
     afterDone?.channel?.sound === true, JSON.stringify(afterDone?.channel ?? null));
+
+  // ---- one shape for every card: the state in the title, the session name FIRST IN THE BODY -------
+  // Not cosmetic. Android draws `body` on the COLLAPSED row and `subtitle` only on the expanded card,
+  // so a session name parked in subtitle is a name nobody sees when they glance at the shade.
+  // Measured on the emulator before this change: `android.title=跑完了` / `android.subText=hello`,
+  // while the one visible line read `stopReason: end_turn`. These are real `observe()` frames.
+  await postJson("/api/notify/settings", { rules: { turnStart: true, completion: true, approval: true } });
+  await postJson("/api/notify/presence", { sessionId: null, visible: false, call: false });
+  await inject(turn("sess-shape"));
+  await inject({ t: "turn-end", sessionId: "sess-shape", at: Date.now(), durationMs: 72_400 });
+  await inject({
+    t: "permission", sessionId: "sess-shape",
+    request: {
+      sessionId: "sess-shape", requestId: "req-shape", kind: "edit",
+      toolCallTitle: "Approve edit: /var/folders/p4/x/T/agentslot-shape.txt",
+      options: [{ optionId: "allow_once", name: "允许", kind: "allow_once" }],
+    },
+  });
+  await sleep(800);
+  const shapeRun = upserted("turn:sess-shape");
+  const shapeDone = framesBy("done:sess-shape")[0];
+  const shapePerm = upserted("perm:req-shape");
+  check("copy: the running card is a state, with the session name in the body",
+    shapeRun?.title === "AgentSlot · 运行中" && String(shapeRun?.body ?? "").startsWith("sess-sha"),
+    JSON.stringify({ title: shapeRun?.title, body: shapeRun?.body }));
+  check("copy: the done card is 「已完成」 and its body is the name + the MEASURED turn time",
+    shapeDone?.title === "已完成" && shapeDone?.body === "sess-sha · 用时 1m 12s",
+    JSON.stringify({ title: shapeDone?.title, body: shapeDone?.body }));
+  check("copy: …so a protocol token (`stopReason`) is nowhere on the card",
+    !String(shapeDone?.body ?? "").includes("stopReason"), JSON.stringify(shapeDone?.body ?? null));
+  check("copy: an approval splits the agent's own title — short head above, long target in the body",
+    shapePerm?.title === "待你确认：Approve edit"
+      && String(shapePerm?.body ?? "").startsWith("sess-sha · /var/folders/p4/"),
+    JSON.stringify({ title: shapePerm?.title, body: shapePerm?.body }));
+  check("copy: no card hides the session name in `subtitle` (Android only draws it expanded)",
+    shapeRun?.subtitle == null && shapeDone?.subtitle == null && shapePerm?.subtitle == null,
+    JSON.stringify({ run: shapeRun?.subtitle, done: shapeDone?.subtitle, perm: shapePerm?.subtitle }));
 
   // The cockpit's one-tap push
   const pushed = await postJson("/api/notify/push", { sessionId: "sess-on", title: "来自驾驶舱的推送" });

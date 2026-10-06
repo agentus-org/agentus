@@ -587,6 +587,9 @@ export class SessionManager {
     s.busy = true;
     s.info.status = "running";
     this.#updateSession(s);
+    // Timed from the announcement, not from the prompt call: the operator's wait INCLUDES the
+    // moment the card lit up. Only the queue-wait above is excluded (that is other turns' time).
+    const turnStartedAt = Date.now();
     this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s) });
     const msg = this.#store.appendMessage({
       sessionId, kind: "user", payload: { text, attachments: summarize(attachments) }, createdAt: Date.now(),
@@ -606,9 +609,9 @@ export class SessionManager {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ContentBlock union, built by hand
         prompt: blocks as any,
       });
-      this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason });
+      this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
-      this.#emit({ t: "turn-end", sessionId, error: errMessage(err) });
+      this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
       if (s.info.status === "running") {

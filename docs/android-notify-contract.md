@@ -52,7 +52,7 @@ POST /api/notify/pair          # no operator session needed: this is how a phone
 ```json
 { "schema": 1, "op": "upsert", "activityId": "perm:req_9", "revision": 1,
   "kind": "approval", "priority": "high", "ongoing": true, "promotable": true,
-  "title": "edit /etc/hosts", "subtitle": "会话名", "body": "file_edit",
+  "title": "待你确认：写文件", "body": "会话名 · /etc/hosts",
   "progress": { "value": 0.6, "segments": [ { "length": 6, "color": "#4f8" } ] },
   "channel": { "id": "agent_approval", "name": "权限请求", "importance": "high", "sound": true },
   "actions": [ { "id": "allow_once", "label": "仅此次", "style": "primary" } ],
@@ -70,6 +70,15 @@ Rules that make the "no new APK" promise hold:
   them on demand. Changing importance or sound is therefore a server-side change.
 - Unknown fields/actions/ops must be ignored by the app, never fatal.
 - `revision` guards ordering; the app drops anything at or below the cursor it already applied.
+- **`title` says what happened; `body` carries `<会话名> · <detail>`; `subtitle` stays unused.**
+  Android draws `contentText` (our `body`) on the **collapsed** row and `subText` (our `subtitle`) only
+  on the **expanded** card, so a name parked in subtitle is a name the operator never sees when they
+  glance at the shade — measured, §11.1.7. One shape for every kind: 运行中 / 已完成 / 执行失败 /
+  待你确认：<工具>.
+- **No protocol tokens on a card.** The completion line is 「用时 1m12s」 (the real turn duration,
+  `turn-end.durationMs`), never `stopReason: end_turn` — a card is read by a human, not a debugger.
+  An approval splits the agent's own tool title (`Approve edit: /var/…` → title `待你确认：Approve edit`,
+  body `… · /var/…`) so neither the state line nor the target has to be guessed at.
 - Frames carry a monotonic `seq`; the app acks with `{t:"ack",cursor:N}` and reconnects with
   `?since=N`, so a lock screen that missed an hour still learns the outcome.
 
@@ -288,9 +297,11 @@ grants focus permission).
 2. Clients ignore what they do not know.
 3. New behaviour ⇒ new capability string, not a version comparison.
 4. Every op idempotent; nothing assumes messages arrive (replay by cursor instead).
-5. An APK rebuild is needed only for (a) a new Android platform API, or (b) a capability that
-   only native code can provide (widgets, shortcuts). Notification/interaction changes are
-   server-side.
+5. An APK rebuild is needed only for (a) a new Android platform API, (b) a capability that
+   only native code can provide (widgets, shortcuts), or (c) a defect **in the native renderer** —
+   copy, wording and field mapping are server-side and must never require a rebuild, but a renderer
+   bug ships as a new APK (§11.1.7 is the worked example: an action with a `RemoteInput` needs a
+   mutable `PendingIntent`, and the card it dropped was the approval one).
 
 ## 8. What the native side has to own
 
@@ -335,6 +346,7 @@ grants focus permission).
 | P19 | A notification channel's sound and importance are **immutable after creation** (Android 8+), and the app deliberately returns early for an existing channel id | "send the same channel with `sound:false`" is a silent no-op: the phone keeps dinging. A muted frame therefore carries `channel.muted: true` and the app routes it to **one** dedicated quiet channel (`agentslot-quiet`, 通话中（静音）, importance low, no sound) — one extra channel beats a channel-setting mutation dance that would also clear the notifications already in it |
 | P21 | An implicit `ACTION_VIEW` on an `https://` URL is the **browser's** notification to handle, not yours — the operator tapped a message reminder and got Chrome | the tap intent must be **explicit** (`Intent(ctx, MainActivity.class)`) whenever the target is one of the operator's own servers, and the rest of the time it must go to the platform on purpose (`open.prefer`, §5.2). "Open the URL" is not a behaviour a notification can own; "open it here, or hand it over" is |
 | P20 | Presence that requires "an interaction within 120s" is wrong during a call: the hands are free | report `call` explicitly and write it the moment the call mounts / hangs up (not on the 30s tick), treat a call as watching for that session, and silence everything else. Verified on the emulator: the same push lands in `agent_done` (importance 4, system sound) with no call and in `agentslot-quiet` (importance 2, `mSound=null`, `SILENT`) during one |
+| P22 | An action that carries a `RemoteInput` must be posted with a **mutable** `PendingIntent` on Android 12+ (`FLAG_IMMUTABLE` there makes SystemUI drop the WHOLE notification, not just the action) | the inline-reply action gets `FLAG_MUTABLE` (`Build.VERSION.SDK_INT >= 31` guard; minSdk is 26), every other action stays immutable. How it fails when wrong, measured: logcat `Not posted. PendingIntents attached to actions with remote inputs must be mutable`, `dumpsys notification \| grep -c channel=agent_approval` ⇒ `0`, while the running/done cards post normally — a card that never appears and never errors in our own code (§11.1.7) |
 
 ## 10. Endpoints as built
 
@@ -575,6 +587,44 @@ a 「跑完了」 card. Fixed in three places, each verified:
 | the app routes muted frames to one quiet channel | `Notifier.java` | `adb shell dumpsys notification --noredact` on API 36: during a call the same push lands in `mId='agentslot-quiet'`, `mImportance=2`, `mSound=null`, `flags=…|SILENT`; with no call it lands in `mId='agent_done'`, `mImportance=4`, `mSound=content://settings/system/notification_sound` |
 
 `notify-smoke` went 57 → **65 checks** (all green) with the call cases; `typecheck` clean.
+
+#### 11.1.7 v0.5.10: 一张从来没发出过的审批卡，和让会话名出现在收起那一行
+
+两件事，同一轮里发现并修完（服务端文案 + 一个 App 侧的平台约束）。
+
+**（1）审批卡在 Android 12+ 从来没投递成功过。** 发探针时 logcat 里出现
+`Not posted. PendingIntents attached to actions with remote inputs must be mutable`：带 `RemoteInput`
+（那个「或直接回一句」输入框）的 action，其 `PendingIntent` 必须是 **mutable**，而代码写的是
+`FLAG_IMMUTABLE`。SystemUI 因此**整条通知都不投递**（不是砍掉按钮），我们的代码里不抛异常、不返回非 0。
+
+| 证据 | 数值 |
+|---|---|
+| `dumpsys notification \| grep -c channel=agent_approval`（修前，连发两次探针） | **0** |
+| 同一句（修后，同一条通知 id `83539`） | **1**，`actions=3`，`ONGOING_EVENT` |
+| 运行中 / 完成两张卡（修前修后） | 都正常出现 —— 所以"其它通知都在"完全不能说明这张也在 |
+
+修法：那个 action 用 `Build.VERSION.SDK_INT >= 31 ? FLAG_MUTABLE : 0`（minSdk 26），其它 action 保持
+immutable（没有人往里写东西）。顺带把 `NotifyService` 里"解析 JSON 失败"和"应用一帧失败"拆成两句话——
+原来共用「无法解析帧」，把一次平台拒收写成了 JSON 问题，正是它把这轮排查带偏过。
+
+**（2）会话名从 `subtitle` 挪到 `body` 的最前面。** Android 的 `setContentText`（我们的 `body`）画在
+**收起**的那一行，`setSubText`（我们的 `subtitle`）只在**展开**才画。改前实测 `android.title=跑完了` /
+`android.subText=hello`，唯一可见的那行是 `stopReason: end_turn`——既没有会话名，也是给调试器看的字符串。
+
+| kind | 标题 | 正文 |
+|---|---|---|
+| 运行中 | `AgentSlot · 运行中` | `<会话名> · <模型> · <思考深度>` |
+| 完成 | `已完成` | `<会话名> · 用时 10s`（`turn-end.durationMs` 真量出来的） |
+| 失败 | `执行失败` | `<会话名> · <错误摘要>` |
+| 审批 | `待你确认：<工具短名>` | `<会话名> · <工具目标>` |
+
+审批那一行来自 agent 自己的 `toolCallTitle`，只在它自己的第一个 `": "` 处切成两半
+（`Approve edit: /var/…` → 标题 `待你确认：Approve edit`、正文 `… · /var/…`）：不翻译、不补全语义。
+
+真机实测（模拟器 API 36）：分组收起形态里三行**每一行都带会话名**——
+`已完成 在的 #2 · 用时 10s` / `已完成 探针会话 · 探针序列结束` / `待你确认：写文件 探针会话 · edit /etc/hosts —…`，
+审批那条下方是「仅此次 / 总是允许 / 拒绝」。断言落在 `scripts/notify-smoke.mts`（5 条，包括"三张卡都不再有
+`subtitle`"和"卡上不出现 `stopReason`"）。
 
 ## 12. Run it
 
