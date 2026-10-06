@@ -104,7 +104,7 @@ const configOptionsFor = (config) => [
   // and a hand-typed window comes back as its own option so `currentValue` stays in the list.
   { id: "context_budget", name: "Context budget", type: "select", category: "_context_window",
     currentValue: config.context_budget || "auto",
-    _meta: { freeform: true, unit: "tokens", min: 16384, step: 1024,
+    _meta: { freeform: true, unit: "tokens", min: 16384, step: 1024, scope: "model",
       presets: [65536, 131072, 200000, 1000000] },
     options: [{ value: "auto", name: "Auto (model window)" }, { value: "65536", name: "64K" },
       { value: "131072", name: "128K" }, { value: "200000", name: "200K" }, { value: "1000000", name: "1M" }] },

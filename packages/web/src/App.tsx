@@ -2205,7 +2205,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           {err ? <div className="usage-edit-err">{err}</div> : null}
           <div className="usage-note">
             {budgetCfg ? (
-              <>这个数字是仪表盘算百分比用的<b>声明</b>（按模型记住）。真正让 agent 提前压缩的旋钮是这个后端自己公告的「{budgetCfg.name || budgetCfg.id}」，在聊天设置里（可填任意 token 数）。</>
+              <>这个数字是仪表盘算百分比用的<b>声明</b>（按模型记住）。真正让 agent 提前压缩的旋钮是这个后端自己公告的「{budgetCfg.name || budgetCfg.id}」，在聊天设置里 —— 可填任意 token 数，<b>改的是这个模型</b>，同模型的所有会话（含新开的）都用同一个上限。</>
             ) : (
               <>ACP 没有"设置窗口"的方法（实测 <code>session/set_context</code> → Method not found），而且这个后端没公告上下文旋钮，所以这个数字只影响上面的百分比；真减上下文用上面的压缩命令或换模型。</>
             )}
