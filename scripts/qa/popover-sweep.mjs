@@ -29,7 +29,9 @@ const send = (method, params = {}, timeout = 20000) => new Promise((res, rej) =>
   ws.send(JSON.stringify({ id: mid, method, params }));
 });
 const ev = async (expr, timeout = 20000) => {
-  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true }, timeout);
+  // awaitPromise: fetch() helpers would otherwise come back as a serialised pending Promise ({})
+  // instead of its value — which reads as a truthy session id and silently skips whole steps.
+  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, timeout);
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'eval err');
   return r.result.value;
 };
@@ -41,16 +43,38 @@ console.log(`== viewport ${W}x${H} @ :${PORT} ==`);
 
 // The popovers hang off the COMPOSER, so a page sitting on the session list has nothing to
 // measure: pick a session in-page first (this tab shares the profile's login).
-if (!(await ev(`location.search.includes('session=')`))) {
-  const sid = await ev(`fetch('/api/sessions').then(r => r.json()).then(d => ((d.live || [])[0] || (d.sessions || [])[0] || {}).id || '')`);
-  if (!sid) { console.log('no session in this instance to measure'); process.exit(2); }
-  await ev(`location.href = ${JSON.stringify(BASE + '/?session=')} + ${JSON.stringify(String(sid))}`);
+// The app CONSUMES `?session=` and strips it from the URL (state.ts #openTarget), so read it once
+// here; anything later needs the id we kept, not location.search.
+let SESSION_ID = await ev(`new URLSearchParams(location.search).get('session')`);
+if (!SESSION_ID) {
+  // A FRESH mock session rather than an adopted one: an adopted session may be mid-turn or sit
+  // behind a permission dialog, which is not a state to measure popover geometry in.
+  for (let i = 0; i < 10 && !SESSION_ID; i++) {
+    SESSION_ID = await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:'/tmp'})}).then(r => r.json()).then(d => d.id || '')`);
+    if (!SESSION_ID) await sleep(700);
+  }
+  if (!SESSION_ID) { console.log('could not create a session to measure'); process.exit(2); }
+  await ev(`location.href = ${JSON.stringify(BASE + '/?session=')} + ${JSON.stringify(String(SESSION_ID))}`);
   await sleep(3000);
 }
 // Wait for the composer to exist before measuring anything on it.
 for (let i = 0; i < 40; i++) {
   if (await ev(`Boolean(document.querySelector('.usage-text'))`)) break;
   await sleep(250);
+}
+// The ctx-window popover only exists once the session HAS usage (the row hides without it), so
+// give the session one mock turn and let the app read the usage back — otherwise the sweep's own
+// subject reads MISSING while the other three pass.
+if (!(await ev(`Boolean(document.querySelector('.usage-text'))`))) {
+  await ev(`fetch('/api/sessions/' + ${JSON.stringify(String(SESSION_ID))} + '/prompt',
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'popover sweep warmup' }) }).then(r => r.status)`);
+  await sleep(2500);
+  await send('Page.reload', { ignoreCache: false });
+  await sleep(3000);
+  for (let i = 0; i < 40; i++) {
+    if (await ev(`Boolean(document.querySelector('.usage-text'))`)) break;
+    await sleep(250);
+  }
 }
 
 const MEASURE = (sel) => `(() => {

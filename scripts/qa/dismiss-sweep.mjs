@@ -8,10 +8,14 @@
 //        W=390 H=844 node scripts/qa/dismiss-sweep.mjs     # phone
 //        W=1440 H=900 node scripts/qa/dismiss-sweep.mjs    # desktop
 const CDP = 'http://127.0.0.1:9222';
+const PORT = Number(process.env.PORT || 8787);
+const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const list = await (await fetch(`${CDP}/json/list`)).json();
-const tab = list.find((t) => t.type === 'page' && t.url.includes('8787'));
-if (!tab) { console.log('no app tab on :9222 — nothing to measure'); process.exit(1); }
+// Open our OWN tab (like transcript-sweep): adopting whatever tab is open measures a page in an
+// unknown state — every panel then reads MISSING and the helpers throw on an absent composer,
+// which looks like a UI failure instead of a setup problem.
+const tab = await (await fetch(`${CDP}/json/new?${encodeURIComponent(BASE)}`, { method: 'PUT' })).json();
+await sleep(2600);
 const ws = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
 let id = 0; const waiting = new Map();
@@ -22,7 +26,9 @@ const send = (m, p = {}, t = 20000) => new Promise((res, rej) => {
   ws.send(JSON.stringify({ id: mid, method: m, params: p }));
 });
 const ev = async (expr, t = 20000) => {
-  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true }, t);
+  // awaitPromise: the sweeps post prompts/sessions with fetch(); without it CDP serialises the
+  // pending Promise as `{}`, which then looks like a (truthy!) session id.
+  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, t);
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'eval error');
   return r.result.value;
 };
@@ -33,7 +39,29 @@ await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceSc
 await sleep(300);
 await send('Page.reload', { ignoreCache: true });
 await sleep(3500);
-console.log(`== dismissal sweep @ ${W}x${H} ==`);
+console.log(`== dismissal sweep @ ${W}x${H} on :${PORT} ==`);
+
+// Every panel here hangs off the COMPOSER, so a page on the session list has nothing to measure:
+// pick a session in-page (this tab shares the profile's login) and wait for the composer.
+// The app CONSUMES `?session=` and strips it from the URL (state.ts #openTarget), so remember the
+// id ourselves instead of reading location.search again later — a later read is always null.
+let SESSION_ID = await ev(`new URLSearchParams(location.search).get('session')`);
+if (!SESSION_ID) {
+  // Create a FRESH mock session rather than adopting one: an adopted session may be mid-turn (a
+  // prompt then 409s) or carry a pending permission dialog, and this sweep needs a quiet composer
+  // that can still produce usage.
+  for (let i = 0; i < 10 && !SESSION_ID; i++) {
+    SESSION_ID = await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:'/tmp'})}).then(r => r.json()).then(d => d.id || '')`);
+    if (!SESSION_ID) await sleep(700);
+  }
+  if (!SESSION_ID) { console.log('could not create a session to measure'); process.exit(2); }
+  await ev(`location.href = ${JSON.stringify(BASE + '/?session=')} + ${JSON.stringify(String(SESSION_ID))}`);
+  await sleep(3500);
+}
+for (let i = 0; i < 40; i++) {
+  if (await ev(`Boolean(document.querySelector('.composer textarea'))`)) break;
+  await sleep(250);
+}
 
 // helpers injected into the page: synthetic pointerdown + click, and an Escape
 const HELPERS = `
@@ -86,7 +114,14 @@ async function check(name, opts) {
     rec(`${name} · click inside keeps it`, await ev(present(opts.panel)), 'still open');
   }
 
-  if (opts.noOutside) { rec(`${name} · click outside closes`, true, 'n/a — full-screen sheet'); }
+  if (opts.outsideStaysOpen) {
+    // Some overlays have no scrim ON PURPOSE (the new-session dialog carries a folder choice;
+    // a stray click outside must not drop a half-set-up session). Assert that, rather than the
+    // generic "outside closes" the other panels honour.
+    const hit = await ev(`window.__out(${JSON.stringify(opts.geom || opts.panel)})`);
+    await sleep(300);
+    rec(`${name} · outside leaves it open`, await ev(present(opts.panel)), `hit ${hit} — no scrim by design`);
+  } else if (opts.noOutside) { rec(`${name} · click outside closes`, true, 'n/a — full-screen sheet'); }
   else {
   const hit = await ev(`window.__out(${JSON.stringify(opts.geom || opts.panel)})`);
   await sleep(300);
@@ -95,7 +130,7 @@ async function check(name, opts) {
 
   // reopen, then Escape (a sheet that was never dismissed is still open: use it as-is)
   let reopened;
-  if (opts.noOutside) { reopened = await ev(present(opts.panel)); }
+  if (opts.noOutside || opts.outsideStaysOpen) { reopened = await ev(present(opts.panel)); }
   else {
     if (opts.reopen) await ev(opts.reopen);
     else if (opts.open) await ev(opts.open);
@@ -122,6 +157,24 @@ async function check(name, opts) {
   }
 }
 
+// The ctx-window popover only exists once the session HAS usage (the row is hidden without it),
+// so give the session one mock turn before measuring. The usage can land while the page is still
+// wiring its socket up, so reload once the turn is done and let the app read usage from the
+// server — otherwise the panel reads MISSING and the sweep's own subject is untested.
+const sidInUrl = SESSION_ID;
+const warmStatus = await ev(`fetch('/api/sessions/' + ${JSON.stringify(String(sidInUrl))} + '/prompt',
+  { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'dismissal sweep warmup' }) }).then(r => r.status)`);
+console.log(`warmup: session=${sidInUrl} prompt HTTP ${warmStatus}`);
+await sleep(2500);
+await send('Page.reload', { ignoreCache: false });
+await sleep(3000);
+for (let i = 0; i < 40; i++) {
+  if (await ev(`Boolean(document.querySelector('.usage-text'))`)) break;
+  await sleep(300);
+}
+// A reload wipes the injected helpers with the old document — put them back.
+await ev(`(() => { ${HELPERS} return true; })()`);
+
 await check('ctx window popover', { trigger: '.usage-text', panel: '.usage-detail', insideFirst: true });
 await check('chat settings popover', { trigger: 'button[aria-label="chat settings"]', panel: '.settings-pop', insideFirst: true });
 await check('model picker', { trigger: 'button[data-testid="tb-model"]', panel: '.tb-list', insideFirst: true });
@@ -133,6 +186,7 @@ await check('slash palette', {
 });
 await check('new-session modal', {
   open: '(window.__click(window.__byText("new session")), true)', panel: '.modal-bg', geom: '.modal', noToggle: true,
+  outsideStaysOpen: true,
 });
 if (W < 700) {
   // the drawer has no toggle: the menu button only opens, the scrim / Escape close it
