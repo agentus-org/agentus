@@ -195,8 +195,13 @@ function discoverEnv(): { apiKey: string; baseUrl: string; source: string } | nu
   const sources: { env: Record<string, string | undefined>; label: string }[] = [
     { env: process.env, label: "process env" },
   ];
-  for (const cand of [".hermes/.env", ".agentslot-test/home/.env"]) {
-    const p = path.join(process.env.HOME ?? "", cand);
+  // The credentials live in the agent's own home — the cockpit reads the same .env its slots do.
+  // AGENTSLOT_HERMES_HOME can move that fallback to whatever home this box really uses.
+  const cands = [path.join(process.env.HOME ?? "", ".hermes", ".env")];
+  if (process.env.AGENTSLOT_HERMES_HOME) {
+    cands.push(path.join(process.env.AGENTSLOT_HERMES_HOME, ".env"));
+  }
+  for (const p of cands) {
     if (fs.existsSync(p)) sources.push({ env: readEnvFile(p), label: p });
   }
   for (const s of sources) {

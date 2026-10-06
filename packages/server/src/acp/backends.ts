@@ -1,13 +1,17 @@
 // Backend registry — the entire multi-backend support surface (D5).
 // Adding a backend = adding one row here; NEVER touch the protocol layer.
 //
-// Isolation rule (learned the hard way, 2026-10-02): a spawned agent CLI inherits
-// our env, so an unset HERMES_HOME makes it fall back to the *user's live*
-// ~/.hermes — same state.db, same cron/kanban DBs, same Hindsight daemon as the
-// real runtime. Two openers on one WAL SQLite (3.50.4 has the WAL-reset bug)
-// corrupted the user's state.db. So: every backend that owns a home directory
-// MUST get an explicit, isolated home, and pointing it at the live home is a
-// hard error unless AGENTSLOT_ALLOW_LIVE_HOME=1 is set deliberately.
+// Home rule: a backend that owns a home directory always gets an EXPLICIT HERMES_HOME — the
+// row's own if it names one, otherwise the operator's real home (~/.hermes). An inherited
+// HERMES_HOME must never decide where a slot writes, because a Hermes-launched terminal hands
+// its own (the live one) down to us.
+//
+// The early-dev isolation guard — a hard error whenever a row pointed at the live home, plus
+// the AGENTSLOT_ALLOW_LIVE_HOME escape hatch and the row's `allowLiveHome` tick — is GONE
+// (2026-10-06): the cockpit is meant to drive the operator's real runtime. It existed because
+// two openers on one WAL SQLite 3.50.4 (inside the WAL-reset range) corrupted the user's
+// state.db; the runtime's interpreter now links SQLite 3.53.1, so the reason is gone. A row
+// that wants its own data directory still simply names one.
 import fs from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,12 +20,8 @@ import path from "node:path";
 export interface HomeIsolation {
   /** env var naming the agent's home (state.db + friends live under it) */
   homeVar: string;
-  /** where the home goes when no explicit override is present */
+  /** where the home goes when the row does not name one — the operator's real home */
   homeDefault: string;
-  /** the live home of the user's real runtime — sharing it is fatal */
-  liveHome: string;
-  /** escape hatch env var; "1" allows the live home on purpose */
-  allowEnv: string;
 }
 
 export interface BackendSpec {
@@ -43,14 +43,11 @@ export interface BackendSpec {
   profile?: string | null;
   /** free-form note shown next to the row in the UI */
   notes?: string;
-  /** This row deliberately drives the LIVE home. Per-row opt-in; `AGENTSLOT_ALLOW_LIVE_HOME=1`
-   *  still works for scripts/QA. The old rule stands: sharing the live home is a hard error. */
-  allowLiveHome?: boolean;
 }
 
+/** The operator's real home — the DEFAULT for a hermes row, not a禁区. */
 const liveHermesHome = path.join(homedir(), ".hermes");
-const testHermesHome =
-  process.env.AGENTSLOT_HERMES_HOME || path.join(homedir(), ".agentslot-test/home");
+const defaultHermesHome = process.env.AGENTSLOT_HERMES_HOME || liveHermesHome;
 
 export const BACKENDS: Record<string, BackendSpec> = {
   hermes: {
@@ -60,9 +57,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
     check: ["acp", "--check"],
     isolation: {
       homeVar: "HERMES_HOME",
-      homeDefault: testHermesHome,
-      liveHome: liveHermesHome,
-      allowEnv: "AGENTSLOT_ALLOW_LIVE_HOME",
+      homeDefault: defaultHermesHome,
     },
   },
   qoder: {
@@ -106,56 +101,38 @@ export interface SpawnPlan {
 }
 
 /**
- * Build the child env for a backend, enforcing home isolation.
- * Throws (fail-closed) when a backend would share the live runtime home.
+ * Build the child env for a backend. Always sets the home env var explicitly — the row's home,
+ * or the operator's real home when the row does not name one. Nothing else is policed: driving
+ * the operator's own runtime is the point of the cockpit.
  */
 export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
-  // A row's extra env (e.g. PYTHONPATH choosing the fork tree) is merged FIRST; the isolation
-  // home below overwrites `HERMES_HOME` unconditionally, so no row can smuggle a home in.
+  // A row's extra env (e.g. PYTHONPATH choosing the fork tree) is merged FIRST; the home
+  // below overwrites `HERMES_HOME` unconditionally, so no row can smuggle a home in.
   const env: NodeJS.ProcessEnv = { ...process.env, ...(spec.env ?? {}) };
   const warnings: string[] = [];
   if (!spec.isolation) return { env, home: null, warnings };
 
-  const { homeVar, homeDefault, liveHome, allowEnv } = spec.isolation;
+  const { homeVar, homeDefault } = spec.isolation;
   // The parent env is untrusted here: a Hermes-launched terminal hands its own
-  // HERMES_HOME (the live one) down to us, and inheriting that is exactly the
-  // bug we are guarding against. Only the explicit AGENTSLOT_* knob chooses the
-  // child's home; an ambient HERMES_HOME is reported, never obeyed.
+  // HERMES_HOME (the live one) down to us, and inheriting that silently is how a slot ends up
+  // writing somewhere nobody chose. Only the row — or the AGENTSLOT_HERMES_HOME seed behind its
+  // default — decides; an ambient HERMES_HOME is reported, never obeyed.
   const ambient = process.env[homeVar] ? expandHome(process.env[homeVar]!) : null;
   const home = path.resolve(expandHome(homeDefault));
-  const live = path.resolve(liveHome);
-  // Two deliberate opt-ins, same meaning: the row says so (UI, red badge) or the server was
-  // started with the flag (scripts/QA). Anything else is still a hard error.
-  const allowed = spec.allowLiveHome === true || process.env[allowEnv] === "1";
-
   if (ambient && path.resolve(ambient) !== home) {
     warnings.push(
       `ignored inherited ${homeVar}=${ambient} (parent env, not authoritative); ` +
         `child gets ${home}. Set a home on the backend row to choose a different one.`,
     );
   }
-
-  if (home === live && !allowed) {
-    throw new Error(
-      `isolation refused: ${spec.label} would run against the live home ${live} ` +
-        `(its state.db is the running runtime's). Give the row an isolated home ` +
-        `(e.g. ${homeDefault}) or mark it "allow live home" / set ${allowEnv}=1 if you ` +
-        `really mean to drive the live runtime.`,
-    );
-  }
-  if (home === live) {
-    warnings.push(
-      `${homeVar} points at the live home ${live} ` +
-        `(${spec.allowLiveHome ? "the backend row opts in" : `${allowEnv}=1`}).`,
-    );
-  }
   env[homeVar] = home;
 
-  // Hindsight's embedded Postgres instance is keyed off the *agent* config
-  // (~/.pg0/instances/hindsight-embed-<profile>, profile from that home's
-  // hindsight/config.json, default "hermes"). A fresh home that keeps the
-  // default name would attach to the production daemon — warn loudly.
-  if (home !== live) {
+  // The operator's real home is the DEFAULT, so it says nothing. A DIFFERENT home is the case
+  // worth a warning: Hindsight's embedded Postgres instance is keyed off the *agent* config
+  // (~/.pg0/instances/hindsight-embed-<profile>, profile from that home's hindsight/config.json,
+  // default "hermes"), so a separate home that keeps the default name would attach to the
+  // production memory daemon.
+  if (home !== path.resolve(liveHermesHome)) {
     try {
       const cfgPath = path.join(home, "hindsight", "config.json");
       if (fs.existsSync(cfgPath)) {

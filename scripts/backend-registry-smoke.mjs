@@ -1,5 +1,7 @@
-// Backend registry (M6) — asserts that "which hermes" is a row the operator owns, and that
-// the isolation guard still cannot be talked out of the live home by adding one.
+// Backend registry (M6) — asserts that "which hermes" is a row the operator owns, and that a row
+// naming its own home gets exactly that home while a row with none falls back to the default (the
+// operator's real ~/.hermes). The early-dev isolation guard — the `blocked` state, the row's
+// `allowLiveHome` tick and AGENTSLOT_ALLOW_LIVE_HOME — is gone.
 //
 //   node scripts/backend-registry-smoke.mjs
 //
@@ -9,7 +11,7 @@
 //   2. a row can point at a DIFFERENT command + code tree + home + profile;
 //   3. /inspect answers "which tree does this row actually run" (the `Install directory:` line);
 //   4. a real slot spawned from that row gets exactly that PYTHONPATH + HERMES_HOME;
-//   5. a row aimed at the live home is reported `blocked`, is never probed, and cannot spawn;
+//   5. a row aimed at the operator's real home is ALLOWED and spawns (no guard, no switch);
 //   6. a row that sessions still name cannot be deleted;
 //   7. health is a PERSISTED snapshot carrying a structured code, at three depths
 //      (startup = resolves on PATH, manual = --version/acp --check, session = a real slot), so a
@@ -130,11 +132,11 @@ async function main() {
   const port = await freePort();
   const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-backreg-"));
   const home = mkdtempSync(path.join(tmpdir(), "agentslot-backreg-home-"));
-  // Give the throwaway home a provider config, the way scripts/setup-hermes-test-home.py does
-  // for the operator's own test bed: without one the fork boots but cannot answer a session
-  // (and this suite is about the REGISTRY, not about provider setup). Read-only on the source.
+  // Give the throwaway home a provider config the way the operator's own home has one: without it
+  // the fork boots but cannot answer a session (and this suite is about the REGISTRY, not about
+  // provider setup). Read-only on the source.
   for (const f of ["config.yaml", ".env"]) {
-    const src = path.join(homedir(), ".agentslot-test/home", f);
+    const src = path.join(LIVE_HOME, f);
     if (fs.existsSync(src)) {
       try { fs.copyFileSync(src, path.join(home, f)); } catch { /* best effort */ }
     }
@@ -180,7 +182,7 @@ async function main() {
         && (hermesSwept.health.status !== "online" || String(hermesSwept.health.message ?? "").includes("/")),
       `status=${hermesSwept?.health?.status} msg=${hermesSwept?.health?.message}`);
 
-    // 2. a row of our own: different command tree + isolated home + profile
+    // 2. a row of our own: different command tree + its own home + profile
     const forkRow = {
       id: "qa-fork", label: "QA fork", kind: "hermes", cmd: HERMES_CMD, args: "acp",
       env: { PYTHONPATH: FORK }, home, profile: "default",
@@ -194,7 +196,7 @@ async function main() {
     check("the new row shows command / home / profile / env keys",
       row?.home === home && row?.profile === "default" && (row?.env ?? []).includes("PYTHONPATH"),
       `home=${row?.home} profile=${row?.profile} env=${(row?.env ?? []).join(",")}`);
-    check("the new row is not blocked", !row?.blocked, String(row?.blocked ?? ""));
+    check("the new row is spawnable (nothing gated it)", !row?.blocked, String(row?.blocked ?? ""));
 
     // 3. inspect: which tree will it actually run? (needs the operator's hermes to exist)
     if (LOCAL.hermes && LOCAL.fork) {
@@ -203,7 +205,7 @@ async function main() {
       check("inspect names the code tree (Install directory = the PYTHONPATH tree)",
         typeof insp.json?.installDir === "string" && insp.json.installDir === FORK,
         `installDir=${insp.json?.installDir}`);
-      check("inspect reports the isolated home (and that it is empty)", insp.json?.home === home && insp.json?.stateDb === null,
+      check("inspect reports the home the row named (and that it is empty)", insp.json?.home === home && insp.json?.stateDb === null,
         `home=${insp.json?.home} stateDb=${insp.json?.stateDb ? "present" : "none"}`);
       check("inspect ran acp --check", insp.json?.acpCheck?.ok === true, String(insp.json?.acpCheck?.output ?? "").slice(0, 120));
 
@@ -314,20 +316,39 @@ async function main() {
       skip("spawning a hermes row", `no ${HERMES_CMD} on this machine`);
     }
 
-    // 5. the live home is refused by the guard, not by convention
-    const liveRowDef = { id: "qa-live", label: "QA live", kind: "hermes", cmd: HERMES_CMD, args: "acp", home: LIVE_HOME };
-    await api("POST", "/api/backends", liveRowDef);
+    // 5. a row aimed at the operator's REAL home is normal now — the early-dev isolation guard
+    //    (and its AGENTSLOT_ALLOW_LIVE_HOME / `allowLiveHome` escape hatches) is gone. Proven
+    //    without touching the real state.db: the row runs the in-repo mock agent under
+    //    HERMES_HOME=~/.hermes, and the mock never opens a database, so this asserts "it is no
+    //    longer refused" and "the home still reaches the child" — and nothing more.
+    await api("POST", "/api/backends", {
+      id: "qa-live", label: "QA live", kind: "hermes", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")], home: LIVE_HOME,
+      notes: "smoke: the operator's real home is an ordinary choice now",
+    });
     const liveListed = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-live");
-    check("a row pointing at the live home is reported blocked", Boolean(liveListed?.blocked), String(liveListed?.blocked ?? "").slice(0, 140));
-    const liveInsp = await api("POST", "/api/backends/qa-live/inspect");
-    check("a blocked row is not probed", liveInsp.json?.blocked && !liveInsp.json?.version, `blocked=${Boolean(liveInsp.json?.blocked)} version=${liveInsp.json?.version}`);
-    check("a blocked row reports the guard's code and why (unchecked, not a fake failure)",
-      liveInsp.json?.status === "unchecked" && liveInsp.json?.errorCode === "blocked_live_home"
-        && Boolean(liveInsp.json?.guidance),
-      `status=${liveInsp.json?.status} code=${liveInsp.json?.errorCode}`);
-    const liveSpawn = await api("POST", "/api/sessions", { backend: "qa-live", cwd: tmpdir(), title: "should be refused" });
-    check("spawning the blocked row fails instead of touching the live home", liveSpawn.status >= 400,
+    check("a row aimed at the operator's real home is no longer refused",
+      liveListed !== undefined && !liveListed.blocked,
+      `blocked=${String(liveListed?.blocked ?? "(field is gone)")}`);
+    check("...and the row keeps the home it named", liveListed?.home === LIVE_HOME, String(liveListed?.home));
+    const liveSpawn = await api("POST", "/api/sessions", { backend: "qa-live", cwd: tmpdir(), title: "real home row" });
+    check("...and it spawns like any other row", liveSpawn.status === 201,
       `status=${liveSpawn.status} ${liveSpawn.text.slice(0, 140)}`);
+    if (liveSpawn.status === 201) {
+      const lsid = liveSpawn.json?.id;
+      let lLive = null;
+      for (let i = 0; i < 60 && !lLive; i++) {
+        await sleep(1000);
+        lLive = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === lsid) ?? null;
+        if (lLive && lLive.status !== "starting") break;
+      }
+      const lenv = lLive?.pid ? psEnv(lLive.pid) : {};
+      check("...with HERMES_HOME still set explicitly to that home",
+        lenv.HERMES_HOME === LIVE_HOME, String(lenv.HERMES_HOME ?? "(unset)"));
+      await api("DELETE", `/api/sessions/${lsid}`);
+    } else {
+      skip("spawning a row aimed at the operator's real home", `POST /api/sessions returned ${liveSpawn.status}`);
+    }
 
     // 5b. a command that does not exist must fail FAST and cleanly. `spawn` reports ENOENT through
     //     an 'error' event (not a throw) and leaves no pid, so without the guard this is an uncaught
@@ -365,7 +386,7 @@ async function main() {
     const del2 = await api("DELETE", "/api/backends/qa-mock");
     check("DELETE works once the session is gone", del2.status === 200, `status=${del2.status} ${del2.text.slice(0, 120)}`);
     const del3 = await api("DELETE", "/api/backends/qa-live");
-    check("a blocked row can be deleted", del3.status === 200, `status=${del3.status}`);
+    check("the real-home row deletes once its session is gone", del3.status === 200, `status=${del3.status}`);
     const del4 = await api("DELETE", "/api/backends/qa-missing");
     check("a row that only ever failed can be deleted too", del4.status === 200, `status=${del4.status}`);
     const del5 = await api("DELETE", "/api/backends/qa-fork");

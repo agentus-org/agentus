@@ -41,10 +41,7 @@ export interface BackendView {
   cwd?: string | null;
   notes?: string;
   builtin?: boolean;
-  allowLiveHome?: boolean;
   warnings?: string[];
-  /** set when the isolation guard refused this row — it cannot spawn until fixed */
-  blocked?: string | null;
   /** last known health (system-written; see BackendHealth on the server) */
   health?: BackendHealthView;
   /** what the agent advertised the last time a slot really started from this row */
@@ -97,7 +94,6 @@ export interface BackendInspect {
   installDir: string | null;
   /** NOT a gate: it returns OK before the adapter's server module is imported */
   acpCheck: { ok: boolean; output: string } | null;
-  blocked: string | null;
   warnings: string[];
   error: string | null;
   /** structured verdict (persisted onto the row by the server) */
@@ -119,7 +115,6 @@ export interface BackendInput {
   profile?: string | null;
   cwd?: string | null;
   notes?: string;
-  allowLiveHome?: boolean;
 }
 
 export interface SessionView {

@@ -59,8 +59,7 @@ layer never changes.
 | `AGENTSLOT_DATA` | `packages/server/.data` | SQLite location |
 | `AGENTSLOT_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTSLOT_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
-| `AGENTSLOT_HERMES_HOME` | `~/.agentslot-test/home` | **isolated `HERMES_HOME` for the child** |
-| `AGENTSLOT_ALLOW_LIVE_HOME` | unset | `1` = allow spawning against `~/.hermes` (you almost never want this) |
+| `AGENTSLOT_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
 | `AGENTSLOT_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
 | `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
 | `AGENTSLOT_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
@@ -237,23 +236,30 @@ forget), and the LAN port must stay plain.
 Logout revokes the session id server-side, so "sign out" ends the session instead of
 just hiding the UI — the cookie stops working immediately.
 
-## Isolation (read this before pointing it at your real agent)
+## HERMES_HOME (which data directory a slot reads and writes)
 
-A spawned agent CLI inherits the server's environment. With `HERMES_HOME` unset,
-`hermes acp` falls back to *your live* `~/.hermes` — the same `state.db` your running
-gateway has open. Two writers on one WAL SQLite is how a real user's state.db got
-corrupted on 2026-10-02 (Hermes' bundled SQLite 3.50.4 has the WAL-reset bug).
+A spawned agent CLI inherits the server's environment, so the server **always sets
+`HERMES_HOME` explicitly**: the row's own home if it names one, otherwise the default —
+**your real `~/.hermes`**, the same `state.db` your gateway and Studio have open. That is
+the intended production setting: a slot drives your actual agent, with your config,
+credentials, memory and session list.
 
-So the server is **fail-closed**: it resolves an explicit home for every backend that
-owns one, ignores an *inherited* `HERMES_HOME` (a Hermes-launched shell leaks the live
-one down), and refuses to spawn when the resolved home equals the live home unless you
-say `AGENTSLOT_ALLOW_LIVE_HOME=1`. `GET /api/backends` reports `home` / `warnings` /
-`blocked` and the new-session dialog shows them.
+An *inherited* `HERMES_HOME` is ignored (a Hermes-launched shell leaks its own down), so
+where a slot writes is always something you chose — on the row, or in
+`AGENTSLOT_HERMES_HOME`.
 
-`scripts/setup-hermes-test-home.py` builds that home: config derived from yours with
-`mcp_servers: {}`, memory off (the embedded Hindsight instance is named by
-`hindsight/config.json`'s `profile`, whose default `"hermes"` would attach a fresh home
-to your production memory daemon), and `.env` copied 0600.
+To keep one slot's data separate (a clean session list, a different profile, a throwaway
+experiment), name a directory in that row's HERMES_HOME — no permission needed. The
+early-dev **isolation guard** is gone: it refused the real home outright because Hermes'
+bundled SQLite 3.50.4 (inside the WAL-reset range) corrupted a real `state.db` when two
+writers shared one WAL file (2026-10-02). The runtime now links SQLite 3.53.1, and sharing
+one home is what Hermes itself already does all day (gateway + Studio bridge), so the
+cockpit no longer gets in the way.
+
+`scripts/setup-hermes-test-home.py` still builds a separate home (config derived from
+yours with `mcp_servers: {}`, memory off). One trap survives when a row points elsewhere:
+a fresh home whose `hindsight/config.json` keeps the default profile name `"hermes"` would
+attach to your production memory daemon, so the row shows a warning when it would.
 
 ## What it does today (M0 → M4)
 

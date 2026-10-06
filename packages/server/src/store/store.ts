@@ -171,7 +171,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
 interface RawBackendRow {
   id: string; label: string; kind: string; cmd: string; args: string; env: string;
   home: string | null; profile: string | null; cwd: string | null; notes: string;
-  allow_live_home: number; builtin: number; created_at: number; updated_at: number;
+  builtin: number; created_at: number; updated_at: number;
   // health snapshot (M6.1) — system-written, see registry.BackendHealth
   last_check_status: string | null; last_check_kind: string | null;
   last_check_error_code: string | null; last_check_error_message: string | null;
@@ -193,7 +193,6 @@ function rowToBackend(r: RawBackendRow): BackendRow {
     profile: r.profile ?? null,
     cwd: r.cwd ?? null,
     notes: r.notes ?? "",
-    allowLiveHome: r.allow_live_home === 1,
     builtin: r.builtin === 1,
     health: {
       status: (r.last_check_status as BackendHealth["status"] | null) ?? "unchecked",
@@ -254,7 +253,7 @@ export class Store {
         id text primary key, label text not null, kind text not null,
         cmd text not null, args text not null default '[]', env text not null default '{}',
         home text, profile text, cwd text, notes text not null default '',
-        allow_live_home integer not null default 0, builtin integer not null default 0,
+        builtin integer not null default 0,
         created_at integer not null, updated_at integer not null
       );
     `);
@@ -768,15 +767,15 @@ export class Store {
     this.#db
       .prepare(
         `insert into backends (id, label, kind, cmd, args, env, home, profile, cwd, notes,
-                               allow_live_home, builtin, created_at, updated_at,
+                               builtin, created_at, updated_at,
                                last_check_status, last_check_kind, last_check_error_code,
                                last_check_error_message, last_check_guidance, last_check_latency_ms,
                                last_check_at, last_success_at, last_failure_at, handshake, handshake_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(id) do update set
            label = excluded.label, kind = excluded.kind, cmd = excluded.cmd, args = excluded.args,
            env = excluded.env, home = excluded.home, profile = excluded.profile, cwd = excluded.cwd,
-           notes = excluded.notes, allow_live_home = excluded.allow_live_home,
+           notes = excluded.notes,
            updated_at = excluded.updated_at,
            -- the evidence travels with the row: a spawn-relevant edit replaces it with a cleared
            -- snapshot (coerceRow decides that), and a row that was never checked writes nulls.
@@ -791,7 +790,7 @@ export class Store {
       )
       .run(
         row.id, row.label, row.kind, row.cmd, JSON.stringify(row.args), JSON.stringify(row.env ?? {}),
-        row.home, row.profile, row.cwd, row.notes ?? "", row.allowLiveHome ? 1 : 0,
+        row.home, row.profile, row.cwd, row.notes ?? "",
         row.builtin ? 1 : 0, row.createdAt, row.updatedAt,
         row.health?.status ?? null, row.health?.kind ?? null, row.health?.errorCode ?? null,
         row.health?.message ?? null, row.health?.guidance ?? null, row.health?.latencyMs ?? null,

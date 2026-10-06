@@ -518,8 +518,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     }
     // ---- backend registry (M6) --------------------------------------------------------------
     // A row says which COMMAND, which HERMES_HOME and which profile a slot spawns with; `plan`
-    // is the isolation verdict computed with the very guard the spawn uses, so a row can be
-    // seen (and refused) before anything is spawned.
+    // resolves the home the same way the spawn does, so the panel shows the real path (a row
+    // with no home of its own runs against the operator's own ~/.hermes).
     if (url.pathname === "/api/backends" && req.method === "GET") {
       return send(
         res,
@@ -529,8 +529,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return {
             id: row.id, label: row.label, kind: row.kind, cmd: row.cmd, args: row.args,
             env: Object.keys(row.env ?? {}), home: plan.home, profile: row.profile,
-            cwd: row.cwd, notes: row.notes, builtin: row.builtin, allowLiveHome: row.allowLiveHome,
-            warnings: plan.warnings, blocked: plan.blocked,
+            cwd: row.cwd, notes: row.notes, builtin: row.builtin,
+            warnings: plan.warnings,
             health: row.health, handshake: row.handshake,
           };
         }),
@@ -543,7 +543,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (store.getBackend(row.id)) return send(res, 409, { error: `backend ${row.id} already exists` });
       store.upsertBackend(row);
       const plan = planFor(row);
-      return send(res, 201, { ok: true, id: row.id, warnings: plan.warnings, blocked: plan.blocked });
+      return send(res, 201, { ok: true, id: row.id, warnings: plan.warnings });
     }
     const beMatch = url.pathname.match(/^\/api\/backends\/([\w.-]+)(\/.*)?$/);
     if (beMatch) {
@@ -553,7 +553,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (!existing) return send(res, 404, { error: `unknown backend: ${beId}` });
       if (req.method === "GET" && beSub === "") {
         const plan = planFor(existing);
-        return send(res, 200, { ...existing, home: plan.home, warnings: plan.warnings, blocked: plan.blocked });
+        return send(res, 200, { ...existing, home: plan.home, warnings: plan.warnings });
       }
       if ((req.method === "PATCH" || req.method === "PUT") && beSub === "") {
         const body = (await readJson(req)) as Record<string, unknown>;
@@ -561,7 +561,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!row) return send(res, 400, { error });
         store.upsertBackend(row);
         const plan = planFor(row);
-        return send(res, 200, { ok: true, id: row.id, warnings: plan.warnings, blocked: plan.blocked });
+        return send(res, 200, { ok: true, id: row.id, warnings: plan.warnings });
       }
       if (req.method === "DELETE" && beSub === "") {
         // A row that OPEN sessions still name must stay: deleting it would leave them pointing

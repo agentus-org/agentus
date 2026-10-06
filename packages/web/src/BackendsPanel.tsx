@@ -4,18 +4,19 @@
 // frozen at server start:
 //   1. which CODE  — the command, plus env such as PYTHONPATH at a source checkout
 //                    (the box's default `hermes` is the installed Studio runtime);
-//   2. which DATA  — HERMES_HOME: the live ~/.hermes (never by accident) or a disposable home;
+//   2. which DATA  — HERMES_HOME: today the box's real ~/.hermes (the default), or any other
+//                    directory a row names to keep a slot's data separate;
 //   3. which PROFILE — `hermes -p <profile>` inside that home.
-// A row is that triple, and the new-slot dialog picks a row. The isolation guard
-// (buildSpawnEnv) still runs per spawn, so a row can never smuggle the live home past it:
-// the server reports such a row as `blocked` and the dialog refuses to launch it.
+// A row is that triple, and the new-slot dialog picks a row. The home is resolved the same way
+// the spawn resolves it: the row's own if it names one, otherwise the operator's real ~/.hermes
+// (the early-dev isolation guard is gone).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cockpit, type BackendInspect, type BackendInput, type BackendView } from "./state";
 
 const EMPTY: BackendInput = {
   id: "", label: "", kind: "hermes", cmd: "hermes", args: "acp",
-  env: "", home: "", profile: "", cwd: "", notes: "", allowLiveHome: false,
+  env: "", home: "", profile: "", cwd: "", notes: "",
 };
 
 function argsToText(args?: string[] | string): string {
@@ -45,7 +46,6 @@ function draftOf(row: BackendView): BackendInput {
     profile: row.profile ?? "",
     cwd: row.cwd ?? "",
     notes: row.notes ?? "",
-    allowLiveHome: Boolean(row.allowLiveHome),
   };
 }
 
@@ -247,7 +247,7 @@ export function BackendsPanel(): JSX.Element {
 
       <div className="be-list">
         {rows.map((row) => (
-          <div key={row.id} className={`be-row ${row.blocked ? "blocked" : ""}`}>
+          <div key={row.id} className="be-row">
             <div className="be-row-main">
               <div className="be-row-title">
                 <b>{row.label}</b> <code>{row.id}</code>
@@ -255,8 +255,6 @@ export function BackendsPanel(): JSX.Element {
                 {row.health?.at ? (
                   <Badge tone={statusTone(row.health.status)}>{STATUS_LABEL[row.health.status] ?? row.health.status}</Badge>
                 ) : null}
-                {row.allowLiveHome ? <Badge tone="danger">live home</Badge> : null}
-                {row.blocked ? <Badge tone="warn">被隔离规则拦住</Badge> : null}
               </div>
               <div className="be-row-sub">
                 <code>{row.cmd} {(row.args ?? []).join(" ")}</code>
@@ -265,7 +263,6 @@ export function BackendsPanel(): JSX.Element {
                 {(row.env ?? []).length ? <> · env <code>{(row.env ?? []).join(", ")}</code></> : null}
               </div>
               {row.notes ? <div className="be-row-note">{row.notes}</div> : null}
-              {row.blocked ? <div className="set-err">{row.blocked}</div> : null}
               {(row.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
               <HealthLine row={row} />
               <HandshakeLine row={row} />
@@ -330,7 +327,6 @@ export function BackendsPanel(): JSX.Element {
                 <div className="be-inspect-out">{inspect.data.acpCheck.output}</div>
               </li>
             ) : null}
-            {inspect.data.blocked ? <li className="be-danger">被拦住：{inspect.data.blocked}</li> : null}
             {inspect.data.error ? <li className="be-danger">{inspect.data.error}</li> : null}
             {(inspect.data.warnings ?? []).map((w, i) => <li key={i} className="hint-warn">{w}</li>)}
           </ul>
@@ -388,8 +384,9 @@ export function BackendsPanel(): JSX.Element {
                     <p className="set-hint be-kind-help">
                       hermes 行的四件事：<b>命令</b> 填 <code>hermes</code>，或指向某份源码树的启动器
                       （如 <code>~/.local/bin/hermes-dev</code>）；<b>HERMES_HOME</b> 是这一行读写的
-                      <code>~/.hermes</code> 目录 —— 默认给隔离的 home，指向 live <code>~/.hermes</code>
-                      会被拒绝（除非勾选下面的 live home）；<b>profile</b> 以 <code>-p</code> 传给命令；
+                      <code>~/.hermes</code> 目录 —— <b>留空就用默认的 <code>~/.hermes</code></b>
+                      （也就是你现在这个 hermes 的数据目录：共用它会共用会话列表、记忆和 cron）；
+                      想让某个槽位用干净的数据，就填一个别的目录；<b>profile</b> 以 <code>-p</code> 传给命令；
                       <b>额外环境</b> 里放 <code>PYTHONPATH</code> 就能让这一行跑那份源码树。
                     </p>
                   ) : null}
@@ -403,7 +400,7 @@ export function BackendsPanel(): JSX.Element {
                   </div>
                   <div className="set-row">
                     <label>HERMES_HOME</label>
-                    <input className="set-input" value={draft.home ?? ""} spellCheck={false} onChange={(e) => field("home", e.target.value)} placeholder="~/.agentslot-test/home" />
+                    <input className="set-input" value={draft.home ?? ""} spellCheck={false} onChange={(e) => field("home", e.target.value)} placeholder="留空 = 默认 ~/.hermes" />
                   </div>
                   <div className="set-row">
                     <label>profile</label>
@@ -424,13 +421,6 @@ export function BackendsPanel(): JSX.Element {
                   <div className="set-row">
                     <label>备注</label>
                     <input className="set-input" value={draft.notes ?? ""} onChange={(e) => field("notes", e.target.value)} />
-                  </div>
-                  <div className="set-row">
-                    <label>live home</label>
-                    <label className="set-check">
-                      <input type="checkbox" checked={Boolean(draft.allowLiveHome)} onChange={(e) => field("allowLiveHome", e.target.checked)} />
-                      允许这一行直接驱动 live <code>~/.hermes</code>（危险：与运行时同开一个 state.db）
-                    </label>
                   </div>
                 </div>
                 <div className="be-modal-foot">

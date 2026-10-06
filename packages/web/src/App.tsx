@@ -2262,7 +2262,7 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
       .loadBackends()
       .then((rows) => {
         setBackends(rows);
-        const first = rows.find((b) => !b.blocked);
+        const first = rows[0];
         setBackend((cur) => cur || first?.id || "");
       })
       .catch((e) => setErr(`后端列表拉取失败：${String((e as Error).message ?? e)}`))
@@ -2294,13 +2294,11 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
           {backends.map((b) => (
             <button
               key={b.id}
-              title={b.blocked ? `blocked: ${b.blocked}` : b.home ? `home: ${b.home}` : undefined}
-              disabled={!!b.blocked}
-              className={`${backend === b.id ? "sel" : ""} ${b.blocked ? "blocked" : ""}`}
+              title={b.home ? `home: ${b.home}` : undefined}
+              className={backend === b.id ? "sel" : ""}
               onClick={() => setBackend(b.id)}
             >
               {b.label}
-              {b.blocked ? " ⊘" : ""}
             </button>
           ))}
           <button className="retry" title="reload backend list" onClick={load}>⟳</button>
@@ -2319,7 +2317,6 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
               {sel.home ? (
                 <div>
                   home: <code>{sel.home}</code>
-                  {sel.allowLiveHome ? <b className="be-danger"> · live home 已放行（危险）</b> : null}
                 </div>
               ) : null}
               {(sel.env ?? []).length ? <div>env: <code>{(sel.env ?? []).join(", ")}</code></div> : null}
@@ -2331,7 +2328,6 @@ function NewSessionModal({ onClose }: { onClose: () => void }): JSX.Element {
                   {sel.health.status !== "online" && sel.health.guidance ? <div className="be-guidance">{sel.health.guidance}</div> : null}
                 </div>
               ) : null}
-              {sel.blocked ? <div className="err">blocked: {sel.blocked}</div> : null}
               {(sel.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
             </div>
           );

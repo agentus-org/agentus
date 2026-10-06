@@ -24,32 +24,29 @@ const run = promisify(execFile);
 export type BackendKind = "hermes" | "qoder" | "mock";
 export const BACKEND_KINDS: BackendKind[] = ["hermes", "qoder", "mock"];
 
-/** The live home of the operator's real runtime — sharing it is fatal (see backends.ts). */
+/** The operator's real home. Not a禁区 any more: it is the DEFAULT home for a hermes row. */
 export const HERMES_LIVE_HOME = path.join(homedir(), ".hermes");
-/** Where a hermes row goes when it does not name a home itself. */
-export const HERMES_DEFAULT_HOME =
-  process.env.AGENTSLOT_HERMES_HOME || path.join(homedir(), ".agentslot-test/home");
+/** Where a hermes row goes when it does not name a home itself: the operator's own home. */
+export const HERMES_DEFAULT_HOME = process.env.AGENTSLOT_HERMES_HOME || HERMES_LIVE_HOME;
 
 /** One registry row: the whole definition of "how to spawn this kind of agent". */
 export interface BackendRow {
   id: string;
   label: string;
-  /** spawn family — decides the arg shape and whether the home guard applies */
+  /** spawn family — decides the arg shape and whether a home is injected */
   kind: BackendKind;
   cmd: string;
   /** args WITHOUT the profile flag (effectiveArgs() composes that) */
   args: string[];
-  /** extra env handed to the child (e.g. PYTHONPATH=<fork tree>); the isolation home always wins */
+  /** extra env handed to the child (e.g. PYTHONPATH=<fork tree>); the home always wins */
   env: Record<string, string>;
-  /** HERMES_HOME for kind=hermes (null/empty = HERMES_DEFAULT_HOME) */
+  /** HERMES_HOME for kind=hermes (null/empty = HERMES_DEFAULT_HOME, the operator's ~/.hermes) */
   home: string | null;
   /** hermes `-p <profile>` — a profile inside that home, i.e. a second isolation axis */
   profile: string | null;
   /** default working directory for new slots (null = the dialog asks) */
   cwd: string | null;
   notes: string;
-  /** deliberate opt-in to run against the live home: the UI shows it red, buildSpawnEnv warns */
-  allowLiveHome: boolean;
   /** seeded row (the ones that used to be env-driven); editable, but flagged in the UI */
   builtin: boolean;
   /**
@@ -67,8 +64,6 @@ export interface BackendRow {
 export interface BackendPlan {
   home: string | null;
   warnings: string[];
-  /** set when buildSpawnEnv refused — the row cannot spawn until it is fixed */
-  blocked: string | null;
 }
 
 // ---- health snapshot ---------------------------------------------------------------------
@@ -83,7 +78,6 @@ export interface BackendPlan {
 export type CheckStatus = "online" | "offline" | "missing" | "unchecked";
 export type CheckKind = "startup" | "manual" | "session";
 export type CheckErrorCode =
-  | "blocked_live_home"
   | "command_not_found"
   | "spawn_failed"
   | "version_failed"
@@ -115,8 +109,6 @@ export function emptyHealth(): BackendHealth {
 
 /** One line per code, addressed to the operator, saying what to fix. */
 export const ERROR_GUIDANCE: Record<CheckErrorCode, string> = {
-  blocked_live_home:
-    "这一行指向 live home（真身数据目录），被隔离护栏拒绝，所以不会去探测它。把 home 改到独立目录，或显式打开“允许 live home”再试。",
   command_not_found:
     "命令不在 PATH 里，也不是可执行的绝对路径。先确认装了没有，或把命令写成绝对路径。",
   spawn_failed: "命令在，但进程起不来（缺解释器、没执行权限之类）。看下面原文。",
@@ -215,11 +207,12 @@ export function seedRows(now = Date.now()): BackendRow[] {
       cmd: spec.cmd,
       args: [...spec.args],
       env: {},
-      home: kind === "hermes" ? (spec.isolation?.homeDefault ?? HERMES_DEFAULT_HOME) : null,
+      // null = "whatever the default home is" — today the operator's own ~/.hermes, so the row
+      // follows the default instead of freezing a path that was only ever a dev-time choice.
+      home: null,
       profile: null,
       cwd: null,
       notes: notes[id] ?? "",
-      allowLiveHome: false,
       builtin: true,
       health: emptyHealth(),
       handshake: null,
@@ -241,14 +234,11 @@ export function rowToSpec(row: BackendRow): BackendSpec {
     needsLoginHint: row.kind === "qoder" ? "qodercli login" : undefined,
     env: { ...(row.env ?? {}) },
     profile: row.profile,
-    allowLiveHome: row.allowLiveHome,
   };
   if (row.kind === "hermes") {
     spec.isolation = {
       homeVar: "HERMES_HOME",
       homeDefault: row.home && row.home.trim() ? row.home : HERMES_DEFAULT_HOME,
-      liveHome: HERMES_LIVE_HOME,
-      allowEnv: "AGENTSLOT_ALLOW_LIVE_HOME",
     };
   }
   return spec;
@@ -267,16 +257,16 @@ export function effectiveArgs(row: BackendRow): string[] {
   return args;
 }
 
-/** Isolation verdict for one row, computed with the SAME guard the spawn uses. */
+/** The home (and any warning about it) one row will spawn with — same code path as the spawn. */
 export function planFor(row: BackendRow): BackendPlan {
   try {
     const plan = buildSpawnEnv(rowToSpec(row));
-    return { home: plan.home, warnings: plan.warnings, blocked: null };
+    return { home: plan.home, warnings: plan.warnings };
   } catch (e) {
+    // Nothing here should throw any more (the guard is gone); keep the list alive if it ever does.
     return {
       home: row.home ? expandHome(row.home) : null,
-      warnings: [],
-      blocked: e instanceof Error ? e.message : String(e),
+      warnings: [e instanceof Error ? e.message : String(e)],
     };
   }
 }
@@ -316,8 +306,7 @@ export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { r
   // evidence, but changing the command/args/env/home/profile/kind does (the row may no longer
   // be the thing that was measured).
   const edited = body.cmd !== undefined || body.args !== undefined || body.env !== undefined
-    || body.home !== undefined || body.profile !== undefined || body.kind !== undefined
-    || body.allowLiveHome !== undefined;
+    || body.home !== undefined || body.profile !== undefined || body.kind !== undefined;
   return {
     row: {
       id,
@@ -330,7 +319,6 @@ export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { r
       profile: body.profile === undefined ? (base?.profile ?? null) : (s(body.profile) || null),
       cwd: body.cwd === undefined ? (base?.cwd ?? null) : (s(body.cwd) || null),
       notes: body.notes === undefined ? (base?.notes ?? "") : s(body.notes),
-      allowLiveHome: body.allowLiveHome === undefined ? base?.allowLiveHome ?? false : body.allowLiveHome === true,
       builtin: base?.builtin ?? false,
       // Health is evidence about the CURRENT spawn definition, so changing that definition
       // invalidates it — otherwise the list would keep showing "online" for a row that was
@@ -371,7 +359,6 @@ export interface BackendInspect {
   version: string | null;
   installDir: string | null;
   acpCheck: { ok: boolean; output: string } | null;
-  blocked: string | null;
   warnings: string[];
   error: string | null;
   /** structured verdict — what the UI stores, colour-codes and turns into advice */
@@ -438,7 +425,6 @@ export async function inspectRow(row: BackendRow, timeoutMs = 30_000): Promise<B
     version: null,
     installDir: null,
     acpCheck: null,
-    blocked: plan.blocked,
     warnings: plan.warnings,
     error: null,
     status: "unchecked",
@@ -457,16 +443,6 @@ export async function inspectRow(row: BackendRow, timeoutMs = 30_000): Promise<B
         result.stateDb = { path: db, bytes: st.size, mtime: st.mtimeMs };
       }
     } catch { /* a home we cannot stat is worth reporting as "not there" */ }
-  }
-
-  if (plan.blocked) {
-    // The guard refused this row: do NOT probe it (probing would run the very command the
-    // guard just blocked, against the live home). `unchecked` is the honest status: nothing
-    // was measured — the row is simply not checkable until it is fixed.
-    result.errorCode = "blocked_live_home";
-    result.guidance = ERROR_GUIDANCE.blocked_live_home;
-    result.latencyMs = Date.now() - started;
-    return result;
   }
 
   let env: NodeJS.ProcessEnv;
@@ -523,12 +499,6 @@ export async function inspectRow(row: BackendRow, timeoutMs = 30_000): Promise<B
  */
 export function startupCheck(row: BackendRow): BackendHealth {
   const started = Date.now();
-  const plan = planFor(row);
-  if (plan.blocked) {
-    return checkedHealth(row.health, {
-      status: "unchecked", kind: "startup", errorCode: "blocked_live_home", message: plan.blocked,
-    });
-  }
   const resolved = resolveCmd(row.cmd);
   if (!resolved) {
     return checkedHealth(row.health, {
