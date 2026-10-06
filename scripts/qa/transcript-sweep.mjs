@@ -1,12 +1,17 @@
-// QA: the transcript's own shape — a turn's tool calls fold into ONE row, finished thinking
-// folds to a line, and only the live burst is open in a small scrolling window.
+// QA: the transcript's own shape — one stretch of the agent's WORK (thinking + tool calls)
+// folds into ONE row; while it is live that row is open in a BOUNDED, self-scrolling box with
+// only the newest burst windowed; when the agent moves on, the whole thing folds to its header.
 //
 //   node scripts/qa/transcript-sweep.mjs
 //
-// The failure this sweep exists for (operator report, 2026-10-06): "工具执行老是刷屏…思考也
-// 老是刷屏". Ten calls were ten lines and every reasoning burst stayed open for the rest of
-// the session. The mock's `[tools:10]` produces exactly that shape, with no tokens spent.
-// Reference: hermes-studio's ToolRunSummary (count + names + status, children behind a click).
+// The failures this sweep exists for (operator reports, 2026-10-06):
+//   ① "工具执行老是刷屏" — ten calls were ten lines.
+//   ② "现在全是思考刷屏了" — folding only the calls left ten 思考 rows behind: 20 rows became 11.
+//   ③ "后面执行的那些怎么直接折叠到最前面去" — the run was anchored at the FIRST call, so calls that
+//     ran later rendered ABOVE reasoning that came after them; the transcript read out of order.
+// The mock's `[tools:10]` produces exactly that shape (10 bursts + 10 calls, interleaved), no
+// tokens spent. Reference: hermes-studio's ToolRunSummary (count + names + status, children
+// behind a click), extended to the reasoning, which studio keeps as separate rows.
 
 const CDP = "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";   // dev instance (scripts/dev.sh start)
@@ -37,49 +42,6 @@ const ev = async (x, to = 25000) => {
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? "eval failed");
   return r.result.value;
 };
-const setViewport = async (W, H) => {
-  await send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: W < 700 });
-  await send("Emulation.setTouchEmulationEnabled", { enabled: W < 700, maxTouchPoints: 5 }).catch(() => {});
-  await sleep(400);
-};
-/** Answer an option the way a THUMB or a mouse does: real pointer events at the button's
- *  centre. A programmatic `.click()` succeeds even when something transparent covers the
- *  button — exactly the failure the operator reported ("弹窗点击不了") and exactly why the
- *  first version of this sweep was green while the surface was unusable for him. */
-const clickAt = async (sel, re) => {
-  const box = await ev(`(() => {
-    const host = document.querySelector('.perm-dialog') ?? document.querySelector('.perm-card');
-    if (!host) return null;
-    const b = ${sel ? `host.querySelector(${JSON.stringify(sel)})` : `[...host.querySelectorAll('button')].find((x) => ${re}.test(x.textContent || ''))`};
-    if (!b) return null;
-    const r = b.getBoundingClientRect();
-    return { x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) };
-  })()`);
-  if (!box) return false;
-  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
-  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
-  await sleep(350);
-  return true;
-};
-const clickOption = (re) => clickAt("", re);
-
-/** The same on a touch screen: a phone taps, it does not move a mouse. */
-const tapOption = async (re) => {
-  const box = await ev(`(() => {
-    const host = document.querySelector('.perm-dialog') ?? document.querySelector('.perm-card');
-    const b = host && [...host.querySelectorAll('button')].find((x) => ${re}.test(x.textContent || ''));
-    if (!b) return null;
-    const r = b.getBoundingClientRect();
-    return { x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) };
-  })()`);
-  if (!box) return false;
-  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x, y: box.y }] });
-  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await sleep(350);
-  return true;
-};
-
 
 await send("Page.enable"); await send("Runtime.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -127,7 +89,7 @@ const sess = await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-ty
 check("the sweep could open a mock session (no tokens are spent by this sweep)", Boolean(sess?.id), JSON.stringify(sess).slice(0, 160));
 const sid = sess.id;
 const status = async () => ev(`fetch('/api/sessions').then(r=>r.json()).then(d=>(d.live||[]).find(s=>s.id===${JSON.stringify(sid)})?.status||'')`).catch(() => "");
-const idle = async (ms = 60000) => {
+const idle = async (ms = 90000) => {
   const t0 = Date.now();
   for (;;) {
     const st = await status();
@@ -136,113 +98,110 @@ const idle = async (ms = 60000) => {
     await sleep(300);
   }
 };
+const prompt = async (text) => ev(`fetch('/api/sessions/${sid}/prompt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:${JSON.stringify(text)}})}).then(r=>r.status)`);
 await ev(`location.href = ${JSON.stringify(BASE + "/?session=" + sid)}`);
 await sleep(3200);
 
-// --- one turn that does real work: 10 tool calls, 10 reasoning bursts ------------------
-// This is the operator's "老是刷屏": every call its own line, every burst open for good.
-const started = await ev(`fetch('/api/sessions/${sid}/prompt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:'[tools:10]'})}).then(r=>r.status)`);
+// --- ① one turn that does real work: 10 calls + 10 bursts, interleaved -----------------
+const started = await prompt("[tools:10]");
 check("the work turn was accepted", started === 202 || started === 200, `HTTP ${started}`);
 
-// while it runs: the live block, its window, and the already-finished ones. Keep sampling
-// until the window actually overflows (the burst starts two lines tall, so one early sample
-// would "prove" there is nothing to scroll).
-let live = null;
-let lastLive = null;
-let peakLines = 0;
-let overflowed = null;
+// while it runs: ONE row, open, in a bounded box, with only the newest burst windowed.
+let lastLive = null, overflowed = null, peakLines = 0, peakBodyRatio = 0, strayThoughts = 0;
 for (let i = 0; i < 300; i++) {
   await sleep(150);
   const sample = await ev(`(() => {
-    const box = document.querySelector('.msg.thought.live .bubble.live');
-    if (!box) return null;
-    const st = getComputedStyle(box);
-    const lh = parseFloat(st.lineHeight) || 20;
-    const all = [...document.querySelectorAll('.msg.thought')];
+    const box = document.querySelector('.work-run-items .work-thought.live');
+    const items = document.querySelector('.work-run-items');
+    const head = document.querySelector('.work-run-head');
+    const st = box ? getComputedStyle(box) : null;
+    const lh = st ? (parseFloat(st.lineHeight) || 20) : 20;
     return {
-      lines: +(box.clientHeight / lh).toFixed(1),
-      h: box.clientHeight, scroll: box.scrollHeight, top: box.scrollTop,
-      head: (document.querySelector('.msg.thought.live .thought-head')?.textContent || '').trim(),
-      bursts: all.length,
-      openFinished: all.filter((t) => !t.classList.contains("live") && t.querySelector(".bubble")).length,
-      chars: box.textContent.length,
+      head: (head?.textContent || '').replace(/\\s+/g, ' ').trim(),
+      expanded: head?.getAttribute('aria-expanded') ?? '',
+      rows: document.querySelectorAll('.work-run').length,
+      stray: document.querySelectorAll('.stream-inner > .msg.thought').length,
+      bodyH: items ? items.clientHeight : 0,
+      bodyMax: items ? parseFloat(getComputedStyle(items).maxHeight) || 0 : 0,
+      lines: box ? +(box.clientHeight / lh).toFixed(1) : 0,
+      h: box ? box.clientHeight : 0,
+      scroll: box ? box.scrollHeight : 0,
+      top: box ? box.scrollTop : 0,
+      chars: box ? box.textContent.length : 0,
     }; })()`);
-  if (!sample) {
-    // between bursts the live mark moves to the next block: keep watching while the turn runs
+  if (!sample || !sample.head) {
+    // between bursts the live mark moves; keep watching while the turn runs
     if (i % 10 === 9 && (await status()) !== "running") break;
     continue;
   }
-  live = sample;
+  strayThoughts = Math.max(strayThoughts, sample.stray);
+  if (sample.bodyH) peakBodyRatio = Math.max(peakBodyRatio, sample.bodyH / 900);
+  if (!sample.lines) continue;
   lastLive = sample;
   peakLines = Math.max(peakLines, sample.lines);
   if (sample.scroll > sample.h + 8) { overflowed = sample; break; }
 }
-check("while the agent is thinking, the live burst is open in a SMALL window (≈6 lines)",
-  Boolean(lastLive) && peakLines > 1 && peakLines <= 7.5, JSON.stringify({ peakLines, head: lastLive?.head }));
-check("…the burst grows taller than that window, so the window really scrolls",
-  Boolean(overflowed), JSON.stringify(overflowed ? { scroll: overflowed.scroll, h: overflowed.h } : { chars: lastLive?.chars }));
+
+check("while it works, the thinking+calls are ONE row (not ten 思考 rows)", lastLive?.rows === 1 && strayThoughts === 0,
+  JSON.stringify({ rows: lastLive?.rows, strayThoughtRows: strayThoughts }));
+check("…that row is OPEN while the run is live (studio: expanded = override ?? active)",
+  lastLive?.expanded === "true", JSON.stringify({ expanded: lastLive?.expanded }));
+check("…and its header counts both kinds of work",
+  /工具调用/.test(lastLive?.head || "") && /段思考/.test(lastLive?.head || ""), lastLive?.head ?? "");
+check("…the box is BOUNDED — a 20-step turn cannot push the composer off screen",
+  peakBodyRatio > 0 && peakBodyRatio <= 0.5, `body/viewport = ${peakBodyRatio.toFixed(2)}`);
+check("…the newest burst sits in a SMALL window (≈6 lines) and really scrolls",
+  Boolean(overflowed) && peakLines > 1 && peakLines <= 7.5,
+  JSON.stringify({ peakLines, scroll: overflowed?.scroll, h: overflowed?.h }));
 check("…and it follows its own tail while the text arrives (auto-scrolled, not stuck at the top)",
-  Boolean(overflowed) && overflowed.top > 4, JSON.stringify(overflowed ? { top: overflowed.top, scroll: overflowed.scroll, h: overflowed.h } : null));
-check("…the finished bursts above are ALREADY folded while this one streams",
-  Boolean(lastLive) && lastLive.openFinished === 0, JSON.stringify(lastLive ? { bursts: lastLive.bursts, openFinished: lastLive.openFinished } : null));
-check("…and its header says so, with a size, not just an arrow",
-  Boolean(lastLive) && /思考中/.test(lastLive.head) && /字/.test(lastLive.head), lastLive?.head ?? "");
+  Boolean(overflowed) && overflowed.top > 4, JSON.stringify(overflowed ? { top: overflowed.top } : null));
 
 const end = await idle(90000);
 check("the work turn finished (otherwise the folding below is about a running turn)",
   end !== "running" && end !== "starting", `status=${end}`);
-await sleep(600);
+await sleep(700);
 
-const after = await ev(`(() => ({
-  runs: document.querySelectorAll('.tool-run-head').length,
-  runText: (document.querySelector('.tool-run-head')?.textContent || '').replace(/\\s+/g, ' ').trim(),
-  runExpanded: document.querySelector('.tool-run-head')?.getAttribute('aria-expanded') ?? "",
-  cards: document.querySelectorAll('.tool-card').length,
-  bursts: document.querySelectorAll('.msg.thought').length,
-  openBursts: [...document.querySelectorAll('.msg.thought')].filter((t) => t.querySelector('.bubble')).length,
-  burstHead: (document.querySelector('.msg.thought .thought-head')?.textContent || '').trim(),
-  rows: document.querySelectorAll('.stream-inner > *').length,
-  msgs: document.querySelectorAll('.msg').length,
-}))()`);
-check("ten finished tool calls are ONE row now (the whole point)", after.runs === 1 && /10 次工具调用/.test(after.runText),
+const after = await ev(`(() => ({\n  runs: document.querySelectorAll('.work-run').length,\n  head: (document.querySelector('.work-run-head')?.textContent || '').replace(/\\\\s+/g, ' ').trim(),\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.tool-card').length,\n  stray: document.querySelectorAll('.stream-inner > .msg.thought').length,\n  inner: document.querySelectorAll('.work-run-items').length,\n  rows: document.querySelectorAll('.stream-inner > *').length,\n  agent: document.querySelectorAll('.stream-inner > .msg.agent').length,\n  user: document.querySelectorAll('.stream-inner > .msg.user').length,\n}))()`);
+check("20 rows of work are ONE row now — thinking and calls TOGETHER", after.runs === 1 && after.user === 1 && after.agent === 1,
   JSON.stringify(after));
-check("…and the row is collapsed to start with — no tool card on screen",
-  after.runExpanded === "false" && after.cards === 0, JSON.stringify({ expanded: after.runExpanded, cards: after.cards }));
-check("…it names what the turn touched and how it went",
-  /read_file|grep|bash/.test(after.runText) && /[✓✗]/.test(after.runText), after.runText);
-check("every finished reasoning burst is folded to its header line",
-  after.bursts === 10 && after.openBursts === 0, JSON.stringify({ bursts: after.bursts, openBursts: after.openBursts }));
-check("…and that header is readable text, not a bare arrow",
-  /思考/.test(after.burstHead) && /字/.test(after.burstHead), after.burstHead);
+check("…the header says what happened: 10 calls AND 10 bursts",
+  /10 次工具调用/.test(after.head) && /10 段思考/.test(after.head), after.head);
+check("…it is folded to that line — nothing open, no cards, no stray thought rows",
+  after.expanded === "false" && after.cards === 0 && after.inner === 0 && after.stray === 0, JSON.stringify(after));
+check("…and the whole transcript reads in order: prompt, work, answer",
+  after.rows <= 6, `rows=${after.rows}`);
 await shot("transcript-folded.png");
 
-// the two levels of detail are behind clicks (row → call → its I/O)
-check("clicking the run row opens it", await clickSel(".tool-run-head"));
-const opened = await ev(`(() => ({
-  expanded: document.querySelector('.tool-run-head')?.getAttribute('aria-expanded') ?? "",
-  cards: document.querySelectorAll('.tool-run-items .tool-card').length,
-  rows: document.querySelectorAll('.tool-run-items .msg').length,
-}))()`);
-check("…every call is inside, one row each", opened.cards === 10 && opened.rows === 10, JSON.stringify(opened));
-check("then clicking a call opens ITS details", await clickSel(".tool-run-items .tool-head"));
-const detail = await ev(`(() => { const b = document.querySelector('.tool-run-items .tool-body');
-  return { open: Boolean(b), text: (b?.textContent || '').replace(/\\s+/g, ' ').slice(0, 90) }; })()`);
+// the two levels of detail are behind clicks (run → call → its I/O)
+check("clicking the row opens the whole run", await clickSel(".work-run-head"));
+const opened = await ev(`(() => ({\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.work-run-items .tool-card').length,\n  thoughts: document.querySelectorAll('.work-run-items .work-thought').length,\n  first: document.querySelector('.work-run-items > *')?.className ?? '',\n  order: [...document.querySelectorAll('.work-run-items > *')].map((x) => x.className.includes('work-thought') ? 'thought' : 'tool'),\n  bodyMax: parseFloat(getComputedStyle(document.querySelector('.work-run-items')).maxHeight) || 0,\n  windowed: document.querySelectorAll('.work-run-items .work-thought.live').length,\n}))()`);
+check("…every burst and every call is inside, in the order they happened",
+  opened.thoughts === 10 && opened.cards === 10 && opened.order[0] === "thought" && opened.order[1] === "tool",
+  JSON.stringify({ thoughts: opened.thoughts, cards: opened.cards, order: opened.order.slice(0, 4) }));
+check("…the opened body is bounded and scrolls (it is not 20 rows tall on screen)",
+  opened.bodyMax > 0 && opened.bodyMax < 700, `max-height=${opened.bodyMax}px`);
+check("…and none of the finished bursts is windowed any more (the window is for the live one)",
+  opened.windowed === 0, `windowed=${opened.windowed}`);
+check("then clicking a call opens ITS details", await clickSel(".work-run-items .tool-head"));
+const detail = await ev(`(() => { const b = document.querySelector('.work-run-items .tool-body');\n  return { open: Boolean(b), text: (b?.textContent || '').replace(/\\\\s+/g, ' ').slice(0, 90) }; })()`);
 check("…the call shows its own input/output (studio's second level)", detail.open && /done|step/.test(detail.text), JSON.stringify(detail));
 await shot("transcript-run-open.png", false);
 
-check("clicking a folded burst opens the full text", await clickSel(".msg.thought .thought-head"));
-const burst = await ev(`(() => { const b = document.querySelector('.msg.thought .bubble');
-  if (!b) return null; const st = getComputedStyle(b);
-  return { maxH: st.maxHeight, h: b.clientHeight, scroll: b.scrollHeight, chars: b.textContent.length }; })()`);
-check("…and that one is NOT windowed (the window is only for the live burst)",
-  Boolean(burst) && (burst.maxH === "none" || parseFloat(burst.maxH) > 300), JSON.stringify(burst));
+// --- ② a lone burst: no run to fold it into, but it must still fold when it ends ---------
+const single = await prompt("[think]");
+check("a lone-thinking turn was accepted", single === 202 || single === 200, `HTTP ${single}`);
+await idle(60000);
+await sleep(600);
+const lone = await ev(`(() => {\n  const all = [...document.querySelectorAll('.stream-inner > .msg.thought')];\n  const t = all[all.length - 1];\n  return { rows: all.length,\n    head: (t?.querySelector('.thought-head')?.textContent || '').trim(),\n    open: Boolean(t?.querySelector('.bubble')),\n    runs: document.querySelectorAll('.work-run').length }; })()`);
+check("a single burst is NOT folded into a run (fewer than two items reads better as itself)",
+  lone.rows === 1 && lone.runs === 1, JSON.stringify(lone));
+check("…and it folded itself when the turn ended, with a readable header",
+  !lone.open && /思考/.test(lone.head) && /字/.test(lone.head), JSON.stringify(lone));
 
-// --- "load earlier messages" ----------------------------------------------------------
+// --- ③ "load earlier messages" ----------------------------------------------------------
 // Folding makes the transcript short, so a page can leave room on screen with history still
 // on disk. The invariant: never offer "load earlier" while the screen has empty space.
-const older = await ev(`(() => { const btn = document.querySelector('.load-earlier button');
-  const s = document.querySelector('.stream');
-  return { button: Boolean(btn), scroll: s.scrollHeight, client: s.clientHeight }; })()`);
+const older = await ev(`(() => { const btn = document.querySelector('.load-earlier button');\n  const s = document.querySelector('.stream');\n  return { button: Boolean(btn), scroll: s.scrollHeight, client: s.clientHeight }; })()`);
 check("“load earlier” is only offered when the screen is already full",
   !older.button || older.scroll > older.client + 80, JSON.stringify(older));
 

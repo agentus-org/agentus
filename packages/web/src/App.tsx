@@ -1240,8 +1240,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               </button>
             </div>
           )}
-          {foldToolRuns(v.msgs, v.busy).map((row) => (row.kind === "run"
-            ? <ToolRun key={row.key} tools={row.tools} />
+          {foldWork(v.msgs, v.busy).map((row) => (row.kind === "work"
+            ? <WorkRun key={row.key} items={row.items} active={row.active} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
@@ -1432,83 +1432,126 @@ function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: 
   );
 }
 
-/** One row of the transcript: a message as it stands, or a turn's tool calls folded into a
- *  single line (hermes-studio's `ToolRunSummary`). */
+/** One row of the transcript: a message as it stands, or one stretch of the agent's WORK
+ *  (its thinking and its tool calls, in order) folded into a single line. */
 type ToolMsg = Extract<MsgView, { kind: "tool" }>;
+type ThoughtMsg = Extract<MsgView, { kind: "thought" }>;
+type WorkItem = ToolMsg | ThoughtMsg;
+const isWork = (m: MsgView): m is WorkItem => m.kind === "thought" || m.kind === "tool";
 type StreamRow =
   | { kind: "msg"; m: MsgView; live: boolean; tail: boolean }
-  | { kind: "run"; key: string; tools: ToolMsg[]; tail: boolean };
+  | { kind: "work"; key: string; items: WorkItem[]; active: boolean; tail: boolean };
 
-/** Fold each turn's FINISHED tool calls into one row; the call still running stays out as its
- *  own line, because that dot is the live progress the operator is actually watching.
+/** Fold one stretch of work into a single row — thinking and tool calls TOGETHER.
  *
- *  A turn is the run — a new prompt starts the next one (studio keys this on a `runMarker`, the
- *  same idea with an id we do not need: messages arrive in order and a user row closes the run).
- *  Fewer than two calls is not worth a click: one tool reads better as itself. */
-function foldToolRuns(msgs: MsgView[], busy: boolean): StreamRow[] {
-  const byTurn = new Map<number, ToolMsg[]>();
-  const turnOf = new Map<MsgView, number>();
-  let turn = 0;
-  for (const m of msgs) {
-    if (m.kind === "user") turn++;
-    turnOf.set(m, turn);
-    if (m.kind === "tool" && statusOf(m.status) !== "running") {
-      const list = byTurn.get(turn) ?? [];
-      list.push(m);
-      byTurn.set(turn, list);
-    }
-  }
+ *  Why both (measured 2026-10-06): folding only the calls moved the flood rather than ending it.
+ *  A turn that reasons and calls in alternation (the shape every real agent has) still printed ten
+ *  `💭 思考` rows: 20 rows became 11. Worse, the tool row was anchored at the FIRST call, so calls
+ *  that ran later rendered ABOVE reasoning that came after them — the transcript read out of order,
+ *  which is what "后面执行的怎么折到最前面去了" describes. A run is therefore every consecutive
+ *  thinking/call item, anchored where the work began and holding its items in the order they
+ *  happened: 10 + 10 items become one line. That is the shape Cursor and ChatGPT use for a turn's
+ *  work (one collapsible "worked for Ns / N steps" region before the answer), and hermes-studio's
+ *  `ToolRunSummary` extended to the reasoning — studio keeps thinking and the run separate, which
+ *  is exactly where the remaining rows come from.
+ *
+ *  A run ENDS at an assistant reply (or a new prompt): the anchor must never swallow the answer,
+ *  and text interleaved mid-turn keeps its true position — chronology stays exact. Fewer than two
+ *  items is not worth a click: alone, a thought or a call reads better as itself. */
+function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
   const rows: StreamRow[] = [];
-  const emitted = new Set<number>();
-  msgs.forEach((m) => {
-    const t = turnOf.get(m) ?? 0;
-    if (m.kind === "tool") {
-      const folded = byTurn.get(t) ?? [];
-      if (folded.length >= 2) {
-        if (folded.includes(m)) {
-          if (!emitted.has(t)) {
-            emitted.add(t);
-            rows.push({ kind: "run", key: `run-${t}`, tools: folded, tail: false });
-          }
-          return;
-        }
-      }
+  let i = 0;
+  while (i < msgs.length) {
+    const m = msgs[i];
+    if (!isWork(m)) {
+      rows.push({ kind: "msg", m, live: false, tail: false });
+      i++;
+      continue;
     }
-    rows.push({ kind: "msg", m, live: busy && m === msgs[msgs.length - 1], tail: false });
-  });
-  if (rows.length) rows[rows.length - 1].tail = true;
+    let j = i;
+    while (j < msgs.length && isWork(msgs[j])) j++;
+    const items = msgs.slice(i, j).filter(isWork);
+    const atTail = j >= msgs.length;
+    if (items.length >= 2) {
+      rows.push({ kind: "work", key: `work-${i}`, items, active: busy && atTail, tail: false });
+    } else {
+      rows.push({ kind: "msg", m: items[0], live: busy && atTail, tail: false });
+    }
+    i = j;
+  }
+  // `tail` drives the fork affordance and must land on the last real MESSAGE: a work row is not
+  // something you can fork from.
+  const lastMsg = [...rows].reverse().find((r) => r.kind === "msg");
+  if (lastMsg && lastMsg.kind === "msg") lastMsg.tail = true;
+  const tailRow = rows[rows.length - 1];
+  if (busy && tailRow && tailRow.kind === "msg") tailRow.live = true;
   return rows;
 }
 
-/** A turn's tool calls as one line: count, the names it touched, and how it went. Every call
- *  keeps its own card inside — click the row, then click the call (studio's two levels). */
-function ToolRun({ tools }: { tools: ToolMsg[] }): JSX.Element {
-  const [open, setOpen] = useState(false);
+/** A stretch of the agent's work as one line: how many calls, how much thinking, how it went.
+ *
+ *  While it is still running the row stays OPEN (studio's `expanded = override ?? active`), and its
+ *  body is a bounded, self-scrolling box — the newest reasoning sits in a small window at the bottom
+ *  and the running call shows its dot, so a twenty-step turn can never push the composer off screen.
+ *  The moment the agent moves on, the row folds to its header line; a click opens the whole run
+ *  again, where each call is still its own card (a second click gives input/output — studio's two
+ *  levels, unchanged). */
+function WorkRun({ items, active }: { items: WorkItem[]; active: boolean }): JSX.Element {
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? active;
+  const body = useRef<HTMLDivElement>(null);
+  const tools = items.filter((x): x is ToolMsg => x.kind === "tool");
+  const thoughts = items.filter((x): x is ThoughtMsg => x.kind === "thought");
+  const lastThought = thoughts[thoughts.length - 1];
   const errs = tools.filter((t) => statusOf(t.status) === "err").length;
-  const frozen = tools.filter((t) => statusOf(t.status) === "idle").length;
+  const running = tools.some((t) => statusOf(t.status) === "running");
+  const chars = thoughts.reduce((n, t) => n + t.text.length, 0);
   const names = [...new Set(tools.map((t) => t.title.replace(/\s+/g, " ").trim()))];
   const shown = names.slice(0, 2).map((n) => (n.length > 34 ? `${n.slice(0, 33)}…` : n)).join(" · ");
+  const label = tools.length && thoughts.length
+    ? `${tools.length} 次工具调用 · ${thoughts.length} 段思考`
+    : tools.length ? `${tools.length} 次工具调用` : `${thoughts.length} 段思考`;
+  // a live box follows its own tail: the newest chunk is what the reader is waiting for. Both
+  // levels scroll — the newest burst inside its small window, and the run body inside its bound
+  // (the first version scrolled only the body, so the window itself sat frozen at its top).
+  useEffect(() => {
+    if (!active) return;
+    const liveBox = body.current?.querySelector(".work-thought.live") as HTMLElement | null;
+    if (liveBox) liveBox.scrollTop = liveBox.scrollHeight;
+    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [items.length, lastThought?.text, active]);
   return (
     <div className="msg">
-      <div className="tool-run">
+      <div className={`work-run${active ? " active" : ""}`}>
         <button
           type="button"
-          className="tool-run-head"
+          className="work-run-head"
           aria-expanded={open}
-          title={tools.map((t) => `· ${t.title}`).join("\n")}
-          onClick={() => setOpen((x) => !x)}
+          title={[`${tools.length} 次工具调用`, `${thoughts.length} 段思考 · ${chars} 字`,
+            ...tools.map((t) => `· ${t.title}`)].join("\n")}
+          onClick={() => setUserOpen(!open)}
         >
-          <IconChevronRight size={11} className={`tool-chev${open ? " open" : ""}`} />
-          <span className="tool-run-icon" aria-hidden="true">⚙</span>
-          <span className="tool-run-count">{tools.length} 次工具调用</span>
-          <span className="tool-run-names">{names.length > 2 ? `${shown} +${names.length - 2}` : shown}</span>
-          <span className={`tool-run-state ${errs ? "err" : frozen ? "run" : "ok"}`} aria-hidden="true">
-            {errs ? `✗ ${errs}` : frozen ? "•••" : "✓"}
+          <IconChevronRight size={11} className={`work-chev${open ? " open" : ""}`} />
+          <span className="work-run-icon" aria-hidden="true">
+            {tools.length ? "⚙" : "💭"}
+          </span>
+          <span className="work-run-count">{label}</span>
+          {names.length ? (
+            <span className="work-run-names">{names.length > 2 ? `${shown} +${names.length - 2}` : shown}</span>
+          ) : (
+            <span className="work-run-chars">{chars} 字</span>
+          )}
+          <span className={`work-run-state ${errs ? "err" : running ? "run" : "ok"}`} aria-hidden="true">
+            {errs ? `✗ ${errs}` : running ? "•••" : "✓"}
           </span>
         </button>
         {open && (
-          <div className="tool-run-items">
-            {tools.map((t) => <ToolCard key={t.key} m={t} />)}
+          <div className="work-run-items" ref={body}>
+            {items.map((it) => (it.kind === "thought" ? (
+              <div key={it.key} className={`work-thought${active && it === lastThought ? " live" : ""}`}>{it.text}</div>
+            ) : (
+              <ToolCard key={it.key} m={it} />
+            )))}
           </div>
         )}
       </div>
