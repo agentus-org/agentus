@@ -211,8 +211,17 @@ public final class NotifyService extends Service {
     }
 
     private void handleFrame(String text, WebSocket ws) {
+        JSONObject frame;
         try {
-            JSONObject frame = new JSONObject(text);
+            frame = new JSONObject(text);
+        } catch (Exception e) {
+            log("无法解析帧：" + e.getMessage());
+            return;
+        }
+        // Parsing and APPLYING are two different failures and must not share one message: a renderer
+        // that refuses a frame (SystemUI declining a notification, say) used to be logged as 「无法解析帧」,
+        // which sends the reader hunting for bad JSON. The frame is right there and it was fine.
+        try {
             String t = frame.optString("t");
             Profiles.P p = profiles.active();
             if ("hello".equals(t)) {
@@ -237,7 +246,7 @@ public final class NotifyService extends Service {
                 log("服务端： " + frame.optString("reason", ""));
             }
         } catch (Exception e) {
-            log("无法解析帧：" + e.getMessage());
+            log("处理帧失败：" + e.getMessage());
         }
     }
 

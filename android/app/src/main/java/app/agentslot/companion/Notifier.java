@@ -300,8 +300,17 @@ final class Notifier {
                 .putExtra("url", link);
             // No addResultsToIntent here: the platform attaches the typed text to this
             // pending intent itself, and ActionReceiver reads it with getResultsFromIntent.
-            PendingIntent rpi = PendingIntent.getBroadcast(ctx, request + 1000, reply,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            //
+            // MUTABLE is mandatory on Android 12+ for an action that carries a RemoteInput — the
+            // platform has to write the typed text into the intent. With FLAG_IMMUTABLE here SystemUI
+            // refuses to post the whole notification ("Not posted. PendingIntents attached to actions
+            // with remote inputs must be mutable"), so the ONE card that asks the operator for a
+            // decision — the reason the phone is in the loop at all — never appeared. Verified on the
+            // emulator: channel=agent_approval count was 0, with that line in logcat, while the
+            // running/done cards posted fine. The other actions stay IMMUTABLE: nothing writes to them.
+            int replyFlags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+            PendingIntent rpi = PendingIntent.getBroadcast(ctx, request + 1000, reply, replyFlags);
             return new Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_notify), label, rpi)
                 .addRemoteInput(ri)
                 .build();
