@@ -519,17 +519,39 @@ code.inline {
   background: transparent; border: none; padding: 0; cursor: pointer;
   font-size: 11px; color: var(--text-dim); font-family: var(--mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+  display: inline-flex; align-items: center; gap: 5px;
 }
 .usage-text:hover { color: var(--text); }
 .usage-row.warn .usage-text { color: var(--accent-text); }
 .usage-row.hot .usage-text { color: var(--err); }
+.usage-icon { flex: none; opacity: 0.75; }
+/* The battery-style line: the operator's 「像电量一样那个横线」. It carries the fill, the text
+   next to it carries only the window length — nothing else competes for this strip. */
 .usage-bar {
-  flex: 1 1 auto; max-width: 160px; height: 3px; border-radius: 2px;
+  flex: 1 1 auto; max-width: 220px; height: 5px; border-radius: 3px;
   background: var(--line); overflow: hidden;
 }
-.usage-bar > i { display: block; height: 100%; background: var(--ok); }
+.usage-bar > i { display: block; height: 100%; background: var(--ok); transition: width 220ms ease; }
 .usage-row.warn .usage-bar > i { background: var(--accent); }
 .usage-row.hot .usage-bar > i { background: var(--err); }
+/* Setting the window lives here, on the row above the input — not in chat settings. */
+.usage-set { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.usage-set-head { display: flex; align-items: center; gap: 5px; color: var(--text); margin-bottom: 6px; }
+.usage-set-scope {
+  margin-left: auto; font-size: 10px; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+}
+.usage-set-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.usage-chip {
+  background: var(--chip-bg); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text-dim); font-family: inherit; font-size: 11px; padding: 4px 8px; cursor: pointer;
+}
+.usage-chip:hover { color: var(--text); border-color: var(--accent-dim); }
+.usage-chip.sel { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.settings-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--effort, var(--text-dim)); margin-right: 6px;
+}
 .usage-detail {
   position: absolute; left: 0; right: auto; width: min(560px, 100%);
   bottom: calc(100% + 8px); z-index: 12;

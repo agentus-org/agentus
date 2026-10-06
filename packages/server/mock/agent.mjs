@@ -442,10 +442,14 @@ const agent = () => ({
     // reported context, so "the button did something" is a measurable claim.
     const compress = /^\/compress\b/.test(text.trim());
     s.used = compress ? Math.ceil((s.used || 4000) / 5) : (s.used || 0) + text.length + 120;
+    // The reported window follows a picked context_budget, like the real adapter (whose
+    // `usage_update.size` IS the window it compresses against) — otherwise a cockpit that
+    // switches its window would look like nothing happened.
+    const picked = Number((s.config || {}).context_budget);
     await send(agent._conn, sessionId, {
       sessionUpdate: "usage_update",
       used: s.used,
-      size: Number(process.env.MOCK_USAGE_SIZE || 200_000),
+      size: picked > 0 ? picked : Number(process.env.MOCK_USAGE_SIZE || 200_000),
     });
     return { stopReason: "end_turn" };
   },

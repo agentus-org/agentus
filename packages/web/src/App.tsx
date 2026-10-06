@@ -18,7 +18,7 @@ import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
-  IconStop, IconVolume, IconVolumeOff,
+  IconStop, IconVolume, IconVolumeOff, IconBrain,
 } from "./Icons";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
 
@@ -2044,12 +2044,20 @@ function ChoiceList({ items, current, onPick, empty }: {
  *  number only moves the gauge; what changes context then is the agent's own `/compress`
  *  (advertised over ACP, so the button only appears when the agent really has it) or a model
  *  with a longer window. */
+/** Is this option the context window/limit knob? It belongs on the usage row above the input,
+ *  not in the settings popover: the operator asked to set the window where the number is
+ *  (「不要到设置里面改…就点这个上下文的地方」), and settings is for thinking depth. */
+export function isContextWindowOption(o: SessionView["info"]["configOptions"][number]): boolean {
+  if (o.category === "_context_window") return true;
+  return /budget|context/i.test(`${o.id} ${o.name ?? ""}`);
+}
+
 function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const usage = v.info.usage;
   // The agent's own context-budget option, when it advertises one: that is the REAL knob (it moves
   // the window Hermes compresses against), so the declaration field below points at it instead of
   // pretending to be it.
-  const budgetCfg = v.info.configOptions.find((o) => o.type === "select" && /budget/i.test(o.id));
+  const budgetCfg = v.info.configOptions.find(isContextWindowOption);
   const [open, setOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
@@ -2095,17 +2103,34 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
     setOpen(false);
   };
 
+  /** Set the context window through the agent's own option — the REAL knob (it moves the window
+   *  Hermes compresses against, and it is saved for the model). Used from the usage row, next to
+   *  the number it changes. */
+  const sendConfig = (configId: string, value: string): void => {
+    const cleaned = value.trim();
+    if (!cleaned) return;
+    cockpit.send({ t: "set-config", sessionId: v.info.id, configId, value: cleaned });
+    setDraft("");
+  };
+  const budgetValue = String(budgetCfg?.currentValue ?? "");
+
   return (
     <div className={`usage-row ${level}`} ref={rowRef}>
-      <button className="usage-text" onClick={() => setOpen((o) => !o)} title="context window and this turn">
-        ctx {fmt(usage.used)}{limit > 0 ? ` / ${fmt(limit)}` : ""}
-        {limit > 0 ? ` · ${pct}% · ${fmt(remaining)} left` : ""}
-        {source === "session" ? " (本会话声明)" : source === "model" ? " (模型记录)" : ""}
-        {usage.cost != null ? ` · $${usage.cost.toFixed(4)}` : ""}
-        {trace && (trace.effort || trace.mode)
-          ? ` · ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(" / ")}`
-          : ""}
+      {/* The strip above the box IS the context gauge: the window length, the battery-style line,
+          and — when it is nearly full — the one useful action. Thinking depth and this turn's mode
+          have their own controls; spelling them out here was noise (operator: 「这个上面就不用写
+          什么 effort low 啊什么什么的，这里就只写这个上下文长度」). */}
+      <button className="usage-text" onClick={() => setOpen((o) => !o)} title="上下文窗口 — 点这里改">
+        <IconGauge size={12} className="usage-icon" />
+        {limit > 0 ? fmt(limit) : "—"}
+        {limit > 0 ? ` · ${pct}%` : ""}
+        {source === "session" ? " · 声明" : source === "model" ? " · 模型记录" : ""}
       </button>
+      {limit > 0 ? (
+        <div className="usage-bar" title={`${usage.used} / ${limit} tokens (${pct}%)`}>
+          <i style={{ width: `${pct}%` }} />
+        </div>
+      ) : null}
       {/* A nearly-full window gets the useful action in place, using the command this agent
           advertised — never a button for a command it does not have. */}
       {level === "hot" && has("compress") && !v.busy ? (
@@ -2117,81 +2142,114 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           <IconChip size={11} /> 压缩上下文
         </button>
       ) : null}
-      {limit > 0 ? (
-        <div className="usage-bar" title={`${fmt(usage.used)} of ${fmt(limit)} tokens`}>
-          <i style={{ width: `${pct}%` }} />
-        </div>
-      ) : null}
       {open ? (
         <div className="usage-detail">
-          <div>context window: {usage.used} / {limit || "—"} tokens ({pct}%)</div>
-          <div>remaining: {limit > 0 ? remaining : "unknown"} tokens</div>
-          <div>window source: <b>{sourceLabel}</b></div>
-          {/* The number below DECLARES a window; it does not change one. ACP has no "set the
-              context window" method, so the field only fixes the percentage above — a cockpit
-              field that looks like it configures the model and does not is exactly the "这个设置
-              没用" report (2026-10-06). The real knobs are the agent's own context-budget option
-              and its /compress. */}
-          <div className="usage-note">
+          {/* ── 改窗口就在这儿 ────────────────────────────────────────────────
+              输入框上面这一行，点开就是上下文窗口的设置：预设 + 任意 token 数。走的是 agent
+              自己公告的那项 config option（Hermes 的 `context_budget`），所以是真旋钮 —— 改的是
+              这个模型，不是仪表盘上的一个数字。预设/常用值提示参考 studio 的「点开数字即改」，
+              百分比口径照 AionUi：分母只认 agent 上报或自己声明的，绝不猜。 */}
+          <div className="usage-set">
+            <div className="usage-set-head">
+              <IconGauge size={12} /> 上下文窗口
+              <span className="usage-set-scope">
+                {budgetCfg ? (String((budgetCfg.meta as Record<string, unknown>)?.scope ?? "") === "model" ? "按模型" : "") : "仅声明"}
+              </span>
+            </div>
             {budgetCfg ? (
-              <>这是<b>声明</b>，只影响上面的百分比。真要 agent 更早压缩，用设置里的「{budgetCfg.name || "Context budget"}」。</>
+              <>
+                <div className="usage-set-chips">
+                  {(budgetCfg.options ?? []).map((opt) => (
+                    <button
+                      key={String(opt.value)}
+                      className={`usage-chip ${budgetValue === String(opt.value) ? "sel" : ""}`}
+                      onClick={() => sendConfig(budgetCfg.id, String(opt.value))}
+                    >
+                      {String(opt.value) === "auto" ? "自动" : opt.name}
+                    </button>
+                  ))}
+                </div>
+                <div className="usage-edit">
+                  <input
+                    value={draft}
+                    inputMode="numeric"
+                    aria-label="context window in tokens"
+                    placeholder={(budgetCfg.meta as Record<string, unknown>)?.freeform === true
+                      ? "任意 token 数，如 300000" : "填一个数"}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") sendConfig(budgetCfg.id, draft);
+                      if (e.key === "Escape") { e.stopPropagation(); setOpen(false); }
+                    }}
+                  />
+                  <button className="usage-edit-btn" disabled={!draft.trim()} onClick={() => sendConfig(budgetCfg.id, draft)}>set</button>
+                </div>
+                <div className="settings-note">常用：64k / 128k / 200k / 400k / 1m；填 auto 回到模型自己的窗口。</div>
+                <div className="usage-note">
+                  改的是<b>这个模型</b>：同模型的所有会话（含新开的、别的槽位）都用同一个上限。它只会让 Hermes 更早压缩，不会把窗口撑过模型本身。
+                </div>
+              </>
             ) : (
-              <>这是<b>声明</b>，只影响上面的百分比：ACP 没有改窗口的方法，这个后端也没公布 context budget 选项。想真的减上下文：/compress 或换模型。</>
+              <>
+                <div className="usage-note">
+                  这个后端没公告上下文旋钮，所以下面这个数只是仪表盘的<b>声明</b>，只影响百分比；真减上下文用压缩命令或换模型。
+                </div>
+                {editing ? (
+                  <div className="usage-edit">
+                    <input
+                      autoFocus
+                      value={draft}
+                      inputMode="numeric"
+                      aria-label="context window in tokens"
+                      placeholder={String(usage.size || v.info.contextLimit || 200000)}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const n = Number(draft.replace(/[^0-9]/g, ""));
+                          if (n > 0) void apply(n, { remember });
+                        }
+                        if (e.key === "Escape") { e.stopPropagation(); setEditing(false); }
+                      }}
+                    />
+                    <button
+                      className="usage-edit-btn"
+                      disabled={busy !== "" || !Number(draft.replace(/[^0-9]/g, ""))}
+                      onClick={() => void apply(Number(draft.replace(/[^0-9]/g, "")), { remember })}
+                    >
+                      {busy === "save" ? "…" : "set"}
+                    </button>
+                    <label className="usage-check" title="像 studio 那样按模型记住：下次用这个模型自动带回来">
+                      <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                      记到本模型
+                    </label>
+                    {remembered ? (
+                      <button
+                        className="usage-edit-btn"
+                        disabled={busy !== ""}
+                        onClick={() => void apply(null, { forgetModel: true })}
+                      >
+                        {busy === "forget" ? "…" : "忘掉本模型记录"}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <button className="usage-edit-btn" onClick={() => { setDraft(String(limit || 200000)); setEditing(true); }}>
+                    声明窗口长度
+                  </button>
+                )}
+              </>
             )}
           </div>
-          {usage.size > 0 && source !== "agent" ? <div>agent reports: {fmt(usage.size)} tokens (usage_update)</div> : null}
-          {remembered && source === "session" ? <div>remembered for this model: {fmt(remembered)} tokens</div> : null}
-          {usage.cost != null ? <div>session cost: ${usage.cost.toFixed(6)}</div> : null}
-          {trace?.model ? <div>model: {trace.model}</div> : null}
+          <div>已用 {usage.used} / {limit || "—"} tokens（{pct}%）</div>
+          <div>剩余：{limit > 0 ? remaining : "unknown"} tokens</div>
+          <div>窗口来源：<b>{sourceLabel}</b></div>
+          {usage.size > 0 && source !== "agent" ? <div>agent 上报：{fmt(usage.size)} tokens (usage_update)</div> : null}
+          {remembered && source === "session" ? <div>本模型记录：{fmt(remembered)} tokens</div> : null}
+          {usage.cost != null ? <div>本轮花费：${usage.cost.toFixed(6)}</div> : null}
+          {trace?.model ? <div>model：{trace.model}</div> : null}
           {trace && (trace.effort || trace.mode)
-            ? <div>this turn: {[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}</div>
+            ? <div>本轮：{[trace.effort && `思考强度 ${trace.effort}`, trace.mode && `模式 ${trace.mode}`].filter(Boolean).join("，")}</div>
             : null}
-          {editing ? (
-            <div className="usage-edit">
-              <input
-                autoFocus
-                value={draft}
-                inputMode="numeric"
-                aria-label="context window in tokens"
-                placeholder={String(usage.size || v.info.contextLimit || 200000)}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const n = Number(draft.replace(/[^0-9]/g, ""));
-                    if (n > 0) void apply(n, { remember });
-                  }
-                  if (e.key === "Escape") { e.stopPropagation(); setEditing(false); }
-                }}
-              />
-              <button
-                className="usage-edit-btn"
-                disabled={busy !== "" || !Number(draft.replace(/[^0-9]/g, ""))}
-                onClick={() => void apply(Number(draft.replace(/[^0-9]/g, "")), { remember })}
-              >
-                {busy === "save" ? "…" : "set"}
-              </button>
-              <label className="usage-check" title="像 studio 那样按模型记住：下次用这个模型自动带回来">
-                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-                记到本模型
-              </label>
-              {declared ? (
-                <button className="usage-edit-btn" disabled={busy !== ""} onClick={() => void apply(null, { remember })}>reset</button>
-              ) : null}
-              {remembered ? (
-                <button
-                  className="usage-edit-btn"
-                  disabled={busy !== ""}
-                  onClick={() => void apply(null, { forgetModel: true })}
-                >
-                  {busy === "forget" ? "…" : "忘掉本模型记录"}
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <button className="usage-edit-btn" onClick={() => { setDraft(String(limit || 200000)); setEditing(true); }}>
-              设置窗口长度
-            </button>
-          )}
           {has("compress") || has("context") ? (
             <div className="usage-actions">
               {has("compress") ? (
@@ -2203,13 +2261,6 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
             </div>
           ) : null}
           {err ? <div className="usage-edit-err">{err}</div> : null}
-          <div className="usage-note">
-            {budgetCfg ? (
-              <>这个数字是仪表盘算百分比用的<b>声明</b>（按模型记住）。真正让 agent 提前压缩的旋钮是这个后端自己公告的「{budgetCfg.name || budgetCfg.id}」，在聊天设置里 —— 可填任意 token 数，<b>改的是这个模型</b>，同模型的所有会话（含新开的）都用同一个上限。</>
-            ) : (
-              <>ACP 没有"设置窗口"的方法（实测 <code>session/set_context</code> → Method not found），而且这个后端没公告上下文旋钮，所以这个数字只影响上面的百分比；真减上下文用上面的压缩命令或换模型。</>
-            )}
-          </div>
         </div>
       ) : null}
     </div>
@@ -2274,7 +2325,7 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
 }): JSX.Element {
   const info = v.info;
   const modes = info.modes?.availableModes ?? [];
-  // effort and model have their own toolbar buttons now; settings keeps everything else
+  // model has its own toolbar button; settings keeps thinking depth, permission mode and voice
   const cfg = pickConfigOption(info.configOptions, "effort");
   const modelCfg = pickConfigOption(info.configOptions, "model");
   // re-render when the browser finally publishes its voice list
@@ -2302,12 +2353,31 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
           ))}
         </div>
       )}
-      {/* Config options the agent advertises that are NOT the effort knob (that one has
-          its own button now). Generic on purpose: a backend that adds an option gets it
-          rendered without a code change here — presets when it lists values, plus an input
-          when it marks itself free-form. */}
+      {/* Thinking depth lives HERE: the settings button is the operator's thinking-strength
+          control (「输入框最下面那个设置按钮就只做这个思考强度的一个设置」). The toolbar keeps its
+          pips button as the at-a-glance level; this is the labelled list, with the levels only
+          this route really takes. */}
+      {cfg?.options?.length ? (
+        <div className="settings-group">
+          <div className="settings-label"><IconBrain size={13} /> thinking depth</div>
+          {cfg.options.map((o, i) => (
+            <button
+              key={String(o.value)}
+              className={`settings-opt ${String(cfg.currentValue ?? "") === String(o.value) ? "sel" : ""}`}
+              onClick={() => cockpit.send({ t: "set-config", sessionId: info.id, configId: cfg.id, value: String(o.value) })}
+            >
+              <i className="settings-dot" style={{ ["--effort" as string]: EFFORT_COLORS[Math.min(i, EFFORT_COLORS.length - 1)] }} />
+              {o.name}
+            </button>
+          ))}
+          <div className="settings-note">只列这个路由真支持的档；改的是本会话。</div>
+        </div>
+      ) : null}
+      {/* Everything else the agent advertises — EXCEPT the context window: that one is set on the
+          usage row above the input, next to the number it changes (the operator asked for it there,
+          not in settings). A backend that adds an option still gets it rendered here for free. */}
       {info.configOptions
-        .filter((o) => o.type === "select" && o.options && o !== cfg && o !== modelCfg)
+        .filter((o) => o.type === "select" && o.options && o !== cfg && o !== modelCfg && !isContextWindowOption(o))
         .map((o) => (
           <ConfigOptionGroup key={o.id} o={o} sessionId={info.id} />
         ))}
