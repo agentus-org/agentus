@@ -2044,6 +2044,10 @@ function ChoiceList({ items, current, onPick, empty }: {
  *  switching to a model with a longer window. */
 function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const usage = v.info.usage;
+  // The agent's own context-budget option, when it advertises one: that is the REAL knob (it moves
+  // the window Hermes compresses against), so the declaration field below points at it instead of
+  // pretending to be it.
+  const budgetCfg = v.info.configOptions.find((o) => o.type === "select" && /budget/i.test(o.id));
   const [open, setOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
@@ -2121,6 +2125,18 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           <div>context window: {usage.used} / {limit || "—"} tokens ({pct}%)</div>
           <div>remaining: {limit > 0 ? remaining : "unknown"} tokens</div>
           <div>window source: <b>{sourceLabel}</b></div>
+          {/* The number below DECLARES a window; it does not change one. ACP has no "set the
+              context window" method, so the field only fixes the percentage above — a cockpit
+              field that looks like it configures the model and does not is exactly the "这个设置
+              没用" report (2026-10-06). The real knobs are the agent's own context-budget option
+              and its /compress. */}
+          <div className="usage-note">
+            {budgetCfg ? (
+              <>这是<b>声明</b>，只影响上面的百分比。真要 agent 更早压缩，用设置里的「{budgetCfg.name || "Context budget"}」。</>
+            ) : (
+              <>这是<b>声明</b>，只影响上面的百分比：ACP 没有改窗口的方法，这个后端也没公布 context budget 选项。想真的减上下文：/compress 或换模型。</>
+            )}
+          </div>
           {usage.size > 0 && source !== "agent" ? <div>agent reports: {fmt(usage.size)} tokens (usage_update)</div> : null}
           {remembered && source === "session" ? <div>remembered for this model: {fmt(remembered)} tokens</div> : null}
           {usage.cost != null ? <div>session cost: ${usage.cost.toFixed(6)}</div> : null}

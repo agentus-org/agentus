@@ -11,9 +11,14 @@
 //        W=1440 H=900 node scripts/qa/popover-sweep.mjs    # desktop
 //
 const CDP = 'http://127.0.0.1:9222';
+const PORT = Number(process.env.PORT || 8787);
+const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const list = await (await fetch(`${CDP}/json/list`)).json();
-const tab = list.find((t) => t.type === 'page' && t.url.includes('8787'));
+// Open our OWN tab (like transcript-sweep does): reusing whatever tab happens to be open means
+// measuring a page in an unknown state — the sweep then reports "no button" for every popover,
+// which reads like a UI failure instead of a setup problem.
+const tab = await (await fetch(`${CDP}/json/new?${encodeURIComponent(BASE)}`, { method: 'PUT' })).json();
+await sleep(2600);
 const ws = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
 let id = 0; const waiting = new Map();
@@ -32,7 +37,21 @@ const ev = async (expr, timeout = 20000) => {
 const W = Number(process.env.W || 390), H = Number(process.env.H || 844);
 await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 2, mobile: W < 700 });
 await sleep(500);
-console.log(`== viewport ${W}x${H} ==`);
+console.log(`== viewport ${W}x${H} @ :${PORT} ==`);
+
+// The popovers hang off the COMPOSER, so a page sitting on the session list has nothing to
+// measure: pick a session in-page first (this tab shares the profile's login).
+if (!(await ev(`location.search.includes('session=')`))) {
+  const sid = await ev(`fetch('/api/sessions').then(r => r.json()).then(d => ((d.live || [])[0] || (d.sessions || [])[0] || {}).id || '')`);
+  if (!sid) { console.log('no session in this instance to measure'); process.exit(2); }
+  await ev(`location.href = ${JSON.stringify(BASE + '/?session=')} + ${JSON.stringify(String(sid))}`);
+  await sleep(3000);
+}
+// Wait for the composer to exist before measuring anything on it.
+for (let i = 0; i < 40; i++) {
+  if (await ev(`Boolean(document.querySelector('.usage-text'))`)) break;
+  await sleep(250);
+}
 
 const MEASURE = (sel) => `(() => {
   const d = document.querySelector(${JSON.stringify(sel)});

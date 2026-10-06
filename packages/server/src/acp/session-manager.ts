@@ -722,19 +722,48 @@ export class SessionManager {
   async setConfig(sessionId: string, configId: string, value: string | number | boolean): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
-    await s.conn
-      .setSessionConfigOption({
+    const requested = String(value);
+    let actual = requested;
+    let rejected = false;
+    try {
+      const res = (await s.conn.setSessionConfigOption({
         sessionId: s.info.acpSessionId,
         configId,
         value: value as never,
-      })
-      .catch((e) => {
-        // backend may advertise configOptions but not implement the setter
-        if (!/not found|Unsupported|method/i.test(errMessage(e))) throw e;
+      })) as unknown as { configOptions?: ConfigOptionView[] } | undefined;
+      // The agent's OWN answer is the truth: ACP's response carries the rebuilt option list, and a
+      // level the route folds away comes back with the old currentValue. Reading our own request
+      // back would show a pick that never landed (operator report: "设置了也好像没什么变化").
+      const opts = res && Array.isArray(res.configOptions) ? res.configOptions : null;
+      if (opts) {
+        s.info.configOptions = opts as ConfigOptionView[];
+        const picked = opts.find((o) => o.id === configId);
+        if (picked && picked.currentValue !== undefined && picked.currentValue !== null) {
+          actual = String(picked.currentValue);
+          rejected = actual !== requested;
+        }
+      } else {
+        s.info.configOptions = s.info.configOptions.map((o) =>
+          o.id === configId ? { ...o, currentValue: value } : o,
+        );
+      }
+    } catch (e) {
+      if (!/not found|Unsupported|method/i.test(errMessage(e))) throw e;
+      // The backend advertises the option but has no setter for it: nothing reaches the agent, so a
+      // local-only "success" would be a lie. Keep the session's real value and flag the pick.
+      rejected = true;
+      actual = String(s.info.configOptions.find((o) => o.id === configId)?.currentValue ?? "");
+    }
+    if (rejected) {
+      this.#emit({
+        t: "config-rejected",
+        sessionId,
+        configId,
+        value: requested,
+        actual,
+        name: s.info.configOptions.find((o) => o.id === configId)?.name,
       });
-    s.info.configOptions = s.info.configOptions.map((o) =>
-      o.id === configId ? { ...o, currentValue: value } : o,
-    );
+    }
     this.#updateSession(s);
   }
 

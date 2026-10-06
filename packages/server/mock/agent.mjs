@@ -97,6 +97,13 @@ const configOptionsFor = (config) => [
   { id: "reasoning_effort", name: "Reasoning Effort", type: "select", category: "thought_level",
     currentValue: config.reasoning_effort || "medium",
     options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+  // The second typed option a real Hermes session advertises (acp_adapter/server.py): the window
+  // Hermes budgets its compression against. The cockpit renders it generically in chat settings,
+  // and the usage popover points at it instead of pretending its own number configures the model.
+  { id: "context_budget", name: "Context budget", type: "select",
+    currentValue: config.context_budget || "auto",
+    options: [{ value: "auto", name: "Auto (model window)" }, { value: "65536", name: "64K" },
+      { value: "131072", name: "128K" }, { value: "200000", name: "200K" }, { value: "1000000", name: "1M" }] },
 ];
 
 // ACP carries the session's model list as `models` on newSession/loadSession (the field
@@ -206,8 +213,18 @@ const agent = () => ({
   async setSessionConfigOption({ sessionId, configId, value }) {
     if (!sessions.has(sessionId)) throw new Error("no such session");
     const s = sessions.get(sessionId);
+    // Shape for shape with the real adapter: the response carries the session's WHOLE rebuilt
+    // option list (not just the one that changed), and a value the option does not offer comes
+    // back with the OLD currentValue instead of being snapped to something else. The cockpit
+    // reads that list back as the truth, so a partial reply here would erase the surface.
+    const options = configOptionsFor(s.config || {});
+    const target = options.find((o) => o.id === configId);
+    const supported = (target?.options || []).map((o) => o.value);
+    if (supported.length && !supported.includes(String(value))) {
+      return { configOptions: options };
+    }
     s.config = { ...(s.config || {}), [configId]: value };
-    return { configOptions: [{ id: configId, type: "select", currentValue: value }] };
+    return { configOptions: configOptionsFor(s.config || {}) };
   },
 
   async cancel({ sessionId }) {

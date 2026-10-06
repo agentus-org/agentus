@@ -149,6 +149,11 @@ export type ServerEvent =
    *  agent gave up first). Said out loud instead of dropped: a click that does nothing is the
    *  worst failure shape there is — the operator cannot tell it from a broken button. */
   | { t: "permission-expired"; requestId: string; sessionId: string }
+  /** A config pick (thinking depth / context budget) the agent did NOT take: the picker showed the
+   *  new value while the wire dropped it — the exact shape an operator reads as "这个设置没用".
+   *  `actual` is what the session really runs with, so the cockpit can put the control back and say
+   *  so instead of pretending the pick landed. */
+  | { t: "config-rejected"; sessionId: string; configId: string; value: string; actual: string; name?: string }
   | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string;
       /** Wall time from the moment the turn was announced to the moment the agent answered (ms).
        *  Exists so a notification can say "用时 1m12s" instead of a protocol token like `end_turn`,

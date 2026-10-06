@@ -1006,6 +1006,20 @@ class Cockpit {
           text: "这条审批已经过期：agent 等不到答复、先自己放过了（或它已经放弃这一轮）。你的点击没有生效。",
         });
         break;
+      case "config-rejected": {
+        // The picker took the click but the agent did not: the level/budget we sent is one the
+        // route folds away (or the backend has no setter at all). Say it, and keep showing what the
+        // session really runs with — a silent "success" here is exactly the "设置了没用" report.
+        const v = this.#view(e.sessionId);
+        const label = e.name || e.configId;
+        v.msgs.push({
+          key: `cfg-rej-${e.configId}-${Date.now()}`,
+          kind: "meta",
+          text: `${label} 这一档没生效：agent 没有接受「${e.value}」${e.actual ? `，实际仍是「${e.actual}」` : ""}。`
+            + `（模型只认它公布的那几档；换档位或换模型再试。）`,
+        });
+        break;
+      }
       case "error": {
         if (this.activeId) {
           const v = this.#view(this.activeId);
