@@ -42,10 +42,13 @@ echo "[relaunch] port $PORT: old pid ${old:-none}"
 
 if [ -n "$old" ]; then
   pgid="$(ps -o pgid= -p "$old" 2>/dev/null | tr -d ' ')"
-  # the launcher starts the server in its own session, so the pid leads its own group and
-  # the group kill also catches any orphaned children of that instance
-  if [ -n "$pgid" ] && [ "$pgid" = "$old" ]; then
+  # Kill the whole group, then the process itself if it is not the group leader. Under a watcher
+  # the LISTEN pid is the launcher's CHILD (leader = the `tsx watch` supervisor, measured: the
+  # migration left the old supervisor alive when only the child was signalled), so a group-only or
+  # child-only kill both leave something behind.
+  if [ -n "$pgid" ]; then
     kill -TERM -- "-$pgid" 2>/dev/null || true
+    [ "$pgid" != "$old" ] && kill -TERM "$old" 2>/dev/null || true
   else
     kill -TERM "$old" 2>/dev/null || true
   fi
