@@ -68,6 +68,9 @@ try {
 
   check("the strip above the input is rendered", !!rowText, rowText);
   check("it shows the window length", /\d+\s*[kK]|—/.test(rowText), rowText);
+  // used / total · pct — the operator's ask: a bare length says nothing about how much is spent
+  check("it shows USED and TOTAL and the percentage",
+    /[\d.]+\s*k?\s*\/\s*[\d.]+/.test(rowText) && /%/.test(rowText), rowText);
   check("it does NOT spell out the thinking effort", !/effort/i.test(rowText), rowText);
   check("it does NOT spell out the mode", !/\bmode\b/i.test(rowText), rowText);
   check("a battery-style line is drawn next to it", !!barBox && barBox.w > 0 && barBox.h >= 3, JSON.stringify(barBox));
@@ -82,23 +85,23 @@ try {
   check("clicking it opens the context-window editor", /上下文窗口/.test(head), head);
   check("the editor lists the agent's own presets", Array.isArray(chips) && chips.length >= 3, JSON.stringify(chips));
   check("the editor offers an arbitrary number", hasInput === true, String(hasInput));
-  check("the presets come from the agent (unchanged list)", JSON.stringify(chips).includes("200K"), JSON.stringify(chips));
+  check("the presets come from the agent (256K/512K/768K/1M + auto)",
+    ["256K", "512K", "768K", "1M"].every((n) => chips.includes(n)) && chips.length === 5, JSON.stringify(chips));
 
   // 3. a pick lands and the strip follows the agent's reported window
   const before = String(await ev(`document.querySelector('.usage-text')?.textContent || ''`));
   // Pick a preset that exists AND differs from the current window (the mock's list is
-  // auto/64K/128K/200K/1M — asserting on a value the backend does not offer would only be
+  // auto/256K/512K/768K/1M — asserting on a value the backend does not offer would only be
   // measuring this script).
   const target = String(await ev(`(() => {
-    const cur = document.querySelector('.usage-chip.sel')?.textContent || '';
-    const b = [...document.querySelectorAll('.usage-chip')].find(e => (e.textContent||'').trim() === '128K' && !/sel/.test(e.className));
-    return b ? '128K' : '';
+    const b = [...document.querySelectorAll('.usage-chip')].find(e => /sel/.test(e.className) === false && (e.textContent||'').trim() === '256K');
+    return b ? '256K' : '';
   })()`));
-  check("a preset to pick is offered", target === "128K", target);
+  check("a preset to pick is offered", target === "256K", target);
   await ev(`(() => { const b = [...document.querySelectorAll('.usage-chip')].find(e => (e.textContent||'').trim() === ${JSON.stringify(target)}); if (!b) return 0; b.click(); return 1; })()`);
   await sleep(1400);
   const selChip = String(await ev(`document.querySelector('.usage-chip.sel')?.textContent || ''`));
-  check("the pick is reflected as the selected preset", selChip.trim() === "128K", selChip);
+  check("the pick is reflected as the selected preset", selChip.trim() === "256K", selChip);
 
   // the strip's number is fed by the agent's usage_update, so it moves only after a new turn
   await ev(`(() => {
@@ -114,10 +117,10 @@ try {
     if (after !== before) break;
     await sleep(500);
   }
-  // 128K travels as 131072 tokens and the strip prints it compacted ("131k") — the claim is that
+  // 256K travels as 262144 tokens and the strip prints it compacted ("262k") — the claim is that
   // the number moved and follows the agent's report, not that it echoes the chip's label.
   check("the strip's length follows the agent's reported window",
-    after !== before && /131k/.test(after), `${before} -> ${after}`);
+    after !== before && /262k/.test(after), `${before} -> ${after}`);
 
   // 4. settings is thinking depth now — and no context window anywhere in it
   await ev(`document.querySelector('.usage-text')?.click()`);   // close the editor

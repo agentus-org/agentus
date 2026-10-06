@@ -2122,7 +2122,10 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           什么 effort low 啊什么什么的，这里就只写这个上下文长度」). */}
       <button className="usage-text" onClick={() => setOpen((o) => !o)} title="上下文窗口 — 点这里改">
         <IconGauge size={12} className="usage-icon" />
-        {limit > 0 ? fmt(limit) : "—"}
+        {/* used / total · pct — the shape every other agent product uses (AionUi "45.2K / 200K",
+            studio "12.3K / 200K (6%)"): a bare length answers nothing about how much of it is spent
+            (operator: 「已用上下文的数量也要写上去……应该把总的、还有已用的、占的百分比都写上去」). */}
+        {limit > 0 ? `${fmt(usage.used)} / ${fmt(limit)}` : `${fmt(usage.used)} / —`}
         {limit > 0 ? ` · ${pct}%` : ""}
         {source === "session" ? " · 声明" : source === "model" ? " · 模型记录" : ""}
       </button>
@@ -2184,7 +2187,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                   />
                   <button className="usage-edit-btn" disabled={!draft.trim()} onClick={() => sendConfig(budgetCfg.id, draft)}>set</button>
                 </div>
-                <div className="settings-note">常用：64k / 128k / 200k / 400k / 1m；填 auto 回到模型自己的窗口。</div>
+                <div className="settings-note">常用：256k / 512k / 768k / 1m；填 auto 回到模型自己的窗口。</div>
                 <div className="usage-note">
                   改的是<b>这个模型</b>：同模型的所有会话（含新开的、别的槽位）都用同一个上限。它只会让 Hermes 更早压缩，不会把窗口撑过模型本身。
                 </div>

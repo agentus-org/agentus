@@ -94,7 +94,7 @@ await until(() => valueOf("context_budget") === "300000");
 check("hand-typed window lands", valueOf("context_budget") === "300000", String(valueOf("context_budget")));
 const budgetOpts = (cfgOf().find((o) => o.id === "context_budget")?.options || []).map((o) => String(o.value));
 check("the typed value is echoed as an option", budgetOpts.includes("300000"), budgetOpts.join(","));
-check("presets survive the echo", budgetOpts.includes("65536") && budgetOpts.includes("auto"), budgetOpts.join(","));
+check("presets survive the echo", budgetOpts.includes("262144") && budgetOpts.includes("auto"), budgetOpts.join(","));
 
 // 3c. below the floor the backend refuses: the old window stays (and the pick is flagged)
 rejected.length = 0;
