@@ -110,10 +110,13 @@ const clickSel = async (sel) => {
   }
   return false;
 };
-const shot = async (name) => {
-  // the tail is where the folded rows are: shoot with the newest output in view
-  await ev(`(() => { const s = document.querySelector('.stream'); if (s) s.scrollTop = s.scrollHeight; })()`);
-  await sleep(350);
+const shot = async (name, bottom = true) => {
+  // the tail is where the folded rows are: shoot with the newest output in view. The expanded
+  // run shot passes bottom=false — its row was just scrolled to the middle by the click.
+  if (bottom) {
+    await ev(`(() => { const s = document.querySelector('.stream'); if (s) s.scrollTop = s.scrollHeight; })()`);
+    await sleep(350);
+  }
   const s = await send("Page.captureScreenshot", { format: "png" }, 25000);
   fs.writeFileSync(`${SHOTS}/${name}`, Buffer.from(s.data, "base64"));
 };
@@ -225,7 +228,7 @@ check("then clicking a call opens ITS details", await clickSel(".tool-run-items 
 const detail = await ev(`(() => { const b = document.querySelector('.tool-run-items .tool-body');
   return { open: Boolean(b), text: (b?.textContent || '').replace(/\\s+/g, ' ').slice(0, 90) }; })()`);
 check("…the call shows its own input/output (studio's second level)", detail.open && /done|step/.test(detail.text), JSON.stringify(detail));
-await shot("transcript-run-open.png");
+await shot("transcript-run-open.png", false);
 
 check("clicking a folded burst opens the full text", await clickSel(".msg.thought .thought-head"));
 const burst = await ev(`(() => { const b = document.querySelector('.msg.thought .bubble');
