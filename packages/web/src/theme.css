@@ -340,6 +340,16 @@ code.inline {
 .bubble-actions { display: flex; align-items: center; gap: 4px; margin-top: 4px; opacity: 0.0; transition: opacity 0.12s; }
 .msg:hover .bubble-actions { opacity: 1; }
 @media (hover: none) { .bubble-actions { opacity: 0.75; } }
+/* A row's own time (when it was said / when the call ran). On a bubble it rides the hover-revealed
+   action row — that is the operator's own ask 「鼠标放在上面的时候把时间显示出来」— and on touch the
+   same row is already half-visible, so the stamp arrives with it. A tool card and a folded stretch
+   have no hover surface, so there the stamp sits in the row's line, dim enough not to compete with
+   the title. Always `title=`d with the exact instant: a fuzzy time should never be the only one. */
+.msg-at {
+  font-size: 10.5px; color: var(--text-dim); opacity: 0.9;
+  font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto;
+}
+.bubble-actions .msg-at { flex: 1 1 auto; text-align: left; }
 .bubble-note { font-size: 10.5px; color: var(--text-dim); }
 .bubble-files { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .bubble-file {
@@ -1355,6 +1365,15 @@ code.inline {
 }
 .session-item .title { flex: 1 1 auto; min-width: 0; }
 .session-item .badge.perm { flex: 0 0 auto; }
+/* "when did I last talk to this" — the same number the rail sorts by, so it is not a decoration
+   the eye has to hunt for: right-aligned, one step dimmer than the title, never wider than it
+   needs to be. On a hover the ⋯ button fades in BESIDE it (the button keeps its space, so the
+   stamp does not jump). */
+.rail-at {
+  flex: 0 0 auto; font-size: 11px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.session-item.active .rail-at { color: var(--text-dim); }
 
 /* The agent's monogram. Studio ships logos; we have none for these CLIs, so the mark is a
    letter on a per-backend tone — the thing the eye actually uses when scanning a list. */

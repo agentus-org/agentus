@@ -4,6 +4,7 @@ import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
+import { clockHM, messageTime, relTime, stamp } from "./time";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
 import { watchingNow } from "./presence";
@@ -335,6 +336,12 @@ const BACKEND_MARK: Record<string, { letter: string; label: string; icon?: strin
   mock: { letter: "M", label: "Mock" },
 };
 
+/** When this session was last talked to (creation time when it has no messages yet). The rail
+ *  orders by it, so the row also SHOWS it — one definition, used by the sort and by the label. */
+function lastOf(s: SessionInfo): number {
+  return s.lastAt ?? s.createdAt;
+}
+
 function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
   const mark = BACKEND_MARK[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
   const [broken, setBroken] = useState(false);
@@ -449,6 +456,14 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   // sent). So: a plain report per session change with no teardown, and a separate long-lived
   // effect that owns the interval and the "I am leaving" write.
   const lastInput = useRef(Date.now());
+  // Relative stamps on the rail ("刚刚" / "12 分钟前") are only true for about a minute: without a
+  // tick a row keeps saying "刚刚" an hour later. Slow on purpose — the rail is scanned, and a
+  // 60s re-render of a list this size costs nothing.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setClockTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(t);
+  }, []);
   useEffect(() => {
     const bump = (): void => { lastInput.current = Date.now(); };
     const events = ["pointerdown", "keydown", "mousemove", "wheel", "touchstart"];
@@ -593,7 +608,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
     }
     const activeKey = activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : "";
     // When the operator last TALKED to a session (creation time when it has no messages yet).
-    const lastOf = (s: SessionInfo): number => s.lastAt ?? s.createdAt;
+    // The rule lives at module scope (`lastOf`): the row renders the same value it sorts by.
     // A workspace is as recent as its newest session, so the workspace order follows the
     // session order: chat in a directory and that group rises with it.
     const at = (g: { items: { s: SessionInfo }[] }): number => g.items.reduce((m, i) => Math.max(m, lastOf(i.s)), 0);
@@ -750,6 +765,10 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
                       {cockpit.byId.get(s.id)?.perms.length ? (
                         <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
                       ) : null}
+                      {/* When I last talked to this session — sorted by it, so it has to be visible.
+                          Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
+                          the tooltip; the operator asked for exactly this and for it to age. */}
+                      <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
                       <button
                         type="button"
                         className="item-btn row-menu"
@@ -1291,6 +1310,7 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
             ) : null}
             {m.text}
             <div className="bubble-actions">
+              {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条消息" />
             </div>
           </div>
@@ -1303,6 +1323,7 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
           <div className="bubble">
             <Markdown text={m.text} />
             <div className="bubble-actions">
+              {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条回复" />
               <SpeakButton id={m.key} text={m.text} />
               {last && !busy ? <ForkHere sid={sid} busy={busy} /> : null}
@@ -1351,6 +1372,7 @@ function ToolCard({ m }: { m: Extract<MsgView, { kind: "tool" }> }): JSX.Element
         >
           <span className={`tool-dot ${status}`} aria-hidden="true" />
           <span className="tool-title">{m.title}</span>
+          {m.at ? <span className="msg-at" title={stamp(m.at)}>{clockHM(m.at)}</span> : null}
           {hasBody ? <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} /> : null}
         </button>
         {open && (
@@ -1416,7 +1438,7 @@ function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: 
       >
         <IconChevronRight size={11} className={`thought-chev${open ? " open" : ""}`} />
         💭 {live ? "思考中…" : "思考"}
-        <span className="thought-meta">{m.text.length} 字</span>
+        <span className="thought-meta">{m.at ? `${messageTime(m.at)} · ` : ""}{m.text.length} 字</span>
       </button>
       {open && (
         <div className={`bubble${live ? " live" : ""}`} ref={body}>
@@ -1540,6 +1562,12 @@ function WorkRun({ items }: { items: WorkItem[] }): JSX.Element {
   const label = tools.length && thoughts.length
     ? `${tools.length} 次工具调用 · ${thoughts.length} 段思考`
     : tools.length ? `${tools.length} 次工具调用` : `${thoughts.length} 段思考`;
+  // The folded stretch gets ONE stamp: when it started (and when it ended, if that is a
+  // different minute). A fold hides rows, so without this the operator loses the only thing
+  // that says how long the agent was busy.
+  const ats = items.map((i) => i.at).filter((n): n is number => typeof n === "number");
+  const from = ats.length ? Math.min(...ats) : null;
+  const to = ats.length ? Math.max(...ats) : null;
   return (
     <div className="msg">
       <div className="work-run">
@@ -1562,6 +1590,11 @@ function WorkRun({ items }: { items: WorkItem[] }): JSX.Element {
           <span className={`work-run-state ${errs ? "err" : running ? "run" : "ok"}`} aria-hidden="true">
             {errs ? `✗ ${errs}` : running ? "•••" : "✓"}
           </span>
+          {from ? (
+            <span className="msg-at" title={`${stamp(from)}${to && to !== from ? ` → ${stamp(to)}` : ""}`}>
+              {clockHM(from)}{to && to - from >= 60_000 ? `–${clockHM(to)}` : ""}
+            </span>
+          ) : null}
         </button>
         {open && (
           <div className="work-run-items">

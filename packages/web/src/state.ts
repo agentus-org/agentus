@@ -12,17 +12,18 @@ import type {
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
 
 export type MsgView =
-  | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[] }
-  | { key: string; kind: "agent"; text: string; open: boolean }
-  | { key: string; kind: "thought"; text: string; open: boolean }
+  | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[]; at?: number }
+  | { key: string; kind: "agent"; text: string; open: boolean; at?: number }
+  | { key: string; kind: "thought"; text: string; open: boolean; at?: number }
   | {
       key: string; kind: "tool"; toolCallId: string; title: string; status: string; kind2: string;
       /** best-effort detail: tool output/content text (AionUi F-DISPLAY-03 wants it viewable) */
       detail: string;
       /** tool input as the agent reported it (rawArgs/title-adjacent metadata) */
       input: string;
+      at?: number;
     }
-  | { key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[] }
+  | { key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[]; at?: number }
   | { key: string; kind: "meta"; text: string };
 
 /** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
@@ -1070,12 +1071,16 @@ class Cockpit {
     // upserted but still carry the seq the store assigned them)
     if (m.seq > 0 && (v.minSeq == null || m.seq < v.minSeq)) v.minSeq = m.seq;
     const p = m.payload as Record<string, unknown>;
+    // When this row happened (the store's own `created_at`). A row that GROWS (a streamed
+    // reply, a tool call whose output arrives later) keeps the time it STARTED — that is the
+    // question the operator asks ("什么时候发的"), and the upsert paths below never rewrite it.
+    const at = typeof m.createdAt === "number" ? m.createdAt : Date.now();
     const text = extractText(p);
     const last = list[list.length - 1];
     switch (m.kind) {
       case "user":
         list.push({
-          key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""),
+          key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""), at,
           // names only — the bytes were never persisted (AttachmentSummary)
           files: Array.isArray(p.attachments)
             ? (p.attachments as { kind?: unknown; name?: unknown }[])
@@ -1090,15 +1095,15 @@ class Cockpit {
       case "thought": {
         const kind = m.kind;
         const key = blockKeyOf(kind, p);
-        const { at } = foldTextRow(
+        const { at: idx } = foldTextRow(
           list,
           index,
           { key, kind, text, delta, n: opts?.n },
-          (k, row) => ({ key: k, kind: row.kind, text: row.text, open: true }),
+          (k, row) => ({ key: k, kind: row.kind, text: row.text, open: true, at }),
         );
         // A live frame keeps ITS bubble marked as the growing one, even when a tool card or a
         // thinking block arrived after it: that flag is what draws the streaming state.
-        const block = list[at];
+        const block = list[idx];
         if (delta !== undefined && block && (block.kind === "agent" || block.kind === "thought")) {
           block.open = true;
         }
@@ -1120,7 +1125,7 @@ class Cockpit {
           if (input) existing.input = input;
         } else {
           list.push({
-            key: `tc-${tcId}`, kind: "tool", toolCallId: tcId,
+            key: `tc-${tcId}`, kind: "tool", toolCallId: tcId, at,
             title: String(p.title ?? "tool call"), status: String(p.status ?? "pending"),
             kind2: String(p.kind ?? ""), detail, input,
           });
@@ -1131,7 +1136,7 @@ class Cockpit {
         const items = ((p.entries ?? []) as { content: string; status: string; priority?: string }[]);
         const existing = list.find((x) => x.kind === "plan");
         if (existing && existing.kind === "plan") existing.items = items;
-        else list.push({ key: `m${m.seq}`, kind: "plan", items });
+        else list.push({ key: `m${m.seq}`, kind: "plan", items, at });
         break;
       }
       case "meta":
