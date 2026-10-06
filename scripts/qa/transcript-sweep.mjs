@@ -82,6 +82,15 @@ const shot = async (name, bottom = true) => {
   const s = await send("Page.captureScreenshot", { format: "png" }, 25000);
   fs.writeFileSync(`${SHOTS}/${name}`, Buffer.from(s.data, "base64"));
 };
+/** Shoot with one row at the TOP of the stream — the header, the fold line and the kept tail in
+ *  one frame, which is what the operator needs to see. */
+const shotRow = async (sel, name) => {
+  await ev(`(() => { const s = document.querySelector('.stream'); const r = document.querySelector(${JSON.stringify(sel)});
+    if (s && r) s.scrollTop += r.getBoundingClientRect().top - s.getBoundingClientRect().top - 8; })()`);
+  await sleep(400);
+  const s = await send("Page.captureScreenshot", { format: "png" }, 25000);
+  fs.writeFileSync(`${SHOTS}/${name}`, Buffer.from(s.data, "base64"));
+};
 
 // --- login + a session on the MOCK backend -------------------------------------------
 await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
@@ -107,7 +116,7 @@ const started = await prompt("[tools:10]");
 check("the work turn was accepted", started === 202 || started === 200, `HTTP ${started}`);
 
 // while it runs: ONE row, open, in a bounded box, with only the newest burst windowed.
-let lastLive = null, overflowed = null, peakLines = 0, peakBodyRatio = 0, strayThoughts = 0;
+let lastLive = null, overflowed = null, peakLines = 0, peakBodyRatio = 0, strayThoughts = 0, maxKept = 0;
 for (let i = 0; i < 300; i++) {
   await sleep(150);
   const sample = await ev(`(() => {
@@ -128,6 +137,8 @@ for (let i = 0; i < 300; i++) {
       scroll: box ? box.scrollHeight : 0,
       top: box ? box.scrollTop : 0,
       chars: box ? box.textContent.length : 0,
+      kept: document.querySelectorAll('.work-run-items > .work-thought, .work-run-items > .msg').length,
+      more: (document.querySelector('.work-more')?.textContent || '').trim(),
     }; })()`);
   if (!sample || !sample.head) {
     // between bursts the live mark moves; keep watching while the turn runs
@@ -135,6 +146,7 @@ for (let i = 0; i < 300; i++) {
     continue;
   }
   strayThoughts = Math.max(strayThoughts, sample.stray);
+  maxKept = Math.max(maxKept, sample.kept || 0);
   if (sample.bodyH) peakBodyRatio = Math.max(peakBodyRatio, sample.bodyH / 900);
   if (!sample.lines) continue;
   lastLive = sample;
@@ -155,29 +167,34 @@ check("…the newest burst sits in a SMALL window (≈6 lines) and really scroll
   JSON.stringify({ peakLines, scroll: overflowed?.scroll, h: overflowed?.h }));
 check("…and it follows its own tail while the text arrives (auto-scrolled, not stuck at the top)",
   Boolean(overflowed) && overflowed.top > 4, JSON.stringify(overflowed ? { top: overflowed.top } : null));
+check("…and while it works, at most 5 item rows are kept out (the rest is always behind the fold)",
+  maxKept > 0 && maxKept <= 5, `max item rows on screen = ${maxKept}`);
 
 const end = await idle(90000);
 check("the work turn finished (otherwise the folding below is about a running turn)",
   end !== "running" && end !== "starting", `status=${end}`);
 await sleep(700);
 
-const after = await ev(`(() => ({\n  runs: document.querySelectorAll('.work-run').length,\n  head: (document.querySelector('.work-run-head')?.textContent || '').replace(/\\\\s+/g, ' ').trim(),\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.tool-card').length,\n  stray: document.querySelectorAll('.stream-inner > .msg.thought').length,\n  inner: document.querySelectorAll('.work-run-items').length,\n  rows: document.querySelectorAll('.stream-inner > *').length,\n  agent: document.querySelectorAll('.stream-inner > .msg.agent').length,\n  user: document.querySelectorAll('.stream-inner > .msg.user').length,\n}))()`);
+const after = await ev(`(() => ({\n  runs: document.querySelectorAll('.work-run').length,\n  head: (document.querySelector('.work-run-head')?.textContent || '').replace(/\\\\s+/g, ' ').trim(),\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.work-run-items .tool-card').length,\n  stray: document.querySelectorAll('.stream-inner > .msg.thought').length,\n  kept: document.querySelectorAll('.work-run-items > .work-thought, .work-run-items > .msg').length,\n  more: (document.querySelector('.work-more')?.textContent || '').trim(),\n  rows: document.querySelectorAll('.stream-inner > *').length,\n  agent: document.querySelectorAll('.stream-inner > .msg.agent').length,\n  user: document.querySelectorAll('.stream-inner > .msg.user').length,\n}))()`);
 check("20 rows of work are ONE row now — thinking and calls TOGETHER", after.runs === 1 && after.user === 1 && after.agent === 1,
   JSON.stringify(after));
 check("…the header says what happened: 10 calls AND 10 bursts",
   /10 次工具调用/.test(after.head) && /10 段思考/.test(after.head), after.head);
-check("…it is folded to that line — nothing open, no cards, no stray thought rows",
-  after.expanded === "false" && after.cards === 0 && after.inner === 0 && after.stray === 0, JSON.stringify(after));
-check("…and the whole transcript reads in order: prompt, work, answer",
+check("…the finished round KEEPS its newest 5 items on screen (the operator's rule)",
+  after.expanded === "true" && after.kept === 5 && after.stray === 0,
+  JSON.stringify({ expanded: after.expanded, kept: after.kept, stray: after.stray }));
+check("…the other 15 sit behind a line that says how many are folded",
+  /前 15 条已折叠/.test(after.more), after.more || "(no fold line)");
+check("…and the whole transcript still reads in order: prompt, work, answer",
   after.rows <= 6, `rows=${after.rows}`);
-await shot("transcript-folded.png");
+await shotRow(".work-run-head", "transcript-folded.png");
 
 // the two levels of detail are behind clicks (run → call → its I/O)
-check("clicking the row opens the whole run", await clickSel(".work-run-head"));
-const opened = await ev(`(() => ({\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.work-run-items .tool-card').length,\n  thoughts: document.querySelectorAll('.work-run-items .work-thought').length,\n  first: document.querySelector('.work-run-items > *')?.className ?? '',\n  order: [...document.querySelectorAll('.work-run-items > *')].map((x) => x.className.includes('work-thought') ? 'thought' : 'tool'),\n  bodyMax: parseFloat(getComputedStyle(document.querySelector('.work-run-items')).maxHeight) || 0,\n  windowed: document.querySelectorAll('.work-run-items .work-thought.live').length,\n}))()`);
+check("clicking the row opens the WHOLE run", await clickSel(".work-run-head"));
+const opened = await ev(`(() => ({\n  expanded: document.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n  cards: document.querySelectorAll('.work-run-items .tool-card').length,\n  thoughts: document.querySelectorAll('.work-run-items .work-thought').length,\n  order: [...document.querySelectorAll('.work-run-items > *')].filter((x) => !x.className.includes('work-more')).map((x) => x.className.includes('work-thought') ? 'thought' : 'tool'),\n  more: document.querySelector('.work-more')?.textContent ?? '',\n  bodyMax: parseFloat(getComputedStyle(document.querySelector('.work-run-items')).maxHeight) || 0,\n  windowed: document.querySelectorAll('.work-run-items .work-thought.live').length,\n}))()`);
 check("…every burst and every call is inside, in the order they happened",
-  opened.thoughts === 10 && opened.cards === 10 && opened.order[0] === "thought" && opened.order[1] === "tool",
-  JSON.stringify({ thoughts: opened.thoughts, cards: opened.cards, order: opened.order.slice(0, 4) }));
+  opened.thoughts === 10 && opened.cards === 10 && opened.order[0] === "thought" && opened.order[1] === "tool" && !opened.more,
+  JSON.stringify({ thoughts: opened.thoughts, cards: opened.cards, order: opened.order.slice(0, 4), more: opened.more }));
 check("…the opened body is bounded and scrolls (it is not 20 rows tall on screen)",
   opened.bodyMax > 0 && opened.bodyMax < 700, `max-height=${opened.bodyMax}px`);
 check("…and none of the finished bursts is windowed any more (the window is for the live one)",
@@ -187,16 +204,24 @@ const detail = await ev(`(() => { const b = document.querySelector('.work-run-it
 check("…the call shows its own input/output (studio's second level)", detail.open && /done|step/.test(detail.text), JSON.stringify(detail));
 await shot("transcript-run-open.png", false);
 
-// --- ② a lone burst: no run to fold it into, but it must still fold when it ends ---------
+// --- ② the NEXT round: the previous run's kept tail folds in by itself -------------------
+// "下一轮开始的时候，那最后 5 条就自动合并到之前那一行里去" — one prompt covers both halves: the
+// older run must fold, and a lone burst (no run to fold into) must still fold when it ends.
+// The clicks above left the run expanded by hand, so reload first: this must be the DEFAULT
+// state of a fresh page, not leftover local state.
+await ev(`location.reload()`);
+await sleep(3200);
 const single = await prompt("[think]");
-check("a lone-thinking turn was accepted", single === 202 || single === 200, `HTTP ${single}`);
+check("a second round was accepted (a lone burst, no tools)", single === 202 || single === 200, `HTTP ${single}`);
 await idle(60000);
-await sleep(600);
-const lone = await ev(`(() => {\n  const all = [...document.querySelectorAll('.stream-inner > .msg.thought')];\n  const t = all[all.length - 1];\n  return { rows: all.length,\n    head: (t?.querySelector('.thought-head')?.textContent || '').trim(),\n    open: Boolean(t?.querySelector('.bubble')),\n    runs: document.querySelectorAll('.work-run').length }; })()`);
-check("a single burst is NOT folded into a run (fewer than two items reads better as itself)",
-  lone.rows === 1 && lone.runs === 1, JSON.stringify(lone));
+await sleep(700);
+const next = await ev(`(() => {\n  const run = document.querySelector('.work-run');\n  const all = [...document.querySelectorAll('.stream-inner > .msg.thought')];\n  const t = all[all.length - 1];\n  return { runs: document.querySelectorAll('.work-run').length,\n    prevExpanded: run?.querySelector('.work-run-head')?.getAttribute('aria-expanded') ?? '',\n    prevKept: run?.querySelectorAll('.work-run-items > *').length ?? 0,\n    prevCards: run?.querySelectorAll('.tool-card').length ?? 0,\n    loneRows: all.length,\n    loneHead: (t?.querySelector('.thought-head')?.textContent || '').trim(),\n    loneOpen: Boolean(t?.querySelector('.bubble')) }; })()`);
+check("…the previous round folded its kept tail in, by itself",
+  next.prevExpanded === "false" && next.prevKept === 0 && next.prevCards === 0, JSON.stringify(next));
+check("a lone burst is NOT folded into a run (fewer than two items reads better as itself)",
+  next.runs === 1 && next.loneRows === 1, JSON.stringify(next));
 check("…and it folded itself when the turn ended, with a readable header",
-  !lone.open && /思考/.test(lone.head) && /字/.test(lone.head), JSON.stringify(lone));
+  !next.loneOpen && /思考/.test(next.loneHead) && /字/.test(next.loneHead), JSON.stringify(next));
 
 // --- ③ "load earlier messages" ----------------------------------------------------------
 // Folding makes the transcript short, so a page can leave room on screen with history still

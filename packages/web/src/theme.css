@@ -318,6 +318,12 @@ button { font: inherit; }
   max-height: 42vh; overflow-y: auto; overscroll-behavior: contain;
 }
 .work-run-items .msg { margin-bottom: 4px; }
+.work-more {
+  align-self: flex-start; margin-bottom: 2px; padding: 3px 6px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer;
+}
+.work-more:hover { background: var(--bg-raised); color: var(--text); }
+.work-run.current .work-run-head { border-color: var(--accent-dim); }
 .work-thought {
   white-space: pre-wrap; font-size: 12.5px; color: var(--text-dim);
   background: rgba(143, 123, 215, 0.07); border-left: 3px solid var(--thought);

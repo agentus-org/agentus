@@ -1241,7 +1241,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             </div>
           )}
           {foldWork(v.msgs, v.busy).map((row) => (row.kind === "work"
-            ? <WorkRun key={row.key} items={row.items} active={row.active} />
+            ? <WorkRun key={row.key} items={row.items} active={row.active} current={row.current} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
@@ -1440,7 +1440,11 @@ type WorkItem = ToolMsg | ThoughtMsg;
 const isWork = (m: MsgView): m is WorkItem => m.kind === "thought" || m.kind === "tool";
 type StreamRow =
   | { kind: "msg"; m: MsgView; live: boolean; tail: boolean }
-  | { kind: "work"; key: string; items: WorkItem[]; active: boolean; tail: boolean };
+  | { kind: "work"; key: string; items: WorkItem[]; active: boolean; current: boolean; tail: boolean };
+
+/** How many of the newest work items stay OUT of the fold and render as their own rows.
+ *  The operator's rule (2026-10-06): "保留最后 5 条…下一轮开始的时候，那 5 条再自动合并到那一行里". */
+const TAIL_PREVIEW = 5;
 
 /** Fold one stretch of work into a single row — thinking and tool calls TOGETHER.
  *
@@ -1473,7 +1477,7 @@ function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
     const items = msgs.slice(i, j).filter(isWork);
     const atTail = j >= msgs.length;
     if (items.length >= 2) {
-      rows.push({ kind: "work", key: `work-${i}`, items, active: busy && atTail, tail: false });
+      rows.push({ kind: "work", key: `work-${i}`, items, active: busy && atTail, current: false, tail: false });
     } else {
       rows.push({ kind: "msg", m: items[0], live: busy && atTail, tail: false });
     }
@@ -1485,20 +1489,35 @@ function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
   if (lastMsg && lastMsg.kind === "msg") lastMsg.tail = true;
   const tailRow = rows[rows.length - 1];
   if (busy && tailRow && tailRow.kind === "msg") tailRow.live = true;
+  // Which run keeps its last few items on screen: the newest one, until the operator starts the
+  // NEXT round (a user row after it) or the agent starts another stretch of work. Everything
+  // older is folded into its header line for good — that is the "自动合并到那一行" he asked for.
+  const lastWork = rows.map((r) => r.kind).lastIndexOf("work");
+  let lastUser = -1;
+  rows.forEach((r, idx) => {
+    if (r.kind === "msg" && r.m.kind === "user") lastUser = idx;
+  });
+  if (lastWork > lastUser) {
+    const row = rows[lastWork];
+    if (row.kind === "work") row.current = true;
+  }
   return rows;
 }
 
-/** A stretch of the agent's work as one line: how many calls, how much thinking, how it went.
+/** A stretch of the agent's work as one row: how many calls, how much thinking, how it went.
  *
- *  While it is still running the row stays OPEN (studio's `expanded = override ?? active`), and its
- *  body is a bounded, self-scrolling box — the newest reasoning sits in a small window at the bottom
- *  and the running call shows its dot, so a twenty-step turn can never push the composer off screen.
- *  The moment the agent moves on, the row folds to its header line; a click opens the whole run
- *  again, where each call is still its own card (a second click gives input/output — studio's two
- *  levels, unchanged). */
-function WorkRun({ items, active }: { items: WorkItem[]; active: boolean }): JSX.Element {
+ *  Three states, in the operator's words ("保留最后 5 条…下一轮开始的时候那 5 条自动合并进去"):
+ *   · the newest run, still on screen  → its last 5 items stay OUT as their own rows, inside a
+ *     bounded box that scrolls itself (the live burst is windowed inside it, so twenty steps still
+ *     cannot push the composer off screen)
+ *   · any older run, or the newest one once the NEXT round starts → folded to the header line,
+ *     which is the "自动合并到那一行"
+ *   · a click → the whole run, every item in the order it happened (each call still its own card,
+ *     a second click gives input/output — studio's two levels)
+ *  While the run is live it opens by itself (studio's `expanded = override ?? active`). */
+function WorkRun({ items, active, current }: { items: WorkItem[]; active: boolean; current: boolean }): JSX.Element {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? active;
+  const view: "closed" | "preview" | "full" = userOpen === null ? (current ? "preview" : "closed") : userOpen ? "full" : "closed";
   const body = useRef<HTMLDivElement>(null);
   const tools = items.filter((x): x is ToolMsg => x.kind === "tool");
   const thoughts = items.filter((x): x is ThoughtMsg => x.kind === "thought");
@@ -1511,6 +1530,9 @@ function WorkRun({ items, active }: { items: WorkItem[]; active: boolean }): JSX
   const label = tools.length && thoughts.length
     ? `${tools.length} 次工具调用 · ${thoughts.length} 段思考`
     : tools.length ? `${tools.length} 次工具调用` : `${thoughts.length} 段思考`;
+  const visible = view === "full" ? items : view === "preview" ? items.slice(-TAIL_PREVIEW) : [];
+  const folded = items.length - visible.length;
+  const open = view !== "closed";
   // a live box follows its own tail: the newest chunk is what the reader is waiting for. Both
   // levels scroll — the newest burst inside its small window, and the run body inside its bound
   // (the first version scrolled only the body, so the window itself sat frozen at its top).
@@ -1519,17 +1541,17 @@ function WorkRun({ items, active }: { items: WorkItem[]; active: boolean }): JSX
     const liveBox = body.current?.querySelector(".work-thought.live") as HTMLElement | null;
     if (liveBox) liveBox.scrollTop = liveBox.scrollHeight;
     if (body.current) body.current.scrollTop = body.current.scrollHeight;
-  }, [items.length, lastThought?.text, active]);
+  }, [items.length, lastThought?.text, active, view]);
   return (
     <div className="msg">
-      <div className={`work-run${active ? " active" : ""}`}>
+      <div className={`work-run${active ? " active" : ""}${current ? " current" : ""}`}>
         <button
           type="button"
           className="work-run-head"
           aria-expanded={open}
           title={[`${tools.length} 次工具调用`, `${thoughts.length} 段思考 · ${chars} 字`,
             ...tools.map((t) => `· ${t.title}`)].join("\n")}
-          onClick={() => setUserOpen(!open)}
+          onClick={() => setUserOpen(view === "full" ? false : true)}
         >
           <IconChevronRight size={11} className={`work-chev${open ? " open" : ""}`} />
           <span className="work-run-icon" aria-hidden="true">
@@ -1547,7 +1569,12 @@ function WorkRun({ items, active }: { items: WorkItem[]; active: boolean }): JSX
         </button>
         {open && (
           <div className="work-run-items" ref={body}>
-            {items.map((it) => (it.kind === "thought" ? (
+            {folded > 0 ? (
+              <button type="button" className="work-more" onClick={() => setUserOpen(true)}>
+                ▸ 前 {folded} 条已折叠 · 点这里展开全部
+              </button>
+            ) : null}
+            {visible.map((it) => (it.kind === "thought" ? (
               <div key={it.key} className={`work-thought${active && it === lastThought ? " live" : ""}`}>{it.text}</div>
             ) : (
               <ToolCard key={it.key} m={it} />
