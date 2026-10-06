@@ -95,19 +95,30 @@ async function boot(port, dataDir) {
   throw new Error(`server did not come up on :${port}\n${log}`);
 }
 
+/** A child's environment. Linux: `/proc/<pid>/environ` is exact (NUL-separated) — procps' `ps eww`
+ *  does NOT dump the environment, which is why the BSD-only call below cannot be the only path.
+ *  macOS: `ps eww`. Either may lose the process to a race; both then return {}. */
 function psEnv(pid) {
-  const out = execFileSync("ps", ["eww", String(pid)], { encoding: "utf8" });
   const env = {};
-  for (const part of out.split(" ")) {
-    const m = part.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (m) env[m[1]] = m[2];
-  }
+  const absorb = (text) => {
+    for (const part of text.split(text.includes("\0") ? "\0" : " ")) {
+      const m = part.match(/^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/);
+      if (m) env[m[1]] = m[2];
+    }
+  };
+  try {
+    absorb(fs.readFileSync(`/proc/${pid}/environ`, "utf8"));
+    if (Object.keys(env).length) return env;
+  } catch { /* not Linux, or gone */ }
+  try {
+    absorb(execFileSync("ps", ["eww", String(pid)], { encoding: "utf8" }));
+  } catch { /* gone */ }
   return env;
 }
 
 /** Is a command runnable on THIS machine? A bare CI runner has neither the operator's `hermes`
  *  nor their source fork, so checks that need one are shipped only where they exist — and
- *  everything provable without an external CLI (registry CRUD, the isolation guard, session-kind
+ *  everything provable without an external CLI (registry CRUD, the home rule, session-kind
  *  health + the handshake via the in-repo mock agent) runs everywhere. Skips are announced. */
 function commandResolves(cmd) {
   const bin = cmd.split(" ")[0];
