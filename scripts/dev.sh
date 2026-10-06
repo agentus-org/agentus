@@ -151,7 +151,12 @@ case "${1:-}" in
     # about to keep serving.
     server_changed="$(git -C "$LIVE" diff --name-only "$old_tip" "$tip" -- packages/server/src packages/shared/src 2>/dev/null | wc -l | tr -d ' ')"
     shape_changed="$(git -C "$LIVE" diff --name-only "$old_tip" "$tip" -- scripts/start.sh package.json 2>/dev/null | wc -l | tr -d ' ')"
-    live_argv="$(ps -o command= -p "$(pid_on_port "$LIVE_PORT")" 2>/dev/null || true)"
+    # The listener is the launcher's CHILD when a watcher is in play, so ask the process-group
+    # leader (the launcher spawned it with its own session) — that is the process that holds the
+    # `watch` flag.
+    live_pid="$(pid_on_port "$LIVE_PORT")"
+    live_leader="$(ps -o pgid= -p "${live_pid:-0}" 2>/dev/null | tr -d ' ')"
+    live_argv="$(ps -o command= -p "${live_leader:-0}" 2>/dev/null || true)"
     under_watch=0; case "$live_argv" in *"tsx watch"*) under_watch=1 ;; esac
     if [ "${server_changed:-0}" != "0" ] || [ "${shape_changed:-0}" != "0" ] || [ "$under_watch" = "1" ]; then
       why="server-side file(s): $server_changed, start shape: $shape_changed, running under tsx watch: $under_watch"
