@@ -1241,7 +1241,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             </div>
           )}
           {foldWork(v.msgs, v.busy).map((row) => (row.kind === "work"
-            ? <WorkRun key={row.key} items={row.items} active={row.active} current={row.current} />
+            ? <WorkRun key={row.key} items={row.items} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
           {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
           {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
@@ -1440,7 +1440,7 @@ type WorkItem = ToolMsg | ThoughtMsg;
 const isWork = (m: MsgView): m is WorkItem => m.kind === "thought" || m.kind === "tool";
 type StreamRow =
   | { kind: "msg"; m: MsgView; live: boolean; tail: boolean }
-  | { kind: "work"; key: string; items: WorkItem[]; active: boolean; current: boolean; tail: boolean };
+  | { kind: "work"; key: string; items: WorkItem[]; tail: boolean };
 
 /** How many of the newest work items stay OUT of the fold and render as their own rows.
  *  The operator's rule (2026-10-06): "保留最后 5 条…下一轮开始的时候，那 5 条再自动合并到那一行里". */
@@ -1454,74 +1454,84 @@ const TAIL_PREVIEW = 5;
  *  that ran later rendered ABOVE reasoning that came after them — the transcript read out of order,
  *  which is what "后面执行的怎么折到最前面去了" describes. A run is therefore every consecutive
  *  thinking/call item, anchored where the work began and holding its items in the order they
- *  happened: 10 + 10 items become one line. That is the shape Cursor and ChatGPT use for a turn's
- *  work (one collapsible "worked for Ns / N steps" region before the answer), and hermes-studio's
- *  `ToolRunSummary` extended to the reasoning — studio keeps thinking and the run separate, which
- *  is exactly where the remaining rows come from.
+ *  happened. Inside, each item keeps its own OLD row: a `💭 思考 · N 字` line that folds itself when
+ *  the burst ends, and a one-line tool card you can open. Three layers of folding, all in play:
+ *  the run (N calls / M bursts) → the burst line → the call's input/output.
  *
  *  A run ENDS at an assistant reply (or a new prompt): the anchor must never swallow the answer,
  *  and text interleaved mid-turn keeps its true position — chronology stays exact. Fewer than two
- *  items is not worth a click: alone, a thought or a call reads better as itself. */
+ *  folded items is not worth a click: alone, a thought or a call reads better as itself. */
 function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
-  const rows: StreamRow[] = [];
+  type Chunk =
+    | { kind: "msg"; m: MsgView }
+    | { kind: "work"; items: WorkItem[]; current: boolean };
+  const chunks: Chunk[] = [];
   let i = 0;
   while (i < msgs.length) {
     const m = msgs[i];
     if (!isWork(m)) {
-      rows.push({ kind: "msg", m, live: false, tail: false });
+      chunks.push({ kind: "msg", m });
       i++;
       continue;
     }
     let j = i;
     while (j < msgs.length && isWork(msgs[j])) j++;
-    const items = msgs.slice(i, j).filter(isWork);
-    const atTail = j >= msgs.length;
-    if (items.length >= 2) {
-      rows.push({ kind: "work", key: `work-${i}`, items, active: busy && atTail, current: false, tail: false });
-    } else {
-      rows.push({ kind: "msg", m: items[0], live: busy && atTail, tail: false });
-    }
+    chunks.push({ kind: "work", items: msgs.slice(i, j).filter(isWork), current: false });
     i = j;
   }
+  // Which stretch keeps its newest items OUT of the fold: the newest stretch, until the operator
+  // starts the NEXT round (a user row after it) or the agent starts another stretch of work.
+  // Everything older is folded into its header line for good — "下一轮开始那 5 条自动合并进去".
+  const lastWork = chunks.map((c) => c.kind).lastIndexOf("work");
+  let lastUser = -1;
+  chunks.forEach((c, idx) => {
+    if (c.kind === "msg" && c.m.kind === "user") lastUser = idx;
+  });
+  if (lastWork > lastUser) {
+    const c = chunks[lastWork];
+    if (c.kind === "work") c.current = true;
+  }
+
+  const rows: StreamRow[] = [];
+  const asRow = (m: MsgView): StreamRow => ({ kind: "msg", m, live: false, tail: false });
+  for (const c of chunks) {
+    if (c.kind === "msg") {
+      rows.push(asRow(c.m));
+      continue;
+    }
+    // He asked for the newest few to stay on screen in the OLD shape (a burst line that folds
+    // itself, a tool card you can open) and for the 6th-oldest onwards to fold into the header:
+    // "出现第 6 条的时候，那最第一条就折到那个里面去".
+    const keep = c.current ? c.items.slice(-TAIL_PREVIEW) : [];
+    const folded = c.items.slice(0, c.items.length - keep.length);
+    // one folded item is not worth a row of its own unless the rule demands it (the current
+    // stretch, where the count must grow as items arrive)
+    if (folded.length >= (c.current ? 1 : 2)) {
+      rows.push({ kind: "work", key: `work-${rows.length}`, items: folded, tail: false });
+    } else {
+      folded.forEach((m) => rows.push(asRow(m)));
+    }
+    keep.forEach((m) => rows.push(asRow(m)));
+  }
   // `tail` drives the fork affordance and must land on the last real MESSAGE: a work row is not
-  // something you can fork from.
+  // something you can fork from. `live` marks the row that is still arriving (the live burst
+  // scrolls in its own small window).
   const lastMsg = [...rows].reverse().find((r) => r.kind === "msg");
   if (lastMsg && lastMsg.kind === "msg") lastMsg.tail = true;
   const tailRow = rows[rows.length - 1];
   if (busy && tailRow && tailRow.kind === "msg") tailRow.live = true;
-  // Which run keeps its last few items on screen: the newest one, until the operator starts the
-  // NEXT round (a user row after it) or the agent starts another stretch of work. Everything
-  // older is folded into its header line for good — that is the "自动合并到那一行" he asked for.
-  const lastWork = rows.map((r) => r.kind).lastIndexOf("work");
-  let lastUser = -1;
-  rows.forEach((r, idx) => {
-    if (r.kind === "msg" && r.m.kind === "user") lastUser = idx;
-  });
-  if (lastWork > lastUser) {
-    const row = rows[lastWork];
-    if (row.kind === "work") row.current = true;
-  }
   return rows;
 }
 
-/** A stretch of the agent's work as one row: how many calls, how much thinking, how it went.
- *
- *  Three states, in the operator's words ("保留最后 5 条…下一轮开始的时候那 5 条自动合并进去"):
- *   · the newest run, still on screen  → its last 5 items stay OUT as their own rows, inside a
- *     bounded box that scrolls itself (the live burst is windowed inside it, so twenty steps still
- *     cannot push the composer off screen)
- *   · any older run, or the newest one once the NEXT round starts → folded to the header line,
- *     which is the "自动合并到那一行"
- *   · a click → the whole run, every item in the order it happened (each call still its own card,
- *     a second click gives input/output — studio's two levels)
- *  While the run is live it opens by itself (studio's `expanded = override ?? active`). */
-function WorkRun({ items, active, current }: { items: WorkItem[]; active: boolean; current: boolean }): JSX.Element {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const view: "closed" | "preview" | "full" = userOpen === null ? (current ? "preview" : "closed") : userOpen ? "full" : "closed";
-  const body = useRef<HTMLDivElement>(null);
+/** The folded part of one stretch of work, as a single line: how many calls, how many bursts,
+ *  which calls it touched, how it went. Its body is the SAME rows the tail uses (a burst line
+ *  that folds itself, a tool card that opens its input/output), in the order they happened — so
+ *  folding hides nothing, it just stops the screen from scrolling. The box is bounded: a stretch
+ *  with 40 steps cannot push the composer off screen. */
+function WorkRun({ items }: { items: WorkItem[] }): JSX.Element {
+  const [open, setOpen] = useState(false);
   const tools = items.filter((x): x is ToolMsg => x.kind === "tool");
   const thoughts = items.filter((x): x is ThoughtMsg => x.kind === "thought");
-  const lastThought = thoughts[thoughts.length - 1];
   const errs = tools.filter((t) => statusOf(t.status) === "err").length;
   const running = tools.some((t) => statusOf(t.status) === "running");
   const chars = thoughts.reduce((n, t) => n + t.text.length, 0);
@@ -1530,33 +1540,19 @@ function WorkRun({ items, active, current }: { items: WorkItem[]; active: boolea
   const label = tools.length && thoughts.length
     ? `${tools.length} 次工具调用 · ${thoughts.length} 段思考`
     : tools.length ? `${tools.length} 次工具调用` : `${thoughts.length} 段思考`;
-  const visible = view === "full" ? items : view === "preview" ? items.slice(-TAIL_PREVIEW) : [];
-  const folded = items.length - visible.length;
-  const open = view !== "closed";
-  // a live box follows its own tail: the newest chunk is what the reader is waiting for. Both
-  // levels scroll — the newest burst inside its small window, and the run body inside its bound
-  // (the first version scrolled only the body, so the window itself sat frozen at its top).
-  useEffect(() => {
-    if (!active) return;
-    const liveBox = body.current?.querySelector(".work-thought.live") as HTMLElement | null;
-    if (liveBox) liveBox.scrollTop = liveBox.scrollHeight;
-    if (body.current) body.current.scrollTop = body.current.scrollHeight;
-  }, [items.length, lastThought?.text, active, view]);
   return (
     <div className="msg">
-      <div className={`work-run${active ? " active" : ""}${current ? " current" : ""}`}>
+      <div className="work-run">
         <button
           type="button"
           className="work-run-head"
           aria-expanded={open}
-          title={[`${tools.length} 次工具调用`, `${thoughts.length} 段思考 · ${chars} 字`,
+          title={[`折叠了 ${tools.length} 次工具调用、${thoughts.length} 段思考（${chars} 字）`, "点开看它们",
             ...tools.map((t) => `· ${t.title}`)].join("\n")}
-          onClick={() => setUserOpen(view === "full" ? false : true)}
+          onClick={() => setOpen((x) => !x)}
         >
           <IconChevronRight size={11} className={`work-chev${open ? " open" : ""}`} />
-          <span className="work-run-icon" aria-hidden="true">
-            {tools.length ? "⚙" : "💭"}
-          </span>
+          <span className="work-run-icon" aria-hidden="true">{tools.length ? "⚙" : "💭"}</span>
           <span className="work-run-count">{label}</span>
           {names.length ? (
             <span className="work-run-names">{names.length > 2 ? `${shown} +${names.length - 2}` : shown}</span>
@@ -1568,17 +1564,8 @@ function WorkRun({ items, active, current }: { items: WorkItem[]; active: boolea
           </span>
         </button>
         {open && (
-          <div className="work-run-items" ref={body}>
-            {folded > 0 ? (
-              <button type="button" className="work-more" onClick={() => setUserOpen(true)}>
-                ▸ 前 {folded} 条已折叠 · 点这里展开全部
-              </button>
-            ) : null}
-            {visible.map((it) => (it.kind === "thought" ? (
-              <div key={it.key} className={`work-thought${active && it === lastThought ? " live" : ""}`}>{it.text}</div>
-            ) : (
-              <ToolCard key={it.key} m={it} />
-            )))}
+          <div className="work-run-items">
+            {items.map((it) => (it.kind === "thought" ? <Thought key={it.key} m={it} live={false} /> : <ToolCard key={it.key} m={it} />))}
           </div>
         )}
       </div>

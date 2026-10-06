@@ -260,9 +260,15 @@ const agent = () => ({
     const slow = /\[slow\]/.test(text) ? Math.max(SLOW, 900) : SLOW;
 
     if (wantThink) {
+      // ONE `messageId` per burst, like the real adapter sends: ACP gives every chunk of one
+      // thought block the same id, and the cockpit/server coalesce on it (`block_key`). A mock
+      // that omits it makes each chunk its own row — a transcript shape that only exists in QA
+      // (measured 2026-10-06: 1336 rows in the DB for a 10-burst turn).
+      const thinkId = `th-${sessionId}-${Date.now()}`;
       for (const w of "pondering the user's request very deeply".split(" ")) {
         await send(agent._conn, sessionId, {
           sessionUpdate: "agent_thought_chunk",
+          messageId: thinkId,
           content: { type: "text", text: w + " " },
         });
         await sleep(SLOW);
@@ -280,9 +286,11 @@ const agent = () => ({
           + "the change back. This sentence is deliberately long so the reasoning block is taller "
           + "than the small window the cockpit draws for it, which is what makes the scrolling "
           + "behaviour measurable at all. ").repeat(3);
+        const thinkId = `th-${sessionId}-multi-${i}`;
         for (const word of burst.split(" ")) {
           await send(agent._conn, sessionId, {
             sessionUpdate: "agent_thought_chunk",
+            messageId: thinkId,
             content: { type: "text", text: word + " " },
           });
           await sleep(10);

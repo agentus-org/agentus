@@ -317,23 +317,12 @@ button { font: inherit; }
   margin: 4px 0 0 11px; padding: 3px 4px 3px 12px; border-left: 1px solid var(--line);
   max-height: 42vh; overflow-y: auto; overscroll-behavior: contain;
 }
+/* inside the fold the SAME rows the tail shows: a burst line that folds itself, a tool card */
 .work-run-items .msg { margin-bottom: 4px; }
-.work-more {
-  align-self: flex-start; margin-bottom: 2px; padding: 3px 6px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer;
-}
-.work-more:hover { background: var(--bg-raised); color: var(--text); }
-.work-run.current .work-run-head { border-color: var(--accent-dim); }
-.work-thought {
-  white-space: pre-wrap; font-size: 12.5px; color: var(--text-dim);
-  background: rgba(143, 123, 215, 0.07); border-left: 3px solid var(--thought);
-  border-radius: 6px; padding: 5px 8px;
-}
-.work-thought.live { max-height: 6.6em; overflow-y: auto; overscroll-behavior: contain; }
+.work-run-items .bubble { max-height: none; }
 @media (max-width: 700px) {
   .work-run-head { min-height: 34px; } /* a thumb, not a mouse */
   .work-run-items { max-height: 38vh; }
-  .work-thought.live { max-height: 7.4em; }
   .msg.thought .bubble.live { max-height: 7.4em; }
 }
 .msg.meta .bubble { color: var(--err); font-size: 13px; background: rgba(229, 115, 115, 0.08); }
