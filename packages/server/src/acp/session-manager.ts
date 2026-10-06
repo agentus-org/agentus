@@ -365,7 +365,7 @@ export class SessionManager {
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
-      live.info.configOptions = (res.configOptions ?? []) as ConfigOptionView[];
+      live.info.configOptions = normConfigOptions(res.configOptions);
       // `models` is on the wire but not in the SDK's published types (see shared/index.ts),
       // so read it defensively instead of trusting a typed field that does not exist.
       live.info.models = readModels(res);
@@ -536,7 +536,7 @@ export class SessionManager {
       // backends that answer loadSession without it
       if (loadedModels) live.info.models = loadedModels;
       if (loaded?.configOptions?.length) {
-        live.info.configOptions = loaded.configOptions.map((o) => (
+        live.info.configOptions = normConfigOptions(loaded.configOptions).map((o) => (
           storedPicks.has(o.id) ? { ...o, currentValue: storedPicks.get(o.id) } : o
         ));
       }
@@ -736,7 +736,7 @@ export class SessionManager {
       // back would show a pick that never landed (operator report: "设置了也好像没什么变化").
       const opts = res && Array.isArray(res.configOptions) ? res.configOptions : null;
       if (opts) {
-        s.info.configOptions = opts as ConfigOptionView[];
+        s.info.configOptions = normConfigOptions(opts);
         const picked = opts.find((o) => o.id === configId);
         if (picked && picked.currentValue !== undefined && picked.currentValue !== null) {
           actual = String(picked.currentValue);
@@ -1336,6 +1336,7 @@ export class SessionManager {
 
     const newId = randomUUID();
     const now = Date.now();
+    const forkedOptions = normConfigOptions(res?.configOptions);
     this.#store.upsertSession({
       id: newId,
       backend: source.info.backend,
@@ -1350,7 +1351,7 @@ export class SessionManager {
       // the agent just told us the fork's modes/options — keep them so the new slot shows
       // the right permission mode and thinking depth before it is even resumed
       modes: res?.modes ?? source.info.modes ?? null,
-      configOptions: res?.configOptions ?? source.info.configOptions ?? [],
+      configOptions: forkedOptions.length ? forkedOptions : (source.info.configOptions ?? []),
       usage: null,
       commands: source.info.commands ?? [],
       workspace: source.info.workspace ?? null,
@@ -1435,6 +1436,21 @@ function normCommands(raw: unknown): SessionInfo["commands"] {
   return raw
     .map((c) => (typeof c === "string" ? { name: c } : (c as { name?: unknown })))
     .filter((c): c is { name: string; description?: string } => Boolean(c && typeof c.name === "string"));
+}
+
+/** ACP options arrive with `_meta`; the view exposes it as `meta` and keeps `category`.
+ *  Custom option kinds live entirely in there (Hermes marks its context budget
+ *  `freeform: true` with a unit/floor/presets), so dropping it would silently strip a
+ *  backend's richer control down to a plain dropdown. */
+function normConfigOptions(raw: unknown): ConfigOptionView[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((o): o is Record<string, unknown> => Boolean(o) && typeof o === "object")
+    .map((o) => {
+      const { _meta, ...rest } = o as { _meta?: Record<string, unknown> | null };
+      const meta = _meta ?? (o as { meta?: Record<string, unknown> | null }).meta ?? null;
+      return { ...rest, meta } as unknown as ConfigOptionView;
+    });
 }
 
 function errMessage(e: unknown): string {

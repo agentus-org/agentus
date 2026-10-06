@@ -84,6 +84,24 @@ check(
   cfgOf().map((o) => o.id).join(","),
 );
 
+// 3b. a hand-typed window: the option says it is free-form, takes any count, and echoes the pick
+//     back as an option (otherwise the returned list contradicts its own currentValue)
+const budget = cfgOf().find((o) => o.id === "context_budget");
+check("budget says it is free-form", budget?.meta?.freeform === true, JSON.stringify(budget?.meta ?? null));
+check("budget carries a floor", typeof budget?.meta?.min === "number", String(budget?.meta?.min));
+ws.send(JSON.stringify({ t: "set-config", sessionId: id, configId: "context_budget", value: "300000" }));
+await until(() => valueOf("context_budget") === "300000");
+check("hand-typed window lands", valueOf("context_budget") === "300000", String(valueOf("context_budget")));
+const budgetOpts = (cfgOf().find((o) => o.id === "context_budget")?.options || []).map((o) => String(o.value));
+check("the typed value is echoed as an option", budgetOpts.includes("300000"), budgetOpts.join(","));
+check("presets survive the echo", budgetOpts.includes("65536") && budgetOpts.includes("auto"), budgetOpts.join(","));
+
+// 3c. below the floor the backend refuses: the old window stays (and the pick is flagged)
+rejected.length = 0;
+ws.send(JSON.stringify({ t: "set-config", sessionId: id, configId: "context_budget", value: "4096" }));
+await until(() => rejected.length > 0 || valueOf("context_budget") === "4096");
+check("below-floor window is refused", valueOf("context_budget") === "300000", String(valueOf("context_budget")));
+
 // 4. a pick the backend folds away is reported, not silently kept
 rejected.length = 0;
 ws.send(JSON.stringify({ t: "set-config", sessionId: id, configId: "reasoning_effort", value: "ultra" }));

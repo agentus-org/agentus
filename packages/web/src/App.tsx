@@ -2037,11 +2037,13 @@ function ChoiceList({ items, current, onPick, empty }: {
  *  The window number has three possible sources, and the popover names the one in play:
  *  this session's declaration → the declaration remembered for this MODEL (studio's shape:
  *  it keeps a context length per provider+model) → the agent's own `usage_update.size`.
- *  ACP has no method to set a window (the SDK routes none, and `session/set_context`
- *  answers "Method not found" — probed against Hermes), so this number is the budget the
- *  gauge measures against. What actually moves context is the agent's own `/compress`
- *  (advertised over ACP, so the button only appears when this agent really has it) and
- *  switching to a model with a longer window. */
+ *
+ *  ACP has no *dedicated* method to set a window, but an agent may advertise one as a config
+ *  option (Hermes exposes `context_budget`, free-form) — that is the real knob, so when it is
+ *  present the declaration field says so instead of pretending to be it. Without one, this
+ *  number only moves the gauge; what changes context then is the agent's own `/compress`
+ *  (advertised over ACP, so the button only appears when the agent really has it) or a model
+ *  with a longer window. */
 function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const usage = v.info.usage;
   // The agent's own context-budget option, when it advertises one: that is the REAL knob (it moves
@@ -2202,9 +2204,59 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           ) : null}
           {err ? <div className="usage-edit-err">{err}</div> : null}
           <div className="usage-note">
-            ACP 没有"设置窗口"的方法（实测 <code>session/set_context</code> → Method not found），所以这个数字是仪表盘的预算；
-            声明按模型记住。真正改变上下文的是上面两个命令与换模型。
+            {budgetCfg ? (
+              <>这个数字是仪表盘算百分比用的<b>声明</b>（按模型记住）。真正让 agent 提前压缩的旋钮是这个后端自己公告的「{budgetCfg.name || budgetCfg.id}」，在聊天设置里（可填任意 token 数）。</>
+            ) : (
+              <>ACP 没有"设置窗口"的方法（实测 <code>session/set_context</code> → Method not found），而且这个后端没公告上下文旋钮，所以这个数字只影响上面的百分比；真减上下文用上面的压缩命令或换模型。</>
+            )}
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** One config option the agent advertised. Presets are chips; when the agent marks the option
+ *  free-form (`_meta.freeform` — the extension slot ACP reserves for custom option kinds) an
+ *  input rides alongside them, because those presets are shortcuts rather than the allowed set.
+ *  We send exactly what was typed and let the agent's rebuilt list be the truth. */
+function ConfigOptionGroup({ o, sessionId }: {
+  o: SessionView["info"]["configOptions"][number];
+  sessionId: string;
+}): JSX.Element {
+  const meta = (o.meta ?? {}) as Record<string, unknown>;
+  const freeform = meta.freeform === true;
+  const [draft, setDraft] = useState("");
+  const current = String(o.currentValue ?? "");
+  const unit = typeof meta.unit === "string" ? meta.unit : "tokens";
+  const send = (value: string) => cockpit.send({ t: "set-config", sessionId, configId: o.id, value });
+  return (
+    <div className="settings-group">
+      <div className="settings-label"><IconSettings size={13} /> {o.name || o.id}</div>
+      {o.options?.map((opt) => (
+        <button
+          key={String(opt.value)}
+          className={`settings-opt ${current === String(opt.value) ? "sel" : ""}`}
+          onClick={() => send(String(opt.value))}
+        >
+          {opt.name}
+        </button>
+      ))}
+      {freeform ? (
+        <div className="settings-freeform">
+          <input
+            className="settings-input"
+            type="number"
+            inputMode="numeric"
+            min={typeof meta.min === "number" ? meta.min : undefined}
+            step={typeof meta.step === "number" ? meta.step : 1024}
+            placeholder={`任意 ${unit}`}
+            aria-label={`${o.name || o.id} value`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) send(draft.trim()); }}
+          />
+          <button className="settings-opt" disabled={!draft.trim()} onClick={() => send(draft.trim())}>set</button>
         </div>
       ) : null}
     </div>
@@ -2252,22 +2304,12 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
       )}
       {/* Config options the agent advertises that are NOT the effort knob (that one has
           its own button now). Generic on purpose: a backend that adds an option gets it
-          rendered without a code change here. */}
+          rendered without a code change here — presets when it lists values, plus an input
+          when it marks itself free-form. */}
       {info.configOptions
         .filter((o) => o.type === "select" && o.options && o !== cfg && o !== modelCfg)
         .map((o) => (
-          <div className="settings-group" key={o.id}>
-            <div className="settings-label"><IconSettings size={13} /> {o.name || o.id}</div>
-            {o.options?.map((opt) => (
-              <button
-                key={String(opt.value)}
-                className={`settings-opt ${String(o.currentValue ?? "") === String(opt.value) ? "sel" : ""}`}
-                onClick={() => cockpit.send({ t: "set-config", sessionId: info.id, configId: o.id, value: opt.value })}
-              >
-                {opt.name}
-              </button>
-            ))}
-          </div>
+          <ConfigOptionGroup key={o.id} o={o} sessionId={info.id} />
         ))}
       <div className="settings-group">
         <div className="settings-label"><IconVolume size={13} /> read replies aloud</div>

@@ -603,6 +603,8 @@ code.inline {
   font-size: 12px; font-family: inherit;
 }
 .settings-select:focus, .settings-input:focus { outline: none; border-color: var(--accent-dim); }
+.settings-freeform { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.settings-freeform .settings-input { flex: 1 1 auto; min-width: 0; }
 .settings-note { font-size: 10.5px; color: var(--text-dim); margin-top: 4px; }
 .settings-range { display: block; font-size: 11.5px; color: var(--text-dim); margin: 5px 0; }
 .settings-range input { width: 100%; }

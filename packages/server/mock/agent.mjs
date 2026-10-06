@@ -100,8 +100,12 @@ const configOptionsFor = (config) => [
   // The second typed option a real Hermes session advertises (acp_adapter/server.py): the window
   // Hermes budgets its compression against. The cockpit renders it generically in chat settings,
   // and the usage popover points at it instead of pretending its own number configures the model.
-  { id: "context_budget", name: "Context budget", type: "select",
+  // `_meta.freeform` + a `_`-prefixed category mirror the real adapter: the presets are shortcuts,
+  // and a hand-typed window comes back as its own option so `currentValue` stays in the list.
+  { id: "context_budget", name: "Context budget", type: "select", category: "_context_window",
     currentValue: config.context_budget || "auto",
+    _meta: { freeform: true, unit: "tokens", min: 16384, step: 1024,
+      presets: [65536, 131072, 200000, 1000000] },
     options: [{ value: "auto", name: "Auto (model window)" }, { value: "65536", name: "64K" },
       { value: "131072", name: "128K" }, { value: "200000", name: "200K" }, { value: "1000000", name: "1M" }] },
 ];
@@ -220,11 +224,25 @@ const agent = () => ({
     const options = configOptionsFor(s.config || {});
     const target = options.find((o) => o.id === configId);
     const supported = (target?.options || []).map((o) => o.value);
-    if (supported.length && !supported.includes(String(value))) {
+    // Free-form options (`_meta.freeform`) accept anything inside their floor; for the rest an
+    // unlisted value comes back with the old currentValue, shape for shape with the real adapter.
+    const freeform = target?._meta?.freeform === true;
+    if (freeform) {
+      const n = Number(String(value).replace(/[^0-9]/g, ""));
+      if (!(n > 0) || (typeof target._meta.min === "number" && n < target._meta.min)) {
+        return { configOptions: options };
+      }
+    } else if (supported.length && !supported.includes(String(value))) {
       return { configOptions: options };
     }
     s.config = { ...(s.config || {}), [configId]: value };
-    return { configOptions: configOptionsFor(s.config || {}) };
+    // A hand-typed window must show up as an option, or the returned list contradicts itself.
+    const rebuilt = configOptionsFor(s.config || {});
+    const opt = rebuilt.find((o) => o.id === configId);
+    if (freeform && opt && !opt.options.some((o) => o.value === String(opt.currentValue))) {
+      opt.options = [...opt.options, { value: String(opt.currentValue), name: `${opt.currentValue} (custom)` }];
+    }
+    return { configOptions: rebuilt };
   },
 
   async cancel({ sessionId }) {

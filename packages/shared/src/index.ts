@@ -92,6 +92,11 @@ export interface ConfigOptionView {
   category?: string | null;
   currentValue?: string | number | boolean | null;
   options?: { value: string; name: string }[];
+  /** The option's ACP `_meta`, passed through verbatim. Custom option kinds describe extra
+   *  shape here (e.g. Hermes's `context_budget` marks itself `freeform: true` with a unit,
+   *  a floor and preset shortcuts) — a client that understands the marker can offer an input
+   *  where a plain dropdown would only ever show the presets. */
+  meta?: Record<string, unknown> | null;
 }
 
 export type PermissionDecision =
