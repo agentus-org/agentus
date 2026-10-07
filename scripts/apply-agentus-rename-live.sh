@@ -170,6 +170,31 @@ done
 [ "$NEW_PID" != "$LIVE_PID" ] || die "pid 没变（${NEW_PID}）——旧进程还在跑，发布没生效"
 echo "  pid $LIVE_PID -> $NEW_PID  ✅ 是新进程"
 
+# ── 3d. 后端注册表里的绝对路径 ───────────────────────────────────────────────
+# 注册表行存的是绝对命令路径（为什么是绝对：见 dev.sh 里那段注释）。启动器目录改名之后，
+# 还写着旧目录的行会让 hermes 槽位起不来 —— 实测 resume 全报
+# `failed to spawn /Users/liang/.hermes/cache/agentslot/hermes-acp-src (no pid)`。
+say "3d. 把注册表里指向旧启动器目录的行改到新目录"
+if [ "$DRY" = 1 ]; then
+  echo "  [dry] PATCH 每个 cmd/args 含 $LOLD 的 backend 行 -> $LNEW"
+else
+  ROW_IDS="$(api "http://127.0.0.1:$LIVE_PORT/api/backends" | OLD="$LOLD" node -e '
+    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
+      const rows=(JSON.parse(s).backends||[]);
+      console.log(rows.filter(r=>JSON.stringify(r).includes(process.env.OLD)).map(r=>r.id).join("\n"));
+    }catch{console.log("")}})')"
+  if [ -z "$ROW_IDS" ]; then
+    echo "  没有行指向旧目录（已迁过）"
+  else
+    for _id in $ROW_IDS; do
+      api -X PATCH -H 'content-type: application/json' \
+        -d "{\"cmd\":\"$LNEW/hermes-acp-src\"}" \
+        "http://127.0.0.1:$LIVE_PORT/api/backends/$_id" >/dev/null
+      echo "  re-pointed backend '$_id' -> $LNEW/hermes-acp-src"
+    done
+  fi
+fi
+
 # ── 4. 回读验证 ─────────────────────────────────────────────────────────────
 say "4. 回读验证"
 FAIL=0
@@ -186,6 +211,13 @@ ck "端口仍是 $LIVE_PORT" "$(echo "$ENVS" | grep -q "^AGENTUS_PORT=$LIVE_PORT
 SESS_AFTER="$(allsids | tr '\n' ' ')"
 ck "会话列表还在（${SESS_BEFORE:-无} -> ${SESS_AFTER:-无}）" \
    "$([ "$(echo "${SESS_AFTER:-}" | wc -w)" -ge "$(echo "${SESS_BEFORE:-}" | wc -w)" ] && echo 1 || echo 0)"
+
+ck "没有后端行还指着旧启动器目录（否则 hermes 槽位起不来）" \
+   "$([ -z "$(api "http://127.0.0.1:$LIVE_PORT/api/backends" | OLD="$LOLD" node -e '
+     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
+       const rows=(JSON.parse(s).backends||[]);
+       console.log(rows.filter(r=>JSON.stringify(r).includes(process.env.OLD)).map(r=>r.id).join(","));
+     }catch{console.log("")}})')" ] && echo 1 || echo 0)"
 
 ck "TLS 监听 $LIVE_TLS_PORT 在线" "$([ -n "$(pid_on "$LIVE_TLS_PORT")" ] && echo 1 || echo 0)"
 
