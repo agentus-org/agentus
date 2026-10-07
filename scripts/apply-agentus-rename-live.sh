@@ -46,7 +46,15 @@ sids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
 # ── 0. 前置检查 ──────────────────────────────────────────────────────────────
 say "0. 前置检查"
 [ -d "$LIVE" ] || die "live 树不存在: $LIVE"
-[ -f "$LOLD/launch.py" ] || die "旧启动器不存在: $LOLD/launch.py"
+# 可续跑：上一次可能停在中间（目录已迁、live 未重启）。旧目录没了但新目录在 = 续跑。
+if [ -f "$LOLD/launch.py" ]; then
+  RESUME=0
+elif [ -f "$LNEW/launch.py" ]; then
+  RESUME=1
+  echo "  注意：$LOLD 已不在，而 $LNEW/launch.py 在 —— 按「续跑」处理（跳过目录改名）"
+else
+  die "两处都没有 launch.py（旧: $LOLD，新: $LNEW）"
+fi
 LIVE_PID="$(pid_on "$LIVE_PORT")"; [ -n "$LIVE_PID" ] || die ":$LIVE_PORT 没有监听的进程——live 没在跑，别用这个脚本"
 git -C "$HERE" diff --quiet && git -C "$HERE" diff --cached --quiet || die "dev 树有未提交的改动，先 commit"
 SESS_BEFORE="$(sids | tr '\n' ' ')"
