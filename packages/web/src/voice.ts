@@ -162,6 +162,16 @@ const TTS_RETRY_MS = 400;
 export const TTS_PRIORITY_NOW = 0;
 export const TTS_PRIORITY_AHEAD = 1;
 
+// The streaming relay's own liveness. The upstream recogniser finalises a task that has heard
+// nothing for ~23 s (`request timeout after 23 seconds`), and a call keeps the microphone for
+// minutes — the operator's own thinking included. So the socket is replaced instead of going
+// quiet: frames captured while it reconnects are buffered and sent on open.
+const RELAY_REOPEN_TRIES = 4;
+const RELAY_REOPEN_MS = 400;
+/** 100 ms of 16 kHz mono s16le per frame: this is ~6 s of the operator still being heard
+ *  across a reconnect that has not completed yet (a stranded frame is a word nobody heard). */
+const RELAY_PENDING_MAX = 60;
+
 interface TtsWaiter { priority: number; run: () => void }
 let ttsInFlight = 0;
 const ttsQueue: TtsWaiter[] = [];
@@ -765,6 +775,21 @@ class Dictation {
   #level = 0;
   #wave = new Float32Array(256);
   #relay = true;
+  /** The streaming path's own coordinates, kept so a dead socket can be REPLACED without
+   *  rebuilding the capture: the call holds the microphone for minutes, and the upstream ends a
+   *  task that has heard nothing for ~23 s. */
+  #sessionId?: string;
+  /** true while the streaming path owns the microphone (set by #startStream, cleared by #closeStream) */
+  #streaming = false;
+  /** frames captured while the socket (re)connects — one buffer for the CURRENT socket */
+  #pending: ArrayBuffer[] = [];
+  #reopen: number | null = null;
+  #tries = 0;
+  /** The last thing the relay said on its way out, kept for when the retries are exhausted —
+   *  a hiccup that heals itself must not paint an error the operator has to dismiss. */
+  #relayError = "";
+  /** true when the END was ours (stop / the call's turn is over): a normal finish, not a failure. */
+  #asked = false;
 
   /** Test seam — automation has no microphone, and the call's thresholds (how loud a
    *  barge-in must be, how long a silence ends a sentence, how short an utterance may be)
@@ -787,9 +812,40 @@ class Dictation {
   wave = (): Float32Array => this.#wave;
   /** While false the mic stays OPEN (levels keep flowing, barge-in keeps working) but PCM
    *  is not relayed to the recogniser — the call speaks without feeding our own TTS back
-   *  into the ASR. */
+   *  into the ASR.
+   *
+   *  The relay SOCKET lives exactly as long as the operator's turn does. The upstream recogniser
+   *  finalises a task that has heard nothing for ~23 s, and a call parks one socket per turn while
+   *  it reads a reply out loud — so the socket that was opened to hear the operator dies while the
+   *  agent is still talking, and the microphone comes back attached to nothing. Closing it here is
+   *  also the shape the relay was built on: one socket = one utterance. */
   setRelay(on: boolean): void {
     this.#relay = on;
+    if (!on) {
+      this.#asked = true;
+      this.#closeSocket();
+      return;
+    }
+    this.#asked = false;
+    if (this.#streaming) this.#openRelay();
+  }
+
+  /** Drop the relay socket only. The capture graph stays up: levels, barge-in and the call's
+   *  orb all read the microphone, not the socket. */
+  #closeSocket(): void {
+    if (this.#reopen !== null) {
+      window.clearTimeout(this.#reopen);
+      this.#reopen = null;
+    }
+    const ws = this.#ws;
+    this.#ws = null;
+    this.#pending.length = 0;
+    if (!ws) return;
+    try {
+      ws.close();
+    } catch {
+      /* already gone */
+    }
   }
   /** Start a fresh listening turn without rebuilding the capture graph. */
   resetText(): void {
@@ -948,22 +1004,51 @@ class Dictation {
     // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
     this.#set({ status: "requesting", engine: "stream", error: "" });
     this.#relay = true;          // a fresh capture always relays until the call says otherwise
+    this.#asked = false;
+    this.#tries = 0;
+    this.#relayError = "";
+    this.#sessionId = sessionId;
+    this.#streaming = true;
+    this.#pending.length = 0;
     // The socket comes FIRST, before the source: the source starts pushing frames the moment it is
     // open, and a frame with nowhere to go is a word the operator said that nothing heard.
-    const q = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+    this.#openRelay();
+    /** One place where a captured frame leaves the page, whichever source produced it — and
+     *  whichever socket is current, since a dead one is replaced without touching the source. */
+    const send = (frame: ArrayBuffer): void => this.#sendFrame(frame);
+    if (bridge) await this.#startBridgeCapture(bridge, send);
+    else await this.#startWebCapture(Ctor, send);
+    this.#set({ status: "listening", engine: "stream", seconds: 0 });
+    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  /** One frame out of the page: straight to the socket when it is open, into the buffer while it
+   *  is still connecting. A frame is a word the operator said, so it is never dropped on purpose
+   *  while the relay gate is on. */
+  #sendFrame(frame: ArrayBuffer): void {
+    const ws = this.#ws;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+    else if (this.#pending.length < RELAY_PENDING_MAX) this.#pending.push(frame);
+  }
+
+  /** (Re)create the relay socket. Idempotent: a live socket is left alone.
+   *
+   *  A socket is replaced only while the operator still has the floor (`#relay`) and WE did not ask
+   *  for the end (`#asked`) — the call's own turn-end closes it deliberately, and a normal end is
+   *  not a failure to recover from. The retry ladder exists so a real outage still says so instead
+   *  of retrying forever. */
+  #openRelay(): void {
+    if (this.#ws || !this.#streaming) return;
+    const q = this.#sessionId ? `?sessionId=${encodeURIComponent(this.#sessionId)}` : "";
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/asr${q}`);
     ws.binaryType = "arraybuffer";
     this.#ws = ws;
-    const pending: ArrayBuffer[] = [];
-    /** One place where a captured frame leaves the page, whichever source produced it. */
-    const send = (frame: ArrayBuffer): void => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
-      else if (ws.readyState === WebSocket.CONNECTING && pending.length < 300) pending.push(frame);
-    };
     ws.onopen = () => {
-      for (const buf of pending) ws.send(buf);
-      pending.length = 0;
-      this.#set({ status: "listening", engine: "stream" });
+      this.#tries = 0;
+      this.#relayError = "";
+      for (const buf of this.#pending) ws.send(buf);
+      this.#pending.length = 0;
+      if (this.#state.status !== "listening") this.#set({ status: "listening", engine: "stream", error: "" });
     };
     ws.onmessage = (ev: MessageEvent) => {
       let msg: { t?: string; text?: string; error?: string };
@@ -977,23 +1062,39 @@ class Dictation {
         this.#committed = `${this.#committed}${msg.text ?? ""}`.replace(/\s+/g, " ").trim();
         this.#set({ text: this.#committed, interim: "" });
       } else if (msg.t === "asr-error") {
-        this.#set({ status: "error", error: String(msg.error ?? "streaming asr failed") });
+        // The task died upstream (an idle ~23 s task, a provider refusal). The socket is next, so
+        // this is a RELAY outage to recover from, not a transcript failure to paint.
+        this.#relayGone(String(msg.error ?? "streaming asr failed"));
       } else if (msg.t === "asr-done") {
-        this.#finishStream();
+        if (this.#asked || !this.#streaming || !this.#relay) this.#finishStream();
+        else this.#relayGone("the recogniser ended the turn by itself");
       }
     };
-    ws.onerror = () => {
-      if (this.#state.status !== "idle" && this.#state.status !== "error") {
-        this.#set({ status: "error", error: "the streaming socket failed — is the server up?" });
-      }
-    };
+    ws.onerror = () => this.#relayGone("the streaming socket failed — is the server up?");
     ws.onclose = () => {
       if (this.#ws === ws) this.#ws = null;
+      this.#relayGone(this.#relayError || "the streaming socket failed — is the server up?");
     };
-    if (bridge) await this.#startBridgeCapture(bridge, send);
-    else await this.#startWebCapture(Ctor, send);
-    this.#set({ status: "listening", engine: "stream", seconds: 0 });
-    this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+  }
+
+  /** The relay is gone. Reopen it while the operator still has the floor; say so when it will not
+   *  come back. A socket that died with the relay OFF is our own doing (the call's turn ended) and
+   *  costs nothing. */
+  #relayGone(why: string): void {
+    if (!this.#streaming || this.#asked || !this.#relay) return;
+    if (!this.#relayError) this.#relayError = why;
+    if (this.#reopen !== null) return;                 // already queued
+    if (this.#tries >= RELAY_REOPEN_TRIES) {
+      this.#set({ status: "error", error: this.#relayError });
+      this.#relayError = "";
+      this.#finishStream();
+      return;
+    }
+    this.#tries += 1;
+    this.#reopen = window.setTimeout(() => {
+      this.#reopen = null;
+      this.#openRelay();
+    }, RELAY_REOPEN_MS * this.#tries);
   }
 
   /** The page's own capture: getUserMedia → graph → 16 kHz mono s16le. */
@@ -1070,15 +1171,11 @@ class Dictation {
 
   /** Tears the capture graph + socket down. Idempotent. */
   #closeStream(): void {
-    const ws = this.#ws;
-    this.#ws = null;
-    if (ws) {
-      try {
-        ws.close();
-      } catch {
-        /* already gone */
-      }
-    }
+    this.#closeSocket();          // the socket may outlive neither the capture nor a re-arm
+    this.#streaming = false;
+    this.#asked = false;
+    this.#tries = 0;
+    this.#relayError = "";
     if (this.#proc) {
       this.#proc.onaudioprocess = null;
       try {
@@ -1194,8 +1291,10 @@ class Dictation {
       return;
     }
     // streaming: ask the recogniser to finalise and wait for its last sentence; the
-    // server closes the socket after asr-done, so nothing to tear down by hand.
+    // server closes the socket after asr-done, so nothing to tear down by hand. `#asked`
+    // makes that end OUR doing, so the relay does not try to replace the socket.
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+      this.#asked = true;
       this.#set({ status: "transcribing" });
       try {
         this.#ws.send(JSON.stringify({ t: "asr-stop" }));

@@ -256,6 +256,15 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       const c = cfgRef.current;
       const st = dictation.getSnapshot();
       const lvl = dictation.level();
+      // A relay that could not be replaced AT ALL is a real failure, and the call is the one surface
+      // where the transcript's own error line is invisible (it renders in the composer, behind the
+      // full-screen call). Say it on the call instead of sitting in `listening` with a microphone
+      // nothing is listening to — the orb then takes the operator back (tapOrb: error → listening).
+      if (st.error && phaseRef.current === "listening") {
+        setErr(st.error);
+        setPhase("error");
+        return;
+      }
       if (lvl > VOICE_LEVEL) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
