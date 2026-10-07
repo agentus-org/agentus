@@ -7,7 +7,7 @@
 // its own (the live one) down to us.
 //
 // The early-dev isolation guard — a hard error whenever a row pointed at the live home, plus
-// the AGENTSLOT_ALLOW_LIVE_HOME escape hatch and the row's `allowLiveHome` tick — is GONE
+// the AGENTUS_ALLOW_LIVE_HOME escape hatch and the row's `allowLiveHome` tick — is GONE
 // (2026-10-06): the cockpit is meant to drive the operator's real runtime. It existed because
 // two openers on one WAL SQLite 3.50.4 (inside the WAL-reset range) corrupted the user's
 // state.db; the runtime's interpreter now links SQLite 3.53.1, so the reason is gone. A row
@@ -47,12 +47,12 @@ export interface BackendSpec {
 
 /** The operator's real home — the DEFAULT for a hermes row, not a禁区. */
 const liveHermesHome = path.join(homedir(), ".hermes");
-const defaultHermesHome = process.env.AGENTSLOT_HERMES_HOME || liveHermesHome;
+const defaultHermesHome = process.env.AGENTUS_HERMES_HOME || liveHermesHome;
 
 export const BACKENDS: Record<string, BackendSpec> = {
   hermes: {
     label: "Hermes",
-    cmd: process.env.AGENTSLOT_HERMES_CMD || "hermes",
+    cmd: process.env.AGENTUS_HERMES_CMD || "hermes",
     args: ["acp"],
     check: ["acp", "--check"],
     isolation: {
@@ -63,7 +63,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
   qoder: {
     label: "Qoder",
     cmd:
-      process.env.AGENTSLOT_QODER_CMD ||
+      process.env.AGENTUS_QODER_CMD ||
       path.join(homedir(), ".local/bin/qodercli"),
     args: ["--acp"],
     check: null,
@@ -72,7 +72,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
   },
   mock: {
     label: "Mock Agent",
-    cmd: process.env.AGENTSLOT_MOCK_CMD || "node",
+    cmd: process.env.AGENTUS_MOCK_CMD || "node",
     // resolve mock relative to this file, not process.cwd() (start.sh launches from the
     // repo root, the dev server from packages/server); fileURLToPath so a clone inside a
     // path with spaces ("~/My Projects/…") doesn't arrive percent-encoded
@@ -115,7 +115,7 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
   const { homeVar, homeDefault } = spec.isolation;
   // The parent env is untrusted here: a Hermes-launched terminal hands its own
   // HERMES_HOME (the live one) down to us, and inheriting that silently is how a slot ends up
-  // writing somewhere nobody chose. Only the row — or the AGENTSLOT_HERMES_HOME seed behind its
+  // writing somewhere nobody chose. Only the row — or the AGENTUS_HERMES_HOME seed behind its
   // default — decides; an ambient HERMES_HOME is reported, never obeyed.
   const ambient = process.env[homeVar] ? expandHome(process.env[homeVar]!) : null;
   const home = path.resolve(expandHome(homeDefault));
@@ -144,7 +144,7 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
           warnings.push(
             `Hindsight instance name is the shared default "hermes" — this home ` +
               `would reuse the live memory daemon (${path.join(homedir(), ".pg0/instances/hindsight-embed-hermes")}). ` +
-              `Set {"profile":"agentslot"} in ${cfgPath} or disable memory.`,
+              `Set {"profile":"agentus"} in ${cfgPath} or disable memory.`,
           );
         }
       }

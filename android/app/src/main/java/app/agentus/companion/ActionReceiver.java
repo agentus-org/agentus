@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.app.NotificationManager;
 import android.app.RemoteInput;
@@ -74,6 +74,6 @@ public final class ActionReceiver extends BroadcastReceiver {
             } finally {
                 pending.finish();
             }
-        }, "agentslot-action").start();
+        }, "agentus-action").start();
     }
 }

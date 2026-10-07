@@ -23,7 +23,7 @@ const BASE = arg("base", "http://127.0.0.1:8787").replace(/\/+$/, "");
 const TOKEN = arg("token", fs.existsSync(path.join(REPO, "packages/server/.data/auth.token"))
   ? fs.readFileSync(path.join(REPO, "packages/server/.data/auth.token"), "utf8").trim()
   : "");
-const CWD = arg("cwd", fs.mkdtempSync(path.join(os.tmpdir(), "agentslot-notify-e2e-")));
+const CWD = arg("cwd", fs.mkdtempSync(path.join(os.tmpdir(), "agentus-notify-e2e-")));
 const PROMPT = arg("prompt", "请在工作目录里创建文件 notify-e2e.txt（用 shell 命令 touch），然后告诉我就好。");
 const WAIT_MS = Number(arg("wait", "90000"));
 

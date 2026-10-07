@@ -1,4 +1,4 @@
-// AgentSlot server entry: HTTP (REST + static web build) + WebSocket relay.
+// Agentus server entry: HTTP (REST + static web build) + WebSocket relay.
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -23,40 +23,40 @@ import { openDashscopeStream } from "./dashscope.js";
 import { initSettings, publicSettings, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
-import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentslot/shared";
+import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentus/shared";
 
-const PORT = Number(process.env.AGENTSLOT_PORT ?? 8787);
+const PORT = Number(process.env.AGENTUS_PORT ?? 8787);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
 // launches from the repo root while the dev server runs from packages/server, and a
 // cwd-relative path would silently open a second database (the operator's slots would
 // "disappear"). Both entry points must land on the same store.
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
-const DATA_DIR = process.env.AGENTSLOT_DATA ?? path.resolve(HERE, "../.data");
-const WEB_DIST = process.env.AGENTSLOT_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
-// The Android companion artifact (/notify links to it, /agentslot-companion.apk streams it).
+const DATA_DIR = process.env.AGENTUS_DATA ?? path.resolve(HERE, "../.data");
+const WEB_DIST = process.env.AGENTUS_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
+// The Android companion artifact (/notify links to it, /agentus-companion.apk streams it).
 // Path is relative to THIS FILE: src → packages/server → packages → repo root.
-const APK_FILE = process.env.AGENTSLOT_APK ?? path.resolve(HERE, "../../../android/artifacts/agentslot-companion.apk");
+const APK_FILE = process.env.AGENTUS_APK ?? path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk");
 // Optional second listener, TLS (see the block right before listen). Declared up here
 // because the request handler also serves the public cert — a phone that has to trust a
 // self-signed issuer needs to fetch the cert from somewhere, and that somewhere should
 // not require already trusting it.
-//   AGENTSLOT_TLS_PORT=0  -> off;  no cert on disk -> off (the LAN listener is unaffected).
-const TLS_PORT = Number(process.env.AGENTSLOT_TLS_PORT ?? 8443);
-const TLS_CERT = process.env.AGENTSLOT_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
-const TLS_KEY = process.env.AGENTSLOT_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
+//   AGENTUS_TLS_PORT=0  -> off;  no cert on disk -> off (the LAN listener is unaffected).
+const TLS_PORT = Number(process.env.AGENTUS_TLS_PORT ?? 8443);
+const TLS_CERT = process.env.AGENTUS_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
+const TLS_KEY = process.env.AGENTUS_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
 // The issuer a device installs once (make-cert.sh: long-lived root + short-lived leaf).
 // Falls back to the leaf itself for a single self-signed cert from an older setup.
-const TLS_CA = process.env.AGENTSLOT_TLS_CA ?? path.join(DATA_DIR, "tls", "ca.pem");
+const TLS_CA = process.env.AGENTUS_TLS_CA ?? path.join(DATA_DIR, "tls", "ca.pem");
 const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const store = new Store(path.join(DATA_DIR, "agentslot.sqlite"));
+const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 // M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
 // the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
 // empty registry means "first boot", a non-empty one means the operator owns those rows.
 {
   const seeded = store.seedBackendsIfEmpty(seedRows());
-  if (seeded) console.log(`[agentslot] backend registry seeded with ${seeded} row(s)`);
+  if (seeded) console.log(`[agentus] backend registry seeded with ${seeded} row(s)`);
 }
 // Boot sweep (M6.1): one cheap, side-effect-free pass (does the command resolve?) behind the
 // first tick, so the list never opens with every row "unchecked". It deliberately does NOT
@@ -67,7 +67,7 @@ setTimeout(() => {
     try {
       store.recordBackendCheck(row.id, startupCheck(row));
     } catch (e) {
-      console.warn(`[agentslot] startup check failed for ${row.id}: ${e instanceof Error ? e.message : e}`);
+      console.warn(`[agentus] startup check failed for ${row.id}: ${e instanceof Error ? e.message : e}`);
     }
   }
 }, 1200);
@@ -209,7 +209,7 @@ function runPrompt(
   void mgr.prompt(sessionId, text, attachments, { interrupt }).catch((e: unknown) => {
     const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
-    console.error(`[agentslot] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
+    console.error(`[agentus] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
     emit({ t: "message", message: {
       seq: -1, sessionId, kind: "meta", payload: { text: `turn failed: ${msg}` }, createdAt: Date.now(),
     } });
@@ -224,16 +224,16 @@ function runPrompt(
 // zombie with no listener (QA#22).
 function installSafetyNet(): void {
   process.on("unhandledRejection", (reason) => {
-    console.error("[agentslot] unhandled rejection (kept alive):", reason);
+    console.error("[agentus] unhandled rejection (kept alive):", reason);
   });
   process.on("uncaughtException", (err) => {
-    console.error("[agentslot] uncaught exception (kept alive):", err);
+    console.error("[agentus] uncaught exception (kept alive):", err);
   });
 }
 
 // AC5: reclaim orphans from previous run before serving anything.
 const killed = mgr.reclaimOrphans();
-if (killed) console.log(`[agentslot] reclaimed ${killed} orphan agent process(es)`);
+if (killed) console.log(`[agentus] reclaimed ${killed} orphan agent process(es)`);
 
 // ---- REST ----
 /** Raw body for uploads (audio for /api/stt). Capped: a dictation clip is small,
@@ -266,7 +266,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   // SPA fallback for web build; only GET
   if (!fs.existsSync(WEB_DIST)) {
     res.writeHead(404);
-    res.end("web build not found (run `npm run build -w @agentslot/web`)");
+    res.end("web build not found (run `npm run build -w @agentus/web`)");
     return;
   }
   const url = new URL(req.url ?? "/", "http://x");
@@ -305,7 +305,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // tunnel's own "auth_pass" does not necessarily gate HTTP (see auth.ts).
     if (!auth.verifyBasic(req.headers.authorization)) {
       res.writeHead(401, auth.basicChallenge());
-      return res.end("AgentSlot: authentication required\n");
+      return res.end("Agentus: authentication required\n");
     }
 
     // GET /cert.crt — the ISSUER to install into a phone's trust store (the "proceed
@@ -320,7 +320,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Apple's installer claims this type and opens the profile flow directly;
         // Android/Chrome just downloads the file.
         "content-type": "application/x-x509-ca-cert",
-        "content-disposition": 'attachment; filename="agentslot.crt"',
+        "content-disposition": 'attachment; filename="agentus.crt"',
         "content-length": String(der.length),
       });
       return res.end(der);
@@ -329,18 +329,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // ---- the phone's onboarding page + the APK, both behind the operator login ----------
     // The pairing code lives on this page, so it is NOT public: an unauthenticated visitor is
     // sent to the login screen (the SPA at /) and comes back with a session cookie.
-    if (url.pathname === "/notify" || url.pathname === "/notify/" || url.pathname === "/agentslot-companion.apk") {
+    if (url.pathname === "/notify" || url.pathname === "/notify/" || url.pathname === "/agentus-companion.apk") {
       const who = auth.authenticate(req.headers, url);
       if (!who) {
         res.writeHead(302, { location: "/" });
         return res.end("login required\n");
       }
-      if (url.pathname === "/agentslot-companion.apk") {
+      if (url.pathname === "/agentus-companion.apk") {
         if (!fs.existsSync(APK_FILE)) return send(res, 404, { error: "no apk built yet" });
         res.writeHead(200, {
           "content-type": "application/vnd.android.package-archive",
           "content-length": String(fs.statSync(APK_FILE).size),
-          "content-disposition": 'attachment; filename="agentslot-companion.apk"',
+          "content-disposition": 'attachment; filename="agentus-companion.apk"',
           "cache-control": "no-store",
         });
         fs.createReadStream(APK_FILE).pipe(res);
@@ -350,7 +350,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         || String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
       const host = String(req.headers.host ?? "localhost");
       const origin = `${secure ? "https" : "http"}://${host}`;
-      const pairUri = `agentslot://pair?u=${encodeURIComponent(origin)}&c=${notify.code}`;
+      const pairUri = `agentus://pair?u=${encodeURIComponent(origin)}&c=${notify.code}`;
       const apkPath = APK_FILE;
       const apkSize = fs.existsSync(apkPath) ? `${(fs.statSync(apkPath).size / 1048576).toFixed(1)} MB` : "尚未构建";
       const rows = notify.devices().map((d) =>
@@ -359,7 +359,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       return res.end(`<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentSlot 手机通知</title>
+<title>Agentus 手机通知</title>
 <style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;margin:24px auto;max-width:40em;padding:0 16px}
 code{background:#f2f2ef;padding:3px 7px;border-radius:5px;word-break:break-all;font-size:13px}
 button{font:inherit;padding:7px 12px;margin:4px 6px 4px 0;border-radius:8px;border:1px solid #ccc;background:#fff}
@@ -367,7 +367,7 @@ td{padding:3px 12px 3px 0;font-size:12px;font-family:ui-monospace,monospace}
 h1{font-size:20px} h3{font-size:15px;margin-top:28px} li{margin:6px 0}</style>
 <h1>手机通知（Android 伴侣）</h1>
 <ol>
-<li>装 App：<a href="/agentslot-companion.apk">agentslot-companion.apk</a> (${apkSize})<br>
+<li>装 App：<a href="/agentus-companion.apk">agentus-companion.apk</a> (${apkSize})<br>
     <small>手机浏览器会提示"安装未知应用"，允许一次即可。${fs.existsSync(apkPath) ? `<br>sha256 <code>${createHash("sha256").update(fs.readFileSync(apkPath)).digest("hex")}</code>` : ""}</small></li>
 <li>打开 App，把这一行粘进首屏（或直接填地址 ${origin} + 你的用户名密码）：<br>
     <code id="uri">${pairUri}</code>
@@ -432,13 +432,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         auth.recordLoginFailure(ip);
         const left = auth.loginLimits().maxFails;
         const after = auth.loginAllowed(ip);
-        console.warn(`[agentslot] failed login for "${username}" from ${ip}${after.allowed ? "" : " (locked out)"}`);
+        console.warn(`[agentus] failed login for "${username}" from ${ip}${after.allowed ? "" : " (locked out)"}`);
         return send(res, 401, { error: "bad_credentials", hint: `username/password rejected (limit ${left} tries per IP)` });
       }
       auth.recordLoginSuccess(ip);
       const st = auth.status();
       const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip, ua: String(req.headers["user-agent"] ?? "") });
-      console.log(`[agentslot] login ok: ${st.username} from ${ip}`);
+      console.log(`[agentus] login ok: ${st.username} from ${ip}`);
       res.writeHead(200, {
         "content-type": "application/json",
         "set-cookie": auth.sessionCookie(value, Math.floor(st.sessionTtlMs / 1000), secure),
@@ -456,7 +456,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         newPassword: body.newPassword === undefined || body.newPassword === null ? undefined : String(body.newPassword),
       });
       if (!out.ok) return send(res, out.status, { error: out.error });
-      console.log(`[agentslot] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
+      console.log(`[agentus] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
       // every older cookie is dead now (the epoch moved) — hand this caller a fresh one
       const st = auth.status();
       const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip: clientIp(req), ua: String(req.headers["user-agent"] ?? "") });
@@ -489,13 +489,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         return send(res, 400, { error: "that is this session — use log out" });
       }
       if (!auth.revokeSessionById(jti)) return send(res, 404, { error: "no such session" });
-      console.log(`[agentslot] session revoked: ${jti} from ${clientIp(req)}`);
+      console.log(`[agentus] session revoked: ${jti} from ${clientIp(req)}`);
       return send(res, 200, { ok: true });
     }
     if (url.pathname === "/api/auth/sessions/revoke-others" && req.method === "POST") {
       const who = (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal;
       const count = auth.revokeOtherSessions(who?.jti);
-      console.log(`[agentslot] logged out ${count} other session(s), asked by ${clientIp(req)}`);
+      console.log(`[agentus] logged out ${count} other session(s), asked by ${clientIp(req)}`);
       return send(res, 200, { ok: true, count });
     }
     if (url.pathname === "/api/auth/locked-ips" && req.method === "GET") {
@@ -506,18 +506,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (ip) {
         const known = auth.unlockIp(ip);
         if (!known) return send(res, 404, { error: "that IP is not locked" });
-        console.log(`[agentslot] lock lifted for ${ip} (asked by ${clientIp(req)})`);
+        console.log(`[agentus] lock lifted for ${ip} (asked by ${clientIp(req)})`);
         return send(res, 200, { ok: true, ip });
       }
       const count = auth.unlockAllIps();
-      console.log(`[agentslot] all login locks lifted (${count}) by ${clientIp(req)}`);
+      console.log(`[agentus] all login locks lifted (${count}) by ${clientIp(req)}`);
       return send(res, 200, { ok: true, count });
     }
     if (url.pathname === "/api/auth/logout" && req.method === "POST") {
       // Revoke, don't just clear: see auth.revokeSession
       const cookie = auth.parseCookies(String(req.headers.cookie ?? ""))[auth.AUTH_COOKIE_NAME];
       const revoked = auth.revokeSession(cookie);
-      console.log(`[agentslot] logout from ${clientIp(req)}${revoked ? "" : " (no live session)"}`);
+      console.log(`[agentus] logout from ${clientIp(req)}${revoked ? "" : " (no live session)"}`);
       res.writeHead(200, { "content-type": "application/json", "set-cookie": auth.clearedCookie(auth.isSecureRequest(req.headers)) });
       return res.end(JSON.stringify({ ok: true, revoked }));
     }
@@ -716,7 +716,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // Leave a trace, or the only symptom is a voice that changed mid-reply (the client falls
           // back to the browser voice for that sentence). Measured cause so far: 429
           // Throttling.RateQuota from 百炼 when more than three clips are asked for at once.
-          console.error(`[agentslot] tts failed: ${e.code} ${e.message.slice(0, 160)}`);
+          console.error(`[agentus] tts failed: ${e.code} ${e.message.slice(0, 160)}`);
           return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
         }
         throw e;
@@ -727,7 +727,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (!audio.length) return send(res, 400, { error: "empty audio body" });
       try {
         const text = await transcribe(audio, String(req.headers["content-type"] ?? "audio/webm"), {
-          filename: typeof req.headers["x-agentslot-filename"] === "string" ? req.headers["x-agentslot-filename"] : undefined,
+          filename: typeof req.headers["x-agentus-filename"] === "string" ? req.headers["x-agentus-filename"] : undefined,
           language: url.searchParams.get("language") || undefined,
           // the session tells the recogniser what this conversation is about (hotwords)
           sessionId: url.searchParams.get("sessionId") || undefined,
@@ -836,7 +836,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         //   before=<seq>         -> the previous page above that seq
         //   after=<seq>          -> forward replay rows from a reconnect anchor (WS path)
         // Page size is env-tunable so the paging path is testable without 500+ messages.
-        const pageSize = Number(process.env.AGENTSLOT_HISTORY_PAGE || 500);
+        const pageSize = Number(process.env.AGENTUS_HISTORY_PAGE || 500);
         const before = url.searchParams.get("before");
         const after = url.searchParams.get("after");
         if (before != null) {
@@ -1031,7 +1031,7 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   if (!auth.verifyBasic(req.headers.authorization)) {
     // Same outer lock as HTTP: browsers resend cached Basic credentials on the
     // handshake, so a logged-in browser passes; anything else gets nothing.
-    socket.write("HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"AgentSlot\"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+    socket.write("HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"Agentus\"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
     socket.destroy();
     return;
   }
@@ -1235,10 +1235,10 @@ asrWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
 // ---- graceful exit: SIGTERM children before we die (design.md §8-1) ----
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
-    console.log(`[agentslot] ${sig}: shutting down sessions`);
+    console.log(`[agentus] ${sig}: shutting down sessions`);
     await mgr.shutdown();
     const shells = terms.killAll();
-    if (shells) console.log(`[agentslot] killed ${shells} terminal shell(s)`);
+    if (shells) console.log(`[agentus] killed ${shells} terminal shell(s)`);
     store.close();
     process.exit(0);
   });
@@ -1246,32 +1246,32 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   installSafetyNet(); // we own the port: from here on, survive per-request errors
-  console.log(`[agentslot-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+  console.log(`[agentus-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
   // Auth state belongs in the boot log: "is this thing locked, and with which
   // password?" is the first question anyone asks when it is on a LAN.
   if (!authStatus.enabled) {
-    console.warn("[agentslot-server] ⚠ AGENTSLOT_AUTH=off — every visitor can drive your agents. Local dev only.");
+    console.warn("[agentus-server] ⚠ AGENTUS_AUTH=off — every visitor can drive your agents. Local dev only.");
   } else if (authStatus.usingDefaultPassword) {
     console.warn(
-      `[agentslot-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
+      `[agentus-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
       + "Anyone on this network can spawn agents in any directory.\n"
-      + "[agentslot-server]   set AGENTSLOT_PASSWORD (or AGENTSLOT_PASSWORD_HASH) before exposing the port.",
+      + "[agentus-server]   set AGENTUS_PASSWORD (or AGENTUS_PASSWORD_HASH) before exposing the port.",
     );
   } else {
-    console.log(`[agentslot-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
+    console.log(`[agentus-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
   }
-  if (authStatus.tokenFile) console.log(`[agentslot-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
+  if (authStatus.tokenFile) console.log(`[agentus-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
   const basic = auth.basicAuthConfig();
   console.log(basic
-    ? `[agentslot-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
-    : "[agentslot-server] HTTP Basic off (set AGENTSLOT_BASIC_AUTH=user:pass before exposing a tunnel)");
+    ? `[agentus-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
+    : "[agentus-server] HTTP Basic off (set AGENTUS_BASIC_AUTH=user:pass before exposing a tunnel)");
   // A wrong/absent dist used to fail silently: the browser's service worker served a stale
   // shell, every request looked fine, and the operator just saw a blank page (QA R36).
   // Say it out loud at boot instead.
   if (!fs.existsSync(path.join(WEB_DIST, "index.html"))) {
     console.error(
-      `[agentslot-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
-      + `[agentslot-server]   build it with:  NODE_ENV=development npm run build -w @agentslot/web`,
+      `[agentus-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
+      + `[agentus-server]   build it with:  NODE_ENV=development npm run build -w @agentus/web`,
     );
   }
 });
@@ -1284,17 +1284,17 @@ if (TLS_READY) {
   const httpsServer = createHttpsServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handleRequest);
   httpsServer.on("upgrade", handleUpgrade);
   httpsServer.listen(TLS_PORT, "0.0.0.0", () => {
-    console.log(`[agentslot-server] https://0.0.0.0:${TLS_PORT} (self-signed, SAN ${TLS_CERT} — point a public tunnel at THIS port; ${PORT} stays for the LAN)`);
+    console.log(`[agentus-server] https://0.0.0.0:${TLS_PORT} (self-signed, SAN ${TLS_CERT} — point a public tunnel at THIS port; ${PORT} stays for the LAN)`);
   });
   // A busy TLS port must not take the LAN listener down with it: log, keep serving.
   httpsServer.on("error", (err) => {
-    console.error(`[agentslot-server] tls listener failed on ${TLS_PORT}: ${(err as Error).message}`);
+    console.error(`[agentus-server] tls listener failed on ${TLS_PORT}: ${(err as Error).message}`);
   });
 } else if (TLS_PORT > 0) {
-  console.log(`[agentslot-server] tls off: no cert at ${TLS_CERT} (create it with scripts/make-cert.sh, or set AGENTSLOT_TLS_PORT=0)`);
+  console.log(`[agentus-server] tls off: no cert at ${TLS_CERT} (create it with scripts/make-cert.sh, or set AGENTUS_TLS_PORT=0)`);
 }
 
 httpServer.on("error", (err) => {
-  console.error(`[agentslot] cannot listen on ${PORT}: ${(err as Error).message}`);
+  console.error(`[agentus] cannot listen on ${PORT}: ${(err as Error).message}`);
   process.exit(1); // fail fast: never linger as a listener-less zombie
 });

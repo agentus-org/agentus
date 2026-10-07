@@ -9,8 +9,8 @@
 //    streams output, keeps the prompt and `cd` — everything a cockpit panel is
 //    used for — but it is *not* a tty: no job control, no colour, and full-screen
 //    programs (vim, top) will refuse to start. Two ways out, both opt-in:
-//    AGENTSLOT_TERM_PTY=1 wraps the shell in Python's stdlib `pty.spawn` for a
-//    real terminal, and AGENTSLOT_TERM_CMD overrides the whole command line.
+//    AGENTUS_TERM_PTY=1 wraps the shell in Python's stdlib `pty.spawn` for a
+//    real terminal, and AGENTUS_TERM_CMD overrides the whole command line.
 //  * **One shell per panel, killed with the socket.** The child lives in the
 //    server's own group and is killed on disconnect, on `term-close`, and in the
 //    process-exit safety net (see installSafetyNet) — an abandoned shell is
@@ -39,12 +39,12 @@ const MAX_BUFFER = 256 * 1024;
 
 /** How to start the shell. Default: pipes (no native deps). PTY on request. */
 function shellCommand(shell: string): { cmd: string; args: string[] } {
-  const override = (process.env.AGENTSLOT_TERM_CMD || "").trim();
+  const override = (process.env.AGENTUS_TERM_CMD || "").trim();
   if (override) {
     const parts = override.split(/\s+/);
     return { cmd: parts[0], args: parts.slice(1) };
   }
-  if (process.env.AGENTSLOT_TERM_PTY === "1") {
+  if (process.env.AGENTUS_TERM_PTY === "1") {
     // python3's stdlib pty module is the one pty allocation available without a
     // native build step. Missing python3 fails loudly in the panel (the child
     // prints the interpreter error into the terminal), which is better than
@@ -79,7 +79,7 @@ export class TermService {
         TERM: "xterm-256color",
         PYTHONUNBUFFERED: "1",
         // Let the shell know a machine is driving, so prompts stay plain.
-        AGENTSLOT_TERMINAL: "1",
+        AGENTUS_TERMINAL: "1",
       },
       stdio: ["pipe", "pipe", "pipe"],
       // own process group: `script` wraps the shell, so only a group kill reliably

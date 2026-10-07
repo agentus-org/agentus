@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { AUTH_COOKIE_NAME, configuredUsername, initAuth, issueSession, revokeSessionById } from "../../packages/server/src/auth.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DATA = process.env.AGENTSLOT_DATA ?? path.resolve(HERE, "../../packages/server/.data");
+const DATA = process.env.AGENTUS_DATA ?? path.resolve(HERE, "../../packages/server/.data");
 
 if (!fs.existsSync(DATA)) {
   console.error(`no cockpit data dir at ${DATA}`);

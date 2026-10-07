@@ -28,8 +28,8 @@ function arg(name: string, fallback: string): string {
 }
 
 const DATA_DIR = path.resolve(arg("data", path.join(REPO, "packages/server/.data-notify-testbed")));
-const PORT = Number(arg("port", String(process.env.AGENTSLOT_NOTIFY_PORT ?? 8790)));
-const TLS_PORT = Number(arg("tls-port", String(process.env.AGENTSLOT_NOTIFY_TLS_PORT ?? 8791)));
+const PORT = Number(arg("port", String(process.env.AGENTUS_NOTIFY_PORT ?? 8790)));
+const TLS_PORT = Number(arg("tls-port", String(process.env.AGENTUS_NOTIFY_TLS_PORT ?? 8791)));
 const CERT = path.resolve(arg("cert", path.join(REPO, "packages/server/.data/tls/cert.pem")));
 const KEY = path.resolve(arg("key", path.join(REPO, "packages/server/.data/tls/key.pem")));
 const APK_DIR = path.resolve(arg("apk-dir", path.join(REPO, "android/artifacts")));
@@ -48,7 +48,7 @@ function operatorToken(): string {
   fs.writeFileSync(file, `${v}\n`, { mode: 0o600 });
   return v;
 }
-const TOKEN = process.env.AGENTSLOT_NOTIFY_TOKEN?.trim() || operatorToken();
+const TOKEN = process.env.AGENTUS_NOTIFY_TOKEN?.trim() || operatorToken();
 
 const equal = (a: string, b: string): boolean => {
   const x = Buffer.from(a);
@@ -81,7 +81,7 @@ center.onAction((e) => {
 function page(req: IncomingMessage): string {
   const host = String(req.headers.host ?? `localhost:${PORT}`);
   const scheme = (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http";
-  const pairUri = `agentslot://pair?u=${encodeURIComponent(`${scheme}://${host}`)}&c=${center.code}`;
+  const pairUri = `agentus://pair?u=${encodeURIComponent(`${scheme}://${host}`)}&c=${center.code}`;
   const apks = fs.existsSync(APK_DIR) ? fs.readdirSync(APK_DIR).filter((f) => f.endsWith(".apk")) : [];
   const devices = center
     .devices()
@@ -89,11 +89,11 @@ function page(req: IncomingMessage): string {
       `<td>${d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleTimeString() : "—"}</td></tr>`)
     .join("");
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentSlot notify test bed</title>
+<title>Agentus notify test bed</title>
 <style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;margin:24px;max-width:46em}
 code{background:#f2f2ef;padding:2px 6px;border-radius:4px;word-break:break-all}
 td{padding:2px 10px 2px 0;font-family:ui-monospace,monospace;font-size:12px}</style>
-<h1>AgentSlot · notify test bed</h1>
+<h1>Agentus · notify test bed</h1>
 <p>配对串（粘进 APK 首屏即可）：</p><p><code id="uri">${pairUri}</code></p>
 <p>APK：${apks.map((f) => `<a href="/dl/${f}">${f}</a>`).join(" · ") || "<i>还没有构建产物</i>"}</p>
 <p><button onclick="fetch('/api/notify/probe?token=${TOKEN}',{method:'POST'})">发一条探针通知</button>

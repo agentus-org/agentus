@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.app.Notification;
 import android.content.Context;

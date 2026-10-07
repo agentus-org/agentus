@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -116,7 +116,7 @@ final class Mic {
         }
         rec.startRecording();
         running = true;
-        pump = new Thread(this::pump, "agentslot-mic");
+        pump = new Thread(this::pump, "agentus-mic");
         pump.start();
         NotifyService.log("原生麦克风：已开始（" + hz + "Hz 单声道 s16le）");
         return "ok";

@@ -19,15 +19,15 @@
 set -euo pipefail
 
 DEV_PORT="${DEV_PORT:-8901}"                    # the QA sweeps default here (scripts/qa/*.mjs)
-DEV_DATA="${DEV_DATA:-/tmp/agentslot-qa-account}"
+DEV_DATA="${DEV_DATA:-/tmp/agentus-qa-account}"
 DEV_USER="${DEV_USER:-scratch}"
 DEV_PASS="${DEV_PASS:-scratch-pass-1}"
-DEV_LOG="${DEV_LOG:-/tmp/agentslot-dev.log}"
+DEV_LOG="${DEV_LOG:-/tmp/agentus-dev.log}"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # the worktree this script lives in (the DEV tree)
-LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentslot}"   # the tree the operator's cockpit runs
+LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"   # the tree the operator's cockpit runs
 LIVE_PORT="${LIVE_PORT:-8787}"
-LIVE_LAUNCHER="${AGENTSLOT_LAUNCHER:-$HOME/.hermes/cache/agentslot/launch.py}"
+LIVE_LAUNCHER="${AGENTUS_LAUNCHER:-$HOME/.hermes/cache/agentus/launch.py}"
 
 pid_on_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
@@ -47,10 +47,10 @@ case "${1:-}" in
     # PORT is deliberately NOT exported: the operator's shell may hold PORT=8648 (Hermes Studio) and
     # a launcher that reads a generic PORT would try to take Studio's port (`EADDRINUSE: 8648`).
     env NODE_ENV=development \
-      AGENTSLOT_PORT="$DEV_PORT" AGENTSLOT_DATA="$DEV_DATA" \
-      AGENTSLOT_USERNAME="$DEV_USER" AGENTSLOT_PASSWORD="$DEV_PASS" \
-      AGENTSLOT_HERMES_CMD="${AGENTSLOT_HERMES_CMD:-$HOME/.hermes/cache/agentslot/hermes-acp-src}" \
-      AGENTSLOT_TLS_PORT="${AGENTSLOT_TLS_PORT:-0}" \
+      AGENTUS_PORT="$DEV_PORT" AGENTUS_DATA="$DEV_DATA" \
+      AGENTUS_USERNAME="$DEV_USER" AGENTUS_PASSWORD="$DEV_PASS" \
+      AGENTUS_HERMES_CMD="${AGENTUS_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
+      AGENTUS_TLS_PORT="${AGENTUS_TLS_PORT:-0}" \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
@@ -59,7 +59,7 @@ case "${1:-}" in
         const p = spawn(process.execPath, ["node_modules/.bin/tsx", "watch", "packages/server/src/index.ts"],
           { cwd: process.env.DEV_TREE, env: process.env, detached: true, stdio: ["ignore", log, log] });
         p.unref();
-        console.log(`[dev] pid=${p.pid} port=${process.env.AGENTSLOT_PORT} data=${process.env.AGENTSLOT_DATA} log=${process.env.DEV_LOG_PATH}`);
+        console.log(`[dev] pid=${p.pid} port=${process.env.AGENTUS_PORT} data=${process.env.AGENTUS_DATA} log=${process.env.DEV_LOG_PATH}`);
       '
     for _ in $(seq 20); do sleep 1; curl -s --noproxy '*' -m 2 "http://127.0.0.1:$DEV_PORT/healthz" | grep -q '"ok":true' && break; done
     curl -s --noproxy '*' -m 3 "http://127.0.0.1:$DEV_PORT/healthz" || { echo "[dev] did not come up — see $DEV_LOG"; exit 1; }

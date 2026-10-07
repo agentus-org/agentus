@@ -39,13 +39,13 @@ check("a tap target (?session=) wins over the slot the operator left",
 check("the parameter is dropped from the URL after it is honoured",
   replacedWith !== null && !String(replacedWith).includes("session=") && String(replacedWith).includes("x=1"),
   String(replacedWith));
-check("…so it is remembered instead (localStorage)", stored.get("agentslot.active") === "bbb",
-  String(stored.get("agentslot.active")));
+check("…so it is remembered instead (localStorage)", stored.get("agentus.active") === "bbb",
+  String(stored.get("agentus.active")));
 check("no `openTarget` is consumed twice: the URL no longer has it",
   !String(replacedWith ?? "").includes("bbb"), String(replacedWith));
 
 // and with no parameter, the operator's own last slot still wins — the old behaviour is intact
-stored.set("agentslot.active", "aaa");
+stored.set("agentus.active", "aaa");
 g.location = { href: "https://host:38787/", search: "" };
 const { cockpit: fresh } = await import("../../packages/web/src/state.ts?fresh=1");
 fresh.apply({ t: "sessions", sessions } as never);

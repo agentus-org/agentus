@@ -1,4 +1,4 @@
-# AgentSlot
+# Agentus
 
 **Keep your agents on the track.** A multi-session web cockpit for ACP-speaking coding
 agents: open several sessions in the browser, each one backed by a real
@@ -10,7 +10,7 @@ agents: open several sessions in the browser, each one backed by a real
 > permission prompts. Reasoning lives in the CLI processes.
 
 ```
-[browser React SPA]  ──HTTP + WS──▶  [AgentSlot server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
+[browser React SPA]  ──HTTP + WS──▶  [Agentus server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
                                          · session registry (who runs, where, pid)
                                          · ACP client (ClientSideConnection)
                                          · event fan-out → WS, commands → ACP
@@ -21,8 +21,8 @@ agents: open several sessions in the browser, each one backed by a real
 
 ```bash
 # Node >= 22.5 (needs node:sqlite; developed on v25)
-git clone https://github.com/agent-slot/agentslot.git
-cd agentslot
+git clone https://github.com/agentus/agentus.git
+cd agentus
 
 # 1) run it — installs if needed, builds, serves
 npm start
@@ -35,9 +35,9 @@ The first slot you start will use the Hermes home **your own agent already uses*
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
-stale, then serves. Use `AGENTSLOT_PORT=9000 npm start` to move the port.
+stale, then serves. Use `AGENTUS_PORT=9000 npm start` to move the port.
 
-For front-end hot reload instead: `npm run dev -w @agentslot/web` (Vite on :5173,
+For front-end hot reload instead: `npm run dev -w @agentus/web` (Vite on :5173,
 `host: true` so your phone can reach it over LAN).
 
 ### Backends
@@ -55,26 +55,26 @@ layer never changes.
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTSLOT_PORT` | `8787` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
-| `AGENTSLOT_DATA` | `packages/server/.data` | SQLite location |
-| `AGENTSLOT_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
-| `AGENTSLOT_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
-| `AGENTSLOT_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
-| `AGENTSLOT_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
-| `AGENTSLOT_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
-| `AGENTSLOT_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
-| `AGENTSLOT_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
-| `AGENTSLOT_TLS_PORT` | `8443` when a cert exists, else off | **second listener, TLS** — the one a public tunnel points at (`0` disables it) |
-| `AGENTSLOT_TLS_CERT` / `AGENTSLOT_TLS_KEY` | `<AGENTSLOT_DATA>/tls/{cert,key}.pem` | cert material for that listener (see `scripts/make-cert.sh`) |
-| `AGENTSLOT_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
-| `AGENTSLOT_TTS_API_KEY` / `AGENTSLOT_TTS_MODEL` / `AGENTSLOT_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
-| `AGENTSLOT_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
-| `AGENTSLOT_STT_API_KEY` / `AGENTSLOT_STT_MODEL` / `AGENTSLOT_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
+| `AGENTUS_PORT` | `8787` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
+| `AGENTUS_DATA` | `packages/server/.data` | SQLite location |
+| `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
+| `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
+| `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
+| `AGENTUS_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
+| `AGENTUS_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
+| `AGENTUS_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
+| `AGENTUS_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
+| `AGENTUS_TLS_PORT` | `8443` when a cert exists, else off | **second listener, TLS** — the one a public tunnel points at (`0` disables it) |
+| `AGENTUS_TLS_CERT` / `AGENTUS_TLS_KEY` | `<AGENTUS_DATA>/tls/{cert,key}.pem` | cert material for that listener (see `scripts/make-cert.sh`) |
+| `AGENTUS_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
+| `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
+| `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
+| `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) credentials. Read from the process env **and** from `~/.hermes/.env`, because the server is usually started from a plain shell |
 
 The voice/theme variables are a **bootstrap only**: the settings page (⚙ in the rail)
 owns the provider, endpoint, key, models, hotword list and the palette, and stores them
-in `<AGENTSLOT_DATA>/settings.json` (0600, key never sent back to the browser). What the
+in `<AGENTUS_DATA>/settings.json` (0600, key never sent back to the browser). What the
 page says wins; the env is what makes a fresh checkout work before anyone opens it.
 
 ## Login
@@ -93,7 +93,7 @@ hash — no plaintext on disk). Changing the password invalidates every other se
 device that made the change is handed a fresh cookie, so it stays signed in. The current
 password is required for any change, including a username-only one.
 
-`AGENTSLOT_USERNAME` / `AGENTSLOT_PASSWORD` / `AGENTSLOT_PASSWORD_HASH` still work as the
+`AGENTUS_USERNAME` / `AGENTUS_PASSWORD` / `AGENTUS_PASSWORD_HASH` still work as the
 bootstrap: they are what the app starts from, and once you save something in the 账号 card
 the file wins from then on (the same "settings file > env" order voice and theme use). A
 password-only change pins today's password as a hash, so an env value can never quietly
@@ -136,19 +136,19 @@ Auth environment:
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTSLOT_AUTH` | `on` | `off` = no login at all (local hacking; the boot log will scold you) |
-| `AGENTSLOT_USERNAME` | `admin` | operator name |
-| `AGENTSLOT_PASSWORD` | `123456` | operator password (plaintext in env) |
-| `AGENTSLOT_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `AGENTSLOT_PASSWORD` if set |
-| `AGENTSLOT_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
-| `AGENTSLOT_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
-| `AGENTSLOT_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
-| `AGENTSLOT_LOGIN_MAX_FAILS` / `AGENTSLOT_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
-| `AGENTSLOT_BASIC_AUTH` | — | an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). `user:pass` checks both; `:pass` (or a bare `pass`) checks **only the password** and accepts any username. This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
+| `AGENTUS_AUTH` | `on` | `off` = no login at all (local hacking; the boot log will scold you) |
+| `AGENTUS_USERNAME` | `admin` | operator name |
+| `AGENTUS_PASSWORD` | `123456` | operator password (plaintext in env) |
+| `AGENTUS_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `AGENTUS_PASSWORD` if set |
+| `AGENTUS_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
+| `AGENTUS_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
+| `AGENTUS_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
+| `AGENTUS_LOGIN_MAX_FAILS` / `AGENTUS_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
+| `AGENTUS_BASIC_AUTH` | — | an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). `user:pass` checks both; `:pass` (or a bare `pass`) checks **only the password** and accepts any username. This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
 
 ### Exposing it publicly (tunnel / reverse proxy)
 
-Put `AGENTSLOT_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
+Put `AGENTUS_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
 `<lan-ip>:8787`. That gives you two independent locks — Basic at the edge of the app, the
 operator login inside it — and scripts can still get in (`curl -u :pass` plus the machine
 token).
@@ -165,7 +165,7 @@ Pick one outer lock, not both:
   IP is remembered after that, and the WebSocket keeps working through it (both measured
   end to end). Zero config on this side; the cost is that machines cannot get in without
   the extra authorisation dance (`POST /v4/tunnel/auth`).
-- **`AGENTSLOT_BASIC_AUTH`**, when the tunnel has no gate, is a plain TCP forward, or you
+- **`AGENTUS_BASIC_AUTH`**, when the tunnel has no gate, is a plain TCP forward, or you
   want scriptable access (`curl -u :pass`). A real 401 challenge is understood by every
   browser, proxy and HTTP client — unlike some tunnel "access auth" flavours, which answer
   HTTP **200** with an authorise-your-IP page and are invisible to `curl`.
@@ -195,8 +195,8 @@ scripts/make-cert.sh                    # self-signed, SAN = the name you actual
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTSLOT_PORT` (8787) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
-| `AGENTSLOT_TLS_PORT` (8443) | HTTPS (self-signed) | **the tunnel** — encrypts the public hop |
+| `AGENTUS_PORT` (8787) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
+| `AGENTUS_TLS_PORT` (8443) | HTTPS (self-signed) | **the tunnel** — encrypts the public hop |
 
 Same handler, same routes, same auth; only the socket differs. Two listeners beat both
 alternatives: turning the single port into HTTPS would put a cert warning in front of your
@@ -209,12 +209,12 @@ certificate at `/cert.crt`:
 ```bash
 https://<your-name>:<tls-port>/cert.crt     # iOS: opens the profile installer directly
                                             # Android: downloads it → Settings → Security → CA certificate
-curl --cacert <AGENTSLOT_DATA>/tls/cert.pem https://<your-name>:<tls-port>/healthz   # scripts, no -k
+curl --cacert <AGENTUS_DATA>/tls/cert.pem https://<your-name>:<tls-port>/healthz   # scripts, no -k
 ```
 
 Installed as a trusted root (iOS also needs *About → Certificate Trust Settings → enable*),
 the browser stops asking and the address bar is clean. It is public material — the private
-key never leaves `<AGENTSLOT_DATA>/tls/`.
+key never leaves `<AGENTUS_DATA>/tls/`.
 
 The cert is **self-signed on purpose** — no CA issues for an unregistered domain or a bare
 IP, so the browser shows "not private → proceed" once per device, and installing the issuer
@@ -246,7 +246,7 @@ credentials, memory and session list.
 
 An *inherited* `HERMES_HOME` is ignored (a Hermes-launched shell leaks its own down), so
 where a slot writes is always something you chose — on the row, or in
-`AGENTSLOT_HERMES_HOME`.
+`AGENTUS_HERMES_HOME`.
 
 To keep one slot's data separate (a clean session list, a different profile, a throwaway
 experiment), name a directory in that row's HERMES_HOME — no permission needed. The
@@ -328,8 +328,8 @@ name `"hermes"` would attach to your production memory daemon, so the row warns 
   persisted — never the bytes
 - **voice, both directions, browser-first**: read any reply aloud (per-message button
   plus an auto-read toggle, voice picker, speed), dictate a prompt (live interim words).
-  A server endpoint is optional and only a proxy (`AGENTSLOT_TTS_BASE_URL` /
-  `AGENTSLOT_STT_BASE_URL`); with nothing configured, the browser does the work and the
+  A server endpoint is optional and only a proxy (`AGENTUS_TTS_BASE_URL` /
+  `AGENTUS_STT_BASE_URL`); with nothing configured, the browser does the work and the
   UI says so
 - **voice call mode** (📞 in the chat header): a full-screen call with the session — a canvas
   orb that rides real audio, one colour per phase (listening / thinking / speaking / error,
@@ -408,7 +408,7 @@ Every suite boots its own server on a scratch port with a throwaway data dir, so
 anywhere (CI included):
 
 - `auth-smoke` — anonymous REST/WS refusal, brute-force lockout, cookie signing and tamper
-  detection, expiry, WS-via-cookie, the machine token, logout revocation, `AGENTSLOT_AUTH=off`.
+  detection, expiry, WS-via-cookie, the machine token, logout revocation, `AGENTUS_AUTH=off`.
 - `workspace-smoke` — the per-session workspace, the read-only file API, the PTY shell,
   attachments on a prompt, the voice endpoint guards.
 - `voice-smoke` — the settings/theme contract (validation, masking, 0600 file), the voice

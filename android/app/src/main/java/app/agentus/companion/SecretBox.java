@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;
@@ -25,7 +25,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * says so instead of pretending.
  */
 final class SecretBox {
-    private static final String ALIAS = "agentslot.profiles.v1";
+    private static final String ALIAS = "agentus.profiles.v1";
     private static final String TRANSFORM = "AES/GCM/NoPadding";
     private static final int TAG_BITS = 128;
 

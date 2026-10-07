@@ -196,10 +196,10 @@ function discoverEnv(): { apiKey: string; baseUrl: string; source: string } | nu
     { env: process.env, label: "process env" },
   ];
   // The credentials live in the agent's own home — the cockpit reads the same .env its slots do.
-  // AGENTSLOT_HERMES_HOME can move that fallback to whatever home this box really uses.
+  // AGENTUS_HERMES_HOME can move that fallback to whatever home this box really uses.
   const cands = [path.join(process.env.HOME ?? "", ".hermes", ".env")];
-  if (process.env.AGENTSLOT_HERMES_HOME) {
-    cands.push(path.join(process.env.AGENTSLOT_HERMES_HOME, ".env"));
+  if (process.env.AGENTUS_HERMES_HOME) {
+    cands.push(path.join(process.env.AGENTUS_HERMES_HOME, ".env"));
   }
   for (const p of cands) {
     if (fs.existsSync(p)) sources.push({ env: readEnvFile(p), label: p });
@@ -227,7 +227,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
         stored.voice = fromFile.voice;
         stored.theme = fromFile.theme;
         stored.call = fromFile.call;
-        console.log(`[agentslot] settings: imported ${legacyFile} into the store`);
+        console.log(`[agentus] settings: imported ${legacyFile} into the store`);
       }
       fs.renameSync(legacyFile, `${legacyFile}.imported`);
     } catch { /* no legacy file: nothing to migrate */ }
@@ -290,7 +290,7 @@ function persist(): void {
     db.setSetting("call", cache.call);
     db.setSetting("prefs", cache.prefs);
   } catch (e) {
-    console.error(`[agentslot] cannot write settings: ${(e as Error).message}`);
+    console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
   }
 }
 

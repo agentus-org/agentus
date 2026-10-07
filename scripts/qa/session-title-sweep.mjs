@@ -10,7 +10,7 @@
 //   · a hand-written name is never overwritten by an automatic one, and clearing it restores
 //     the generated one; asking for a regeneration on purpose DOES replace it.
 //
-// Self-contained: its own AgentSlot instance + the user's Edge over CDP, mock agent only.
+// Self-contained: its own Agentus instance + the user's Edge over CDP, mock agent only.
 //   node scripts/qa/session-title-sweep.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -31,7 +31,7 @@ const killGroup = (target) => {
 };
 
 const CDP = "http://127.0.0.1:9222";
-const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentslot/screens");
+const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentus/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -47,12 +47,12 @@ const freePort = () => new Promise((res, rej) => {
   s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
 });
 const PORT = await freePort();
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-title-"));
-const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-title-home-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-title-"));
+const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-title-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTSLOT_PORT: String(PORT), AGENTSLOT_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";

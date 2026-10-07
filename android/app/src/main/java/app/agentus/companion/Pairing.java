@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.content.Context;
 import android.os.Build;
@@ -35,11 +35,11 @@ final class Pairing {
         return url.replaceAll("/+$", "");
     }
 
-    /** Parse `agentslot://pair?u=<base>&c=<code>`, or "<base> <code>", into {base, code}. */
+    /** Parse `agentus://pair?u=<base>&c=<code>`, or "<base> <code>", into {base, code}. */
     static String[] parsePairString(String raw) {
         if (TextUtils.isEmpty(raw)) return null;
         String text = raw.trim();
-        if (text.startsWith("agentslot://")) {
+        if (text.startsWith("agentus://")) {
             try {
                 android.net.Uri uri = android.net.Uri.parse(text);
                 return new String[]{normalise(uri.getQueryParameter("u")), uri.getQueryParameter("c")};

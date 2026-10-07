@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Restart an AgentSlot instance and PROVE it came back on a new process.
+# Restart an Agentus instance and PROVE it came back on a new process.
 #
-#   scripts/relaunch.sh --port 8787 --launcher ~/.hermes/cache/agentslot/launch.py
+#   scripts/relaunch.sh --port 8787 --launcher ~/.hermes/cache/agentus/launch.py
 #
 # Why this exists: the live instance no longer runs under `tsx watch` (a reload SIGTERMs
 # every live `hermes acp` slot), so nothing restarts the server by itself any more. A

@@ -105,7 +105,7 @@ export function bargeLevelOf(sensitivity: number): number {
   return 0.5 - 0.45 * (s / 100);
 }
 
-const KEY = "agentslot.call";
+const KEY = "agentus.call";
 /** numeric knobs only — clamping `interruptMode` as a number would erase the choice */
 const NUMERIC = Object.keys(CALL_RANGE) as CallKnobKey[];
 

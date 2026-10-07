@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.Manifest;
 import android.app.Activity;
@@ -48,7 +48,7 @@ import java.util.function.Consumer;
  * One screen: the saved servers, a form to add or edit one, and the live log.
  *
  * Deliberately a list rather than a single "current server": the operator runs more than one
- * AgentSlot (home LAN, the public tunnel, a work box), and switching must be one tap — with the
+ * Agentus (home LAN, the public tunnel, a work box), and switching must be one tap — with the
  * password kept so a token the server forgot can be re-minted without anyone typing it again.
  *
  * Foldable-aware (the operator's phone is a Xiaomi MIX Fold 4): the cover screen is a normal
@@ -85,7 +85,7 @@ public final class MainActivity extends Activity {
     /** 最近一次语音自检的结果：原生那半（App 自己能不能录）与页面那半（WebView 能不能拿到）。 */
     private volatile String nativeProbe = "（未跑）";
     private volatile String pageProbe = "（未跑）";
-    /** 原生桥（window.AgentSlotMic）那一半：页面直接让 App 录音、帧有没有真的到页面。 */
+    /** 原生桥（window.AgentusMic）那一半：页面直接让 App 录音、帧有没有真的到页面。 */
     private volatile String bridgeProbe = "（未跑）";
     /** 页面探针的轮询次数（探针可能一步都不返回，等不到就不能一直等）。 */
     private int probeTries = 0;
@@ -96,7 +96,7 @@ public final class MainActivity extends Activity {
     private final AtomicReference<String> lastMessage = new AtomicReference<>("就绪");
 
     // ---- screens -------------------------------------------------------------
-    // The app OPENS ON THE COCKPIT — the actual AgentSlot web UI in a WebView — because that is what
+    // The app OPENS ON THE COCKPIT — the actual Agentus web UI in a WebView — because that is what
     // "install the app" is supposed to mean. The configuration screen is one tap away in the toolbar.
     // (An earlier build opened straight into the settings list; the operator's reaction to that was
     // the correct one: "为什么我打开后就是在设置界面，没有我们的这个 slot 网页".)
@@ -107,7 +107,7 @@ public final class MainActivity extends Activity {
     private View configView;
     private TextView titleView;
     private WebView webView;
-    /** The native microphone behind {@code window.AgentSlotMic} (see Mic: the WebView's own capture
+    /** The native microphone behind {@code window.AgentusMic} (see Mic: the WebView's own capture
      *  will not open on this ROM, this app's AudioRecord does). */
     private Mic mic;
     private int screen = SCREEN_COCKPIT;
@@ -349,14 +349,14 @@ public final class MainActivity extends Activity {
         // can record natively instead. Gated to the operator's own saved servers: a page that is not
         // one of them cannot make this app record.
         mic = new Mic(this, webView, this::bridgeAllowed);
-        webView.addJavascriptInterface(mic, "AgentSlotMic");
+        webView.addJavascriptInterface(mic, "AgentusMic");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
-                if ("agentslot".equals(scheme)) {              // a pairing link on the page
+                if ("agentus".equals(scheme)) {              // a pairing link on the page
                     handleIntent(new Intent(Intent.ACTION_VIEW, u));
                     return true;
                 }
@@ -565,7 +565,7 @@ public final class MainActivity extends Activity {
         adv.setTextSize(13);
         adv.setPadding(0, dp(12), 0, dp(2));
         root.addView(adv);
-        fPair = field("agentslot://pair?u=…&c=…", false);
+        fPair = field("agentus://pair?u=…&c=…", false);
         root.addView(button("用配对串添加", v -> addFromPairString()));
 
         // ---- the way back to the thing the app is for, plus the island self-test (the two "act now"
@@ -877,7 +877,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 runOnUiThread(() -> setMessage("配对失败：" + e.getMessage()));
             }
-        }, "agentslot-pair").start();
+        }, "agentus-pair").start();
     }
 
     /**
@@ -944,7 +944,7 @@ public final class MainActivity extends Activity {
                 setMessage("语音自检完成，已上报");
                 reportDiagnosis();
             });
-        }, "agentslot-audioprobe").start();
+        }, "agentus-audioprobe").start();
     }
 
     /** Can THIS APP record at all, WebView out of the picture? */
@@ -993,7 +993,7 @@ public final class MainActivity extends Activity {
         // "no answer", which cost a whole round trip on the real phone.
         String js = "window.__asVoice=JSON.stringify({step:'start',secure:window.isSecureContext,"
             + "md:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),"
-            + "bridge:!!(window.AgentSlotMic&&window.AgentSlotMic.available)});"
+            + "bridge:!!(window.AgentusMic&&window.AgentusMic.available)});"
             + "(async()=>{const o=JSON.parse(window.__asVoice);const put=()=>{window.__asVoice=JSON.stringify(o)};"
             + "const to=(p,ms)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(Object.assign(new Error('timeout'),{name:'TimeoutError'})),ms))]);"
             + "try{o.perm=(await to(navigator.permissions.query({name:'microphone'}),2000)).state}catch(e){o.perm='err:'+e.name}"
@@ -1043,7 +1043,7 @@ public final class MainActivity extends Activity {
             runNativeProbe();
             return;
         }
-        String js = "window.__asMicProbe='（跑着…）';(function(){var c=window.AgentSlotMic;"
+        String js = "window.__asMicProbe='（跑着…）';(function(){var c=window.AgentusMic;"
             + "if(!c||!c.available()){window.__asMicProbe='没有原生桥';return}"
             + "window.__asMicN=0;window.__asMic=function(){window.__asMicN++};var r;"
             + "try{r=String(c.start(16000))}catch(e){r='throw:'+e.message}"
@@ -1092,7 +1092,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 runOnUiThread(() -> setMessage("诊断上报失败：" + e.getMessage() + " —— 可点「复制诊断」"));
             }
-        }, "agentslot-diag").start();
+        }, "agentus-diag").start();
     }
 
     /** The same text on the clipboard, for when the server is unreachable. */
@@ -1101,7 +1101,7 @@ public final class MainActivity extends Activity {
         try {
             android.content.ClipboardManager cm =
                 (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("AgentSlot 诊断", text));
+            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("Agentus 诊断", text));
             setMessage("诊断已复制到剪贴板（粘给谁都行）");
         } catch (Exception e) {
             setMessage("复制失败：" + e.getMessage());
@@ -1137,7 +1137,7 @@ public final class MainActivity extends Activity {
         } else {
             NotifyService.log("系统授权回来了但没有挂着的页面请求（可能页面已重载，再按一次语音即可）");
         }
-        setMessage(granted ? "麦克风已授权，语音输入可以用了" : "麦克风被拒：语音用不了，去系统设置里给 AgentSlot 开「录音」");
+        setMessage(granted ? "麦克风已授权，语音输入可以用了" : "麦克风被拒：语音用不了，去系统设置里给 Agentus 开「录音」");
         refresh();
     }
 
@@ -1168,7 +1168,7 @@ public final class MainActivity extends Activity {
             } catch (Exception e) {
                 runOnUiThread(() -> setMessage("探针失败：" + e.getMessage()));
             }
-        }, "agentslot-probe").start();
+        }, "agentus-probe").start();
     }
 
     /**
@@ -1191,7 +1191,7 @@ public final class MainActivity extends Activity {
         final String base = p == null ? null : p.url;
         final String forced = path == null ? "" : path;
         final String label = title == null || title.isEmpty() ? "上岛自检" : title;
-        final String id = forced.isEmpty() ? "agentslot-selftest" : "agentslot-selftest-" + forced;
+        final String id = forced.isEmpty() ? "agentus-selftest" : "agentus-selftest-" + forced;
         selfTestRunning = true;
         setMessage(label + "中：盯住状态栏 / 锁屏 / 息屏（12 秒）");
         NotifyService.log("自检：通道=" + (forced.isEmpty() ? "自动（先小米焦点通知，再安卓原生）" : forced)
@@ -1226,16 +1226,16 @@ public final class MainActivity extends Activity {
         int done = Math.max(1, (int) Math.round(v * 100));
         String label = title == null || title.isEmpty() ? "上岛自检" : title;
         JSONObject a = new JSONObject()
-            .put("activityId", path == null || path.isEmpty() ? "agentslot-selftest" : "agentslot-selftest-" + path)
+            .put("activityId", path == null || path.isEmpty() ? "agentus-selftest" : "agentus-selftest-" + path)
             .put("op", "upsert")
             .put("revision", i + 1)
             .put("ongoing", true)
             .put("promotable", true)
             .put("title", label)
-            .put("subtitle", "AgentSlot")
+            .put("subtitle", "Agentus")
             .put("body", "第 " + (i + 1) + "/" + steps + " 步 · 假装一个任务在跑")
             .put("channel", new JSONObject()
-                .put("id", "agentslot-selftest").put("name", "上岛自检")
+                .put("id", "agentus-selftest").put("name", "上岛自检")
                 .put("importance", "default").put("sound", false).put("vibration", false))
             .put("progress", new JSONObject().put("value", v).put("segments", new org.json.JSONArray()
                 .put(new JSONObject().put("length", done).put("color", "#2f6f4f"))
@@ -1279,7 +1279,7 @@ public final class MainActivity extends Activity {
         String target = intent.getStringExtra(EXTRA_OPEN_URL);
         Uri data = intent.getData();
         if ((target == null || target.isEmpty()) && data != null
-            && "agentslot".equals(data.getScheme()) && "open".equals(data.getHost())) {
+            && "agentus".equals(data.getScheme()) && "open".equals(data.getHost())) {
             target = data.getQueryParameter("u");
         }
         if (target != null && !target.isEmpty()) {
@@ -1292,12 +1292,12 @@ public final class MainActivity extends Activity {
             return;
         }
         if (data == null) return;
-        if (!"agentslot".equals(data.getScheme())) return;
+        if (!"agentus".equals(data.getScheme())) return;
         if (!"pair".equals(data.getHost())) return;
         String u = data.getQueryParameter("u");
         String c = data.getQueryParameter("c");
         if (u != null) {
-            fPair.setText("agentslot://pair?u=" + u + (c != null ? "&c=" + c : ""));
+            fPair.setText("agentus://pair?u=" + u + (c != null ? "&c=" + c : ""));
             addFromPairString();
         }
     }

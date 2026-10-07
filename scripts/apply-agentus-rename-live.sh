@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Agentus 改名落地（LIVE :8787）—— 只有操作者明确下令才跑。
+#
+# 为什么需要单独一步（而不是直接 promote）：这次改名同时动了三样 live 正在用的东西，
+# 任何一样漏掉都会静默出事：
+#
+#   1. 库文件名。index.ts 现在开的是 <data>/agentus.sqlite，而 live 的库叫
+#      agentslot.sqlite —— 直接重启 = 开一个空库 = 操作者的会话列表凭空消失。
+#   2. 启动器目录。live 的启动器在 ~/.hermes/cache/agentslot/launch.py，它 set 的
+#      AGENTSLOT_* 变量改名后不再被代码读取（代码只认 AGENTUS_*）；不换 = 端口/数据目录
+#      全部回落到默认值（8787/.data 恰好同值躲过一劫，TLS 与 HERMES_CMD 不会）。
+#   3. 启动形态。dev 树里 scripts/start.sh、package.json、npm workspace 名字都变了，
+#      需要 npm install 重连 @agentus/* 链接 + 重新 build。
+#
+# 顺序刻意这样排：先把「不需要进程配合」的事做完（启动器改名、代码 promote + 构建），
+# 此时 live 仍用内存里的旧代码在跑、不掉线；然后才 kill -> 改库名 -> 用新启动器拉起，
+# 停机窗口只有几秒。
+#
+#   bash scripts/apply-agentus-rename-live.sh --dry-run     # 只看要做什么
+#   bash scripts/apply-agentus-rename-live.sh               # 真做（会重启 :8787）
+#
+# 前置：dev 树已 commit + push；dev 全套 sweep 已绿。
+set -euo pipefail
+
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"                       # dev 树
+LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentslot}"          # live 树
+LIVE_PORT="${LIVE_PORT:-8787}"
+LIVE_TLS_PORT="${LIVE_TLS_PORT:-8443}"
+LOLD="$HOME/.hermes/cache/agentslot"                            # 旧启动器目录
+LNEW="$HOME/.hermes/cache/agentus"                              # 新启动器目录
+SLUG="$(git -C "$HERE" rev-parse --abbrev-ref HEAD | tr '/' '-')"
+DATA="$LIVE/packages/server/.data"
+TOKEN="$DATA/auth.token"
+
+say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+run()  { if [ "$DRY" = 1 ]; then echo "  [dry] $*"; else eval "$@"; fi; }
+die()  { echo "FAILED: $*" >&2; exit 1; }
+pid_on() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
+api() { curl -s --noproxy '*' -m 8 -H "Authorization: Bearer $(cat "$TOKEN" 2>/dev/null)" "$@"; }
+sids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).live||[]).map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
+
+# ── 0. 前置检查 ──────────────────────────────────────────────────────────────
+say "0. 前置检查"
+[ -d "$LIVE" ] || die "live 树不存在: $LIVE"
+[ -f "$LOLD/launch.py" ] || die "旧启动器不存在: $LOLD/launch.py"
+LIVE_PID="$(pid_on "$LIVE_PORT")"; [ -n "$LIVE_PID" ] || die ":$LIVE_PORT 没有监听的进程——live 没在跑，别用这个脚本"
+git -C "$HERE" diff --quiet && git -C "$HERE" diff --cached --quiet || die "dev 树有未提交的改动，先 commit"
+SESS_BEFORE="$(sids | tr '\n' ' ')"
+ASSET_BEFORE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/api/version" || true)"
+echo "  dev 分支 : $SLUG @ $(git -C "$HERE" rev-parse --short HEAD)"
+echo "  live 树   : $LIVE  (pid $LIVE_PID)"
+echo "  live 会话 : ${SESS_BEFORE:-（无）}"
+echo "  live 版本 : ${ASSET_BEFORE:-（取不到）}"
+echo "  启动器    : $LOLD  ->  $LNEW"
+
+# ── 1. 启动器目录改名 + AGENTSLOT_* -> AGENTUS_* ─────────────────────────────
+say "1. 启动器目录改名（$LOLD -> $LNEW）"
+if [ -d "$LNEW" ]; then
+  echo "  $LNEW 已存在——跳过移动（假定上次已经迁过）"
+else
+  run "mv '$LOLD' '$LNEW'"
+fi
+# 里面的脚本：AGENTSLOT_ 前缀换掉；cache/agentslot 路径换掉；worktrees/agentslot 的引用
+# 一律保留（本次不改 worktree 目录名，见报告）。用占位符保护它，避免误伤。
+run "python3 - '$LNEW' <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+PH = '@@WORKTREE_KEEP@@'
+n = 0
+for p in root.rglob('*'):
+    if not p.is_file(): continue
+    try: t = p.read_text(encoding='utf-8')
+    except Exception: continue
+    o = t
+    t = t.replace('worktrees/agentslot', PH)         # 保护：worktree 目录本次不改名
+    t = t.replace('cache/agentslot', 'cache/agentus')
+    t = t.replace('AGENTSLOT_', 'AGENTUS_')
+    t = t.replace('AgentSlot', 'Agentus')
+    t = t.replace('agentslot', 'agentus')
+    t = t.replace(PH, 'worktrees/agentslot')
+    if t != o:
+        p.write_text(t, encoding='utf-8'); n += 1
+print(f'  启动器脚本更新 {n} 个文件')
+PY"
+run "mv '$LNEW/agentslot-root.crt' '$LNEW/agentus-root.crt' 2>/dev/null || true"
+if [ "$DRY" = 0 ]; then
+  LEFT="$(grep -rl 'AGENTSLOT' "$LNEW" 2>/dev/null | head -5 || true)"
+  [ -z "$LEFT" ] || die "启动器目录里仍有 AGENTSLOT：$LEFT"
+  echo "  启动器目录已清干净"
+fi
+
+# ── 2. promote 改名后的代码到 live 树（live 仍在跑旧代码，不掉线）─────────────
+say "2. 把改名代码落到 live 树（checkout run/$SLUG + npm install + build）"
+OLD_TIP="$(git -C "$LIVE" rev-parse HEAD)"
+echo "  live 树 $OLD_TIP  ->  $(git -C "$HERE" rev-parse --short HEAD)"
+run "git -C '$LIVE' checkout -B 'run/$SLUG' $(git -C "$HERE" rev-parse HEAD)"
+run "cd '$LIVE' && npm install --no-audit --no-fund"
+run "cd '$LIVE' && npm run build"
+if [ "$DRY" = 0 ]; then
+  LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist 2>/dev/null | head -5 || true)"
+  [ -z "$LEFT" ] || die "live 树里仍有 AGENTSLOT：$LEFT"
+  echo "  live 树文本已清干净"
+fi
+
+# ── 3. 停机 -> 库文件改名 -> 用新启动器拉起 ─────────────────────────────────
+say "3. 重启 :$LIVE_PORT（先停、改库名、再起）"
+run "bash -c '
+  pid=\"$(lsof -nP -iTCP:$LIVE_PORT -sTCP:LISTEN -t | head -1)\"
+  pgid=\"$(ps -o pgid= -p \"$pid\" | tr -d \" \")\"
+  kill -TERM -- \"-$pgid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true
+  for _ in $(seq 1 40); do [ -z \"$(lsof -nP -iTCP:$LIVE_PORT -sTCP:LISTEN -t 2>/dev/null)\" ] && break; sleep 0.5; done
+'"
+if [ "$DRY" = 0 ]; then
+  [ -z "$(pid_on "$LIVE_PORT")" ] || die "端口 $LIVE_PORT 没释放"
+  echo "  端口已释放"
+fi
+
+# 库文件 + 它的 WAL/SHM。这一条就是「会话列表不能丢」的全部保障。
+say "3b. 库文件改名 agentslot.sqlite* -> agentus.sqlite*"
+if [ -f "$DATA/agentus.sqlite" ]; then
+  echo "  $DATA/agentus.sqlite 已存在——跳过（假定上次已迁过）"
+else
+  run "for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-fold.bak; do
+    [ -e '$DATA/'\$f ] && mv '$DATA/'\$f '$DATA/'\"\${f/agentslot.sqlite/agentus.sqlite}\" && echo \"  renamed \$f\"
+  done; true"
+fi
+if [ "$DRY" = 0 ]; then
+  [ -f "$DATA/agentus.sqlite" ] || die "改名后没看到 $DATA/agentus.sqlite——不要继续"
+  echo "  库文件就位: $(ls -la "$DATA/agentus.sqlite" | awk '{print $5" bytes"}')"
+fi
+
+if [ "$DRY" = 1 ]; then
+  say "dry-run 结束：上面就是要做的全部动作，真跑请去掉 --dry-run（会重启 :$LIVE_PORT）"
+  exit 0
+fi
+
+say "3c. 用新启动器拉起"
+run "cd '$LIVE' && python3 '$LNEW/launch.py'"
+NEW_PID=""
+for _ in $(seq 1 120); do
+  NEW_PID="$(pid_on "$LIVE_PORT")"
+  [ -n "$NEW_PID" ] && curl -s --noproxy '*' -m 3 "http://127.0.0.1:$LIVE_PORT/healthz" | grep -q '"ok":true' && break
+  sleep 1
+done
+[ -n "$NEW_PID" ] || die ":$LIVE_PORT 没起来——看 /tmp/agentus-server.log"
+[ "$NEW_PID" != "$LIVE_PID" ] || die "pid 没变（$NEW_PID）——旧进程还在跑，发布没生效"
+echo "  pid $LIVE_PID -> $NEW_PID  ✅ 是新进程"
+
+# ── 4. 回读验证 ─────────────────────────────────────────────────────────────
+say "4. 回读验证"
+FAIL=0
+ck() { if [ "$2" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1"; FAIL=1; fi; }
+
+ENVS="$(ps eww -p "$NEW_PID" | tr ' ' '\n' | grep -E '^AGENT' | sort)"
+echo "$ENVS" | sed 's/^/       /'
+ck "新进程的环境变量全是 AGENTUS_*（没有 AGENTSLOT_*）" \
+   "$([ -n "$(echo "$ENVS" | grep '^AGENTUS_')" ] && [ -z "$(echo "$ENVS" | grep '^AGENTSLOT_')" ] && echo 1 || echo 0)"
+ck "数据目录仍是 live 的 .data（没被 QA 库顶掉）" \
+   "$(echo "$ENVS" | grep -q "AGENTUS_DATA=$DATA$" && echo 1 || echo 0)"
+ck "端口仍是 $LIVE_PORT" "$(echo "$ENVS" | grep -q "^AGENTUS_PORT=$LIVE_PORT$" && echo 1 || echo 0)"
+
+SESS_AFTER="$(sids | tr '\n' ' ')"
+ck "会话列表还在（${SESS_BEFORE:-无} -> ${SESS_AFTER:-无}）" \
+   "$([ "$(echo "${SESS_AFTER:-}" | wc -w)" -ge "$(echo "${SESS_BEFORE:-}" | wc -w)" ] && echo 1 || echo 0)"
+
+ck "TLS 监听 $LIVE_TLS_PORT 在线" "$([ -n "$(pid_on "$LIVE_TLS_PORT")" ] && echo 1 || echo 0)"
+
+TITLE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/" | grep -o '<title>[^<]*' | head -1 | sed 's/<title>//')"
+ck "页面标题是 Agentus（实得: ${TITLE:-空}）" "$(echo "$TITLE" | grep -q 'Agentus' && echo 1 || echo 0)"
+
+LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist 2>/dev/null | head -3 || true)"
+ck "live 树全文无 AGENTSLOT（残留: ${LEFT:-无}）" "$([ -z "$LEFT" ] && echo 1 || echo 0)"
+
+ck "旧日志路径未再被写入（/tmp/agentus-server.log 新鲜）" \
+   "$([ -n "$(find /tmp/agentus-server.log -newermt '-3 minutes' 2>/dev/null)" ] && echo 1 || echo 0)"
+
+# ── 5. 槽位恢复 ─────────────────────────────────────────────────────────────
+say "5. 把每个 live 槽位恢复（重启杀掉了它们的 agent 子进程）"
+for id in $SESS_BEFORE; do
+  code="$(api -o /dev/null -w '%{http_code}' -X POST -m 90 "http://127.0.0.1:$LIVE_PORT/api/sessions/$id/resume" || true)"
+  echo "  resume $id -> HTTP $code"
+done
+
+say "结果"
+if [ "$FAIL" = 0 ]; then
+  echo "  改名已在 live 生效。硬刷新座舱标签页（web 资产 hash 变了）。"
+  echo "  剩下的：Android APK 需重编重装（applicationId 从 app.agentslot.companion 变 app.agentus.companion）——手机上的旧 App 仍是旧包名。"
+  exit 0
+else
+  echo "  有 FAIL 项——live 可能不完整，回滚办法："
+  echo "    git -C '$LIVE' checkout $OLD_TIP && (cd '$LIVE' && npm run build)"
+  echo "    mv '$LNEW' '$LOLD'; mv '$DATA/agentus.sqlite'* 回 agentslot.sqlite*; python3 '$LOLD/launch.py'"
+  exit 1
+fi

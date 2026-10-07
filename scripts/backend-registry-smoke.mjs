@@ -1,7 +1,7 @@
 // Backend registry (M6) — asserts that "which hermes" is a row the operator owns, and that a row
 // naming its own home gets exactly that home while a row with none falls back to the default (the
 // operator's real ~/.hermes). The early-dev isolation guard — the `blocked` state, the row's
-// `allowLiveHome` tick and AGENTSLOT_ALLOW_LIVE_HOME — is gone.
+// `allowLiveHome` tick and AGENTUS_ALLOW_LIVE_HOME — is gone.
 //
 //   node scripts/backend-registry-smoke.mjs
 //
@@ -31,8 +31,8 @@ import { createServer as createTcp } from "node:net";
 const ROOT = path.resolve(import.meta.dirname, "..");
 // What the QA row should run. Default = the operator's own setup on this box: the installed
 // `hermes` (Studio runtime) with PYTHONPATH at the source fork. Override on any other machine.
-const HERMES_CMD = process.env.AGENTSLOT_QA_HERMES_CMD || "hermes";
-const FORK = process.env.AGENTSLOT_QA_FORK || path.join(homedir(), "Project/hermes-agent");
+const HERMES_CMD = process.env.AGENTUS_QA_HERMES_CMD || "hermes";
+const FORK = process.env.AGENTUS_QA_FORK || path.join(homedir(), "Project/hermes-agent");
 const LIVE_HOME = path.join(homedir(), ".hermes");
 
 const killGroup = (target) => {
@@ -72,12 +72,12 @@ async function boot(port, dataDir) {
       env: {
         ...process.env,
         NODE_ENV: "development",
-        AGENTSLOT_PORT: String(port),
-        AGENTSLOT_DATA: dataDir,
-        AGENTSLOT_AUTH: "on",
+        AGENTUS_PORT: String(port),
+        AGENTUS_DATA: dataDir,
+        AGENTUS_AUTH: "on",
         // keep the QA server off the operator's voice endpoints
-        AGENTSLOT_STT_BASE_URL: "",
-        AGENTSLOT_TTS_BASE_URL: "",
+        AGENTUS_STT_BASE_URL: "",
+        AGENTUS_TTS_BASE_URL: "",
       },
     },
   );
@@ -141,8 +141,8 @@ function skip(name, why) {
 
 async function main() {
   const port = await freePort();
-  const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-backreg-"));
-  const home = mkdtempSync(path.join(tmpdir(), "agentslot-backreg-home-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-backreg-"));
+  const home = mkdtempSync(path.join(tmpdir(), "agentus-backreg-home-"));
   // Give the throwaway home a provider config the way the operator's own home has one: without it
   // the fork boots but cannot answer a session (and this suite is about the REGISTRY, not about
   // provider setup). Read-only on the source.
@@ -328,7 +328,7 @@ async function main() {
     }
 
     // 5. a row aimed at the operator's REAL home is normal now — the early-dev isolation guard
-    //    (and its AGENTSLOT_ALLOW_LIVE_HOME / `allowLiveHome` escape hatches) is gone. Proven
+    //    (and its AGENTUS_ALLOW_LIVE_HOME / `allowLiveHome` escape hatches) is gone. Proven
     //    without touching the real state.db: the row runs the in-repo mock agent under
     //    HERMES_HOME=~/.hermes, and the mock never opens a database, so this asserts "it is no
     //    longer refused" and "the home still reaches the child" — and nothing more.

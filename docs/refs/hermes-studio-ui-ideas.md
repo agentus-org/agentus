@@ -1,7 +1,7 @@
 # Hermes Studio 聊天 UI 设计思想摘要（调研笔记）
 
 > 调研对象：`~/Project/hermes-studio`（Vue 3 + Pinia + Socket.IO + markdown-it + vue-virtual-scroller）。
-> 目的：为 AgentSlot 的聊天 UI 提取可移植的设计思想，不抄代码。行号基于当前 checkout，引用路径相对 `packages/client/src`（服务端相对 `packages/server/src`）。
+> 目的：为 Agentus 的聊天 UI 提取可移植的设计思想，不抄代码。行号基于当前 checkout，引用路径相对 `packages/client/src`（服务端相对 `packages/server/src`）。
 
 ---
 
@@ -188,4 +188,4 @@
 ## 附：值得移植 vs 不必照搬
 
 - **值得移植**：resume 快照 + 事件回放的会话切换协议；`userDetachedFromBottom` 跟底状态机与多帧 rAF；fence/think 修复层；"tool 平级消息 + toolCallId upsert + 底部活动条"三件套；服务端小环形事件缓冲；12s 列表轮询的门闸条件。
-- **不必照搬**：4000 行单 store（按 sessions/stream/reducer 拆分）；模板里字符串 replace 生成 HTML（AgentSlot 若用 React 可直接组件化）；`session_id` 无 seq 的方案在 ACP 多后端下建议升级为 per-run runMarker（他们已有雏形 `runMarker`/`finishReason`，值得正式化）。
+- **不必照搬**：4000 行单 store（按 sessions/stream/reducer 拆分）；模板里字符串 replace 生成 HTML（Agentus 若用 React 可直接组件化）；`session_id` 无 seq 的方案在 ACP 多后端下建议升级为 per-run runMarker（他们已有雏形 `runMarker`/`finishReason`，值得正式化）。

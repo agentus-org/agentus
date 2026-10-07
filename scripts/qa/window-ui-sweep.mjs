@@ -10,9 +10,9 @@
 //   3. a pick lands: the row's number follows the agent's reported window;
 //   4. chat settings offers thinking depth and no longer offers any context option.
 //
-//   AGENTSLOT_BASE=http://127.0.0.1:8901 node scripts/qa/window-ui-sweep.mjs
+//   AGENTUS_BASE=http://127.0.0.1:8901 node scripts/qa/window-ui-sweep.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTSLOT_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

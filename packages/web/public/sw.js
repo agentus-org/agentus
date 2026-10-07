@@ -1,10 +1,10 @@
-// AgentSlot service worker — app-shell strategy, staleness-safe.
+// Agentus service worker — app-shell strategy, staleness-safe.
 // Rules:
 //  - HTML/navigation: NETWORK FIRST (avoid stale bundles), offline => cached shell.
 //  - hashed assets (/assets/): CACHE FIRST (immutable by content hash).
 //  - other static (icons/manifest): cache-first with network fill.
 //  - /api /ws /healthz: NEVER touch (live agent state must always be live).
-const SHELL = "agentslot-shell-v2";
+const SHELL = "agentus-shell-v2";
 
 self.addEventListener("install", (e) => {
   e.waitUntil(

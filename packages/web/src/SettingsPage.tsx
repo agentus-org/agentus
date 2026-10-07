@@ -142,7 +142,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [ttsText, setTtsText] = useState("AgentSlot 语音合成自测：龙安欢音色。");
+  const [ttsText, setTtsText] = useState("Agentus 语音合成自测：龙安欢音色。");
   // account, sessions and login locks live in Account.tsx (their own endpoints, their own
   // loading); this page only carries the identity the 账号 card prints.
   const [acc, setAcc] = useState<AccountInfo | null>(null);
@@ -535,7 +535,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           <textarea
             className="set-textarea"
             rows={5}
-            placeholder={"AgentSlot=5\nACP\nqodercli"}
+            placeholder={"Agentus=5\nACP\nqodercli"}
             value={draft?.hotwordsText ?? ""}
             onChange={(e) => field("hotwordsText", e.target.value)}
             spellCheck={false}

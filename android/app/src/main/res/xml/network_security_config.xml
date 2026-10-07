@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Two deliberate choices, both because this app only ever talks to the operator's own
-  self-hosted AgentSlot server:
+  self-hosted Agentus server:
 
   * cleartext is OFF by default and only allowed for the LAN addresses (a test bed over
     http://192.168.x.x). Everything else must be wss/https.

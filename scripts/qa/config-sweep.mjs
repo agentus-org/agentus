@@ -9,11 +9,11 @@
 //   2. a supported pick lands, comes back in the agent's own reply, and is NOT flagged;
 //   3. an unsupported pick emits `config-rejected` carrying what the session really runs with;
 //   4. the option list survives a set (a partial agent reply must not wipe the surface).
-// Usage: node scripts/qa/config-sweep.mjs   (AGENTSLOT_BASE to point at another instance)
+// Usage: node scripts/qa/config-sweep.mjs   (AGENTUS_BASE to point at another instance)
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTSLOT_BASE || "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8787";
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });

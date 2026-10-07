@@ -2,7 +2,7 @@
 //   「每条消息的时间…当我去点击，或者电脑版鼠标放在上面的时候，把时间显示出来」
 //   「外面那个会话列表…是不是也可以显示最新那条消息的时间？几天前显示日期，当天显示时间或几分钟前」
 //
-//   AGENTSLOT_BASE=http://127.0.0.1:8901 node scripts/qa/time-ui-sweep.mjs
+//   AGENTUS_BASE=http://127.0.0.1:8901 node scripts/qa/time-ui-sweep.mjs
 //
 // It drives the real page against a real (mock-backed) session and compares what is RENDERED
 // against what the SERVER stored — the number is not "some string that looks like a time": it is
@@ -10,7 +10,7 @@
 // here independently. A stamp that drifts from the data (wrong field, stale value, a hardcoded
 // placeholder) fails even though the UI "shows a time".
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTSLOT_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

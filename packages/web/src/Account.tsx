@@ -264,7 +264,7 @@ export function AccountPanels({ account, onChanged }: {
           {account?.credentialSource === "default" ? (
             <>现在是<b>内置默认口令</b>（<code>admin / 123456</code>），对公网开放时务必改掉。</>
           ) : account?.credentialSource === "env" ? (
-            <>当前口令来自环境变量（<code>AGENTSLOT_USERNAME</code> / <code>AGENTSLOT_PASSWORD</code>）；
+            <>当前口令来自环境变量（<code>AGENTUS_USERNAME</code> / <code>AGENTUS_PASSWORD</code>）；
               在这里保存后以本页为准，环境变量只当引导。</>
           ) : (
             <>当前口令存在数据目录的 <code>credentials.json</code>（0600，scrypt 哈希，明文不落盘）。</>

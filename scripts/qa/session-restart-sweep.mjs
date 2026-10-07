@@ -11,11 +11,11 @@
 //   4. the operator's pick survives it too (thinking depth stays where they left it);
 //   5. the new process really serves the slot: a prompt gets an answer, not a refusal;
 //   6. a cold slot has no process to restart -> 404 pointing at /resume.
-// Usage: AGENTSLOT_BASE=http://127.0.0.1:8901 node scripts/qa/session-restart-sweep.mjs
+// Usage: AGENTUS_BASE=http://127.0.0.1:8901 node scripts/qa/session-restart-sweep.mjs
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTSLOT_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });

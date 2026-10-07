@@ -35,7 +35,7 @@ export interface VoicePrefs {
   stt: "auto" | "browser" | "stream" | "server";
 }
 
-const PREFS_KEY = "agentslot.voice";
+const PREFS_KEY = "agentus.voice";
 
 const DEFAULT_PREFS: VoicePrefs = {
   autoRead: false,
@@ -728,9 +728,9 @@ export function browserDictationAvailable(): boolean {
   return Boolean(recognitionCtor());
 }
 
-/** The Android app's native microphone, injected as `window.AgentSlotMic`.
+/** The Android app's native microphone, injected as `window.AgentusMic`.
  *
- *  It only exists inside the AgentSlot companion app, and only for a page that is one of the
+ *  It only exists inside the Agentus companion app, and only for a page that is one of the
  *  operator's saved servers (the app checks). When it is there, the page records with it instead of
  *  getUserMedia: Chromium's own capture never opens on that ROM, while the app's AudioRecord does. */
 interface NativeMicBridge {
@@ -741,7 +741,7 @@ interface NativeMicBridge {
 }
 
 function bridgeMic(): NativeMicBridge | null {
-  const b = (window as unknown as { AgentSlotMic?: NativeMicBridge }).AgentSlotMic;
+  const b = (window as unknown as { AgentusMic?: NativeMicBridge }).AgentusMic;
   return b && typeof b.start === "function" && typeof b.stop === "function" ? b : null;
 }
 
@@ -934,7 +934,7 @@ class Dictation {
         status: "error",
         engine: null,
         error: want === "server" || serverOk
-          ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTSLOT_STT_BASE_URL)"
+          ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTUS_STT_BASE_URL)"
           : "no dictation available in this browser — set the server STT endpoint or use Chromium/Edge",
       });
       return false;

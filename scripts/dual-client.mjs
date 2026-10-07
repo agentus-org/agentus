@@ -5,7 +5,7 @@ import { wsUrl } from "./lib/auth.mjs";
 
 const sid = process.argv[2];
 if (!sid) throw new Error("usage: node scripts/dual-client.mjs <sessionId>");
-const URL = wsUrl(process.env.AGENTSLOT_BASE || "http://127.0.0.1:8787");
+const URL = wsUrl(process.env.AGENTUS_BASE || "http://127.0.0.1:8787");
 
 function open(name) {
   const ws = new WebSocket(URL);

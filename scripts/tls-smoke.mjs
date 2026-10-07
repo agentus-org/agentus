@@ -26,7 +26,7 @@ const killGroup = (target) => {
   try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
 };
 
-const NAME = "agentslot-smoke.test";
+const NAME = "agentus-smoke.test";
 const [PLAIN, TLS, PLAIN_OFF, TLS_OFF] = await freePorts(4);
 const USER = "smoke-op", PASS = "smoke-pass-1";
 let failed = 0;
@@ -70,8 +70,8 @@ async function boot(dataDir, extraEnv = {}) {
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development",
-      AGENTSLOT_PORT: String(PLAIN), AGENTSLOT_TLS_PORT: String(TLS),
-      AGENTSLOT_DATA: dataDir, AGENTSLOT_USERNAME: USER, AGENTSLOT_PASSWORD: PASS,
+      AGENTUS_PORT: String(PLAIN), AGENTUS_TLS_PORT: String(TLS),
+      AGENTUS_DATA: dataDir, AGENTUS_USERNAME: USER, AGENTUS_PASSWORD: PASS,
       HOME: path.join(dataDir, "home"), // no operator .env leaks into the guards
       ...extraEnv,
     },
@@ -93,7 +93,7 @@ async function boot(dataDir, extraEnv = {}) {
 
 function makeCert(dir) {
   execFileSync(path.join(ROOT, "scripts/make-cert.sh"), [NAME], {
-    cwd: ROOT, env: { ...process.env, AGENTSLOT_TLS_DIR: dir }, stdio: "pipe",
+    cwd: ROOT, env: { ...process.env, AGENTUS_TLS_DIR: dir }, stdio: "pipe",
   });
   // root + leaf: the root is what a device installs, the leaf is what the listener serves.
   return { ca: path.join(dir, "ca.pem"), leaf: path.join(dir, "cert.pem") };
@@ -102,7 +102,7 @@ function makeCert(dir) {
 const tlsFetch = (url, init) => fetch(url, { ...init, dispatcher: undefined });
 
 // ---------------------------------------------------------------- with a cert
-const dir1 = mkdtempSync(path.join(tmpdir(), "agentslot-tls-"));
+const dir1 = mkdtempSync(path.join(tmpdir(), "agentus-tls-"));
 const { ca: caPath, leaf: certPath } = makeCert(path.join(dir1, "tls"));
 const { proc: srv, log } = await boot(dir1);
 try {
@@ -124,7 +124,7 @@ try {
   const days = Math.round((day("notAfter") - day("notBefore")) / 86_400_000);
   check("the leaf's validity is under Apple's 398-day cap", days <= 398, `${days} days`);
   const issuer = execFileSync("openssl", ["x509", "-in", certPath, "-noout", "-issuer"], { encoding: "utf8" });
-  check("the leaf is issued by the root, not self-signed", /AgentSlot self-signed root/.test(issuer), issuer.trim());
+  check("the leaf is issued by the root, not self-signed", /Agentus self-signed root/.test(issuer), issuer.trim());
 
   // 2) the TLS port really is TLS: a verifying client must be refused
   let strictFailed = false;
@@ -140,7 +140,7 @@ try {
     body: JSON.stringify({ username: USER, password: PASS }),
   });
   const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0];
-  check("login over TLS issues the session cookie", login.status === 200 && cookie.startsWith("agentslot_session="), `status=${login.status}`);
+  check("login over TLS issues the session cookie", login.status === 200 && cookie.startsWith("agentus_session="), `status=${login.status}`);
 
   // 4) the WS relay must work on wss too
   const wsResult = await new Promise((resolve) => {
@@ -173,13 +173,13 @@ try {
   check("the LAN port does not speak TLS (listeners are separate)", !plainIsTls);
 
   // 6) turning it off is honoured
-  const dir2 = mkdtempSync(path.join(tmpdir(), "agentslot-tls-off-"));
+  const dir2 = mkdtempSync(path.join(tmpdir(), "agentus-tls-off-"));
   if (await portInUse(PLAIN_OFF)) throw new Error(`port ${PLAIN_OFF} in use — leaked server?`);
   const off = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(PLAIN_OFF), AGENTSLOT_TLS_PORT: String(TLS_OFF),
-      AGENTSLOT_DATA: dir2, HOME: path.join(dir2, "home") },
+    env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(PLAIN_OFF), AGENTUS_TLS_PORT: String(TLS_OFF),
+      AGENTUS_DATA: dir2, HOME: path.join(dir2, "home") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let offLog = "";

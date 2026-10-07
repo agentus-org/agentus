@@ -1,7 +1,7 @@
 // Mock ACP agent for offline development & browser QA.
 // Implements just enough of the ACP agent surface (initialize/newSession/prompt/
 // cancel/setSessionMode + permission flow) with fake streaming, so the whole
-// AgentSlot pipeline can be exercised without a real LLM.
+// Agentus pipeline can be exercised without a real LLM.
 //
 // Env switches to simulate edge cases (append `=N` to env vars when spawning):
 //   MOCK_TOOL=1        -> prompt triggers a tool_call + requestPermission

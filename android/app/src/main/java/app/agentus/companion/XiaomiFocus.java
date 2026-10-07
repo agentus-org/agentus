@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.app.Notification;
 import android.content.Context;
@@ -26,7 +26,7 @@ import org.json.JSONObject;
 final class XiaomiFocus {
     private static final String KEY_PARAM = "miui.focus.param";
     private static final String KEY_PICS = "miui.focus.pics";
-    private static final String PIC = "miui.focus.pic_agentslot";
+    private static final String PIC = "miui.focus.pic_agentus";
 
     private static Boolean cachedCanShow = null;
     private static Boolean cachedIsXiaomi = null;
@@ -165,14 +165,14 @@ final class XiaomiFocus {
 
     /** The param_v2 object, in the shape the ROM's protocol generation expects. */
     private static JSONObject payload(JSONObject a, boolean os3) throws Exception {
-        String title = clip(a.optString("title", "AgentSlot"), 20);
+        String title = clip(a.optString("title", "Agentus"), 20);
         String subtitle = a.optString("subtitle", "");
         String body = a.optString("body", subtitle);
         String ticker = clip(subtitle.isEmpty() ? title : subtitle, 40);
         String content = clip(body.isEmpty() ? title : body, 60);
 
         JSONObject v2 = new JSONObject()
-            .put("business", "agentslot")
+            .put("business", "agentus")
             .put("enableFloat", false)     // an update must not yank the island open
             .put("updatable", true)        // same notification id keeps updating in place
             .put("ticker", ticker)         // status-bar line

@@ -399,7 +399,7 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
         </button>
       </div>
       <div className="term-note">
-        runs in {root} · line-based shell (no full-screen apps — set AGENTSLOT_TERM_PTY=1 for a pty)
+        runs in {root} · line-based shell (no full-screen apps — set AGENTUS_TERM_PTY=1 for a pty)
       </div>
     </div>
   );

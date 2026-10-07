@@ -6,7 +6,7 @@
 // The fold here mirrors packages/web's ingest rules so the exported transcript reads
 // like the cockpit: consecutive agent/thought chunks join into one paragraph, a user
 // row breaks the paragraph, tool rows are discrete entries keyed by toolCallId.
-import type { StoredMessage } from "@agentslot/shared";
+import type { StoredMessage } from "@agentus/shared";
 
 export interface ExportSessionHeader {
   id: string;
@@ -183,7 +183,7 @@ export function renderMarkdown(session: ExportSessionHeader, messages: StoredMes
 export function renderJson(session: ExportSessionHeader, messages: StoredMessage[]): string {
   return JSON.stringify(
     {
-      format: "agentslot-session/1",
+      format: "agentus-session/1",
       exportedAt: new Date().toISOString(),
       session,
       // lossless: every stored row with its raw payload, seq order preserved

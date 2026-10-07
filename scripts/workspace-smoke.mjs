@@ -67,7 +67,7 @@ process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } cat
 /** An empty HOME: the server's settings bootstrap also reads `~/.hermes/.env`, so a suite
  *  that inherits the operator's home is not testing an unconfigured install (this bit us:
  *  the voice guards below returned 200 with real audio instead of 501). */
-const EMPTY_HOME = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
+const EMPTY_HOME = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 
 async function boot(port, dataDir) {
   if (await portInUse(port)) {
@@ -77,7 +77,7 @@ async function boot(port, dataDir) {
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir, HOME: EMPTY_HOME },
+    env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(port), AGENTUS_DATA: dataDir, HOME: EMPTY_HOME },
     stdio: ["ignore", "pipe", "pipe"],
   });
   CHILDREN.add(proc);
@@ -119,7 +119,7 @@ function tokenFor(dataDir) {
   throw new Error("no machine token was written");
 }
 
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-ws-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-ws-"));
 const { proc, base, log } = await boot(PORT, dataDir);
 const token = tokenFor(dataDir);
 const H = { authorization: `Bearer ${token}` };
@@ -127,7 +127,7 @@ const j = (r) => r.json();
 
 try {
   // ---- fixture tree -------------------------------------------------------------
-  const root = mkdtempSync(path.join(tmpdir(), "agentslot-fs-"));
+  const root = mkdtempSync(path.join(tmpdir(), "agentus-fs-"));
   fs.mkdirSync(path.join(root, "alpha"));
   fs.mkdirSync(path.join(root, ".hidden"));
   fs.writeFileSync(path.join(root, "notes.txt"), "hello workspace\n");
@@ -379,7 +379,7 @@ try {
     (mdText.match(/### Agent/g) || []).length <= 3, String((mdText.match(/### Agent/g) || []).length));
   const jsonExport = await j(await fetch(`${base}/api/sessions/${created.id}/export?format=json`, { headers: H }));
   check("the json export is the lossless row dump",
-    jsonExport.format === "agentslot-session/1" && Array.isArray(jsonExport.messages)
+    jsonExport.format === "agentus-session/1" && Array.isArray(jsonExport.messages)
     // One row per MESSAGE now (streamed chunks fold into the row they belong to), so this flow is
     // user + agent. The floor proves the dump carries the transcript; the invariants below are what
     // make it "lossless" — and they are asserted harder than the old row-count guess.
@@ -398,8 +398,8 @@ try {
   // silently ate every message the operator sent. The server refuses up front now, names the two
   // agent homes, and the only useful action (delete it) is offered. These checks pin the refusal,
   // and that a healthy resume on the same row still works.
-  const homeA = mkdtempSync(path.join(tmpdir(), "agentslot-homeA-"));
-  const homeB = mkdtempSync(path.join(tmpdir(), "agentslot-homeB-"));
+  const homeA = mkdtempSync(path.join(tmpdir(), "agentus-homeA-"));
+  const homeB = mkdtempSync(path.join(tmpdir(), "agentus-homeB-"));
   const probeRow = {
     id: "qa-home", label: "QA home probe",
     // kind=hermes is what gives a row a HERMES_HOME; the mock ignores it, so the suite stays

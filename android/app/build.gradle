@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace 'app.agentslot.companion'
+    namespace 'app.agentus.companion'
     compileSdk 36
     compileSdkMinor 1
     // AGP defaults to build-tools 35.0.0, which this machine does not have; 36.1.0 is what
@@ -11,7 +11,7 @@ android {
     buildToolsVersion '36.1.0'
 
     defaultConfig {
-        applicationId "app.agentslot.companion"
+        applicationId "app.agentus.companion"
         minSdk 26            // Notification channels; also the floor for a simple FGS
         targetSdk 36
         versionCode 18

@@ -1,4 +1,4 @@
-// AgentSlot auth — one operator, two credentials.
+// Agentus auth — one operator, two credentials.
 //
 //   1. session cookie  : HttpOnly + SameSite=Lax, HMAC-SHA256 signed, minted by
 //                        POST /api/auth/login. This is what the browser carries.
@@ -20,7 +20,7 @@ import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from
 import fs from "node:fs";
 import path from "node:path";
 
-const COOKIE_NAME = "agentslot_session";
+const COOKIE_NAME = "agentus_session";
 const DEFAULT_USERNAME = "admin";
 const DEFAULT_PASSWORD = "123456";
 const SESSION_VERSION = "v1";
@@ -58,29 +58,29 @@ function envNum(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-/** `AGENTSLOT_AUTH=off` opens the cockpit (local hacking only) — it says so loudly. */
+/** `AGENTUS_AUTH=off` opens the cockpit (local hacking only) — it says so loudly. */
 export function authEnabled(): boolean {
-  const v = String(process.env.AGENTSLOT_AUTH ?? "on").trim().toLowerCase();
+  const v = String(process.env.AGENTUS_AUTH ?? "on").trim().toLowerCase();
   return !(v === "off" || v === "0" || v === "false" || v === "no");
 }
 
 export function configuredUsername(): string {
-  return stored?.username ?? (String(process.env.AGENTSLOT_USERNAME ?? DEFAULT_USERNAME).trim() || DEFAULT_USERNAME);
+  return stored?.username ?? (String(process.env.AGENTUS_USERNAME ?? DEFAULT_USERNAME).trim() || DEFAULT_USERNAME);
 }
 
 function configuredPassword(): string {
-  return process.env.AGENTSLOT_PASSWORD ?? DEFAULT_PASSWORD;
+  return process.env.AGENTUS_PASSWORD ?? DEFAULT_PASSWORD;
 }
 
 function usesDefaultPassword(): boolean {
-  return !stored && !process.env.AGENTSLOT_PASSWORD && !process.env.AGENTSLOT_PASSWORD_HASH;
+  return !stored && !process.env.AGENTUS_PASSWORD && !process.env.AGENTUS_PASSWORD_HASH;
 }
 
 /** Where the credentials in play come from — the settings page names the source, the
  *  same way the context-window popover names where its number came from. */
 export function credentialSource(): "saved" | "env" | "default" {
   if (stored) return "saved";
-  return process.env.AGENTSLOT_PASSWORD || process.env.AGENTSLOT_PASSWORD_HASH ? "env" : "default";
+  return process.env.AGENTUS_PASSWORD || process.env.AGENTUS_PASSWORD_HASH ? "env" : "default";
 }
 
 /** Bumped on every credential change and carried in the session payload, so a password
@@ -89,7 +89,7 @@ export function credentialEpoch(): number {
   return stored?.epoch ?? 0;
 }
 
-/** scrypt:<salt>:<hex> — the shape hermes-studio writes, and what AGENTSLOT_PASSWORD_HASH takes. */
+/** scrypt:<salt>:<hex> — the shape hermes-studio writes, and what AGENTUS_PASSWORD_HASH takes. */
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString("hex");
   return `scrypt:${salt}:${scryptSync(password, salt, 32).toString("hex")}`;
@@ -165,7 +165,7 @@ export function changeCredentials(input: { currentPassword: string; username?: s
 export function sessionTtlMs(): number {
   // NB: sessions carry a JWT-style `exp` stamped in whole SECONDS, so a TTL below
   // 1s can expire in the same second it was issued. Anything sane (hours/days) is fine.
-  return envNum("AGENTSLOT_SESSION_TTL_MS", 1000 * 60 * 60 * 24 * 7); // 7 days
+  return envNum("AGENTUS_SESSION_TTL_MS", 1000 * 60 * 60 * 24 * 7); // 7 days
 }
 
 // ---- key material -----------------------------------------------------------
@@ -198,10 +198,10 @@ export function initAuth(dataDir: string): AuthStatus {
   sessionsFile = path.join(dataDir, "sessions.json");
   adoptingLegacy = !fs.existsSync(sessionsFile);
   records = readRecords(sessionsFile);
-  const secretRaw = process.env.AGENTSLOT_AUTH_SECRET?.trim() || readOrCreate(path.join(dataDir, "auth.secret"), 32);
+  const secretRaw = process.env.AGENTUS_AUTH_SECRET?.trim() || readOrCreate(path.join(dataDir, "auth.secret"), 32);
   secret = Buffer.from(secretRaw, "utf8");
   // Exported so WS-upgrade code (a different module, same process) can verify too.
-  const envToken = process.env.AGENTSLOT_AUTH_TOKEN?.trim();
+  const envToken = process.env.AGENTUS_AUTH_TOKEN?.trim();
   if (envToken) {
     tokenFile = null;
     machineToken = envToken;
@@ -251,8 +251,8 @@ export function verifyCredentials(username: string, password: string): boolean {
     createHash("sha256").update(String(username)).digest("hex"),
     createHash("sha256").update(configuredUsername()).digest("hex"),
   );
-  // saved (UI-set) > AGENTSLOT_PASSWORD_HASH > AGENTSLOT_PASSWORD > built-in default
-  const hashEnv = process.env.AGENTSLOT_PASSWORD_HASH?.trim();
+  // saved (UI-set) > AGENTUS_PASSWORD_HASH > AGENTUS_PASSWORD > built-in default
+  const hashEnv = process.env.AGENTUS_PASSWORD_HASH?.trim();
   const hash = stored?.hash ?? hashEnv;
   const passOk = hash ? verifyScrypt(String(password), hash) : safeEqual(
     createHash("sha256").update(String(password)).digest("hex"),
@@ -592,7 +592,7 @@ export function clearedCookie(secure: boolean): string {
 
 /** 5 bad attempts from one IP => 30s lockout. Env-tunable so tests need not sleep. */
 export function loginLimits(): { maxFails: number; lockMs: number } {
-  return { maxFails: envNum("AGENTSLOT_LOGIN_MAX_FAILS", 5), lockMs: envNum("AGENTSLOT_LOGIN_LOCK_MS", 30_000) };
+  return { maxFails: envNum("AGENTUS_LOGIN_MAX_FAILS", 5), lockMs: envNum("AGENTUS_LOGIN_LOCK_MS", 30_000) };
 }
 
 export function loginAllowed(ip: string, now = Date.now()): { allowed: boolean; retryAfterMs: number } {
@@ -633,7 +633,7 @@ export const AUTH_DEFAULT_PASSWORD = DEFAULT_PASSWORD;
 // invisible to curl. So the outer lock lives here: a standard Basic challenge in front
 // of everything, which any tunnel, proxy or phone browser honours.
 //
-// AGENTSLOT_BASIC_AUTH forms:
+// AGENTUS_BASIC_AUTH forms:
 //   user:pass   -> both must match
 //   :pass       -> password only; ANY (or empty) username is accepted
 //   pass        -> same as ":pass"
@@ -646,7 +646,7 @@ export const AUTH_DEFAULT_PASSWORD = DEFAULT_PASSWORD;
 // username would treat ":pass" as malformed and silently turn the lock OFF.
 
 export function basicAuthConfig(): { user: string; pass: string } | null {
-  const raw = process.env.AGENTSLOT_BASIC_AUTH?.trim();
+  const raw = process.env.AGENTUS_BASIC_AUTH?.trim();
   if (!raw) return null;
   const idx = raw.indexOf(":");
   const cfg = idx < 0 ? { user: "", pass: raw } : { user: raw.slice(0, idx), pass: raw.slice(idx + 1) };
@@ -682,7 +682,7 @@ function digest(value: string): string {
 /** 401 + the challenge. Without WWW-Authenticate a browser never asks. */
 export function basicChallenge(): Record<string, string> {
   return {
-    "www-authenticate": 'Basic realm="AgentSlot", charset="UTF-8"',
+    "www-authenticate": 'Basic realm="Agentus", charset="UTF-8"',
     "content-type": "text/plain; charset=utf-8",
   };
 }

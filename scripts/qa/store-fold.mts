@@ -15,8 +15,8 @@ function check(name: string, cond: boolean, detail = ""): void {
   else { failed += 1; console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentslot-store-fold-"));
-const dbPath = path.join(dir, "agentslot.sqlite");
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-store-fold-"));
+const dbPath = path.join(dir, "agentus.sqlite");
 const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent" | "thought" = "agent"):
   { sessionId: string; kind: "agent" | "thought"; payload: unknown; createdAt: number } =>
     ({ sessionId, kind, createdAt: Date.now(), payload: { sessionUpdate: `${kind}_message_chunk`, content: { type: "text", text }, ...(messageId ? { messageId } : {}) } });
@@ -57,8 +57,8 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const block = "工作区现状一览：\n\n**结构**（AGENTS.md 约定，运转正常）\n"
     + "- `tasks/`：2 个活跃需求 + `lessons.md`（纠错登记）\n"
     + "- `areas/hindsight-memory/`：README + scripts\n"
-    + "- `worktrees/agentslot`：独立仓不入库\n\n"
-    + "**任务索引（TASKS.md）**\n| slug | 状态 |\n|---|---|\n| agentslot | 进行中 |\n";
+    + "- `worktrees/agentus`：独立仓不入库\n\n"
+    + "**任务索引（TASKS.md）**\n| slug | 状态 |\n|---|---|\n| agentus | 进行中 |\n";
   const a = store.appendTextChunk(chunk("s-anon", block));
   check("an anonymous block is stored once", !!a.message.seq);
   const again = store.appendTextChunk(chunk("s-anon", `\n\n${block}`));

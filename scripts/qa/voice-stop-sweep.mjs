@@ -6,7 +6,7 @@
 // speak()'s catch treated every rejection as "the server voice failed" — so the documented
 // browser fallback ran on a deliberate stop.
 //
-// Self-contained: spawns a stub TTS upstream (returns a real WAV) plus its own AgentSlot
+// Self-contained: spawns a stub TTS upstream (returns a real WAV) plus its own Agentus
 // server pointed at it, then drives the user's Edge over raw CDP.
 //   node scripts/qa/voice-stop-sweep.mjs
 import { spawn } from "node:child_process";
@@ -30,7 +30,7 @@ const killGroup = (target) => {
 };
 
 const CDP = "http://127.0.0.1:9222";
-const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentslot/screens");
+const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentus/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -87,15 +87,15 @@ const stub = http.createServer((req, res) => {
 await new Promise((r) => stub.listen(0, "127.0.0.1", r));
 const stubPort = stub.address().port;
 
-// ------------------------------------------------------------------ AgentSlot server
+// ------------------------------------------------------------------ Agentus server
 const freePort = () => new Promise((res, rej) => {
   const s = createTcp();
   s.on("error", rej);
   s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
 });
 const PORT = await freePort();
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-voice-"));
-const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-voice-"));
+const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const CHILDREN = new Set();
 process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } catch { /* gone */ } } });
 
@@ -104,9 +104,9 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: "development", HOME: emptyHome,
-    AGENTSLOT_PORT: String(PORT), AGENTSLOT_DATA: dataDir,
-    AGENTSLOT_TTS_BASE_URL: `http://127.0.0.1:${stubPort}`,
-    AGENTSLOT_TTS_API_KEY: "stub", AGENTSLOT_TTS_MODEL: "stub-tts", AGENTSLOT_TTS_VOICE: "stub",
+    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir,
+    AGENTUS_TTS_BASE_URL: `http://127.0.0.1:${stubPort}`,
+    AGENTUS_TTS_API_KEY: "stub", AGENTUS_TTS_MODEL: "stub-tts", AGENTUS_TTS_VOICE: "stub",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -176,7 +176,7 @@ try {
   // prefs are the ones in play.
   // NOTE the settings path, not the env bootstrap: a fresh install defaults to
   // provider:"dashscope", and an unconfigured dashscope resolves to the BROWSER voice
-  // (env AGENTSLOT_TTS_BASE_URL does not win over an explicit provider choice). The
+  // (env AGENTUS_TTS_BASE_URL does not win over an explicit provider choice). The
   // operator reaches server TTS through the settings page, so the sweep does the same.
   // The settings body is built HERE and injected as JSON: writing a credential-shaped
   // literal into a tool payload gets it redacted on the way to disk (this bit me — the file
@@ -193,13 +193,13 @@ try {
   });
 
   const setup = await ev(`(async () => {
-    localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'en-US', serverTts: true, stt: 'auto' }));
+    localStorage.setItem('agentus.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'en-US', serverTts: true, stt: 'auto' }));
     const putRes = await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' },
       body: ${JSON.stringify(settingsBody)} });
     const putText = (await putRes.text()).slice(0, 200);
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentslot.active', s.id);
+    localStorage.setItem('agentus.active', s.id);
     await fetch('/api/sessions/' + s.id + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '语音停止测试：这句话会被读出来，然后我要按停止。' }) });
     const caps = await fetch('/api/voice').then((r) => r.json());
@@ -306,7 +306,7 @@ try {
   const autoOn = await ev(`document.querySelector('.chat-head .icon-btn.auto-read')?.getAttribute('aria-pressed')`);
   check("the header switch reports auto-read ON", autoOn === "true", `aria-pressed=${autoOn}`);
   const sendPrompt = (text) => ev(`(async () => {
-    const sid = localStorage.getItem('agentslot.active');
+    const sid = localStorage.getItem('agentus.active');
     await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: ${JSON.stringify(text)} }) });
     return sid; })()`);

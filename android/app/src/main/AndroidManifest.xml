@@ -48,12 +48,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- agentslot://pair?u=<base>&c=<code> — the same string the test bed prints -->
+            <!-- agentus://pair?u=<base>&c=<code> — the same string the test bed prints -->
             <intent-filter android:label="@string/app_name">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="agentslot" android:host="pair" />
+                <data android:scheme="agentus" android:host="pair" />
             </intent-filter>
         </activity>
 
@@ -63,15 +63,15 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Holds one WebSocket to the operator's own self-hosted AgentSlot server so task notifications keep arriving; it is the product feature, not a background trick." />
+                android:value="Holds one WebSocket to the operator's own self-hosted Agentus server so task notifications keep arriving; it is the product feature, not a background trick." />
         </service>
 
         <receiver
             android:name=".ActionReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="app.agentslot.companion.ACTION" />
-                <action android:name="app.agentslot.companion.REPLY" />
+                <action android:name="app.agentus.companion.ACTION" />
+                <action android:name="app.agentus.companion.REPLY" />
             </intent-filter>
         </receiver>
 

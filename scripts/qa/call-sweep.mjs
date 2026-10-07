@@ -7,7 +7,7 @@
 //     the output waveform must stop being a flat line while the server TTS plays;
 //   · the phases are colour-coded, thumb-sized on a phone, and announced to a screen reader.
 //
-// Self-contained: stub TTS upstream + its own AgentSlot instance + the user's Edge over CDP.
+// Self-contained: stub TTS upstream + its own Agentus instance + the user's Edge over CDP.
 //   node scripts/qa/call-sweep.mjs
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -30,7 +30,7 @@ const killGroup = (target) => {
 };
 
 const CDP = "http://127.0.0.1:9222";
-const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentslot/screens");
+const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentus/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -107,12 +107,12 @@ const freePort = () => new Promise((res, rej) => {
   s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => res(port)); });
 });
 const PORT = await freePort();
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-call-"));
-const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-call-"));
+const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTSLOT_PORT: String(PORT), AGENTSLOT_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -219,11 +219,11 @@ try {
   const prefsBody = { autoRead: true, serverTts: true, stt: "auto", rate: 1, voiceURI: "", lang: "zh-CN" };
   const settingsBody = JSON.stringify({ voice: stubVoice, prefs: prefsBody });
   const setup = await ev(`(async () => {
-    localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
+    localStorage.setItem('agentus.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(settingsBody)} });
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentslot.active', s.id);
+    localStorage.setItem('agentus.active', s.id);
     const caps = await fetch('/api/voice').then((r) => r.json());
     return { sid: s.id, serverTts: caps?.tts?.server ?? null };
   })()`);
@@ -273,7 +273,7 @@ try {
 
   // ---- join a turn in flight and let it SPEAK (the audio-reactive path) -----------------
   const hitsBefore = upstreamHits;
-  await ev(`(async () => { const sid = localStorage.getItem('agentslot.active');
+  await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
     await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '[slow] 用三句话介绍一下你自己。' }) });
     return true; })()`);
@@ -437,7 +437,7 @@ try {
   };
   // record every frame the app puts on the wire, installed BEFORE the app opens its socket
   await send2("Page.addScriptToEvaluateOnNewDocument", { source: `
-    localStorage.setItem('agentslot.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
+    localStorage.setItem('agentus.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
     // the injected microphone (voice.ts's test seam): automation has no device, and a
     // threshold is only observable if something is making a sound
     window.__asFeed = { level: 0, text: '', interim: '' };
@@ -699,7 +699,7 @@ try {
   await sleep(500);
   check("an idle session is never cancelled: the server logs the refusal and does not forward it",
     log.slice(idleMark).includes("cancel ignored") && !log.slice(idleMark).includes("cancel sent"),
-    JSON.stringify((log.slice(idleMark).match(/\[agentslot\] cancel [a-z]+/g) ?? [])));
+    JSON.stringify((log.slice(idleMark).match(/\[agentus\] cancel [a-z]+/g) ?? [])));
   // ---- 打断方式（语音打断 / 按键打断）：开关就在通话页上，一下切换、立即生效 ---------------
   // One setting changes with the ROOM (a phone on a table hears its own loudspeaker; a headset does
   // not), so both ends live on the call itself, always visible, and flipping one is a single tap —
@@ -955,8 +955,8 @@ try {
 
   // persistence: wipe the browser's copy and reload — the numbers come back from the server
   await closeSheet();
-  await ev2(`(() => { localStorage.removeItem('agentslot.call');
-    localStorage.setItem('agentslot.active', ${JSON.stringify(slow2.id)}); return true; })()`);
+  await ev2(`(() => { localStorage.removeItem('agentus.call');
+    localStorage.setItem('agentus.active', ${JSON.stringify(slow2.id)}); return true; })()`);
   await send2("Page.reload", { ignoreCache: true });
   await sleep(3200);
   await waitEl2('button[aria-label="开始语音通话"]', 12000);

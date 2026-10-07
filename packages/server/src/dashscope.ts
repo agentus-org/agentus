@@ -1,7 +1,7 @@
 // DashScope (阿里百炼) voice adapter.
 //
 // Shapes verified against the operator's own MaaS endpoint on 2026-10-02 (probe scripts
-// in ~/.hermes/cache/agentslot/night):
+// in ~/.hermes/cache/agentus/night):
 //   TTS   POST {root}/api/v1/services/audio/tts/SpeechSynthesizer
 //         {model:"qwen-audio-3.0-tts-flash", input:{text, voice:"longanhuan_v3.6",
 //         format:"wav", sample_rate}} → output.audio.url (fetch server-side, return bytes)
@@ -53,7 +53,7 @@ async function fetchJson(url: string, init: RequestInit, label: string): Promise
 }
 
 /** Text → audio bytes. Non-streaming: the response carries a 24h OSS URL; we fetch it
- *  server-side so the browser only ever talks to AgentSlot (and the key never pairs with
+ *  server-side so the browser only ever talks to Agentus (and the key never pairs with
  *  a cross-origin request from the client). */
 export async function dashscopeTts(text: string, opts: { voice?: string; speed?: number } = {}): Promise<{
   contentType: string;
@@ -93,7 +93,7 @@ function mimeOf(format: string): string {
 
 /** Hotwords for the compat route: a compact system message. The docs describe it as
  *  "背景文本和实体词表" — exactly the context-enhancement channel, and it is what makes
- *  "AgentSlot"/"网关" survive instead of "安逸 slot"/"万关". */
+ *  "Agentus"/"网关" survive instead of "安逸 slot"/"万关". */
 export function hotwordContext(words: string[]): string {
   if (!words.length) return "";
   return `本次语音可能涉及的词汇表（识别时可优先匹配）：${words.slice(0, 60).join("、")}。`;

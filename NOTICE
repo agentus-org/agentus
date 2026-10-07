@@ -1,5 +1,5 @@
-AgentSlot
-Copyright 2026 AgentSlot contributors
+Agentus
+Copyright 2026 Agentus contributors
 
 AionUi (https://github.com/iOfficeAI/AionUi) is credited as an INSPIRATION. Its
 published design notes and the behaviour of its interfaces were studied while Agentus
@@ -8,4 +8,4 @@ was designed, and some of our choices follow them. No AionUi source code was cop
 The Hermes and Qoder brand marks under packages/web/public/coding-agents/ are the
 respective property of their owners (EKKOLearnAI / Alibaba). They are included
 unmodified, at small size, solely to identify the backend each session is talking
-to (nominative use). AgentSlot is not affiliated with or endorsed by either party.
+to (nominative use). Agentus is not affiliated with or endorsed by either party.

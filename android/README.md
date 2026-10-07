@@ -1,6 +1,6 @@
 # Android companion (notify channel client)
 
-The phone half of the notify contract. It holds **one websocket** to your AgentSlot server and
+The phone half of the notify contract. It holds **one websocket** to your Agentus server and
 renders whatever arrives as a notification; on Android 16 that can be a **Live Update** (the
 status-bar chip / lock-screen card people call "the island").
 
@@ -10,7 +10,7 @@ server, and this app renders it without a rebuild. See
 
 ```
 android/
-  app/src/main/java/app/agentslot/companion/
+  app/src/main/java/app/agentus/companion/
     MainActivity.java    one screen: paste the pairing string, watch the socket
     NotifyService.java   foreground service + websocket + reconnect/cursor
     Notifier.java        ActivityObject -> notification (the generic renderer)
@@ -19,14 +19,14 @@ android/
     Http.java            OkHttp with the bundled CA pinned (self-signed friendly)
     BootReceiver.java    come back after a reboot
     Prefs.java           pairing state
-  app/src/main/res/raw/agentslot_ca.pem   the server's root CA, copied at build time
+  app/src/main/res/raw/agentus_ca.pem   the server's root CA, copied at build time
 ```
 
 ## Build
 
 ```bash
 bash scripts/build-apk.sh          # from the repo root
-# -> android/artifacts/agentslot-companion.apk
+# -> android/artifacts/agentus-companion.apk
 ```
 
 The script pins `JAVA_HOME` to Android Studio's JBR because this machine's `java` is 8 and AGP
@@ -43,10 +43,10 @@ The script pins `JAVA_HOME` to Android Studio's JBR because this machine's `java
 
 ## Install and pair
 
-1. On the phone, download the APK from the server (`/agentslot-companion.apk`) or the test bed,
+1. On the phone, download the APK from the server (`/agentus-companion.apk`) or the test bed,
    then allow "install unknown apps" for the browser once.
 2. Open the app and paste the pairing string from the server page:
-   `agentslot://pair?u=https://<host>:<port>&c=<CODE>`
+   `agentus://pair?u=https://<host>:<port>&c=<CODE>`
 3. Grant notifications. On Android 16 also check the system switch it points at
    («实时动态» / Live Updates) — the server cannot turn that on for you.
 

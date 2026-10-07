@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Issue the certificate AgentSlot's TLS listener uses — the public hop of a plain TCP tunnel.
+# Issue the certificate Agentus's TLS listener uses — the public hop of a plain TCP tunnel.
 #
 # Structure: a self-signed ROOT (10 years) + a short-lived LEAF signed by it.
 #   ca.pem           → what a phone/laptop installs ONCE (public; served at /cert.crt)
@@ -19,12 +19,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${AGENTSLOT_TLS_DIR:-$ROOT_DIR/packages/server/.data/tls}"
+OUT="${AGENTUS_TLS_DIR:-$ROOT_DIR/packages/server/.data/tls}"
 LEAF_ONLY=0
 if [ "${1:-}" = "--leaf-only" ]; then LEAF_ONLY=1; shift; fi
-NAME="${1:-${AGENTSLOT_TLS_NAME:-i207f47592.wicp.vip}}"
-LEAF_DAYS="${AGENTSLOT_TLS_DAYS:-390}"         # < 398 = Apple's cap for server certificates
-ROOT_DAYS="${AGENTSLOT_TLS_ROOT_DAYS:-3650}"
+NAME="${1:-${AGENTUS_TLS_NAME:-i207f47592.wicp.vip}}"
+LEAF_DAYS="${AGENTUS_TLS_DAYS:-390}"         # < 398 = Apple's cap for server certificates
+ROOT_DAYS="${AGENTUS_TLS_ROOT_DAYS:-3650}"
 mkdir -p "$OUT"
 
 if [ "$LEAF_ONLY" = "0" ] || [ ! -f "$OUT/ca.pem" ] || [ ! -f "$OUT/ca.key" ]; then
@@ -35,7 +35,7 @@ x509_extensions    = v3
 prompt             = no
 
 [dn]
-CN = AgentSlot self-signed root ($NAME)
+CN = Agentus self-signed root ($NAME)
 
 [v3]
 basicConstraints = critical,CA:TRUE,pathlen:0

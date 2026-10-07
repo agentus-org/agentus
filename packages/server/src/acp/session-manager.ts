@@ -30,11 +30,11 @@ import type {
   SessionInfo,
   SessionModeState,
   TurnTrace,
-} from "@agentslot/shared";
+} from "@agentus/shared";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
-const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTSLOT_PERM_TIMEOUT_MS || 5 * 60_000);
+const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTUS_PERM_TIMEOUT_MS || 5 * 60_000);
 
 // ── What the request is ABOUT ─────────────────────────────────────────────────────────────────
 // An edit approval arrives as a `ToolCallUpdate` whose `content` carries a diff (path + the
@@ -97,11 +97,11 @@ function boundedDiff(path: string, oldText: string, newText: string): Permission
 // A title fork is a real model turn over a copy of the conversation: give it room, but never
 // let a stuck one hang the operator's click — the caller falls back to the derived name on
 // timeout. Env-tunable so a sweep can exercise the timeout path in seconds.
-const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTSLOT_TITLE_TIMEOUT_MS || 90_000);
+const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTUS_TITLE_TIMEOUT_MS || 90_000);
 
 // How long a cancelled turn may take to actually stop before an interrupting prompt gives up
 // (an agent that ignores session/cancel must not hang the operator's next sentence forever).
-const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTSLOT_SETTLE_TIMEOUT_MS || 15_000);
+const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTUS_SETTLE_TIMEOUT_MS || 15_000);
 
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
  *
@@ -766,10 +766,10 @@ export class SessionManager {
     // talked over a reply still being read aloud: the agent's turn was already over, so the
     // barge-in's cancel landed on an idle session.
     if (!s.busy) {
-      console.log(`[agentslot] cancel ignored for ${sessionId}: no turn is running`);
+      console.log(`[agentus] cancel ignored for ${sessionId}: no turn is running`);
       return;
     }
-    console.log(`[agentslot] cancel sent for ${sessionId}`);
+    console.log(`[agentus] cancel sent for ${sessionId}`);
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
   }
 
@@ -900,7 +900,7 @@ export class SessionManager {
     if (!pending) {
       // Someone answered a request we no longer hold (our timeout fired, or the agent gave up
       // first). Silently returning false made a click look like a broken button.
-      console.log(`[agentslot] permission answer dropped for ${sessionId}: request ${requestId} is not pending`);
+      console.log(`[agentus] permission answer dropped for ${sessionId}: request ${requestId} is not pending`);
       return false; // already timed out / resolved / never existed
     }
     clearTimeout(pending.timer);

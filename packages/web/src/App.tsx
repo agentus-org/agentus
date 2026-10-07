@@ -21,7 +21,7 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain,
 } from "./Icons";
-import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentslot/shared";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentus/shared";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -191,7 +191,7 @@ function AuthScreen(): JSX.Element {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <div className="auth-logo">⛟ AgentSlot</div>
+        <div className="auth-logo">⛟ Agentus</div>
         <div className="auth-sub">keep your agents on the track</div>
         {splash ? (
           <div className="auth-note">正在检查登录状态…</div>
@@ -224,7 +224,7 @@ function AuthScreen(): JSX.Element {
             {authInfo?.usingDefaultPassword ? (
               <div className="auth-warn">
                 ⚠ 当前是默认口令 <code>admin / 123456</code>。够挡住误闯，挡不住同网段的人 —
-                设置 <code>AGENTSLOT_PASSWORD</code> 后重启即可更换。
+                设置 <code>AGENTUS_PASSWORD</code> 后重启即可更换。
               </div>
             ) : null}
             <div className="auth-foot">
@@ -645,7 +645,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
-        <span className="logo">⛟ AgentSlot</span>
+        <span className="logo">⛟ Agentus</span>
         <span className="tagline">keep your agents on the track</span>
         <button
           className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
@@ -890,7 +890,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
       <div className="main">
         <div className="chat-head">
           <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
-          <span className="title">AgentSlot</span>
+          <span className="title">Agentus</span>
         </div>
         <div className="empty">
           <div className="big">⛟</div>

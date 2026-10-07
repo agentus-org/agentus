@@ -1,4 +1,4 @@
-# AgentSlot M1 浏览器自测日志（≥20 轮）
+# Agentus M1 浏览器自测日志（≥20 轮）
 
 规则：每轮记 **现象 → 复现 → 根因 → 修复 → 回归**，并留下可复查的证据（curl 输出、DOM 状态、`ps`/`lsof` 结果）。
 环境：server `:8787`（tsx watch，托管 `packages/web/dist`）、Edge over CDP（用户真实浏览器）、
@@ -62,28 +62,28 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - **回归**：真 LLM 回合 → `thought`×5 + `agent`「收到」。
 
 ## Bug#5 — 子进程共享 live home，把用户真 state.db 搞坏（**最严重**）
-- **现象**：AgentSlot 跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
+- **现象**：Agentus 跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
   `sqlite3.DatabaseError: database disk image is malformed`，gateway 的 `hosted_room_worker` 连续崩，
   需另一 agent 从 `state-db-backup-20261002-0503/` 恢复。
 - **复现**：`session-manager.ts` 里 `env: { ...process.env }` → 子进程 `HERMES_HOME` 未设（或被运行时继承一个 live 值）→ 回落 `~/.hermes` → 与 gateway 同开一个 WAL 库。
 - **根因**：三点叠加 —— ① 继承 env 导致 home 不确定；② Hermes 侧链接的 SQLite 3.50.4 有 WAL-reset 损坏 bug（`errors.log` 点名）；③ 单库双写 + 版本 bug = 真损坏。（Hermes 事后对 `state.db` 自动改用 `journal_mode=DELETE` 规避。）
-- **修复**：AgentSlot 侧 fail-closed 隔离
-  - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.agentslot-test/home`；
-  - `buildSpawnEnv()` **只认显式开关** `AGENTSLOT_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
-  - 解析结果 == live home → 抛错拒绝 spawn，除非 `AGENTSLOT_ALLOW_LIVE_HOME=1`；
+- **修复**：Agentus 侧 fail-closed 隔离
+  - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.agentus-test/home`；
+  - `buildSpawnEnv()` **只认显式开关** `AGENTUS_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
+  - 解析结果 == live home → 抛错拒绝 spawn，除非 `AGENTUS_ALLOW_LIVE_HOME=1`；
   - 隔离 home 的 `hindsight/config.json` 若仍是共享默认实例名 → 告警；
   - `GET /api/backends` 回传 `home/warnings/blocked`，新建会话弹窗直接显示；
   - 新增 `scripts/setup-hermes-test-home.py` 生成测试床（`mcp_servers: {}`、memory 关闭、`.env` 0600 副本）。
-- **回归（证据）**：`HERMES_HOME=~/.agentslot-test/home hermes acp --check` → OK；
-  子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.agentslot-test/home`；
+- **回归（证据）**：`HERMES_HOME=~/.agentus-test/home hermes acp --check` → OK；
+  子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.agentus-test/home`；
   `lsof -p <child>` 内 live home 命中 **0 条**，只开测试 home 的 `state.db`/`logs`；
-  显式 `AGENTSLOT_HERMES_HOME=~/.hermes` → 被拒。
+  显式 `AGENTUS_HERMES_HOME=~/.hermes` → 被拒。
 
 ## Bug#7 — 刷新后不记得所在会话
 - **现象**：在会话 A 里切了 mode/effort，刷新后落到了另一个（最早的）会话，看到的像是"设置丢了"。
 - **复现**：`POST /api/sessions` 两条 → 切到第二条 → 刷新 → 落在第一条。
 - **根因**：`activeId` 无持久化，`sessions` 事件回退到 `sessions[0]`；且这个"第一条"当时是最旧的（列表按插入序）。
-- **修复**：`localStorage["agentslot.active"]` 记/恢复；服务端 `list()` 改按 `createdAt desc` 排。
+- **修复**：`localStorage["agentus.active"]` 记/恢复；服务端 `list()` 改按 `createdAt desc` 排。
 - **回归**：切换后刷新仍停在原会话；API `modes.currentModeId` 显示 `accept_edits`、effort `high` 保持。
 
 ## Bug#8 — `lastSeq` 恒为 0
@@ -171,9 +171,9 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 
 ## R27 — 真后端思考深度下拉（P1 联调，源码 hermes 测试床）
 
-- 测试床：`AGENTSLOT_HERMES_CMD=~/.hermes/cache/agentslot/hermes-acp-src`（`uv run --project ~/Project/hermes-agent hermes` 的 wrapper）
+- 测试床：`AGENTUS_HERMES_CMD=~/.hermes/cache/agentus/hermes-acp-src`（`uv run --project ~/Project/hermes-agent hermes` 的 wrapper）
   指向 fork 的 `yl-dev/merge-20261002-1558`（= thinking-depth + mode-persist 合并版）。
-  `ps eww` + `lsof` 铁证：子进程跑的是源码仓 `acp_adapter`，`HERMES_HOME=~/.agentslot-test/home`，live `~/.hermes` 零 fd。
+  `ps eww` + `lsof` 铁证：子进程跑的是源码仓 `acp_adapter`，`HERMES_HOME=~/.agentus-test/home`，live `~/.hermes` 零 fd。
 - 后端广播（官方 0.21.5 二进制此处是空数组）：`configOptions=[{id:reasoning_effort, type:select,
   options:none..max 七档(路由裁剪), currentValue:""}]`。
 - UI：头部出现第二个下拉（aria="reasoning effort"，🧠 标签）；切到 High → WS `config` 命令 →
@@ -208,7 +208,7 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
   （同 R23–25 的记录）。
 
 ### R30 长会话分页 + 侧栏搜索 —— **抓到真 bug**
-- 造了 126 行的 mock 会话（6 轮），把页大小调成 5（`AGENTSLOT_HISTORY_PAGE`，便于实测）后：
+- 造了 126 行的 mock 会话（6 轮），把页大小调成 5（`AGENTUS_HISTORY_PAGE`，便于实测）后：
 - **Bug**：首屏历史用的是 `?after=-1`，语义是"从 replay 锚点**向前**取最旧的 500 行"——
   长会话打开时看到的是**最开头**的几轮，新的内容被静默丢弃；而客户端把响应的 `hasMore`
   （=还有更新的）误当成"还有更旧的"，于是"load earlier"出现一次就消失。
@@ -245,7 +245,7 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 
 **R33 修复后复验**：顶栏 select 44/44、ghost 按钮 44、发送键 46、权限卡按钮 8 个全 44；
 斜杠面板移动端 44px 行 + 40vh 上限。PWA：SW `scope=http://127.0.0.1:8787/`、`active`、
-缓存 `agentslot-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。
+缓存 `agentus-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。
 
 ## R34–R38 — 真 hermes 回归 + 冷槽位语义连修三处（2026-10-02 下午）
 
@@ -287,16 +287,16 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R44 伪 Cookie（CDP 在网线上注入，JS 注入被浏览器拒掉正好证明 HttpOnly 起效）**：伪造签名段 → 首屏落回登录卡、`/api/sessions` 401、WS refused，且 **6 秒内 0 次 `/api` 请求**（客户端退避，不会对着门狂敲）。
 
-**自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`AGENTSLOT_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。
+**自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`AGENTUS_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。
 
 ## R45–R45c · 公网隧道（SakuraFrp）+ 应用层 HTTP Basic
 
-**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentslot`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `REDACTED-TUNNEL`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
+**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentus`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `REDACTED-TUNNEL`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
 
 **R45a 认证分层实测**
 - j→Mac:8787 前置条件 OK（`/healthz` 200），隧道启动成功、online=true。
 - 樱花自带的 `auth_pass` 实测**不返回 401**：未认证时返回 **HTTP 200 + "访问认证"页面**（IP 白名单制）。只看状态码会误判成"没挡"（我犯过一次，随后用响应体特征词核实）。对照：`openclaw` 也是认证页，`hermes_studio`（绑域名路径）直通应用。
-- 决定分层：**移除**樱花 `auth_pass`，外层改成 AgentSlot 自身的 **HTTP Basic**（标准 401 + `WWW-Authenticate`，脚本可 `curl -u`），内层仍是操作者登录。
+- 决定分层：**移除**樱花 `auth_pass`，外层改成 Agentus 自身的 **HTTP Basic**（标准 401 + `WWW-Authenticate`，脚本可 `curl -u`），内层仍是操作者登录。
 
 **R45b/R45c 浏览器端到端（真 Edge + CDP）**
 - 裸访问隧道 URL → 自签证书拦一次（`NET::ERR_CERT_AUTHORITY_INVALID`）。
@@ -310,7 +310,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **动机**：HTTP Basic（RFC 7617）协议上必然带用户名，但单人服务没有用户体系 —— 每次都要填用户名是无谓摩擦。改成只验密码后用户名随便填/留空。
 
-**代码**（`auth.ts`）：`AGENTSLOT_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
+**代码**（`auth.ts`）：`AGENTUS_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
 
 **配置**：口令改为 `REDACTED-PASS`（与现有 nano_ssh/openclaw 等服务的 `auth_pass` 同口令，少记一个）。
 
@@ -330,7 +330,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **口径**：用户要的是「应用自身的用户名密码登录」+「SakuraFrp 的保护鉴权」两层 —— 不要应用层 Basic（能力与测试保留，只是不注入）。
 
 **改动**
-- `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("AGENTSLOT_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
+- `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("AGENTUS_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
 - 樱花侧写回 `extra = "auth_pass = REDACTED-PASS\nauto_https = auto"` 并重启 frpc 单元（`extra` 二次确认）。
 
 **实测**
@@ -382,8 +382,8 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 - **R51 布局**（1280×860，真 Edge）
   - 头部：`h=46`、`children=[menu, title, spacer, icon, icon]`、`selects=0`（原来是 2 个下拉 + 环形用量 + 停止 + 关闭）。模式/深度/用量/停止全部移入输入区。
   - 输入区：`.usage-text = "ctx 8.4k / 1000k · 1% · 992k left"` + 细条，且 `usageAboveBox=true`（用量行在输入框上方 ✓）；`.composer-bar` 按钮 = `["attach","chat settings","dictate"]` + 发送按钮，`insideBox=true`。
-  - 工作空间面板：`tabs=["files","terminal"]`、列出 11 个条目、`root=/…/worktrees/agentslot`、`noHScroll=true`；文件预览 `package.json` 867 字符。
-  - 终端：`status="shell agentslot"`，发 `echo AGENTSLOT_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
+  - 工作空间面板：`tabs=["files","terminal"]`、列出 11 个条目、`root=/…/worktrees/agentus`、`noHScroll=true`；文件预览 `package.json` 867 字符。
+  - 终端：`status="shell agentus"`，发 `echo AGENTUS_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
   - 设置弹层：4 组（permission mode / thinking depth / read replies aloud / dictation），无控制台报错。
 - **R52 附件与语音（浏览器路径）**
   - 用 CDP `DOM.setFileInputFiles` 走真实 `<input type=file>`：草稿 chip 出现（`attach-probe.txt`），发送后气泡显示附件名、草稿清空、agent 正常回复（mock 把附加文本回显出来了 → 端到端确实带着内容进了 prompt）。
@@ -402,7 +402,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R56–R57 四条反馈：模型/强度拆按钮、真 markdown、上下文上限可改、"no voices" 误报**
 
-先做的是「研究」而不是改代码：把 ACP 到底能给什么查清楚了（探针 `~/.hermes/cache/agentslot/probe_raw.mjs` 看原始帧，`packages/server` 里临时脚本看 SDK 到底留不留字段）。
+先做的是「研究」而不是改代码：把 ACP 到底能给什么查清楚了（探针 `~/.hermes/cache/agentus/probe_raw.mjs` 看原始帧，`packages/server` 里临时脚本看 SDK 到底留不留字段）。
 
 - **ACP 事实（实测）**
   - `session/new` 的**原始响应**有四个顶层键：`sessionId, modes, configOptions, models`；`models = {currentModelId, availableModels[501]}（Hermes 实测）`。
@@ -448,8 +448,8 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R61–R62 工作空间默认路径 + 侧栏按工作空间分组 + 措辞去 slot + 会话 fork**
 
-- **文件/终端默认路径**：面板根目录 = 会话的 `workspace || cwd`，服务端 `sessionRoot()` 同源。实测（会话工作空间 = `/tmp/agentslot-ws-b`）：文件面板 `path=/tmp/agentslot-ws-b`、终端 `pwd` → `/private/tmp/agentslot-ws-b`（macOS `/tmp` 是软链）。**改工作空间后终端必须重开**：`TerminalTab` 的 effect 依赖加上 `root`（shell 无法从外面 cd，只能新开一个）。实测改成 `agentslot-ws-a` 后 `pwd` → `/private/tmp/agentslot-ws-a`。
-- **侧栏按工作空间分组**：组名 = 文件夹名（完整路径在 tooltip），组内 live 在前、cold 在后，当前会话所在组置顶并默认展开，可折叠；搜索时强制展开。实测 8 组（`liang`/`agent-dev-workspace`/`agentslot`/`agentslot-ws-a`/`agentslot-ws-b`/…），计数 `1/1`、折叠/展开正常。
+- **文件/终端默认路径**：面板根目录 = 会话的 `workspace || cwd`，服务端 `sessionRoot()` 同源。实测（会话工作空间 = `/tmp/agentus-ws-b`）：文件面板 `path=/tmp/agentus-ws-b`、终端 `pwd` → `/private/tmp/agentus-ws-b`（macOS `/tmp` 是软链）。**改工作空间后终端必须重开**：`TerminalTab` 的 effect 依赖加上 `root`（shell 无法从外面 cd，只能新开一个）。实测改成 `agentus-ws-a` 后 `pwd` → `/private/tmp/agentus-ws-a`。
+- **侧栏按工作空间分组**：组名 = 文件夹名（完整路径在 tooltip），组内 live 在前、cold 在后，当前会话所在组置顶并默认展开，可折叠；搜索时强制展开。实测 8 组（`liang`/`agent-dev-workspace`/`agentus`/`agentus-ws-a`/`agentus-ws-b`/…），计数 `1/1`、折叠/展开正常。
 - **措辞**：`new session`（原 new slot）、`search sessions…`、冷会话按钮只说 resume/delete、头部菜单 title=sessions、"No session selected"、工作空间弹窗里的 "this session"。**侧栏整块 innerText 里 `slot` 出现 0 次**（实测正则计数）。服务端两处面向用户的错误串（"resume the slot first"）也改了；README 里用户可见的 slot 措辞改为 session，并新增 **Naming** 段说明"UI 一律说 session，slot 只是项目名，产品可能改名"。
 - **会话 fork（ACP `session/fork`）**：
   - 协议侧：请求 `{sessionId, cwd}` → 响应 `{sessionId, modes?, configOptions?}`；**SDK 类型里有（UNSTABLE）但 `AGENT_METHODS` 未路由**，所以走 `conn.request("session/fork", …)`。Hermes 公告 `sessionCapabilities.fork` 且实现了 `fork_session`（"deep-copy a session's history"）。
@@ -485,7 +485,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 - **真 bug（已修）**：`play() failed because the user didn't interact with the document first.` —— 浏览器只允许在用户手势（及其后很短的窗口）内开始播放，而百炼合成往返常常超过这个窗口。于是**真实用户点了按钮也听不到**，而合成其实成功。修法：点击时先 `AudioContext.resume()` 解锁，再用同一个 context 播（`decodeAudioData` + `BufferSource`），`<audio>` 元素只作兜底；朗读（speaker）的服务端路径也改走同一个播放器。
 - **诚实记录**：R66 想用**可信点击**（`Input.dispatchMouseEvent`）验证"点了真的出声"，但 Edge 在这个 CDP 配置下**根本不派发合成输入**——`elementFromPoint` 命中按钮、坐标在视口内，而页面里的 click 监听器一个事件都没收到（`window.__clicks=[]`）。三次尝试（补 `buttons` / `scrollIntoView` / `Page.bringToFront`）都没用。**结论：浏览器内的"点击→出声"这一段没有实测**，改用能拿到的证据：
-  - R67：页面里 `fetch('/api/tts')` → `decodeAudioData` 成功，**5.92s、48kHz 单声道、peak 0.54**（即浏览器确实拿到了可解码可播放的音频）；落盘的 `/tmp/agentslot-tts-自测.wav` 由 `ffprobe` 校验为 `pcm_s16le / 24kHz / mono / 3.44s`。
+  - R67：页面里 `fetch('/api/tts')` → `decodeAudioData` 成功，**5.92s、48kHz 单声道、peak 0.54**（即浏览器确实拿到了可解码可播放的音频）；落盘的 `/tmp/agentus-tts-自测.wav` 由 `ffprobe` 校验为 `pcm_s16le / 24kHz / mono / 3.44s`。
   - 服务端往返、剧本、解锁设计三点都有证据；"人点按钮能听到声音"这一条留给用户自己点一下确认。
 
 **R68 CI：`voice-smoke`（47 项）**
@@ -586,7 +586,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R87 改用户名/密码：从"只能改环境变量 + 重启"变成设置页里改，立即生效**
 
-用户："支持改用户名和密码吗现在"。查下来：**不支持** —— 凭据只有一条链路 `AGENTSLOT_USERNAME / AGENTSLOT_PASSWORD(或 _HASH)`，改完必须重启；`usingDefaultPassword` 还是开机快照。已做成功能。
+用户："支持改用户名和密码吗现在"。查下来：**不支持** —— 凭据只有一条链路 `AGENTUS_USERNAME / AGENTUS_PASSWORD(或 _HASH)`，改完必须重启；`usingDefaultPassword` 还是开机快照。已做成功能。
 
 - 服务端（`auth.ts`）：凭据读取链变成 **`<DATA_DIR>/credentials.json`（0600、`scrypt:<salt>:<hex>`）> 环境变量 > 内置默认**，与 voice/theme 的"设置文件 > env"同一形状；`changeCredentials()` 要求**当前密码**，校验用户名（1–32、无空格）与密码下限（4 位）；只改用户名时会把当前密码钉成哈希，防 env 值悄悄回潮。会话载荷里加了**凭据版本号（epoch）**：改一次所有旧 cookie 立刻失效。
 - API：`POST /api/auth/credentials`（在需要登录的那半边），成功后给调用者**重签一张新 cookie**（本机不掉线，其他设备被登出）；`/api/auth/me` 改成实时状态并新增 `configuredUsername / credentialSource(saved|env|default) / minPasswordLen`。
@@ -601,7 +601,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 用户："你可以参考下 hermes studio 吗，完整实现下账户管理"。
 
-先读参考（`~/.hermes/cache/studio-ref` @ `ea5bcb9f`）：studio 的账户面 = `AccountSettings.vue`（头像上传/随机/重置 + 改用户名 + 改密码，两个弹窗，当前密码必填）+ `UserManagementSettings.vue`（多用户，super admin）+ **锁定 IP 列表 + 单个/全部解锁**（`GET|DELETE /api/auth/locked-ips`，限流器 `recordPasswordFailure` 的可见面）。多用户与 AgentSlot 的"单操作员、一台机器一个驾驶舱"定位冲突，不做；其余全部补齐，并加一样 studio 没有但本产品必须要的东西。
+先读参考（`~/.hermes/cache/studio-ref` @ `ea5bcb9f`）：studio 的账户面 = `AccountSettings.vue`（头像上传/随机/重置 + 改用户名 + 改密码，两个弹窗，当前密码必填）+ `UserManagementSettings.vue`（多用户，super admin）+ **锁定 IP 列表 + 单个/全部解锁**（`GET|DELETE /api/auth/locked-ips`，限流器 `recordPasswordFailure` 的可见面）。多用户与 Agentus 的"单操作员、一台机器一个驾驶舱"定位冲突，不做；其余全部补齐，并加一样 studio 没有但本产品必须要的东西。
 
 - **会话注册表（新）**：会话是无状态签名 cookie，因此"谁登录着"原本答不出来、偷来的 cookie 也撤不掉。现在登录即登记 `<DATA_DIR>/sessions.json`（0600）：`jti / username / ip / ua / iat / exp / lastSeen`。接口：`GET /api/auth/sessions`（带 `current` 标记）、`POST /api/auth/sessions/revoke {jti}`（撤自己返回 400 并提示"这是登出"）、`POST /api/auth/sessions/revoke-others`。注册表对读取是"提示"、对存在性是"权威"：不在表里的 cookie 一律拒绝 —— 这才让撤销与"全部登出"是真的，并且**重启后依然成立**。升级路径：首次启动若注册表文件不存在，则把仍然签名有效的旧 cookie 一次性接管，避免升级即全员掉线。
 - **锁定 IP 可见可解（新）**：`GET /api/auth/locked-ips` → `{locks:[{ip,fails,locked,retryAfterMs}], maxFails, lockMs}`；`DELETE /api/auth/locked-ips?ip=` 解一个、不带 ip 解全部（对齐 studio 的形状）。把自己锁在门外从"等 30 秒或重启"变成"点一下解锁"。

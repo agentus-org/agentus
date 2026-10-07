@@ -1,6 +1,6 @@
 # Notify channel contract (v0.2, as built)
 
-The interface between an AgentSlot server and a phone app, designed so that **adding a
+The interface between an Agentus server and a phone app, designed so that **adding a
 notification or an interaction never requires a new APK**.
 
 | Piece | Where |
@@ -10,7 +10,7 @@ notification or an interaction never requires a new APK**.
 | Contract smoke test (real HTTP + real WS) | `scripts/notify-smoke.mts` → `npm run notify-smoke` |
 | Android client | `android/` (see `android/README.md`) |
 
-Design record and the decision trail: workspace `tasks/20261001-agentslot/track.md` §34 and
+Design record and the decision trail: workspace `tasks/20261001-agentus/track.md` §34 and
 `android-notify-contract.md` (v0.1 draft).
 
 ---
@@ -57,7 +57,7 @@ POST /api/notify/pair          # no operator session needed: this is how a phone
   "channel": { "id": "agent_approval", "name": "权限请求", "importance": "high", "sound": true },
   "actions": [ { "id": "allow_once", "label": "仅此次", "style": "primary" } ],
   "input": { "enabled": true, "placeholder": "或直接回一句" },
-  "visibility": "private", "smallIcon": "agentslot",
+  "visibility": "private", "smallIcon": "agentus",
   "open": { "url": "/?session=…", "prefer": "app" },   // §5.2; `deeplink` stays as its old alias
   "deeplink": "/?session=…" }
 ```
@@ -117,10 +117,10 @@ same HTTP surface the app does:
 | sends one island-shaped frame down one promotion path | `POST /api/notify/push` with `{kind:"island", path:"aosp"｜"xiaomi"}` | the same route; `path` is a contract field (§6), not a test hook |
 
 Notifications still need **no** JS bridge, and that has not changed. The one bridge the app does inject is
-for the microphone: `window.AgentSlotMic` (`available()` / `start(rate)` / `stop()`), which the page uses
+for the microphone: `window.AgentusMic` (`available()` / `start(rate)` / `stop()`), which the page uses
 **instead of** `getUserMedia` when the WebView's own capture refuses to start (see §11.1.5). It is gated:
 the app only allows it while the loaded page is one of the operator's saved servers, so a page that ends
-up in the WebView cannot quietly record. A `window.AgentSlotNative.publish()` bridge for foreground-only
+up in the WebView cannot quietly record. A `window.AgentusNative.publish()` bridge for foreground-only
 niceties stays reserved and unused; nothing depends on it, and the app still decides nothing on the
 page's behalf.
 
@@ -218,9 +218,9 @@ both spellings. It goes away once no such app is in the field.
 **Where this is going for third parties** (the reason this is worth abstracting now): the same activity
 object, pushed by anyone. Today the sender is our own server; the missing pieces for a webhook sender are
 (a) a per-sender token + a `source` label so several systems can push into the same app without sharing the
-operator's credentials, and (b) the reverse direction — AgentSlot POSTing its own events out to a URL. With
+operator's credentials, and (b) the reverse direction — Agentus POSTing its own events out to a URL. With
 `open` in place, (a) needs no change to the renderer or the tap policy: a sender that has never heard of
-AgentSlot sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the behaviour it expects.
+Agentus sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the behaviour it expects.
 
 ## 6. Degradation: the server gates on capabilities, the app tries and falls back
 
@@ -229,7 +229,7 @@ AgentSlot sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the
 | `progress` | `progress: null` | plain ongoing notification, no bar |
 | `actions` | `actions: []` | tappable card only (deeplink) |
 | `remote_input` | `input: null` | no inline reply |
-| `channels` | `channel: null` | the default AgentSlot channel |
+| `channels` | `channel: null` | the default Agentus channel |
 | `icon_url` | `iconUrl: null` | (v0.1 does not claim it: no download implemented) |
 | `live_update` | `promotable: false` | — |
 | `xiaomi_focus` | `promotable: false` | — (Xiaomi's own island, see below) |
@@ -328,13 +328,13 @@ grants focus permission).
 | P1 | Android 15 caps `dataSync` FGS at 6h/24h | `specialUse` + `FOREGROUND_SERVICE_SPECIAL_USE`, with the reason declared in `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` |
 | P2 | `POST_NOTIFICATIONS` is runtime; Live Updates are a user switch | app asks on first run, and offers a button straight to `MANAGE_APP_PROMOTED_NOTIFICATIONS` |
 | P3 | Aggressive OEM background kills | exponential backoff + cursor replay (so being killed only delays, never loses) |
-| P4 | Android 7+ ignores user-installed CAs; the server cert is a self-signed DDNS leaf | `res/raw/agentslot_ca.pem` + a composite trust manager (system ∪ our root) and a waived hostname **for that root** |
+| P4 | Android 7+ ignores user-installed CAs; the server cert is a self-signed DDNS leaf | `res/raw/agentus_ca.pem` + a composite trust manager (system ∪ our root) and a waived hostname **for that root** |
 | P5 | Cleartext is blocked since Android 9 | `network_security_config`: cleartext only for LAN test addresses, everything else https/wss |
 | P6 | Locked screen loses events | monotonic `seq` + `?since=` + ack (verified in the smoke test) |
 | P7 | The cockpit had no notification concept | activity centre derives activities from the existing event stream |
 | P8 | A notification button is a remote execution path | device token per device + single-use action + `visibility: private` + `VISIBILITY_PRIVATE`; the LAN/pin design keeps the transport from leaking a bearer token in clear |
 | P9 | Streaming agents update constantly | the server throttles/decides; `revision` + `setOnlyAlertOnce` keep updates from re-alerting |
-| P10 | Distribution | one static URL (`/agentslot-companion.apk` on the cockpit, `/dl/…` on the test bed), **behind the operator login** — a phone-pairing page and an installable APK are not public material; schema compatibility keeps rebuilds rare |
+| P10 | Distribution | one static URL (`/agentus-companion.apk` on the cockpit, `/dl/…` on the test bed), **behind the operator login** — a phone-pairing page and an installable APK are not public material; schema compatibility keeps rebuilds rare |
 | P11 | Xiaomi HyperOS ignores an app's `configChanges` and force-relaunches the activity on fold/unfold | do not fight it: declare `resizeableActivity` + continuity meta-data, accept the recreate, restore the half-typed form from `onSaveInstanceState`, and derive the layout from the current `screenWidthDp` |
 | P12 | The vendor island is gated by a HyperOS-side permission that has no runtime API | probe `canShowFocus`; attach `miui.focus.param` only when it says yes; report the outcome as a capability and in the UI instead of silently doing nothing (Xiaomi grants it per app on review — see §6.1) |
 | P13 | Since Android 15 / targetSdk 35, `windowSoftInputMode="adjustResize"` no longer resizes the window when the keyboard appears | handle `WindowInsets.Type.ime()` in the same listener that handles the system bars and pad the root by `max(bars, ime)` — padding the root is what makes a WebView (and any form) genuinely shrink, instead of the keyboard covering the page (verified: WebView 1688 px → 848 px → 1688 px around the IME on the emulator) |
@@ -343,9 +343,9 @@ grants focus permission).
 | P16 | The WebView's own capture can refuse to start even when every gate is green (secure origin, `RECORD_AUDIO` granted, 18/18 page requests granted) | this is Chromium's pipeline, not the app's permissions. Two answers, in order: declare `MODIFY_AUDIO_SETTINGS` (Chromium's audio input switches the AudioManager mode before it opens the source, and several reports of this exact error name that permission as the fix), and give the page a native `AudioRecord` bridge to fall back on — the app can record where the WebView cannot (see §11.1.5) |
 | P17 | A `@JavascriptInterface` method runs on the JavaBridge thread, and any WebView call from there throws | never touch the `WebView` inside the bridge: compute what it needs on the UI thread (`onPageStarted` / `onPageFinished`) and only read a `volatile` flag there. Also wrap the whole method body — an escaping `RuntimeException` reaches the page as the useless `Java exception was raised during method invocation`, and wrap every frame-posting loop in a log, or "0 frames arrived" has no cause anywhere |
 | P18 | `View.post()` on a DETACHED view queues the runnable until the view is attached | the app shows its config screen by detaching the WebView on purpose (so going back does not reload the cockpit), which silently starved the microphone bridge: `送出帧=60 · 收到帧=0`. Post to `new Handler(Looper.getMainLooper())` instead, and keep **two** counters ("sent" and "received") — they are different bugs |
-| P19 | A notification channel's sound and importance are **immutable after creation** (Android 8+), and the app deliberately returns early for an existing channel id | "send the same channel with `sound:false`" is a silent no-op: the phone keeps dinging. A muted frame therefore carries `channel.muted: true` and the app routes it to **one** dedicated quiet channel (`agentslot-quiet`, 通话中（静音）, importance low, no sound) — one extra channel beats a channel-setting mutation dance that would also clear the notifications already in it |
+| P19 | A notification channel's sound and importance are **immutable after creation** (Android 8+), and the app deliberately returns early for an existing channel id | "send the same channel with `sound:false`" is a silent no-op: the phone keeps dinging. A muted frame therefore carries `channel.muted: true` and the app routes it to **one** dedicated quiet channel (`agentus-quiet`, 通话中（静音）, importance low, no sound) — one extra channel beats a channel-setting mutation dance that would also clear the notifications already in it |
 | P21 | An implicit `ACTION_VIEW` on an `https://` URL is the **browser's** notification to handle, not yours — the operator tapped a message reminder and got Chrome | the tap intent must be **explicit** (`Intent(ctx, MainActivity.class)`) whenever the target is one of the operator's own servers, and the rest of the time it must go to the platform on purpose (`open.prefer`, §5.2). "Open the URL" is not a behaviour a notification can own; "open it here, or hand it over" is |
-| P20 | Presence that requires "an interaction within 120s" is wrong during a call: the hands are free | report `call` explicitly and write it the moment the call mounts / hangs up (not on the 30s tick), treat a call as watching for that session, and silence everything else. Verified on the emulator: the same push lands in `agent_done` (importance 4, system sound) with no call and in `agentslot-quiet` (importance 2, `mSound=null`, `SILENT`) during one |
+| P20 | Presence that requires "an interaction within 120s" is wrong during a call: the hands are free | report `call` explicitly and write it the moment the call mounts / hangs up (not on the 30s tick), treat a call as watching for that session, and silence everything else. Verified on the emulator: the same push lands in `agent_done` (importance 4, system sound) with no call and in `agentus-quiet` (importance 2, `mSound=null`, `SILENT`) during one |
 | P22 | An action that carries a `RemoteInput` must be posted with a **mutable** `PendingIntent` on Android 12+ (`FLAG_IMMUTABLE` there makes SystemUI drop the WHOLE notification, not just the action) | the inline-reply action gets `FLAG_MUTABLE` (`Build.VERSION.SDK_INT >= 31` guard; minSdk is 26), every other action stays immutable. How it fails when wrong, measured: logcat `Not posted. PendingIntents attached to actions with remote inputs must be mutable`, `dumpsys notification \| grep -c channel=agent_approval` ⇒ `0`, while the running/done cards post normally — a card that never appears and never errors in our own code (§11.1.7) |
 
 ## 10. Endpoints as built
@@ -353,7 +353,7 @@ grants focus permission).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/notify/health` | none | liveness; echoes the code only to an operator |
-| GET | `/api/notify/pair-code` | operator | the code + a ready-to-paste `agentslot://pair?u=…&c=…` |
+| GET | `/api/notify/pair-code` | operator | the code + a ready-to-paste `agentus://pair?u=…&c=…` |
 | POST | `/api/notify/pair-code/rotate` | operator | mint a new code |
 | POST | `/api/notify/pair` | code *or* operator | register a device, get its token |
 | GET | `/api/notify/devices` | operator | list (with `online`) |
@@ -391,15 +391,15 @@ operator-only routes inside re-check their own credential.
   something outside the workspace did not.
 - `auth-smoke` PASS and `workspace-smoke` 66/66 — the routing change (`/api/notify/*` ahead of the
   operator gate) did not disturb the existing server.
-- `npm run typecheck -w @agentslot/server` clean.
+- `npm run typecheck -w @agentus/server` clean.
 - APK (v0.3.0): `assembleRelease` OK; `aapt dump badging` shows `versionCode 3` / `targetSdk 36` + all
   permissions; `apksigner verify` OK (v2, debug key); `dexdump` confirms the shipped bytecode calls
   `Notification$Builder.setRequestPromotedOngoing(Z)` and `Notification$ProgressStyle`; the CA is
-  packaged as `raw/agentslot_ca` → `res/9n.pem`; `strings` on `classes.dex` finds the Xiaomi island
+  packaged as `raw/agentus_ca` → `res/9n.pem`; `strings` on `classes.dex` finds the Xiaomi island
   keys (`miui.focus.param`, `canShowFocus`) and both `resizeableActivity` flags survive into the
   merged manifest.
-- Artifact delivery: `GET /agentslot-companion.apk` answers **302 → `/` without a login** and **200
-  with the operator token**, streaming bytes byte-identical to `android/artifacts/agentslot-companion.apk`
+- Artifact delivery: `GET /agentus-companion.apk` answers **302 → `/` without a login** and **200
+  with the operator token**, streaming bytes byte-identical to `android/artifacts/agentus-companion.apk`
   (sha256 `defc3a48…`, 1048446 bytes) — compared by hashing the served stream, not by trusting the 200.
   `/notify` (the onboarding page with the pairing string + device table) is behind the same login.
 - Username+password pairing: wrong password → `403 wrong username or password`, right one → `200` with a
@@ -432,7 +432,7 @@ minutes and the app was verified on a real device instead of by inspection. Meas
 | Check | Method | Result |
 |---|---|---|
 | installs and launches | `adb install -r` + `am start` | ✅ v0.3.2 up, nothing in `logcat -b crash` |
-| a notification really appears | paired to the test bed (`10.0.2.2:8790`), posted the canned sequence | ✅ shade shows `跑完了 / 探针序列结束（end_turn）` with a 「查看」 action; the FGS notification `AgentSlot · 已连接 · 10.0.2.2:8790` is there too |
+| a notification really appears | paired to the test bed (`10.0.2.2:8790`), posted the canned sequence | ✅ shade shows `跑完了 / 探针序列结束（end_turn）` with a 「查看」 action; the FGS notification `Agentus · 已连接 · 10.0.2.2:8790` is there too |
 | promotion (AOSP path) | `NotificationManager.canPostPromotedNotifications()` | ⚠️ false on this image (the system has it off), and the app says so: 「实时动态: 被系统/用户关闭」。A real Android 16 phone is still the judge |
 | foldable one-pane / two-pane | `adb shell wm size 1080x2520` (cover, 411dp) vs `2224x2488` | ✅ 「单栏（折叠态）」 vs 「双栏（展开态）」, servers left / form + status right |
 | fold/unfold keeps the form | typed `https://fold4.test:8443`, unfolded, folded back | ✅ the activity was recreated and the typed text **survived** — `onSaveInstanceState` genuinely works |
@@ -454,11 +454,11 @@ Two real defects the emulator caught (both looked fine in code and in a screensh
 
 | Check | Method | Result |
 |---|---|---|
-| The app opens on the cockpit | launch with a saved server | ✅ toolbar + WebView, and the page really renders (the AgentSlot login screen — so the SPA's JS runs, it is not a white box); 服务器 → settings, 进驾驶舱 → back to the cockpit **without reloading** |
+| The app opens on the cockpit | launch with a saved server | ✅ toolbar + WebView, and the page really renders (the Agentus login screen — so the SPA's JS runs, it is not a white box); 服务器 → settings, 进驾驶舱 → back to the cockpit **without reloading** |
 | Toolbar no longer under the status bar | `uiautomator dump`, the 服务器 node's `y` | ✅ y≈10 (under the bar, taps eaten by SystemUI) → y≈116 |
 | Toolbar buttons were oversized | screenshot | ✅ replaced the platform `Button` (48dp minimum height, wide padding, raised gradient) with small rounded pills |
 | Keyboard shrinks the page | tap the page's 用户名 field; `dumpsys input_method` + the WebView's bounds | ✅ IME `mInputShown=true`, WebView **1688 px → 848 px**, and back to **1688 px** after `keyevent 4` (which dismisses the IME only — the app stayed in the foreground) |
-| 上岛自检 | tap it; read `logcat -s AgentSlotNotify` | ✅ first the device diagnosis (model / Android / HyperOS version / `canShowFocus` / SystemUI probe / AOSP availability), then 8 frames of a real ongoing notification (same id updated in place, 12.5% → 100%), auto-cleaned after 12 s. On the emulator (not Xiaomi, no promotion) the log says exactly that instead of pretending |
+| 上岛自检 | tap it; read `logcat -s AgentusNotify` | ✅ first the device diagnosis (model / Android / HyperOS version / `canShowFocus` / SystemUI probe / AOSP availability), then 8 frames of a real ongoing notification (same id updated in place, 12.5% → 100%), auto-cleaned after 12 s. On the emulator (not Xiaomi, no promotion) the log says exactly that instead of pretending |
 
 **Evidence from the real phone** (in the cockpit's own device table / `notify/state.json`): the
 operator's MIX Fold 4 (`24072PX77C`, `sdkInt` 36, appVersion 0.3.2) paired with
@@ -474,7 +474,7 @@ likely reason the island was never seen, and the app's own 「上岛自检」 is
 | the island payload matches OS3 | `adb shell settings put system notification_focus_protocol 3`, then 上岛自检 and read the log | ✅ the log's 「会发出的焦点通知参数（岛模板=true）」 prints exactly `param_v2{…, islandFirstFloat, param_island{islandProperty, islandTimeout, smallIslandArea{picInfo}, bigIslandArea{imageTextInfoLeft{picInfo}, imageTextInfoRight{type:2, textInfo}}}}` — the OS3 template, chosen from the ROM's protocol rather than from `Build.VERSION` |
 | the diagnostic is readable on the phone | same run | ✅ 协议版本 3 / 超级岛特性（`persist.sys.feature.island`）/ canShowFocus / SystemUI probe / platform path — so the next "上岛没反应" is answered from the device, not from a doc |
 | the page's mic request reaches the app | `WebView` on `http://localhost:8787` (a secure origin) calling `getUserMedia` | ✅ app log: 「页面要麦克风：系统权限没有，弹系统授权（请求先挂住）」 |
-| the OS dialog appears and the grant lands | tap the dialog | ✅ 「Allow AgentSlot to record audio?」 → `RECORD_AUDIO: granted=true` (flags `USER_SET`) |
+| the OS dialog appears and the grant lands | tap the dialog | ✅ 「Allow Agentus to record audio?」 → `RECORD_AUDIO: granted=true` (flags `USER_SET`) |
 | an http LAN origin cannot do media at all | the same probe page over `http://10.0.2.2:8787` | ✅ the page itself reports no `navigator.mediaDevices` → hence the app's own warning line (P15) |
 | ⚠️ not provable on the emulator | the page's promise after the grant | the emulator has no usable audio device, so the `getUserMedia` promise never settles there; "and then the page really gets the microphone" needs the real phone |
 
@@ -552,7 +552,7 @@ v0.5.7 answers with three things and this run verifies each on the emulator:
 |---|---|
 | `MODIFY_AUDIO_SETTINGS` declared (the fix several reports name for exactly this error: Chromium's audio input switches the AudioManager mode before it opens the source) | `改动音频设置权限=有` in the diagnosis |
 | The probe writes its state **after every step** and every step has a timeout | `{"step":"done", …}` instead of「跑着…」; each variant then reports its own `a_default` / `b_noProc` / `c_16k` outcome |
-| A native microphone bridge (`window.AgentSlotMic`, `AudioRecord` 16 kHz mono s16le → base64 → `window.__asMic`), used by the page **instead of** `getUserMedia`, and probed as its own stage | `语音自检（原生桥）: ok · 收到帧=51` and `原生桥=有 · 送出帧=51` — the two numbers agree, so frames really cross the bridge |
+| A native microphone bridge (`window.AgentusMic`, `AudioRecord` 16 kHz mono s16le → base64 → `window.__asMic`), used by the page **instead of** `getUserMedia`, and probed as its own stage | `语音自检（原生桥）: ok · 收到帧=51` and `原生桥=有 · 送出帧=51` — the two numbers agree, so frames really cross the bridge |
 | The page's real dictation path (设置 → 语音 → 开麦说一句) picking the bridge | `原生麦克风：已开始` → `已送出 100 帧` in ~6 s, status `listening`, engine `stream` |
 | `path` on the activity object, and a 「原生实时动态」 button that forces the AOSP path | `自检：通道=aosp` → `路径：aosp → 小米=跳过 · 原生实时动态=没用` |
 
@@ -584,7 +584,7 @@ a 「跑完了」 card. Fixed in three places, each verified:
 | `completion` is actually read now, and the done card honours presence | `center.ts` `observe()` | smoke `rules: completion off ⇒ no done card (the switch used to be stored and never read)`, `presence: watching ⇒ the completion card is suppressed too` |
 | presence carries `call`, written the instant `CallMode` mounts / hangs up | `CallMode.tsx`, `App.tsx`, `types.ts`, `center.ts` | smoke `presence: a call is reported as such`; `call: the called session gets neither the running card nor the completion card` |
 | every other frame is sent **silently** while a call is live | `center.ts` `publish()` → `silentChannel`, `ChannelSpec.muted`, `Notifier.apply` (quiet channel) | smoke `call: another session's completion still arrives (never dropped)` + `…but silently`; `call: an approval still arrives`; `call over ⇒ the completion is loud again` |
-| the app routes muted frames to one quiet channel | `Notifier.java` | `adb shell dumpsys notification --noredact` on API 36: during a call the same push lands in `mId='agentslot-quiet'`, `mImportance=2`, `mSound=null`, `flags=…|SILENT`; with no call it lands in `mId='agent_done'`, `mImportance=4`, `mSound=content://settings/system/notification_sound` |
+| the app routes muted frames to one quiet channel | `Notifier.java` | `adb shell dumpsys notification --noredact` on API 36: during a call the same push lands in `mId='agentus-quiet'`, `mImportance=2`, `mSound=null`, `flags=…|SILENT`; with no call it lands in `mId='agent_done'`, `mImportance=4`, `mSound=content://settings/system/notification_sound` |
 
 `notify-smoke` went 57 → **65 checks** (all green) with the call cases; `typecheck` clean.
 
@@ -613,7 +613,7 @@ immutable（没有人往里写东西）。顺带把 `NotifyService` 里"解析 J
 
 | kind | 标题 | 正文 |
 |---|---|---|
-| 运行中 | `AgentSlot · 运行中` | `<会话名> · <模型> · <思考深度>` |
+| 运行中 | `Agentus · 运行中` | `<会话名> · <模型> · <思考深度>` |
 | 完成 | `已完成` | `<会话名> · 用时 10s`（`turn-end.durationMs` 真量出来的） |
 | 失败 | `执行失败` | `<会话名> · <错误摘要>` |
 | 审批 | `待你确认：<工具短名>` | `<会话名> · <工具目标>` |
@@ -633,7 +633,7 @@ immutable（没有人往里写东西）。顺带把 `NotifyService` 里"解析 J
 npm run notify-testbed            # http :8790, https :8791 (test bed state is its own dir)
 
 # 2. the phone app
-npm run apk                       # -> android/artifacts/agentslot-companion.apk
+npm run apk                       # -> android/artifacts/agentus-companion.apk
 
 # 3. on the phone: open the test bed page, copy the pairing string, paste it into the app
 #    http://<mac-lan-ip>:8790/     (or https://<mac-lan-ip>:8791/ and accept the cert once)
@@ -643,7 +643,7 @@ npm run apk                       # -> android/artifacts/agentslot-companion.apk
 
 The test bed serves its own state (`packages/server/.data-notify-testbed`) precisely so it can run
 while the cockpit is up. Once the cockpit is restarted it owns the channel itself
-(`/api/notify/*`, `/agentslot-companion.apk`) and has its own pairing code.
+(`/api/notify/*`, `/agentus-companion.apk`) and has its own pairing code.
 
 ## 13. What is left
 

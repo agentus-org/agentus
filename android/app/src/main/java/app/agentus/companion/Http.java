@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.content.Context;
 
@@ -30,7 +30,7 @@ import okhttp3.WebSocketListener;
  * verification would reject the IP against a DNS-only SAN, so this client:
  *
  *   * keeps the system trust store (so a later Let's Encrypt cert also works), and
- *   * additionally trusts the bundled AgentSlot root, and
+ *   * additionally trusts the bundled Agentus root, and
  *   * accepts that root for whatever host the operator typed.
  *
  * That is CA pinning with a waived hostname, not "trust anything": a certificate that does
@@ -62,7 +62,7 @@ final class Http {
         return client;
     }
 
-    /** Trust = system store ∪ bundled AgentSlot root. */
+    /** Trust = system store ∪ bundled Agentus root. */
     private static X509TrustManager composite(Context context) throws Exception {
         final X509TrustManager system = defaultManager();
         final X509TrustManager mine = manager(bundled(context));
@@ -103,7 +103,7 @@ final class Http {
     private static X509TrustManager manager(X509Certificate ca) throws Exception {
         KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
         ks.load(null, null);
-        ks.setCertificateEntry("agentslot-root", ca);
+        ks.setCertificateEntry("agentus-root", ca);
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         tmf.init(ks);
         for (TrustManager tm : tmf.getTrustManagers()) {
@@ -113,7 +113,7 @@ final class Http {
     }
 
     static X509Certificate bundled(Context context) throws Exception {
-        try (InputStream in = context.getResources().openRawResource(R.raw.agentslot_ca)) {
+        try (InputStream in = context.getResources().openRawResource(R.raw.agentus_ca)) {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             return (X509Certificate) cf.generateCertificate(in);
         }

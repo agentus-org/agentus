@@ -21,7 +21,7 @@ const CDP = "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";   // dev instance (scripts/dev.sh start)
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentslot/screens", import.meta.url).pathname;
+const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentus/screens", import.meta.url).pathname;
 const fs = await import("node:fs");
 
 let pass = 0, fail = 0;

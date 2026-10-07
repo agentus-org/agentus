@@ -16,7 +16,7 @@ const CDP = "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";   // dev instance (scripts/dev.sh start)
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentslot/screens", import.meta.url).pathname;
+const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentus/screens", import.meta.url).pathname;
 const fs = await import("node:fs");
 
 let pass = 0, fail = 0;
@@ -322,7 +322,7 @@ check("a reject reaches the agent too (nothing is written)", rejected?.ok, JSON.
 // The server can no longer hold it (its own timeout fired, or the agent gave up first) and
 // now answers the page with an event instead of silently returning false: a click that does
 // nothing is the one failure an operator cannot tell from a broken button.
-const tok = fs.readFileSync(`${process.env.AGENTSLOT_DATA ?? "/tmp/agentslot-qa-account"}/auth.token`, "utf8").trim();
+const tok = fs.readFileSync(`${process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account"}/auth.token`, "utf8").trim();
 const wsq = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws?token=${encodeURIComponent(tok)}`);
 const expired = await new Promise((res) => {
   wsq.addEventListener("open", () => {

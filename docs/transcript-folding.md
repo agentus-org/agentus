@@ -45,7 +45,7 @@ So three things were true:
   stays one entry. Their comment is explicit that a tool/thinking interruption is allowed to keep the
   message boundary.
 
-## What AgentSlot does now
+## What Agentus does now
 
 **1. The store writes one row per message** (`Store.appendTextChunk`, `store/store.ts`):
 
@@ -114,7 +114,7 @@ accepted rather than guessed away.
    reads rows, so it sees accumulated text for free — it used to see 40 chunks of 3.8 characters.
 3. **Never fold on a guess.** Same id, or whitespace-insensitive equality, or ≥60% coverage. Everything
    else stays as it is, and the migration is logged (`[store] 历史分片已折叠：3804 行 → …`) with a
-   one-time `VACUUM INTO` backup beside the DB (`agentslot.sqlite.pre-fold.bak`).
+   one-time `VACUUM INTO` backup beside the DB (`agentus.sqlite.pre-fold.bak`).
 4. **A page boundary must not be able to cut a message.** Page sizes are row- and byte-bounded, and the
    store guarantees a message is one row; if either changes, re-run the checks below.
 

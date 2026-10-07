@@ -5,7 +5,7 @@ const CDP = "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";   // scratch instance (launch_scratch.py)
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentslot/screens", import.meta.url).pathname;
+const SHOTS = process.env.SHOTS ?? new URL("../../../../tasks/20261001-agentus/screens", import.meta.url).pathname;
 const fs = await import("node:fs");
 
 let pass = 0, fail = 0;
@@ -138,16 +138,16 @@ check("the icons themselves sit close (glyph gap well under one icon width)",
 
 const toggled = await ev(`(async () => {
   const btn = document.querySelector('.chat-head .icon-btn.auto-read');
-  const before = JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead;
+  const before = JSON.parse(localStorage.getItem('agentus.voice') || '{}').autoRead;
   const iconBefore = btn.innerHTML;
   btn.click();
   await new Promise((r) => setTimeout(r, 300));
   const mid = { pressed: btn.getAttribute('aria-pressed'), cls: btn.className.includes('on'),
-    stored: JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead, title: btn.getAttribute('title'),
+    stored: JSON.parse(localStorage.getItem('agentus.voice') || '{}').autoRead, title: btn.getAttribute('title'),
     iconChanged: btn.innerHTML !== iconBefore };
   btn.click();                                   // leave the pref where we found it
   await new Promise((r) => setTimeout(r, 300));
-  const after = JSON.parse(localStorage.getItem('agentslot.voice') || '{}').autoRead;
+  const after = JSON.parse(localStorage.getItem('agentus.voice') || '{}').autoRead;
   return { before, mid, after, pressedNow: btn.getAttribute('aria-pressed') };
 })()`);
 check("clicking it turns auto-read ON, visibly and in storage",

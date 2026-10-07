@@ -1,6 +1,6 @@
 {
-  "name": "AgentSlot",
-  "short_name": "AgentSlot",
+  "name": "Agentus",
+  "short_name": "Agentus",
   "description": "Multi-session web cockpit for ACP coding agents. Keep your agents on the track.",
   "start_url": "/",
   "scope": "/",

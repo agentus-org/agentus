@@ -10,7 +10,7 @@
 //                 batch ASR over the OpenAI-compatible chat route, TTS via
 //                 SpeechSynthesizer; fixed + dynamic hotwords ride along.
 //   "openai"     any OpenAI-compatible /audio/speech + /audio/transcriptions endpoint
-//                 (the AGENTSLOT_TTS_* / AGENTSLOT_STT_* bootstrap path).
+//                 (the AGENTUS_TTS_* / AGENTUS_STT_* bootstrap path).
 //   "browser"    no server path (the UI uses speechSynthesis / SpeechRecognition).
 //
 // The server still synthesises or recognises nothing itself: every call forwards to an
@@ -29,23 +29,23 @@ const trimmed = (v: string | undefined): string => String(v ?? "").trim().replac
 /** Env bootstrap for the OpenAI-compatible provider (unchanged semantics: what the
  *  fake-endpoint tests and openai users hit; the settings page overrides it). */
 export function voiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfig {
-  const ttsBase = trimmed(env.AGENTSLOT_TTS_BASE_URL);
-  const sttBase = trimmed(env.AGENTSLOT_STT_BASE_URL);
+  const ttsBase = trimmed(env.AGENTUS_TTS_BASE_URL);
+  const sttBase = trimmed(env.AGENTUS_STT_BASE_URL);
   return {
     tts: ttsBase
       ? {
           baseUrl: ttsBase,
-          key: String(env.AGENTSLOT_TTS_API_KEY ?? env.OPENAI_API_KEY ?? ""),
-          model: String(env.AGENTSLOT_TTS_MODEL || "tts-1"),
-          voice: String(env.AGENTSLOT_TTS_VOICE || "alloy"),
+          key: String(env.AGENTUS_TTS_API_KEY ?? env.OPENAI_API_KEY ?? ""),
+          model: String(env.AGENTUS_TTS_MODEL || "tts-1"),
+          voice: String(env.AGENTUS_TTS_VOICE || "alloy"),
         }
       : null,
     stt: sttBase
       ? {
           baseUrl: sttBase,
-          key: String(env.AGENTSLOT_STT_API_KEY ?? env.OPENAI_API_KEY ?? ""),
-          model: String(env.AGENTSLOT_STT_MODEL || "whisper-1"),
-          language: String(env.AGENTSLOT_STT_LANGUAGE || ""),
+          key: String(env.AGENTUS_STT_API_KEY ?? env.OPENAI_API_KEY ?? ""),
+          model: String(env.AGENTUS_STT_MODEL || "whisper-1"),
+          language: String(env.AGENTUS_STT_LANGUAGE || ""),
         }
       : null,
   };
@@ -147,7 +147,7 @@ export async function synthesize(text: string, opts: { voice?: string; speed?: n
   // openai-compatible: settings endpoint+key when complete, else the env bootstrap
   const fromSettings = v.baseUrl && v.apiKey ? { baseUrl: trimmed(v.baseUrl), key: v.apiKey, model: v.ttsModel || "tts-1", voice: v.ttsVoice } : null;
   const cfg = fromSettings ?? r.openai.tts;
-  if (!cfg) throw new VoiceError("server TTS is not configured (settings page, or AGENTSLOT_TTS_BASE_URL)", "not_configured");
+  if (!cfg) throw new VoiceError("server TTS is not configured (settings page, or AGENTUS_TTS_BASE_URL)", "not_configured");
   const res = await withTimeout("tts", (signal) => fetch(`${cfg.baseUrl}/audio/speech`, {
     method: "POST",
     signal,
@@ -178,7 +178,7 @@ export async function transcribe(
   }
   const fromSettings = v.baseUrl && v.apiKey ? { baseUrl: trimmed(v.baseUrl), key: v.apiKey, model: v.asrBatchModel, language: "" } : null;
   const cfg = fromSettings ?? r.openai.stt;
-  if (!cfg) throw new VoiceError("server STT is not configured (settings page, or AGENTSLOT_STT_BASE_URL)", "not_configured");
+  if (!cfg) throw new VoiceError("server STT is not configured (settings page, or AGENTUS_STT_BASE_URL)", "not_configured");
   const form = new FormData();
   const name = opts.filename || `dictation.${mimeToExt(mime)}`;
   form.append("file", new Blob([new Uint8Array(audio)], { type: mime || "audio/webm" }), name);

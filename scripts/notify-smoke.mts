@@ -18,7 +18,7 @@ const TSX = path.join(REPO, "node_modules/.bin/tsx");
 // make the next run silently test the wrong process (it did, once).
 const PORT = Number(process.env.SMOKE_PORT ?? 8800 + Math.floor(Math.random() * 90));
 const BASE = `http://127.0.0.1:${PORT}`;
-const DATA = fs.mkdtempSync(path.join(os.tmpdir(), "agentslot-notify-smoke-"));
+const DATA = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-notify-smoke-"));
 
 let pass = 0;
 let fail = 0;
@@ -244,7 +244,7 @@ try {
 
   const s0 = await readSettings();
   check("settings: rules + devices + pairing string in one call",
-    typeof s0.rules?.turnStart === "boolean" && Array.isArray(s0.devices) && s0.pairUri.startsWith("agentslot://pair"),
+    typeof s0.rules?.turnStart === "boolean" && Array.isArray(s0.devices) && s0.pairUri.startsWith("agentus://pair"),
     JSON.stringify(s0).slice(0, 120));
   check("settings: defaults are all-on, quiet-when-watching on",
     s0.rules.turnStart && s0.rules.approval && s0.rules.completion && s0.rules.quietWhenWatching,
@@ -384,7 +384,7 @@ try {
     t: "permission", sessionId: "sess-shape",
     request: {
       sessionId: "sess-shape", requestId: "req-shape", kind: "edit",
-      toolCallTitle: "Approve edit: /var/folders/p4/x/T/agentslot-shape.txt",
+      toolCallTitle: "Approve edit: /var/folders/p4/x/T/agentus-shape.txt",
       options: [{ optionId: "allow_once", name: "允许", kind: "allow_once" }],
     },
   });
@@ -393,7 +393,7 @@ try {
   const shapeDone = framesBy("done:sess-shape")[0];
   const shapePerm = upserted("perm:req-shape");
   check("copy: the running card is a state, with the session name in the body",
-    shapeRun?.title === "AgentSlot · 运行中" && String(shapeRun?.body ?? "").startsWith("sess-sha"),
+    shapeRun?.title === "Agentus · 运行中" && String(shapeRun?.body ?? "").startsWith("sess-sha"),
     JSON.stringify({ title: shapeRun?.title, body: shapeRun?.body }));
   check("copy: the done card is 「已完成」 and its body is the name + the MEASURED turn time",
     shapeDone?.title === "已完成" && shapeDone?.body === "sess-sha · 用时 1m 12s",

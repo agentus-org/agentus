@@ -14,7 +14,7 @@
 // The operator's own rename always outranks both (the store keeps `title` = what is
 // displayed and `auto_title` = the generated name, so a rename is reversible and a
 // generated name never stomps a hand-written one).
-import type { StoredMessage } from "@agentslot/shared";
+import type { StoredMessage } from "@agentus/shared";
 
 /** Hard cap for a single-line row, in characters (AionUi uses 50). */
 export const TITLE_MAX = 50;

@@ -1,4 +1,4 @@
-package app.agentslot.companion;
+package app.agentus.companion;
 
 import android.app.Service;
 import android.content.Context;
@@ -39,9 +39,9 @@ import okhttp3.WebSocketListener;
  * Nothing here interprets agent semantics: frames are contract objects handed to Notifier.
  */
 public final class NotifyService extends Service {
-    private static final String TAG = "AgentSlotNotify";
-    public static final String ACTION_START = "app.agentslot.companion.START";
-    public static final String ACTION_STOP = "app.agentslot.companion.STOP";
+    private static final String TAG = "AgentusNotify";
+    public static final String ACTION_START = "app.agentus.companion.START";
+    public static final String ACTION_STOP = "app.agentus.companion.STOP";
 
     /** Read by MainActivity (a polled status beats a broadcast for a one-screen app). */
     static volatile String status = "未启动";
@@ -151,7 +151,7 @@ public final class NotifyService extends Service {
                     log("配对失败：" + e.getMessage());
                 }
                 handler.post(this::connect);
-            }, "agentslot-pair").start();
+            }, "agentus-pair").start();
             return;
         }
         final String ws = p.url.replaceFirst("^http", "ws").replaceAll("/+$", "")

@@ -5,8 +5,8 @@
 //                     runtime tree vs the operator's fork under ~/Project/hermes-agent);
 //   2. which DATA   — HERMES_HOME (live ~/.hermes vs a disposable test home);
 //   3. which PROFILE— `hermes -p <profile>` inside that home.
-// Until now 1 and 2 were env vars fixed at server start (AGENTSLOT_HERMES_CMD /
-// AGENTSLOT_HERMES_HOME) and 3 was impossible, so isolating a slot meant restarting the
+// Until now 1 and 2 were env vars fixed at server start (AGENTUS_HERMES_CMD /
+// AGENTUS_HERMES_HOME) and 3 was impossible, so isolating a slot meant restarting the
 // cockpit. Rows live in the store, are edited from the UI, and are resolved per spawn.
 //
 // backends.ts stays the isolation CORE (buildSpawnEnv + the fail-closed live-home rule) and
@@ -27,7 +27,7 @@ export const BACKEND_KINDS: BackendKind[] = ["hermes", "qoder", "mock"];
 /** The operator's real home. Not a禁区 any more: it is the DEFAULT home for a hermes row. */
 export const HERMES_LIVE_HOME = path.join(homedir(), ".hermes");
 /** Where a hermes row goes when it does not name a home itself: the operator's own home. */
-export const HERMES_DEFAULT_HOME = process.env.AGENTSLOT_HERMES_HOME || HERMES_LIVE_HOME;
+export const HERMES_DEFAULT_HOME = process.env.AGENTUS_HERMES_HOME || HERMES_LIVE_HOME;
 
 /** One registry row: the whole definition of "how to spawn this kind of agent". */
 export interface BackendRow {

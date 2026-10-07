@@ -134,8 +134,8 @@ export function NotifySettings({ sessionId }: { sessionId?: string }): JSX.Eleme
       <div className="set-row">
         <label>装 App</label>
         <div>
-          <a className="set-mini" href={view?.apkUrl ?? "/agentslot-companion.apk"} download>
-            agentslot-companion.apk
+          <a className="set-mini" href={view?.apkUrl ?? "/agentus-companion.apk"} download>
+            agentus-companion.apk
           </a>
           {view?.apkBytes ? <span className="set-hint"> · {(view.apkBytes / 1048576).toFixed(1)} MB</span> : null}
           <span className="set-hint"> · 装完在 App 里贴下面这行配对串，或直接填地址 + 用户名密码</span>

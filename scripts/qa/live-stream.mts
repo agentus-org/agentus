@@ -18,7 +18,7 @@ const auth = (): Record<string, string> => ({ ...authHeaders() }) as Record<stri
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 const { cockpit } = await import("../../packages/web/src/state.ts");
 
-const BASE = process.env.AGENTSLOT_BASE || "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8787";
 const PROMPT = process.argv[2] || "你好，介绍一下你自己";
 const DEADLINE = 45_000;
 
@@ -36,7 +36,7 @@ const created = await fetch(`${BASE}/api/sessions`, {
 });
 if (!created.ok) {
   console.error("cannot create a session:", created.status, await created.text());
-  console.error("hint: start the cockpit, or pass AGENTSLOT_BASE");
+  console.error("hint: start the cockpit, or pass AGENTUS_BASE");
   process.exit(1);
 }
 const session = await created.json();

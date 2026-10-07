@@ -141,7 +141,7 @@ const procs = [];
 /** Boot the server. `home` matters: settings.ts falls back to reading ~/.hermes/.env, so
  *  a test that inherits the operator's real home is not a test of the empty case. */
 async function boot(dataDir, extraEnv = {}, home = "") {
-  const port = Number(extraEnv.AGENTSLOT_PORT ?? PORT);
+  const port = Number(extraEnv.AGENTUS_PORT ?? PORT);
   if (await portInUse(port)) {
     throw new Error(`port ${port} is already in use — a leaked server from an earlier run? `
       + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
@@ -150,7 +150,7 @@ async function boot(dataDir, extraEnv = {}, home = "") {
     detached: true,
     cwd: ROOT,
     env: {
-      ...process.env, NODE_ENV: "development", AGENTSLOT_PORT: String(port), AGENTSLOT_DATA: dataDir,
+      ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(port), AGENTUS_DATA: dataDir,
       ...(home ? { HOME: home } : {}),
       ...extraEnv,
     },
@@ -191,8 +191,8 @@ function tokenFor(dataDir) {
   throw new Error("no machine token");
 }
 
-const emptyHome = mkdtempSync(path.join(tmpdir(), "agentslot-home-"));
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentslot-voice-"));
+const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-voice-"));
 const { proc, base, log } = await boot(dataDir, {}, emptyHome);
 const token = tokenFor(dataDir);
 const H = { authorization: `Bearer ${token}`, "content-type": "application/json" };
@@ -266,7 +266,7 @@ try {
   const put = await fetch(`${base}/api/settings`, {
     method: "PUT",
     headers: H,
-    body: JSON.stringify({ voice: { provider: "openai", baseUrl: PROVIDER, apiKey: "sk-test-abc123", asrBatchModel: "qwen3-asr-flash", ttsModel: "qwen-audio-3.0-tts-flash", ttsVoice: "longanhuan_v3.6", hotwords: ["AgentSlot=5", "ACP"] } }),
+    body: JSON.stringify({ voice: { provider: "openai", baseUrl: PROVIDER, apiKey: "sk-test-abc123", asrBatchModel: "qwen3-asr-flash", ttsModel: "qwen-audio-3.0-tts-flash", ttsVoice: "longanhuan_v3.6", hotwords: ["Agentus=5", "ACP"] } }),
   });
   const putBody = await put.json();
   check("provider + endpoint + key save", put.status === 200 && putBody.provider === "openai", `status ${put.status}`);
@@ -300,7 +300,7 @@ try {
   // ---- 6. hotwords: fixed parses, dynamic is on by default ----
   const hot = await get("/api/voice/hotwords");
   const fixed = (hot.body?.words ?? []).filter((w) => w.origin === "fixed");
-  check("fixed hotwords are carried with their weights", hot.status === 200 && fixed.length === 2 && fixed.some((w) => w.word === "AgentSlot" && w.weight === 5), JSON.stringify(hot.body?.words ?? []).slice(0, 120));
+  check("fixed hotwords are carried with their weights", hot.status === 200 && fixed.length === 2 && fixed.some((w) => w.word === "Agentus" && w.weight === 5), JSON.stringify(hot.body?.words ?? []).slice(0, 120));
   check("dynamic extraction is on by default", hot.body?.words?.every((w) => w.origin === "fixed"), "no transcript yet");
 
   const limit = await fetch(`${base}/api/settings`, { method: "PUT", headers: H, body: JSON.stringify({ voice: { hotwords: ["a", "b", "c", "d"], hotwordLimit: 2 } }) });
@@ -328,11 +328,11 @@ try {
   // ---- 9. the env bootstrap: this is how the operator's own machine is set up
   //         (DASHSCOPE_* in ~/.hermes/.env), and it must work with no page visit at all.
   killGroup(proc);
-  const home2 = mkdtempSync(path.join(tmpdir(), "agentslot-home-env-"));
+  const home2 = mkdtempSync(path.join(tmpdir(), "agentus-home-env-"));
   fs.mkdirSync(path.join(home2, ".hermes"), { recursive: true });
   fs.writeFileSync(path.join(home2, ".hermes", ".env"), `DASHSCOPE_API_KEY=sk-env-abcdef123\nDASHSCOPE_BASE_URL=http://127.0.0.1:${providerPort}/\n`);
-  const dataDir2 = mkdtempSync(path.join(tmpdir(), "agentslot-voice-env-"));
-  const second = await boot(dataDir2, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const dataDir2 = mkdtempSync(path.join(tmpdir(), "agentus-voice-env-"));
+  const second = await boot(dataDir2, { AGENTUS_PORT: String(await freePort()) }, home2);
   const base2 = second.base;
   const token2 = tokenFor(dataDir2);
   const H2 = { ...H, authorization: `Bea${"rer"} ${token2}` };
@@ -346,7 +346,7 @@ try {
   const capsEnv = await get2("/api/voice");
   check("caps report 百炼 streaming with the default models", capsEnv.body?.provider === "dashscope" && capsEnv.body?.stt?.streaming === true && capsEnv.body?.stt?.model === "qwen-audio-3.1-asr-flash-streaming", JSON.stringify(capsEnv.body?.stt));
 
-  const hotEnv = await fetch(`${base2}/api/settings`, { method: "PUT", headers: H2, body: JSON.stringify({ voice: { hotwords: ["AgentSlot=5", "ACP"] } }) });
+  const hotEnv = await fetch(`${base2}/api/settings`, { method: "PUT", headers: H2, body: JSON.stringify({ voice: { hotwords: ["Agentus=5", "ACP"] } }) });
   check("hotwords save through the same page api", hotEnv.status === 200, `status ${hotEnv.status}`);
   const ttsEnv = await fetch(`${base2}/api/tts`, { method: "POST", headers: H2, body: JSON.stringify({ text: "百炼合成自测" }) });
   const ttsEnvBytes = Buffer.from(await ttsEnv.arrayBuffer());
@@ -361,7 +361,7 @@ try {
   check("百炼 batch ASR: compat chat/completions answers", sttEnv.status === 200 && /百炼听写结果/.test(String(sttEnvBody.text ?? "")), JSON.stringify(sttEnvBody).slice(0, 90));
   const asrBody = seen.asrBodies[seen.asrBodies.length - 1] ?? "";
   check("the ASR request carries an input_audio data URL", /"type":"input_audio"/.test(asrBody) && /data:audio\/wav;base64,/.test(asrBody), asrBody.slice(0, 110));
-  check("hotwords ride along as the entity list", /AgentSlot/.test(asrBody) && /ACP/.test(asrBody), asrBody.slice(0, 160));
+  check("hotwords ride along as the entity list", /Agentus/.test(asrBody) && /ACP/.test(asrBody), asrBody.slice(0, 160));
 
   const modelsEnv = await get2("/api/voice/models");
   check("the model list comes from the 百炼 endpoint", modelsEnv.status === 200 && modelsEnv.body?.total === 3 && modelsEnv.body?.tts?.includes("qwen-audio-3.0-tts-flash"), `status ${modelsEnv.status} ${JSON.stringify(modelsEnv.body)}`);
@@ -371,7 +371,7 @@ try {
   // They used to be a 0600 JSON beside the DB plus a browser's localStorage. Anything the
   // operator changes belongs with the rest of the data: it then survives a device change, and
   // a second tab cannot disagree with the first.
-  const dbPath = path.join(dataDir, "agentslot.sqlite");
+  const dbPath = path.join(dataDir, "agentus.sqlite");
   const dbMode = fs.existsSync(dbPath) ? (fs.statSync(dbPath).mode & 0o777).toString(8) : "missing";
   const db = new DatabaseSync(dbPath);
   const rows = db.prepare("select key, value from settings").all();
@@ -385,13 +385,13 @@ try {
   check("no settings file is left behind", !fs.existsSync(path.join(dataDir, "settings.json")));
 
   // ---- 11. migration: a pre-store installation must not lose its settings ----
-  const legacyDir = mkdtempSync(path.join(tmpdir(), "agentslot-legacy-"));
+  const legacyDir = mkdtempSync(path.join(tmpdir(), "agentus-legacy-"));
   fs.writeFileSync(
     path.join(legacyDir, "settings.json"),
     JSON.stringify({ theme: { mode: "dark", accent: "#123456" }, call: { bargeLevel: 0.3, minChars: 7 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const third = await boot(legacyDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const third = await boot(legacyDir, { AGENTUS_PORT: String(await freePort()) }, home2);
   const token3 = tokenFor(legacyDir);
   const get3 = async (p) => {
     const res = await fetch(third.base + p, { headers: { ...H, authorization: `Bearer ${token3}` } });
@@ -409,13 +409,13 @@ try {
 
   // a call section that is STILL at the old shipped defaults (最少字数 1 was the old default)
   // must follow the new ones instead of carrying a fossil of them into the panel
-  const fossilDir = mkdtempSync(path.join(tmpdir(), "agentslot-fossil-"));
+  const fossilDir = mkdtempSync(path.join(tmpdir(), "agentus-fossil-"));
   fs.writeFileSync(
     path.join(fossilDir, "settings.json"),
     JSON.stringify({ call: { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const fourth = await boot(fossilDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const fourth = await boot(fossilDir, { AGENTUS_PORT: String(await freePort()) }, home2);
   const mig2 = await (async () => {
     const res = await fetch(fourth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(fossilDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -425,13 +425,13 @@ try {
   killGroup(fourth.proc);
 
   // …but a section the operator really tuned is left exactly as it is
-  const tunedDir = mkdtempSync(path.join(tmpdir(), "agentslot-tuned-"));
+  const tunedDir = mkdtempSync(path.join(tmpdir(), "agentus-tuned-"));
   fs.writeFileSync(
     path.join(tunedDir, "settings.json"),
     JSON.stringify({ call: { bargeSensitivity: 85, bargeMs: 500, silenceMs: 900, minChars: 1 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const fifth = await boot(tunedDir, { AGENTSLOT_PORT: String(await freePort()) }, home2);
+  const fifth = await boot(tunedDir, { AGENTUS_PORT: String(await freePort()) }, home2);
   const mig3 = await (async () => {
     const res = await fetch(fifth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(tunedDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };

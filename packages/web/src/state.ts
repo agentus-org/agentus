@@ -8,7 +8,7 @@ import type {
   SessionInfo,
   StoredMessage,
   TurnTrace,
-} from "@agentslot/shared";
+} from "@agentus/shared";
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
 
 /** Plan step: ACP's own shape (content/status), plus the cockpit's terminal stamp. */
@@ -258,8 +258,8 @@ class Cockpit {
    *  lands back where they were instead of the oldest session (QA#7). */
   #rememberActive(id: string | null): void {
     try {
-      if (id) localStorage.setItem("agentslot.active", id);
-      else localStorage.removeItem("agentslot.active");
+      if (id) localStorage.setItem("agentus.active", id);
+      else localStorage.removeItem("agentus.active");
     } catch {
       /* private mode / storage disabled — not worth failing over */
     }
@@ -290,7 +290,7 @@ class Cockpit {
       return target;
     }
     try {
-      return localStorage.getItem("agentslot.active");
+      return localStorage.getItem("agentus.active");
     } catch {
       return null;
     }

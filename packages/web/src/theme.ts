@@ -18,7 +18,7 @@ export interface ThemeConfig {
 }
 
 export const THEME_DEFAULT: ThemeConfig = { mode: "system", accent: "" };
-const KEY = "agentslot.theme";
+const KEY = "agentus.theme";
 const ACCENT_FALLBACK = "#ffb454";
 
 const listeners = new Set<() => void>();
