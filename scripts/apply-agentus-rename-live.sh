@@ -55,7 +55,7 @@ elif [ -f "$LNEW/launch.py" ]; then
 else
   die "两处都没有 launch.py（旧: $LOLD，新: $LNEW）"
 fi
-LIVE_PID="$(pid_on "$LIVE_PORT")"; [ -n "$LIVE_PID" ] || die ":$LIVE_PORT 没有监听的进程——live 没在跑，别用这个脚本"
+LIVE_PID="$(pid_on "$LIVE_PORT" || true)"; [ -n "$LIVE_PID" ] || die ":$LIVE_PORT 没有监听的进程——live 没在跑，别用这个脚本"
 git -C "$HERE" diff --quiet && git -C "$HERE" diff --cached --quiet || die "dev 树有未提交的改动，先 commit"
 SESS_BEFORE="$(sids | tr '\n' ' ')"
 ASSET_BEFORE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/api/version" || true)"
@@ -149,9 +149,14 @@ fi
 say "3c. 用新启动器拉起"
 run "cd '$LIVE' && python3 '$LNEW/launch.py'"
 NEW_PID=""
+# `pid_on` returns non-zero while the port is still free, and `set -e` + `pipefail` would then
+# kill this script SILENTLY on the first iteration (observed 2026-10-08: live came up fine, the
+# script just stopped — no postcheck, no slot resume). Absence of a listener is expected here.
 for _ in $(seq 1 120); do
-  NEW_PID="$(pid_on "$LIVE_PORT")"
-  [ -n "$NEW_PID" ] && curl -s --noproxy '*' -m 3 "http://127.0.0.1:$LIVE_PORT/healthz" | grep -q '"ok":true' && break
+  NEW_PID="$(pid_on "$LIVE_PORT" || true)"
+  if [ -n "$NEW_PID" ] && curl -s --noproxy '*' -m 3 "http://127.0.0.1:$LIVE_PORT/healthz" | grep -q '"ok":true'; then
+    break
+  fi
   sleep 1
 done
 [ -n "$NEW_PID" ] || die ":$LIVE_PORT 没起来——看 /tmp/agentus-server.log"
