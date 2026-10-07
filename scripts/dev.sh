@@ -96,7 +96,7 @@ case "${1:-}" in
     if [ -f "$token_file" ]; then
       tok_file="$token_file"
       row="$(curl -s --noproxy '*' -m 5 -H "$(auth_hdr "$tok_file")" "http://127.0.0.1:$DEV_PORT/api/backends" \
-        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=(JSON.parse(s).backends||[]).find(x=>x.id==="mock");console.log(r?JSON.stringify(r.args||[]):"")}catch{console.log("")}})')"
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const rows=j.backends||j;const r=rows.find(x=>x.id==="mock");console.log(r?JSON.stringify(r.args||[]):"")}catch{console.log("")}})')"
       case "$row" in
         *"$HERE"*) : ;;
         "") : ;;

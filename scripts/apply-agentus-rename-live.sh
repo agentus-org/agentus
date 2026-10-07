@@ -26,7 +26,9 @@ DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"                       # dev 树
-LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentslot}"          # live 树
+# live 树：2026-10-08 起两棵 worktree 已改名为 agentus / agentus-dev（本脚本自己那轮只改了
+# 启动器目录与库文件名，故意没动 worktree 目录名；这次由人工序列补上）。
+LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"             # live 树
 LIVE_PORT="${LIVE_PORT:-8787}"
 LIVE_TLS_PORT="${LIVE_TLS_PORT:-8443}"
 LOLD="$HOME/.hermes/cache/agentslot"                            # 旧启动器目录
