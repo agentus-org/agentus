@@ -99,6 +99,7 @@ if [ "$DRY" = 0 ]; then
   [ -x "$LIVE/node_modules/.bin/tsx" ] || die "live 树里没有 tsx（devDependency 被 NODE_ENV=production 跳过了）"
   # 这两个脚本本身就是迁移工具，必然含旧名 —— 排除它们，否则检查会死在自己身上
   LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+    --exclude-dir=.data --exclude-dir=.data-notify-testbed \
     --exclude='apply-agentus-*.sh' --exclude='agentus-rename-*.py' 2>/dev/null | head -5 || true)"
   [ -z "$LEFT" ] || die "live 树里仍有 AGENTSLOT：$LEFT"
   echo "  live 树文本已清干净"
@@ -180,6 +181,7 @@ TITLE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/" | grep -o '<t
 ck "页面标题是 Agentus（实得: ${TITLE:-空}）" "$(echo "$TITLE" | grep -q 'Agentus' && echo 1 || echo 0)"
 
 LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.data --exclude-dir=.data-notify-testbed \
   --exclude='apply-agentus-*.sh' --exclude='agentus-rename-*.py' 2>/dev/null | head -3 || true)"
 ck "live 树全文无 AGENTSLOT（残留: ${LEFT:-无}）" "$([ -z "$LEFT" ] && echo 1 || echo 0)"
 
