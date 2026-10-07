@@ -40,6 +40,24 @@ await send("Page.enable"); await send("Runtime.enable");
 // --- login + a few sessions so the rail has rows
 await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
 await ev(`Promise.all([0,1,2].map((i)=>fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:i%2?'/tmp':'/Users/liang'})}).then(r=>r.json())))`);
+
+// --- 前置条件自己建立，别指望上一轮留下什么（2026-10-07 实测的假红）
+// 这一轮的两个"默认值"断言会被残留状态污染，产生与代码无关的 FAIL：
+//   · auto-read 开关的初始态来自服务端 prefs（上几轮点过之后 autoRead=true）→ 断言 OFF 必红
+//   · 浏览器 localStorage（本 origin 的 agentus.voice）同理
+//   · 重命名阶段断言「全库只有一条『重构 · 会话列表』」，上一轮没清干净就会红
+// 所以：先把 prefs 归零、把浏览器那个键删掉、把残留的重命名行清掉。测的是代码，不是环境。
+const PREP = await ev(`(async () => {
+  localStorage.removeItem('agentus.voice');
+  const st = await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({prefs:{autoRead:false}})}).then(r=>r.status);
+  const list = await fetch('/api/sessions').then(r=>r.json());
+  const stale = [...(list.live||[]),...(list.archived||[])].filter((s)=>s.title==='重构 · 会话列表');
+  for (const s of stale) await fetch('/api/sessions/'+s.id+'/rename',{method:'POST',
+    headers:{'content-type':'application/json'},body:JSON.stringify({title:''})});
+  return { settings: st, clearedStale: stale.length };
+})()`).catch((e) => ({ error: String(e) }));
+console.log("prep:", JSON.stringify(PREP));
 await send("Page.reload", { ignoreCache: true });
 await sleep(3200);
 

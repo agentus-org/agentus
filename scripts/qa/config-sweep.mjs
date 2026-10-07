@@ -13,7 +13,7 @@
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";   // dev instance, never live
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });
