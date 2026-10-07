@@ -2518,6 +2518,18 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
   }, [text]);
   const [switching, setSwitching] = useState(false);
+  // A refused model switch keeps the picker OPEN and pins the agent's own sentence next to the
+  // offending row: on the live cockpit the whole report used to be "Invalid params" in a banner
+  // under a closed popover, which says nothing about what to do (track §61 — the reason lives in
+  // the ACP error's `data.details`, and the list the operator picks from is a wider one than the
+  // one the agent validates against, so "listed" does not mean "switchable").
+  const [modelErr, setModelErr] = useState<{ id: string; text: string } | null>(null);
+  // Picks this agent has already refused, for as long as we are looking at this session: after one
+  // attempt the operator can see which entries of a too-generous list are not switchable, without
+  // having to remember. Not a block — clicking one re-tries (the agent's answer may have changed).
+  const [modelBad, setModelBad] = useState<Record<string, string>>({});
+  // A new session is a different agent: what it refuses is a different question.
+  useEffect(() => { setModelBad({}); setModelErr(null); }, [v.info.id]);
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
   const spoken = useSpeaker();
@@ -2828,6 +2840,14 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               >
                 {models.length > 0 ? (
                   <div className="tb-list wide">
+                    {/* The refused pick's own sentence, kept above the list: the row may be
+                        scrolled out of view or filtered away, the reason must not be. */}
+                    {modelErr ? (
+                      <div className="tb-err" role="alert" data-model-err={modelErr.id}>
+                        <span className="tb-err-id">{modelErr.id}</span>
+                        <span className="tb-err-text">{modelErr.text}</span>
+                      </div>
+                    ) : null}
                     {models.length > 12 ? (
                       <input
                         className="tb-search"
@@ -2859,16 +2879,26 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                               {g.list.map((m) => (
                                 <button
                                   key={m.modelId}
-                                  className={`tb-opt ${m.modelId === currentModel ? "sel" : ""}`}
-                                  title={m.description ? `${m.modelId} — ${m.description}` : m.modelId}
+                                  className={`tb-opt ${m.modelId === currentModel ? "sel" : ""} ${modelErr?.id === m.modelId || modelBad[m.modelId] ? "bad" : ""}`}
+                                  title={modelBad[m.modelId]
+                                    ? `${m.modelId} — this agent refused it: ${modelBad[m.modelId]}`
+                                    : (m.description ? `${m.modelId} — ${m.description}` : m.modelId)}
                                   data-model={m.modelId}
+                                  data-model-refused={modelBad[m.modelId] ? "1" : undefined}
                                   onClick={() => {
-                                    setPop(null);
-                                    setModelQuery("");
-                                    if (m.modelId === currentModel) return;
+                                    if (m.modelId === currentModel) { setPop(null); setModelQuery(""); return; }
                                     setSwitching(true);
+                                    setModelErr(null);
+                                    // Not closed up front: a refusal has to be read where the pick
+                                    // was made, with the list still in front of the operator.
                                     void cockpit.setModel(v.info.id, m.modelId)
-                                      .catch((e) => setAttachErr(`model switch failed: ${String((e as Error)?.message ?? e)}`))
+                                      .then(() => { setPop(null); setModelQuery(""); setModelErr(null); setAttachErr(""); })
+                                      .catch((e) => {
+                                        const text = String((e as Error)?.message ?? e);
+                                        setModelErr({ id: m.modelId, text });
+                                        setModelBad((prev) => ({ ...prev, [m.modelId]: text }));
+                                        setAttachErr(`model switch failed: ${text}`);
+                                      })
                                       .finally(() => setSwitching(false));
                                   }}
                                 >

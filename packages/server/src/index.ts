@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { SessionManager, SessionUnavailable } from "./acp/session-manager.js";
+import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, seedRows, startupCheck } from "./acp/registry.js";
 import { FsError, listDirs, readTextFile } from "./fs.js";
@@ -206,7 +207,7 @@ function runPrompt(
   interrupt = false,
 ): void {
   void mgr.prompt(sessionId, text, attachments, { interrupt }).catch((e: unknown) => {
-    const msg = String((e as Error)?.message ?? e);
+    const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
     console.error(`[agentslot] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
     emit({ t: "message", message: {
@@ -894,7 +895,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, { info, via: mgr.lastTitleVia });
         } catch (e) {
-          const msg = String((e as Error)?.message ?? e);
+          const msg = describeAcpError(e);
           if (/no such session/.test(msg)) return send(res, 404, { error: msg });
           return send(res, 409, { error: msg });
         }
@@ -906,7 +907,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
-          const msg = String((e as Error)?.message ?? e);
+          const msg = describeAcpError(e);
           if (/no such session|unknown session/.test(msg)) return send(res, 404, { error: msg });
           return send(res, /mid-turn|not ready/.test(msg) ? 409 : 400, { error: msg });
         }
@@ -918,7 +919,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         try {
           return send(res, 200, await mgr.setModel(id, modelId));
         } catch (e) {
-          const msg = String((e as Error)?.message ?? e);
+          const msg = describeAcpError(e);
           // 409: the slot exists but has no live agent to switch (resume first)
           return send(res, /not ready|resume it first/.test(msg) ? 409 : 400, { error: msg });
         }
@@ -1085,7 +1086,7 @@ wss.on("connection", (ws) => {
           break;
       }
     } catch (e) {
-      sendEvt({ t: "error", error: String((e as Error)?.message ?? e) });
+      sendEvt({ t: "error", error: describeAcpError(e) });
     }
   });
   ws.on("close", () => clients.delete(clientId));

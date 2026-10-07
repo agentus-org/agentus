@@ -9,7 +9,7 @@
 //   MOCK_SLOW_MS=n     -> delay between chunks (default 60)
 //   MOCK_SINK=1        -> exit the process mid-turn (crash path for AC5/QA)
 import { randomUUID } from "node:crypto";
-import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
+import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
@@ -116,7 +116,21 @@ const MODELS = [
   { modelId: "mock:fast", name: "Mock Fast", description: "low latency, shallow" },
   { modelId: "mock:deep", name: "Mock Deep", description: "slow, thorough" },
   { modelId: "mock:vision", name: "Mock Vision", description: "accepts images" },
+  // A real agent's list is WIDER than the set it will actually accept — hermes lists every
+  // provider/model it knows (live listing ∪ curated ∪ models.dev) and then validates a switch
+  // against a narrower pair of sources, so "it is in the picker" does not mean "it can be
+  // selected" (track §61: 33 of 503 entries on the live slot were like this, and the refusal
+  // was reported as the four words "Invalid params"). `mock:gone` is that fixture, and it is
+  // what the cockpit's refusal path (reason shown in place, picker stays open) is tested on.
+  { modelId: "mock:gone", name: "Mock Gone", description: "listed, but this agent refuses it" },
 ];
+const REJECTED = new Set(["mock:gone"]);
+// The sentence hermes puts in the JSON-RPC error's `data.details` for a refused switch
+// (acp_adapter/server.py: RequestError.invalid_params({"details": str(exc)})). Copied verbatim
+// so the cockpit is tested against the real shape, not a friendlier one.
+const rejectDetails = (modelId) =>
+  `Model \`${modelId}\` was not found in this provider's model listing.\n` +
+  "  Similar models: `mock:fast`, `mock:deep`";
 const modelsFor = (config) => ({
   currentModelId: config.model || "mock:fast",
   availableModels: MODELS,
@@ -202,6 +216,7 @@ const agent = () => ({
   async setSessionModel({ sessionId, modelId }) {
     const s = sessions.get(sessionId);
     if (!s) throw new Error("no such session");
+    if (REJECTED.has(modelId)) throw RequestError.invalidParams({ details: rejectDetails(modelId) });
     if (!MODELS.some((m) => m.modelId === modelId)) throw new Error(`unknown model: ${modelId}`);
     s.config = { ...(s.config || {}), model: modelId };
     return { models: modelsFor(s.config) };
@@ -490,11 +505,20 @@ const stdinFilter = new Transform({
       if (msg?.method && STDIN_INTERCEPTED.has(msg.method)) {
         const params = msg.params ?? {};
         const target = sessions.get(params.sessionId);
-        const ok = Boolean(target) && MODELS.some((m) => m.modelId === params.modelId);
+        const gone = REJECTED.has(params.modelId);
+        const ok = Boolean(target) && !gone && MODELS.some((m) => m.modelId === params.modelId);
         if (ok) target.config = { ...(target.config || {}), model: params.modelId };
+        // A refusal carries the reason in `data.details`, exactly like hermes does — the
+        // cockpit must be able to show the sentence, not just the protocol title.
         const reply = ok
           ? { jsonrpc: "2.0", id: msg.id, result: { models: modelsFor(target.config) } }
-          : { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown model: ${params.modelId}` } };
+          : {
+              jsonrpc: "2.0", id: msg.id,
+              error: {
+                code: -32602, message: "Invalid params",
+                data: { details: gone ? rejectDetails(params.modelId) : `unknown model: ${params.modelId}` },
+              },
+            };
         process.stdout.write(JSON.stringify(reply) + "\n");
         process.stderr.write(`[mock-agent] ${msg.method} -> ${ok ? "ok" : "rejected"} (${params.modelId})\n`);
         continue; // never forwarded: the SDK would 404 it

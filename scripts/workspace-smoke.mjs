@@ -230,8 +230,12 @@ try {
   await fetch(`${base}/api/sessions/${forked.id}`, { method: "DELETE", headers: H });
 
   // ---- models (ACP session model state + session/set_model) ----------------------
-  check("the mock advertises its models", created.models?.availableModels?.length === 3,
-    JSON.stringify(created.models?.currentModelId));
+  // Contract, not a count: the fixtures the cockpit's model paths are tested against (a
+  // switchable pair plus the listed-but-refused `mock:gone`) must be in the advertisement.
+  const advertised = (created.models?.availableModels ?? []).map((m) => m.modelId);
+  check("the mock advertises its models",
+    ["mock:fast", "mock:deep", "mock:gone"].every((id) => advertised.includes(id)),
+    JSON.stringify(advertised));
   const switched = await j(await fetch(`${base}/api/sessions/${created.id}/model`, {
     method: "POST", headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ modelId: "mock:deep" }),
@@ -241,6 +245,17 @@ try {
     method: "POST", headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ modelId: "mock:nope" }),
   })).status === 400);
+  // A refused switch must report WHY (the agent's `data.details`), not the JSON-RPC title
+  // "Invalid params" — the whole point of §61: a listed model can still be unswitchable.
+  const refusedSwitch = await fetch(`${base}/api/sessions/${created.id}/model`, {
+    method: "POST", headers: { "content-type": "application/json", ...H },
+    body: JSON.stringify({ modelId: "mock:gone" }),
+  });
+  const refusedSwitchBody = await j(refusedSwitch);
+  check("a refused switch is a 400 that carries the agent's reason",
+    refusedSwitch.status === 400 && /was not found in this provider's model listing/.test(String(refusedSwitchBody.error))
+    && /Similar models/.test(String(refusedSwitchBody.error)),
+    `${refusedSwitch.status} ${JSON.stringify(refusedSwitchBody)}`);
   check("set-model needs a modelId", (await fetch(`${base}/api/sessions/${created.id}/model`, {
     method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({}),
   })).status === 400);
