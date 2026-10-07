@@ -97,14 +97,17 @@ if [ "$DRY" = 0 ]; then
 fi
 
 # ── 3. 停机 -> 库文件改名 -> 用新启动器拉起 ─────────────────────────────────
-say "3. 重启 :$LIVE_PORT（先停、改库名、再起）"
-run "bash -c '
-  pid=\"$(lsof -nP -iTCP:$LIVE_PORT -sTCP:LISTEN -t | head -1)\"
-  pgid=\"$(ps -o pgid= -p \"$pid\" | tr -d \" \")\"
-  kill -TERM -- \"-$pgid\" 2>/dev/null || kill -TERM \"$pid\" 2>/dev/null || true
-  for _ in $(seq 1 40); do [ -z \"$(lsof -nP -iTCP:$LIVE_PORT -sTCP:LISTEN -t 2>/dev/null)\" ] && break; sleep 0.5; done
-'"
-if [ "$DRY" = 0 ]; then
+say "3. 重启 :${LIVE_PORT}（先停、改库名、再起）"
+if [ "$DRY" = 1 ]; then
+  echo "  [dry] 停掉 :$LIVE_PORT 的进程组（TERM，等端口释放，最多 20s）"
+else
+  # 整组 TERM：监听进程是 launcher 的子进程，只杀它会把 watcher/holder 留着
+  _pid="$(pid_on "$LIVE_PORT")"
+  if [ -n "$_pid" ]; then
+    _pgid="$(ps -o pgid= -p "$_pid" | tr -d ' ')"
+    kill -TERM -"$_pgid" 2>/dev/null || kill -TERM "$_pid" 2>/dev/null || true
+    for _ in $(seq 1 40); do [ -z "$(pid_on "$LIVE_PORT")" ] && break; sleep 0.5; done
+  fi
   [ -z "$(pid_on "$LIVE_PORT")" ] || die "端口 $LIVE_PORT 没释放"
   echo "  端口已释放"
 fi
@@ -113,18 +116,24 @@ fi
 say "3b. 库文件改名 agentslot.sqlite* -> agentus.sqlite*"
 if [ -f "$DATA/agentus.sqlite" ]; then
   echo "  $DATA/agentus.sqlite 已存在——跳过（假定上次已迁过）"
+elif [ "$DRY" = 1 ]; then
+  echo "  [dry] mv $DATA/agentslot.sqlite{,-wal,-shm,.pre-fold.bak} -> agentus.sqlite*"
 else
-  run "for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-fold.bak; do
-    [ -e '$DATA/'\$f ] && mv '$DATA/'\$f '$DATA/'\"\${f/agentslot.sqlite/agentus.sqlite}\" && echo \"  renamed \$f\"
-  done; true"
+  for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-fold.bak; do
+    if [ -e "$DATA/$f" ]; then
+      mv "$DATA/$f" "$DATA/${f/agentslot.sqlite/agentus.sqlite}"
+      echo "  renamed $f"
+    fi
+  done
 fi
+
 if [ "$DRY" = 0 ]; then
   [ -f "$DATA/agentus.sqlite" ] || die "改名后没看到 $DATA/agentus.sqlite——不要继续"
   echo "  库文件就位: $(ls -la "$DATA/agentus.sqlite" | awk '{print $5" bytes"}')"
 fi
 
 if [ "$DRY" = 1 ]; then
-  say "dry-run 结束：上面就是要做的全部动作，真跑请去掉 --dry-run（会重启 :$LIVE_PORT）"
+  say "dry-run 结束：上面就是要做的全部动作，真跑请去掉 --dry-run（会重启 :${LIVE_PORT}）"
   exit 0
 fi
 
@@ -137,7 +146,7 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 [ -n "$NEW_PID" ] || die ":$LIVE_PORT 没起来——看 /tmp/agentus-server.log"
-[ "$NEW_PID" != "$LIVE_PID" ] || die "pid 没变（$NEW_PID）——旧进程还在跑，发布没生效"
+[ "$NEW_PID" != "$LIVE_PID" ] || die "pid 没变（${NEW_PID}）——旧进程还在跑，发布没生效"
 echo "  pid $LIVE_PID -> $NEW_PID  ✅ 是新进程"
 
 # ── 4. 回读验证 ─────────────────────────────────────────────────────────────
