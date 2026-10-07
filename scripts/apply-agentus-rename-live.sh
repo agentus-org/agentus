@@ -58,35 +58,16 @@ echo "  live 版本 : ${ASSET_BEFORE:-（取不到）}"
 echo "  启动器    : $LOLD  ->  $LNEW"
 
 # ── 1. 启动器目录改名 + AGENTSLOT_* -> AGENTUS_* ─────────────────────────────
-say "1. 启动器目录改名（$LOLD -> $LNEW）"
+say "1. 启动器目录改名（${LOLD} -> ${LNEW}）"
 if [ -d "$LNEW" ]; then
-  echo "  $LNEW 已存在——跳过移动（假定上次已经迁过）"
+  echo "  ${LNEW} 已存在——跳过移动（假定上次已经迁过）"
 else
   run "mv '$LOLD' '$LNEW'"
 fi
-# 里面的脚本：AGENTSLOT_ 前缀换掉；cache/agentslot 路径换掉；worktrees/agentslot 的引用
-# 一律保留（本次不改 worktree 目录名，见报告）。用占位符保护它，避免误伤。
-run "python3 - '$LNEW' <<'PY'
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
-PH = '@@WORKTREE_KEEP@@'
-n = 0
-for p in root.rglob('*'):
-    if not p.is_file(): continue
-    try: t = p.read_text(encoding='utf-8')
-    except Exception: continue
-    o = t
-    t = t.replace('worktrees/agentslot', PH)         # 保护：worktree 目录本次不改名
-    t = t.replace('cache/agentslot', 'cache/agentus')
-    t = t.replace('AGENTSLOT_', 'AGENTUS_')
-    t = t.replace('AgentSlot', 'Agentus')
-    t = t.replace('agentslot', 'agentus')
-    t = t.replace(PH, 'worktrees/agentslot')
-    if t != o:
-        p.write_text(t, encoding='utf-8'); n += 1
-print(f'  启动器脚本更新 {n} 个文件')
-PY"
-run "mv '$LNEW/agentslot-root.crt' '$LNEW/agentus-root.crt' 2>/dev/null || true"
+# 里面的脚本：AGENTSLOT_ 前缀换掉、cache/agentslot 路径换掉；worktrees/agentslot 的引用一律
+# 保留（本次不改 worktree 目录名，见报告）。逻辑在 scripts/agentus-rename-launcher-dir.py，
+# 已用真实目录的副本验过（86 个文件改净、0 残留、worktree 引用完好）。
+run "python3 '$HERE/scripts/agentus-rename-launcher-dir.py' '$LNEW'"
 if [ "$DRY" = 0 ]; then
   LEFT="$(grep -rl 'AGENTSLOT' "$LNEW" 2>/dev/null | head -5 || true)"
   [ -z "$LEFT" ] || die "启动器目录里仍有 AGENTSLOT：$LEFT"
