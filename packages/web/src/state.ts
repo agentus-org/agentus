@@ -23,7 +23,12 @@ export type MsgView =
       input: string;
       at?: number;
     }
-  | { key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[]; at?: number }
+  | {
+      key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[];
+      /** set by the server's turn lifecycle when the run ended with unfinished steps */
+      terminal?: string;
+      at?: number;
+    }
   | { key: string; kind: "meta"; text: string };
 
 /** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
@@ -1133,10 +1138,17 @@ class Cockpit {
         break;
       }
       case "plan": {
+        // ACP plan frames are whole-list snapshots (replace semantics), so every frame
+        // folds into the ONE card the transcript shows. `_slotPlanTerminal` is the cockpit's
+        // own field — the server's turn lifecycle stamps it when a run ends with unfinished
+        // steps (the agent can never set it; same rule as Studio's execution_state).
         const items = ((p.entries ?? []) as { content: string; status: string; priority?: string }[]);
+        const terminal = typeof p._slotPlanTerminal === "string" ? p._slotPlanTerminal : undefined;
         const existing = list.find((x) => x.kind === "plan");
-        if (existing && existing.kind === "plan") existing.items = items;
-        else list.push({ key: `m${m.seq}`, kind: "plan", items, at });
+        if (existing && existing.kind === "plan") {
+          existing.items = items;
+          existing.terminal = terminal;
+        } else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, at });
         break;
       }
       case "meta":

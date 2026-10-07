@@ -328,6 +328,26 @@ button { font: inherit; }
 .msg.meta .bubble { color: var(--err); font-size: 13px; background: rgba(229, 115, 115, 0.08); }
 .usage-note { color: var(--text-dim); font-size: 11.5px; line-height: 1.5; max-width: 46ch; }
 .msg.plan .bubble { border-left: 3px solid var(--ok); background: rgba(78, 201, 160, 0.06); font-size: 13.5px; }
+/* Task plan card (PlanCard) — same card family as .tool-card: line border, accent stripe
+   that turns green when the whole plan is done, three-state step icons. */
+.plan-card { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 3px 8px; background: var(--bg-panel); }
+.plan-card.completed { border-left-color: var(--ok); }
+.plan-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-align: start; }
+.plan-head:hover { color: var(--accent-text); }
+.plan-title { font-weight: 600; flex: 0 0 auto; }
+.plan-count { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.plan-state { font-size: 11.5px; padding: 0 6px; border-radius: 999px; line-height: 18px; }
+.plan-state.running { color: var(--accent-text); background: rgba(var(--accent-rgb, 90, 140, 255), 0.12); }
+.plan-state.done { color: var(--ok); background: rgba(78, 201, 160, 0.12); }
+.plan-state.terminal { color: var(--err); background: rgba(var(--err-rgb), 0.10); }
+.plan-head .tool-chev { margin-inline-start: auto; }
+.plan-body { list-style: none; margin: 2px 0 4px; padding: 4px 0 0; border-top: 1px dashed var(--line); }
+.plan-step { display: flex; align-items: baseline; gap: 8px; padding: 2.5px 0; font-size: 13px; }
+.plan-step .step-icon { flex: 0 0 14px; text-align: center; color: var(--text-dim); }
+.plan-step.completed .step-icon { color: var(--ok); }
+.plan-step.completed .step-title { color: var(--text-dim); }
+.plan-step.in_progress .step-icon { color: var(--accent); animation: pulse 1.2s infinite; }
+.plan-step .step-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 pre.code {
   background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 12.8px;

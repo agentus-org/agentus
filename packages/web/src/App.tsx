@@ -1336,19 +1336,55 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
     case "tool":
       return <ToolCard m={m} />;
     case "plan":
-      if (!m.items.length) return null;
-      return (
-        <div className="msg plan"><div className="bubble">
-          {m.items.map((it, i) => (
-            <div key={i}>{it.status === "completed" ? "☑" : it.status === "in_progress" ? "▶" : "☐"} {it.content}</div>
-          ))}
-        </div></div>
-      );
+      return <PlanCard m={m} busy={busy} />;
     case "meta":
       return <div className="msg meta"><div className="bubble">{m.text}</div></div>;
     default:
       return null;
   }
+}
+
+/** Task plan card — every ACP `plan` frame is a whole-list snapshot (replace semantics),
+ *  so the transcript folds them into this ONE card. Mirrors hermes-studio's TaskPlanCard:
+ *  a count header that collapses, three-state step icons, and an execution-state line the
+ *  AGENT can never write — the server's turn lifecycle stamps `_slotPlanTerminal` when a
+ *  run ends with unfinished steps, and those steps demote back to pending (nothing runs
+ *  them anymore). Unknown statuses render neutral rather than as failures. */
+function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: boolean }): JSX.Element | null {
+  const [open, setOpen] = useState(true);
+  const total = m.items.length;
+  if (!total) return null;
+  const done = m.items.filter((it) => it.status === "completed").length;
+  const allDone = done === total;
+  const stateText =
+    m.terminal === "interrupted" ? "已打断"
+    : m.terminal === "failed" ? "运行出错"
+    : m.terminal === "ended" ? "回合结束"
+    : allDone ? "已完成"
+    : busy ? "进行中" : "";
+  const stateClass = m.terminal ? "terminal" : allDone ? "done" : busy ? "running" : "";
+  return (
+    <div className="msg">
+      <div className={`plan-card ${allDone && !m.terminal ? "completed" : ""}`}>
+        <button type="button" className="plan-head" onClick={() => setOpen((x) => !x)} aria-expanded={open} title="任务计划 · click to collapse/expand">
+          <span className="plan-title">任务计划</span>
+          <span className="plan-count">{done}/{total}</span>
+          {stateText ? <span className={`plan-state ${stateClass}`}>{stateText}</span> : null}
+          <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} />
+        </button>
+        {open ? (
+          <ol className="plan-body">
+            {m.items.map((it, i) => (
+              <li key={i} className={`plan-step ${it.status}`}>
+                <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : "○"}</span>
+                <span className="step-title">{it.content}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 /** Tool call card with viewable input/output (AionUi F-DISPLAY-03). Collapsed by

@@ -491,6 +491,18 @@ export class Store {
     return (row.m ?? 0) + 1;
   }
 
+  /** The newest plan row of a session, or null. Plans are whole-list snapshots
+   *  (ACP replace semantics), so the last row is the current truth. */
+  latestPlanMessage(sessionId: string): StoredMessage | null {
+    const exist = this.#db
+      .prepare(
+        `select seq, session_id, kind, payload, tool_call_id, created_at from messages
+         where session_id = ? and kind = 'plan' order by seq desc limit 1`,
+      )
+      .get(sessionId) as RawMessageRow | undefined;
+    return exist ? rowToMessage(exist) : null;
+  }
+
   appendMessage(m: Omit<StoredMessage, "seq">): StoredMessage {
     const seq = this.nextSeq(m.sessionId);
     this.#db

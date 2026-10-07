@@ -204,6 +204,9 @@ export class SessionManager {
       }
       if (row.status !== "closed") {
         this.#store.upsertSession({ ...row, status: "error", closedAt: Date.now(), pid: null });
+        // A crash between turns left the plan card mid-work with nothing to finish it; the
+        // startup reclaim is the one that owns the run now, so it closes the card honestly.
+        this.#finalizePlan(row.id, "interrupted");
       }
     }
     return killed;
@@ -674,8 +677,11 @@ export class SessionManager {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ContentBlock union, built by hand
         prompt: blocks as any,
       });
+      const terminalState = res?.stopReason === "cancelled" ? "interrupted" : "ended";
+      this.#finalizePlan(sessionId, terminalState);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
+      this.#finalizePlan(sessionId, "failed");
       this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
@@ -765,6 +771,26 @@ export class SessionManager {
       });
     }
     this.#updateSession(s);
+  }
+
+  /** Turn lifecycle closes the plan card (the Studio rule: the agent may never set the
+   *  execution state — only the run does). A leftover `in_progress` step is demoted back to
+   *  `pending` (nothing runs it anymore) and the card gets an honest terminal line; without
+   *  this, a crash or an interrupted turn leaves the card pretending to work forever.
+   *  Writes only when the newest plan still has unfinished steps — a plan the agent closed
+   *  out itself (all completed) needs no banner. Idempotent per state. */
+  #finalizePlan(sessionId: string, state: "ended" | "interrupted" | "failed"): void {
+    const last = this.#store.latestPlanMessage(sessionId);
+    if (!last) return;
+    const p = last.payload as Record<string, unknown>;
+    if (p._slotPlanTerminal === state) return;
+    const entries = Array.isArray(p.entries) ? (p.entries as Record<string, unknown>[]) : [];
+    if (!entries.some((e) => e.status === "in_progress" || e.status === "pending")) return;
+    const demoted = entries.map((e) => (e.status === "in_progress" ? { ...e, status: "pending" } : e));
+    const stored = this.#store.appendMessage({
+      sessionId, kind: "plan", payload: { ...p, entries: demoted, _slotPlanTerminal: state }, createdAt: Date.now(),
+    });
+    this.#emit({ t: "message", message: stored });
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -989,6 +1015,7 @@ export class SessionManager {
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);
     const row = this.#store.getSession(live.info.id);
     if (row) this.#store.upsertSession({ ...row, status: "error", pid: null });
+    this.#finalizePlan(live.info.id, "failed"); // the turn died with the process — close the card honestly
     this.#emit({ t: "session", session: live.info });
     this.#emit({ t: "turn-end", sessionId: live.info.id, error: live.info.lastError });
   }
