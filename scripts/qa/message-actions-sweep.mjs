@@ -72,7 +72,10 @@ check("fork appears on the LAST message only", shape.forks === 1 && shape.forkOn
 const rowShape = await ev(`(() => {
   const rows = [...document.querySelectorAll('.bubble-actions')];
   const row = rows[rows.length - 1];
-  const kids = [...row.children].map((b) => {
+  // buttons only: since §59 the same row also carries the message's own time (.msg-at), which is
+  // deliberately not a button and not the same size — counting row.children made this sweep red
+  // for a feature that landed *before* the rename it was being blamed on.
+  const kids = [...row.querySelectorAll('.bubble-btn')].map((b) => {
     const r = b.getBoundingClientRect();
     return { cls: b.className, w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top),
       text: (b.textContent || '').trim(), icon: !!b.querySelector('svg') };
@@ -110,7 +113,10 @@ await sleep(400);
 const staged = await ev(`(() => { const btn = document.querySelector('.msg.user .bubble-btn.copy');
   const r = btn.getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2, onScreen: r.top >= 0 && r.bottom <= innerHeight,
-    bubble: document.querySelector('.msg.user .bubble').innerText.trim() }; })()`);
+    // the bubble also carries the message's own time (§59) — the clipboard must hold the TEXT,
+    // so the oracle is the bubble minus the .msg-at element, not the whole bubble
+    bubble: (() => { const c = document.querySelector('.msg.user .bubble').cloneNode(true);
+      c.querySelectorAll('.msg-at').forEach((n) => n.remove()); return c.textContent.trim(); })() }; })()`);
 check("the copy button under test is on screen (a trusted click needs viewport coords)", staged.onScreen === true, JSON.stringify({ y: Math.round(staged.y) }));
 for (const type of ["mousePressed", "mouseReleased"]) {
   await send("Input.dispatchMouseEvent", { type, x: staged.x, y: staged.y, button: "left", clickCount: 1, buttons: type === "mousePressed" ? 1 : 0 });
@@ -180,7 +186,7 @@ check("no horizontal overflow at 390px", phone.overflowX === 0, `overflow=${phon
 const phoneRow = await ev(`(() => {
   const rows = [...document.querySelectorAll('.bubble-actions')];
   const row = rows[rows.length - 1];
-  return { kids: [...row.children].map((b) => { const r = b.getBoundingClientRect();
+  return { kids: [...row.querySelectorAll('.bubble-btn')].map((b) => { const r = b.getBoundingClientRect();
     return { cls: b.className, w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) }; }) };
 })()`);
 check("on a phone the three actions are still one uniform, thumb-sized row",
