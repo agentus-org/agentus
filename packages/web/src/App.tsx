@@ -1376,7 +1376,7 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
           <ol className="plan-body">
             {m.items.map((it, i) => (
               <li key={i} className={`plan-step ${it.status}`}>
-                <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : "○"}</span>
+                <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : it.status === "cancelled" ? "✕" : "○"}</span>
                 <span className="step-title">{it.content}</span>
               </li>
             ))}

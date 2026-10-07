@@ -347,6 +347,8 @@ button { font: inherit; }
 .plan-step.completed .step-icon { color: var(--ok); }
 .plan-step.completed .step-title { color: var(--text-dim); }
 .plan-step.in_progress .step-icon { color: var(--accent); animation: pulse 1.2s infinite; }
+.plan-step.cancelled .step-icon { color: var(--err); }
+.plan-step.cancelled .step-title { color: var(--text-dim); text-decoration: line-through; }
 .plan-step .step-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 pre.code {
   background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--line); border-radius: 8px;
