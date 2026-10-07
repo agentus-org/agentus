@@ -46,9 +46,14 @@ api() { curl -s --noproxy '*' -m 8 -H "Authorization: Bearer $(cat "$TOKEN" 2>/d
 # 就在这一类里）。两个都要看，否则"会话列表还在"这条检查会退化成 0>=0 的空转（2026-10-08 实测）。
 allsids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log([...(j.live||[]),...(j.archived||[])].map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
-# 要恢复的：被重启打断的（error/ready/cold…），不包括操作者自己关掉的 closed —— 那是他的决定。
+# 要恢复的 = 重启前【正在跑】的那些（就是这次重启会杀掉的那些）。别用"live+archived 里所有非 closed"：
+# 那个口径会把历史上早已死掉的几十条冷会话一起拉起来（实测 dry-run 列出 19 个 id，含远古 QA 会话），
+# 每条都要 spawn 一个 agent、大多注定失败。冷会话留给操作者在座舱里按需点恢复。
 resumeids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log([...(j.live||[]),...(j.archived||[])].filter(x=>x.status!=="closed").map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log((j.live||[]).map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
+# 冷会话（archived 里非 closed）只报数，不自动恢复。
+coldcount() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log((j.archived||[]).filter(x=>x.status!=="closed").length)}catch{console.log("0")}})'; }
 
 # ── 0. 前置检查 ──────────────────────────────────────────────────────────────
 say "0. 前置检查"
@@ -70,7 +75,7 @@ ASSET_BEFORE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/api/vers
 echo "  dev 分支 : $SLUG @ $(git -C "$HERE" rev-parse --short HEAD)"
 echo "  live 树   : $LIVE  (pid $LIVE_PID)"
 echo "  live 会话 : ${SESS_BEFORE:-（无）}"
-echo "  待恢复    : ${RESUME_BEFORE:-（无）}"
+echo "  待恢复    : ${RESUME_BEFORE:-（无）}（另有冷会话 $(coldcount) 条，座舱里按需点恢复）"
 echo "  live 版本 : ${ASSET_BEFORE:-（取不到）}"
 echo "  启动器    : $LOLD  ->  $LNEW"
 
