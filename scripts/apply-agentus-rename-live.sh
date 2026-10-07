@@ -40,8 +40,13 @@ run()  { if [ "$DRY" = 1 ]; then echo "  [dry] $*"; else eval "$@"; fi; }
 die()  { echo "FAILED: $*" >&2; exit 1; }
 pid_on() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 api() { curl -s --noproxy '*' -m 8 -H "Authorization: Bearer $(cat "$TOKEN" 2>/dev/null)" "$@"; }
-sids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log((JSON.parse(s).live||[]).map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
+# 会话可能出现在 live（有 agent 在跑）或 archived（agent 已经没了 —— 重启之后，原来 live 的那些
+# 就在这一类里）。两个都要看，否则"会话列表还在"这条检查会退化成 0>=0 的空转（2026-10-08 实测）。
+allsids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log([...(j.live||[]),...(j.archived||[])].map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
+# 要恢复的：被重启打断的（error/ready/cold…），不包括操作者自己关掉的 closed —— 那是他的决定。
+resumeids() { api "http://127.0.0.1:$LIVE_PORT/api/sessions" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log([...(j.live||[]),...(j.archived||[])].filter(x=>x.status!=="closed").map(x=>x.id).join("\n"))}catch{console.log("")}})'; }
 
 # ── 0. 前置检查 ──────────────────────────────────────────────────────────────
 say "0. 前置检查"
@@ -57,11 +62,13 @@ else
 fi
 LIVE_PID="$(pid_on "$LIVE_PORT" || true)"; [ -n "$LIVE_PID" ] || die ":$LIVE_PORT 没有监听的进程——live 没在跑，别用这个脚本"
 git -C "$HERE" diff --quiet && git -C "$HERE" diff --cached --quiet || die "dev 树有未提交的改动，先 commit"
-SESS_BEFORE="$(sids | tr '\n' ' ')"
+SESS_BEFORE="$(allsids | tr '\n' ' ')"
+RESUME_BEFORE="$(resumeids | tr '\n' ' ')"
 ASSET_BEFORE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/api/version" || true)"
 echo "  dev 分支 : $SLUG @ $(git -C "$HERE" rev-parse --short HEAD)"
 echo "  live 树   : $LIVE  (pid $LIVE_PID)"
 echo "  live 会话 : ${SESS_BEFORE:-（无）}"
+echo "  待恢复    : ${RESUME_BEFORE:-（无）}"
 echo "  live 版本 : ${ASSET_BEFORE:-（取不到）}"
 echo "  启动器    : $LOLD  ->  $LNEW"
 
@@ -176,7 +183,7 @@ ck "数据目录仍是 live 的 .data（没被 QA 库顶掉）" \
    "$(echo "$ENVS" | grep -q "AGENTUS_DATA=$DATA$" && echo 1 || echo 0)"
 ck "端口仍是 $LIVE_PORT" "$(echo "$ENVS" | grep -q "^AGENTUS_PORT=$LIVE_PORT$" && echo 1 || echo 0)"
 
-SESS_AFTER="$(sids | tr '\n' ' ')"
+SESS_AFTER="$(allsids | tr '\n' ' ')"
 ck "会话列表还在（${SESS_BEFORE:-无} -> ${SESS_AFTER:-无}）" \
    "$([ "$(echo "${SESS_AFTER:-}" | wc -w)" -ge "$(echo "${SESS_BEFORE:-}" | wc -w)" ] && echo 1 || echo 0)"
 
@@ -195,7 +202,7 @@ ck "旧日志路径未再被写入（/tmp/agentus-server.log 新鲜）" \
 
 # ── 5. 槽位恢复 ─────────────────────────────────────────────────────────────
 say "5. 把每个 live 槽位恢复（重启杀掉了它们的 agent 子进程）"
-for id in $SESS_BEFORE; do
+for id in $RESUME_BEFORE; do
   code="$(api -o /dev/null -w '%{http_code}' -X POST -m 90 "http://127.0.0.1:$LIVE_PORT/api/sessions/$id/resume" || true)"
   echo "  resume $id -> HTTP $code"
 done
