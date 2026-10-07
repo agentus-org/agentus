@@ -158,6 +158,10 @@ interface LiveSession {
    *  today only the throwaway fork used to summarise the conversation for a title. Anything
    *  whose sessionId is not `info.acpSessionId` is routed here and never persisted. */
   collectors: Map<string, (u: Record<string, unknown>) => void>;
+  /** Set while restart() is swapping this slot's process. The child that is exiting belongs to the
+   *  slot being REPLACED, so its exit must not be read as "the agent died" — that would stamp
+   *  `error` on the row its replacement is adopting and fire a turn-end on a slot mid-swap. */
+  replacing?: boolean;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -394,9 +398,12 @@ export class SessionManager {
    *  a deliberate close): spawn a fresh child and ask the agent to load the old
    *  ACP session, then re-apply the stored mode/effort. AC5's "restart and keep
    *  going" half — no intelligence here, the agent owns the transcript. */
-  async resume(id: string): Promise<SessionInfo> {
+  async resume(id: string, opts: { replace?: boolean } = {}): Promise<SessionInfo> {
+    // `replace` is restart()'s path: the slot is still in the map on purpose (dropping it made the
+    // rail flash the slot as cold for the length of a spawn), so the "already live, nothing to do"
+    // shortcut has to be skipped and the fresh child takes its place.
     const existing = this.#sessions.get(id);
-    if (existing) return existing.info;
+    if (existing && !opts.replace) return existing.info;
 
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`unknown session: ${id}`);
@@ -591,6 +598,61 @@ export class SessionManager {
       });
       throw err instanceof Error ? err : new Error(String(err));
     }
+  }
+
+  /** Swap the agent process under a LIVE slot, keeping everything the operator can see: same slot
+   *  id, same ACP session (the transcript lives agent-side), same stored picks (model, mode,
+   *  thinking depth). Only the pid changes.
+   *
+   *  Why it exists: a spawned CLI holds the modules it loaded at startup, so a fix sitting on disk
+   *  is invisible to a slot that is already up. Before this the only way to pick new code up was
+   *  archive → un-archive (measured 2026-10-07: exactly that dance was needed for a thinking-depth
+   *  fix). This reuses the resume path instead of duplicating it — resume already rebuilds a child,
+   *  calls loadSession, and re-applies the stored picks, including the rule that the OPERATOR's
+   *  thinking depth wins over whatever the backend re-announces on load.
+   *
+   *  A restart kills the process mid-turn; the client confirms that with the operator first. */
+  async restart(id: string): Promise<SessionInfo> {
+    const live = this.#sessions.get(id);
+    if (!live) throw new Error(`session ${id} has no running agent to restart`);
+    // The slot stays IN the map for the whole swap: it keeps its place in the rail, and it must
+    // never read as cold while the old child dies (an earlier revision deleted it here and the
+    // operator watched their slot flicker into the archive for a second — measured on :8901).
+    // Mark the swap BEFORE the signal, so the exit we are causing is not read as a dead agent.
+    live.replacing = true;
+    for (const { resolve, timer } of live.pendingPermissions.values()) {
+      clearTimeout(timer);
+      resolve({ outcome: { outcome: "cancelled" } });
+    }
+    live.pendingPermissions.clear();
+    live.busy = false;
+    // show the swap honestly: "starting" with no pid, not a pid that is already gone
+    live.info.status = "starting";
+    live.info.pid = null;
+    this.#updateSession(live);
+    await this.#stopChild(live, 5000);
+    return this.resume(id, { replace: true });
+  }
+
+  /** SIGTERM, then SIGKILL if it will not go. Resolves once the child is really gone, so the caller
+   *  can spawn its replacement without two processes racing over the same session state. */
+  #stopChild(live: LiveSession, graceMs: number): Promise<void> {
+    const child = live.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        // SIGKILL cannot be caught, so its exit event is the honest signal — but never hang the
+        // request on a zombie that never reports one.
+        setTimeout(done, 250);
+      }, graceMs);
+      child.once("exit", done);
+      child.kill("SIGTERM");
+    });
   }
 
   /** Sessions we know about on disk but have no process for (rail's cold slots). */
@@ -1005,6 +1067,9 @@ export class SessionManager {
   #onChildExit(live: LiveSession, code: number | null, sig: string | null): void {
     // If we initiated close, session was already removed — ignore.
     if (!this.#sessions.has(live.info.id)) return;
+    // …and if we are REPLACING this slot's process (restart), the exit is the one we asked for: the
+    // slot has not failed, it is coming back on a new child.
+    if (live.replacing) return;
     for (const { resolve, timer } of live.pendingPermissions.values()) {
       clearTimeout(timer);
       resolve({ outcome: { outcome: "cancelled" } });

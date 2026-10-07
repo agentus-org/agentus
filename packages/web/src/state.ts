@@ -879,6 +879,40 @@ class Cockpit {
     }
   }
 
+  /** Swap the agent process under a live slot: same session, same picks, new pid. What makes a code
+   *  change on disk (or a changed backend config) real for a slot that is already up — a spawned CLI
+   *  keeps the modules it loaded at startup, so only a fresh process can see them. */
+  async restart(id: string): Promise<void> {
+    try {
+      const info = await this.#req<SessionInfo>(`/api/sessions/${id}/restart`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
+      const view = this.#view(id);
+      view.info = { ...view.info, ...info };
+      for (const list of [this.sessions, this.archived]) {
+        const i = list.findIndex((s) => s.id === id);
+        if (i >= 0) list[i] = { ...list[i], ...info };
+      }
+      this.bump();
+    } catch (e) {
+      const status = (e as { httpStatus?: number }).httpStatus;
+      const body = (e as { httpBody?: ResumeRefusal }).httpBody;
+      // A refused restart is the same dead handoff a refused resume is: the agent cannot adopt this
+      // session in this home. Same dialog, same only-useful-action (delete it).
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing")) {
+        const info = this.sessions.find((s) => s.id === id);
+        this.blocked = {
+          id,
+          title: info?.title ?? id,
+          code: body.code,
+          sessionHome: body.sessionHome ?? null,
+          rowHome: body.rowHome ?? null,
+        };
+        this.bump();
+        return;
+      }
+      this.#setNet(false, `重启 agent 进程失败：${String((e as Error).message ?? e)}`);
+    }
+  }
+
   /** Close the refusal dialog without deleting anything (the slot stays cold in the rail). */
   dismissBlocked(): void {
     this.blocked = null;

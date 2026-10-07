@@ -806,6 +806,30 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           throw e;
         }
       }
+      if (req.method === "POST" && sub === "/restart") {
+        // Swap the agent process under a LIVE slot — the operator's "make this slot run the code I
+        // just changed" button. Same session, same picks, new pid. A cold slot has no process to
+        // replace: that is /resume, and saying so beats a 500.
+        if (!mgr.hasSession(id)) return send(res, 404, { error: `session ${id} has no running agent — resume it instead` });
+        try {
+          const info = await mgr.restart(id);
+          emit(sessionsEvent());
+          return send(res, 200, info);
+        } catch (e) {
+          // Same refusal shape as /resume: the agent could not adopt the session in this home, and
+          // the only useful action is the same one (delete the dead slot).
+          if (e instanceof SessionUnavailable) {
+            emit(sessionsEvent());
+            return send(res, 409, {
+              error: e.message,
+              code: e.code,
+              sessionHome: e.sessionHome,
+              rowHome: e.rowHome,
+            });
+          }
+          throw e;
+        }
+      }
       if (req.method === "GET" && sub === "/messages") {
         // Paging contract (M4):
         //   no params / tail=1   -> NEWEST page, oldest-first, hasOlder says more exist above

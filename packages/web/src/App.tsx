@@ -362,16 +362,18 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
   );
 }
 
-/** Everything that acts on a SESSION, in one menu: rename, fork, workspace, id, resume,
+/** Everything that acts on a SESSION, in one menu: rename, fork, workspace, id, resume, restart,
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onResume, onCloseSession, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onCloseSession, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; canFork: boolean;
   onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
   onFork: () => void; onWorkspace: () => void;
   onExport: () => void;
+  /** Live slots only: swap the agent process under this slot — same session and picks, new pid. */
+  onRestart: () => void;
   onResume: () => void; onCloseSession: () => void; onDelete: () => void;
 }): JSX.Element {
   const panel = useRef<HTMLDivElement>(null);
@@ -427,7 +429,9 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
       {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
       {item("导出会话（Markdown）", <IconDownload size={14} />, onExport)}
       {item("复制会话 ID", <IconCopy size={14} />, () => { void copyText(info.id); })}
-      {cold ? item("取消归档并恢复", <IconResume size={14} />, onResume) : null}
+      {cold
+        ? item("取消归档并恢复", <IconResume size={14} />, onResume)
+        : item("重启 agent 进程", <IconPower size={14} />, onRestart)}
       {cold
         ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true)
         : item("归档会话", <IconArchive size={14} />, onCloseSession)}
@@ -812,6 +816,11 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
             document.body.appendChild(a); a.click(); a.remove();
           }}
           onResume={() => { setMenu(null); void cockpit.resume(menuInfo.id); }}
+          onRestart={() => {
+            setMenu(null);
+            // The one honest warning: this kills the process, so a turn in flight dies with it.
+            if (confirm(`重启“${menuInfo.title}”的 agent 进程？\n\n旧进程退出、新进程接管同一个会话：对话记录、模型和思考深度都保留，只有进程换新（改完代码或改了后端配置后，用它让槽位吃到新东西）。正在跑的这一轮会被中断。`)) void cockpit.restart(menuInfo.id);
+          }}
           onCloseSession={() => {
             setMenu(null);
             if (confirm(`归档“${menuInfo.title}”？\n\nagent 进程会退出，记录保留在归档里（随时可取消归档并恢复）。`)) cockpit.closeSession(menuInfo.id);
