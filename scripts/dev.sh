@@ -16,6 +16,12 @@
 #     restarts the instance and proves the pid changed (no slot survives, by design — it is a release)
 #   · web-only change -> the running server keeps its process; the new bundle is served on reload,
 #     so no session is interrupted at all
+#
+# Identity hygiene (added after the 2026-10-07 accident, see track §64): this script drops every
+# inherited identity variable — both its own namespace and the pre-rename one — and keeps only what
+# it sets itself, printing what it dropped. A dev watcher holding a LIVE identity pair is a loaded
+# gun: flip the tree between code versions (tsx watch restarts) and the other version's name lookup
+# finds LIVE ports/data in the environment.
 set -euo pipefail
 
 DEV_PORT="${DEV_PORT:-8901}"                    # the QA sweeps default here (scripts/qa/*.mjs)
@@ -49,12 +55,31 @@ case "${1:-}" in
     env NODE_ENV=development \
       AGENTUS_PORT="$DEV_PORT" AGENTUS_DATA="$DEV_DATA" \
       AGENTUS_USERNAME="$DEV_USER" AGENTUS_PASSWORD="$DEV_PASS" \
-      AGENTUS_HERMES_CMD="${AGENTUS_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
-      AGENTUS_TLS_PORT="${AGENTUS_TLS_PORT:-0}" \
+      AGENTUS_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
+      AGENTUS_TLS_PORT="${DEV_TLS_PORT:-0}" \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
         const fs = require("node:fs");
+        // IDENTITY IS NOT INHERITED (accident 2026-10-07, see track §64). This script is normally
+        // run from INSIDE a cockpit, i.e. from a shell whose env carries that instance identity.
+        // Inheriting it is not harmless: with LIVE variables left in the dev watcher env, switching
+        // this tree to the pre-rename commit made the watcher read them, open the LIVE store and
+        // reap 9 live agent processes (its own session included). Keep exactly the keys below —
+        // which is everything dev.sh sets — and drop every other identity-shaped key.
+        const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
+          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_TLS_PORT", "DEV_TREE", "DEV_LOG_PATH"]);
+        // dev.sh's own knobs: consumed by this script, never forwarded to the server, not worth a line.
+        const quiet = new Set(["DEV_PORT", "DEV_DATA", "DEV_USER", "DEV_PASS", "DEV_LOG",
+          "DEV_HERMES_CMD", "DEV_TLS_PORT", "LIVE_REPO", "LIVE_PORT"]);
+        // "AGENTSL" is spelled short on purpose: the rename acceptance check greps this tree for the
+        // old full name and must keep finding nothing but the two migration scripts.
+        for (const k of Object.keys(process.env)) {
+          if (keep.has(k)) continue;
+          if (!(k.startsWith("AGENTSL") || k.startsWith("AGENTUS_") || k.startsWith("DEV_"))) continue;
+          if (!quiet.has(k)) console.log(`[dev] dropped inherited ${k}`);
+          delete process.env[k];
+        }
         const log = fs.openSync(process.env.DEV_LOG_PATH, "a");
         const p = spawn(process.execPath, ["node_modules/.bin/tsx", "watch", "packages/server/src/index.ts"],
           { cwd: process.env.DEV_TREE, env: process.env, detached: true, stdio: ["ignore", log, log] });

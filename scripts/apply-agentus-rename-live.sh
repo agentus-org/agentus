@@ -68,10 +68,14 @@ fi
 # 保留（本次不改 worktree 目录名，见报告）。逻辑在 scripts/agentus-rename-launcher-dir.py，
 # 已用真实目录的副本验过（86 个文件改净、0 残留、worktree 引用完好）。
 run "python3 '$HERE/scripts/agentus-rename-launcher-dir.py' '$LNEW'"
+# 1b. 反向护栏：新启动器只认自己 pin 的那几个键，绝不吃调用者环境里带进来的身份
+#     （2026-10-07 事故就是「身份跟着环境走」；见 track §64）。幂等。
+run "python3 '$HERE/scripts/agentus-harden-launcher.py' '$LNEW/launch.py'"
 if [ "$DRY" = 0 ]; then
   LEFT="$(grep -rl 'AGENTSLOT' "$LNEW" 2>/dev/null | head -5 || true)"
   [ -z "$LEFT" ] || die "启动器目录里仍有 AGENTSLOT：$LEFT"
-  echo "  启动器目录已清干净"
+  grep -q 'identity hygiene' "$LNEW/launch.py" || die "新启动器没被加固（缺 identity hygiene 段）"
+  echo "  启动器目录已清干净 + 已加固"
 fi
 
 # ── 2. promote 改名后的代码到 live 树（live 仍在跑旧代码，不掉线）─────────────
@@ -79,10 +83,15 @@ say "2. 把改名代码落到 live 树（checkout run/$SLUG + npm install + buil
 OLD_TIP="$(git -C "$LIVE" rev-parse HEAD)"
 echo "  live 树 $OLD_TIP  ->  $(git -C "$HERE" rev-parse --short HEAD)"
 run "git -C '$LIVE' checkout -B 'run/$SLUG' $(git -C "$HERE" rev-parse HEAD)"
-run "cd '$LIVE' && npm install --no-audit --no-fund"
-run "cd '$LIVE' && npm run build"
+# NODE_ENV 显式写死：本机全局是 production，npm 会跳过 devDependencies —— 而 live 是用
+# node_modules/.bin/tsx 跑起来的（tsx 是 devDependency），装掉了就起不来。
+run "cd '$LIVE' && NODE_ENV=development npm install --no-audit --no-fund"
+run "cd '$LIVE' && NODE_ENV=development npm run build"
 if [ "$DRY" = 0 ]; then
-  LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist 2>/dev/null | head -5 || true)"
+  [ -x "$LIVE/node_modules/.bin/tsx" ] || die "live 树里没有 tsx（devDependency 被 NODE_ENV=production 跳过了）"
+  # 这两个脚本本身就是迁移工具，必然含旧名 —— 排除它们，否则检查会死在自己身上
+  LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+    --exclude='apply-agentus-*.sh' --exclude='agentus-rename-*.py' 2>/dev/null | head -5 || true)"
   [ -z "$LEFT" ] || die "live 树里仍有 AGENTSLOT：$LEFT"
   echo "  live 树文本已清干净"
 fi
@@ -153,7 +162,8 @@ ck "TLS 监听 $LIVE_TLS_PORT 在线" "$([ -n "$(pid_on "$LIVE_TLS_PORT")" ] && 
 TITLE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/" | grep -o '<title>[^<]*' | head -1 | sed 's/<title>//')"
 ck "页面标题是 Agentus（实得: ${TITLE:-空}）" "$(echo "$TITLE" | grep -q 'Agentus' && echo 1 || echo 0)"
 
-LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist 2>/dev/null | head -3 || true)"
+LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude='apply-agentus-*.sh' --exclude='agentus-rename-*.py' 2>/dev/null | head -3 || true)"
 ck "live 树全文无 AGENTSLOT（残留: ${LEFT:-无}）" "$([ -z "$LEFT" ] && echo 1 || echo 0)"
 
 ck "旧日志路径未再被写入（/tmp/agentus-server.log 新鲜）" \
