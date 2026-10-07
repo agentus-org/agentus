@@ -350,6 +350,16 @@ button { font: inherit; }
 .plan-step.cancelled .step-icon { color: var(--err); }
 .plan-step.cancelled .step-title { color: var(--text-dim); text-decoration: line-through; }
 .plan-step .step-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* The LIVE plan pinned above the composer (above the context strip): one collapsed line with a
+   per-step dot row, so the count is readable without expanding anything. */
+.plan-bar { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 1px 8px; margin-bottom: 6px; background: var(--bg-panel); }
+.plan-bar.completed { border-left-color: var(--ok); }
+.plan-bar .plan-body { max-height: 40vh; overflow-y: auto; }
+.plan-dots { display: inline-flex; align-items: center; gap: 2.5px; margin-inline-start: 2px; }
+.plan-dots .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--line); border: 1px solid var(--text-dim); box-sizing: border-box; }
+.plan-dots .dot.completed { background: var(--ok); border-color: var(--ok); }
+.plan-dots .dot.in_progress { background: var(--accent); border-color: var(--accent); animation: pulse 1.2s infinite; }
+.plan-dots .dot.cancelled { background: var(--err); border-color: var(--err); }
 pre.code {
   background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 12.8px;

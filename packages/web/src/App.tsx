@@ -1344,6 +1344,58 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
   }
 }
 
+/** The LIVE plan, pinned above the composer — above the context strip, exactly where the operator
+ *  asked for it: always in sight while typing, instead of buried in the scroll. Collapsed it is ONE
+ *  line: title, per-step dots (a filled dot per completed step), count, state. It does NOT move at
+ *  turn end; it is retired into the transcript only when a NEW turn produces a new plan (the state
+ *  layer splices the old card into its own turn's end). Mirrors Studio's TaskPlanCard semantics. */
+function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const plan = v.plan;
+  if (!plan || !plan.items.length) return null;
+  const total = plan.items.length;
+  const done = plan.items.filter((it) => it.status === "completed").length;
+  const allDone = done === total;
+  const stateText =
+    plan.terminal === "interrupted" ? "已打断"
+    : plan.terminal === "failed" ? "运行出错"
+    : plan.terminal === "ended" ? "回合结束"
+    : allDone ? "已完成"
+    : v.busy ? "进行中" : "待命中";
+  const stateClass = plan.terminal ? "terminal" : allDone ? "done" : v.busy ? "running" : "";
+  return (
+    <div className={`plan-bar ${allDone && !plan.terminal ? "completed" : ""}`}>
+      <button
+        type="button"
+        className="plan-head"
+        onClick={() => setOpen((x) => !x)}
+        aria-expanded={open}
+        title="任务计划 · 点击展开/折叠"
+      >
+        <span className="plan-title">任务计划</span>
+        <span className="plan-dots" aria-hidden="true">
+          {plan.items.map((it, i) => (
+            <span key={i} className={`dot ${it.status}`} />
+          ))}
+        </span>
+        <span className="plan-count">{done}/{total}</span>
+        <span className={`plan-state ${stateClass}`}>{stateText}</span>
+        <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} />
+      </button>
+      {open ? (
+        <ol className="plan-body">
+          {plan.items.map((it, i) => (
+            <li key={i} className={`plan-step ${it.status}`}>
+              <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : it.status === "cancelled" ? "✕" : "○"}</span>
+              <span className="step-title">{it.content}</span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
 /** Task plan card — every ACP `plan` frame is a whole-list snapshot (replace semantics),
  *  so the transcript folds them into this ONE card. Mirrors hermes-studio's TaskPlanCard:
  *  a count header that collapses, three-state step icons, and an execution-state line the
@@ -1351,7 +1403,7 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
  *  run ends with unfinished steps, and those steps demote back to pending (nothing runs
  *  them anymore). Unknown statuses render neutral rather than as failures. */
 function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: boolean }): JSX.Element | null {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const total = m.items.length;
   if (!total) return null;
   const done = m.items.filter((it) => it.status === "completed").length;
@@ -1368,6 +1420,11 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
       <div className={`plan-card ${allDone && !m.terminal ? "completed" : ""}`}>
         <button type="button" className="plan-head" onClick={() => setOpen((x) => !x)} aria-expanded={open} title="任务计划 · click to collapse/expand">
           <span className="plan-title">任务计划</span>
+          <span className="plan-dots" aria-hidden="true">
+            {m.items.map((it, i) => (
+              <span key={i} className={`dot ${it.status}`} />
+            ))}
+          </span>
           <span className="plan-count">{done}/{total}</span>
           {stateText ? <span className={`plan-state ${stateClass}`}>{stateText}</span> : null}
           <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} />
@@ -2698,6 +2755,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
         if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
       }}
     >
+      <PlanBar v={v} />
       <UsageRow v={v} />
       <div className="composer-inner" ref={composerRef}>
         {paletteOpen && (

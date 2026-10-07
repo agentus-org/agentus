@@ -11,6 +11,22 @@ import type {
 } from "@agentslot/shared";
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
 
+/** Plan step: ACP's own shape (content/status), plus the cockpit's terminal stamp. */
+export interface PlanStep { content: string; status: string; priority?: string }
+
+/** The plan the session is LIVING IN right now — rendered pinned above the composer, not in the
+ *  transcript. Whole-list snapshots replace it in place (ACP plan semantics), and the `turn` it
+ *  was born in decides when it gets archived into the transcript. */
+export interface LivePlan {
+  key: string;
+  items: PlanStep[];
+  /** set by the server's turn lifecycle when the run ended with unfinished steps */
+  terminal?: string;
+  at?: number;
+  /** user-turn ordinal: a plan frame from a later turn retires this one into the transcript */
+  turn: number;
+}
+
 export type MsgView =
   | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[]; at?: number }
   | { key: string; kind: "agent"; text: string; open: boolean; at?: number }
@@ -129,6 +145,15 @@ export interface SessionView {
   perms: PermissionRequestView[];
   busy: boolean;
   loaded: boolean; // history fetched
+  /** The LIVE plan: it is not in `msgs` at all — the composer pins it above the input. The
+   *  transcript only ever shows ARCHIVED plans (previous turns), placed at the end of the turn
+   *  they belonged to. `turn` is the user-turn it was born in: a plan frame arriving in a LATER
+   *  turn archives this one and takes its place. */
+  plan?: LivePlan | null;
+  /** current user-turn ordinal (incremented when a `user` row is ingested) */
+  turn: number;
+  /** index in `msgs` where the current turn's user row sits — where an archived plan lands */
+  turnStart: number;
   /** an older page exists on disk (M4: long slots are paged, not truncated) */
   hasOlder: boolean;
   loadingOlder: boolean;
@@ -580,6 +605,11 @@ class Cockpit {
       v.msgs = [];
       v.blocks.clear();
       v.minSeq = null;
+      // A rebuild is a new world: the live plan and the turn cursor start over, so the last
+      // plan frame in the replay becomes the live one and older ones archive to their turn.
+      v.plan = null;
+      v.turn = 0;
+      v.turnStart = 0;
       for (const m of messages) this.#ingest(v, m);
       v.loaded = true;
       v.hasOlder = Boolean(hasOlder);
@@ -895,6 +925,7 @@ class Cockpit {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
         msgs: [], perms: [], busy: false, loaded: false, hasOlder: false, loadingOlder: false,
         minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(), blocks: new Map(),
+        plan: null, turn: 0, turnStart: 0,
       };
       this.byId.set(id, v);
     }
@@ -959,6 +990,9 @@ class Cockpit {
         v.seen.clear();
         v.msgs = [];
         v.blocks.clear();
+        v.plan = null;
+        v.turn = 0;
+        v.turnStart = 0;
         this.#endOpenBubbles(v);
         for (const m of e.messages) this.#ingest(v, m);
         v.loaded = true;
@@ -1092,6 +1126,12 @@ class Cockpit {
                 .map((a) => ({ kind: String(a.kind ?? ""), name: String(a.name ?? "file") }))
             : [],
         });
+        // A user row IS a turn boundary. Only the live fold counts them: a paged older batch
+        // is history, and letting it bump the counter would retire the live plan behind our back.
+        if (!opts?.list) {
+          v.turn += 1;
+          v.turnStart = list.length - 1;
+        }
         break;
       // Streamed text: one message is one bubble, found by its `messageId` — a history page can no
       // longer split a reply (or a markdown table) in half, and a re-sent block does not become a
@@ -1138,17 +1178,44 @@ class Cockpit {
         break;
       }
       case "plan": {
-        // ACP plan frames are whole-list snapshots (replace semantics), so every frame
-        // folds into the ONE card the transcript shows. `_slotPlanTerminal` is the cockpit's
-        // own field — the server's turn lifecycle stamps it when a run ends with unfinished
-        // steps (the agent can never set it; same rule as Studio's execution_state).
-        const items = ((p.entries ?? []) as { content: string; status: string; priority?: string }[]);
+        // ACP plan frames are whole-list snapshots (replace semantics). TWO destinations:
+        //  · the frame born in the CURRENT turn becomes the LIVE plan — pinned above the composer,
+        //    never in the transcript (the operator asked for exactly this: a plan you can always
+        //    see while you type, instead of hunting for it in the scroll);
+        //  · a frame arriving in a LATER turn retires the previous live plan into the transcript,
+        //    placed at the END of the turn it belonged to (`turnStart` = this turn's user row), the
+        //    same rule Studio's positionTaskPlansAtTurnEnd implements.
+        // `_slotPlanTerminal` is the cockpit's own field — the server's turn lifecycle stamps it
+        // when a run ends with unfinished steps; the agent can never write it.
+        const items = ((p.entries ?? []) as PlanStep[]).map((e) => ({
+          content: String(e?.content ?? ""), status: String(e?.status ?? "pending"), priority: e?.priority,
+        }));
         const terminal = typeof p._slotPlanTerminal === "string" ? p._slotPlanTerminal : undefined;
-        const existing = list.find((x) => x.kind === "plan");
-        if (existing && existing.kind === "plan") {
-          existing.items = items;
-          existing.terminal = terminal;
-        } else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, at });
+        if (opts?.list) {
+          // A paged older batch is history: fold it into that page's own card (one per page —
+          // these rows are far behind the live edge, so per-turn placement buys nothing).
+          const old = list.find((x) => x.kind === "plan");
+          if (old && old.kind === "plan") { old.items = items; old.terminal = terminal; }
+          else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, at });
+          break;
+        }
+        const live = v.plan;
+        if (!live) {
+          v.plan = { key: `plan-${v.turn}`, items, terminal, at, turn: v.turn };
+        } else if (live.turn === v.turn) {
+          // same turn: the snapshot replaces the list in place (the agent rewriting its own plan)
+          live.items = items;
+          live.terminal = terminal;
+        } else {
+          // a new turn produced a plan: retire the old one to the END of ITS turn
+          const at2 = v.turnStart > 0 && v.turnStart <= v.msgs.length ? v.turnStart : v.msgs.length;
+          v.msgs.splice(at2, 0, {
+            key: live.key, kind: "plan", items: live.items, terminal: live.terminal, at: live.at,
+          });
+          v.blocks = reindexBlocks(v.msgs);
+          v.turnStart = Math.min(v.turnStart + 1, v.msgs.length);
+          v.plan = { key: `plan-${v.turn}`, items, terminal, at, turn: v.turn };
+        }
         break;
       }
       case "meta":
