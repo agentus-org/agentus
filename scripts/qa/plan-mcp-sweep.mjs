@@ -23,6 +23,7 @@
 // the file named by MOCK_PLAN_TOKEN_FILE (its own opt-in QA hook) because a token printed into a
 // transcript would be a credential in the operator's UI.
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -138,6 +139,21 @@ const hermesRow = builtinRows.find((r) => r.id === "hermes");
 check("the built-in hermes row is MCP-driven too (its frames are not rendered)",
   (hermesRow?.nativePlanSource ?? "none") === "none",
   `nativePlanSource=${hermesRow?.nativePlanSource}`);
+// The upgrade path, which the checks above cannot see: a fresh row is seeded WITH the value, while a
+// row that predates the column — i.e. every row an existing install already has — is NULL. Those are
+// the rows an operator's cockpit actually runs on, so assert the NULL case lands on the same default
+// (deriving it from the kind instead would report `acp` for Hermes while everything else says `none`).
+{
+  const db = new DatabaseSync(path.join(DATA, "agentus.sqlite"));
+  const stored = db.prepare("select native_plan_source from backends where id = 'hermes'").get();
+  db.prepare("update backends set native_plan_source = null where id = 'hermes'").run();
+  const nullRow = ((await api("/api/backends")).body ?? []).find((r) => r.id === "hermes");
+  check("a row whose column predates the feature (NULL) lands on the MCP-driven default",
+    nullRow?.nativePlanSource === "none", `nativePlanSource=${nullRow?.nativePlanSource}`);
+  db.prepare("update backends set native_plan_source = ? where id = 'hermes'")
+    .run(stored?.native_plan_source ?? null);
+  db.close();
+}
 await api("/api/backends/mock", {
   method: "PATCH",
   body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }),
