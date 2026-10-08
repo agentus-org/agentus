@@ -81,6 +81,11 @@ function clientIp(req: IncomingMessage): string {
   return fwd || req.socket.remoteAddress || "unknown";
 }
 
+/** Addresses the plan MCP tool will answer to. It has its own per-session token (see the route),
+ *  so this is the second lock, not the only one: a token that leaked out of `ps` still has to be
+ *  used from this machine. */
+const LOOPBACK_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"]);
+
 // ---- event fan-out to all WS clients + per-client replay tracking ----
 const clients = new Map<string, { ws: WebSocket; lastSeen: Map<string, number> }>();
 
@@ -299,6 +304,31 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // device token for everything else — so it runs AHEAD of the operator gate. That is the
     // whole point: a phone tapping "allow" on the lock screen has no browser session.
     if (url.pathname.startsWith("/api/notify") && (await notify.handleHttp(req, res, url))) return undefined;
+
+    // The plan MCP tool's door (design-plan-service.md §6-B). AHEAD of the operator gate, like
+    // /api/notify, because its caller is a child process of an AGENT: it has no browser session, and
+    // the outer HTTP Basic lock is not something we could hand it without putting operator
+    // credentials into every agent's environment. It carries its own credential instead — a token
+    // minted per agent process and delivered through the ACP handshake (§4) — plus a loopback-only
+    // rule, so the token never crosses a network. The blast radius of a leaked token is one session's
+    // plan, which is the object the operator is already looking at.
+    if (url.pathname === "/api/plan/mcp" && req.method === "POST") {
+      const ip = clientIp(req);
+      if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the plan tool is loopback-only" });
+      const body = await readJson(req);
+      const token = String(req.headers["x-agentus-plan-token"] ?? "");
+      const sessionId = String(body.session ?? "");
+      if (body.op === "read") {
+        const out = mgr.planForMcp(sessionId, token);
+        return out.ok ? send(res, 200, { plan: out.plan }) : send(res, 403, { error: out.error });
+      }
+      if (body.op === "update") {
+        const out = mgr.writePlanFromMcp(sessionId, token, { items: body.items, explanation: body.explanation });
+        if (!out.ok) return send(res, 403, { error: out.error });
+        return send(res, 200, { accepted: out.accepted, reason: out.reason, plan: out.plan });
+      }
+      return send(res, 400, { error: "op must be 'read' or 'update'" });
+    }
 
     // ---- outer lock: optional HTTP Basic, in front of EVERYTHING (static, /healthz,
     // /api, login page). This is the layer that a public tunnel needs, because a
@@ -538,6 +568,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             id: row.id, label: row.label, kind: row.kind, cmd: row.cmd, args: row.args,
             env: Object.keys(row.env ?? {}), home: plan.home, profile: row.profile,
             cwd: row.cwd, notes: row.notes, builtin: row.builtin,
+            // Which channel carries this backend's plan (P1). Sent with the list because the
+            // settings page shows it next to the row: it is the one declaration an operator may
+            // want to flip when an agent gains (or loses) native plan support.
+            nativePlanSource: row.nativePlanSource,
             warnings: plan.warnings,
             health: row.health, handshake: row.handshake,
           };

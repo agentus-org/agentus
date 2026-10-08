@@ -29,6 +29,19 @@ export interface BackendSpec {
   id?: string;
   /** spawn family, so callers can reason about the arg shape without matching on the id */
   kind?: "hermes" | "qoder" | "mock";
+  /**
+   * Where this agent's PLAN comes from — a declaration, not per-agent code.
+   *
+   *  · `acp`  — the agent emits ACP `plan` frames itself (Hermes does; that is the whole point of
+   *             the fork fix). The cockpit ingests them and must NOT hand the agent a second
+   *             writable list, so no plan MCP server is injected into the handshake.
+   *  · `none` — anything else. The cockpit injects the `agentus-plan` MCP server at handshake
+   *             time, so a new agent gets plan cards without one line of its own code.
+   *
+   *  The choice is per SESSION (it rides the handshake), which is why it can never leak into the
+   *  agent's own config — see design-plan-service.md §4.
+   */
+  nativePlanSource?: NativePlanSource;
   label: string;
   cmd: string;
   args: string[];
@@ -55,6 +68,8 @@ export const BACKENDS: Record<string, BackendSpec> = {
     cmd: process.env.AGENTUS_HERMES_CMD || "hermes",
     args: ["acp"],
     check: ["acp", "--check"],
+    // Hermes emits ACP `plan` frames (acp_adapter/events.py) — the native channel, no injection.
+    nativePlanSource: "acp",
     isolation: {
       homeVar: "HERMES_HOME",
       homeDefault: defaultHermesHome,
@@ -69,6 +84,8 @@ export const BACKENDS: Record<string, BackendSpec> = {
     check: null,
     needsLoginHint: "qodercli login",
     // qodercli keeps its own state under ~/.qoder; no home env to pin yet.
+    // Nothing known to emit plan frames → hand it the plan MCP tool instead (zero adapter code).
+    nativePlanSource: "none",
   },
   mock: {
     label: "Mock Agent",
@@ -83,10 +100,14 @@ export const BACKENDS: Record<string, BackendSpec> = {
       ),
     ],
     check: null,
+    nativePlanSource: "none",
   },
 };
 
 export type BackendId = keyof typeof BACKENDS;
+
+/** Which channel carries a backend's plan. See BackendSpec.nativePlanSource. */
+export type NativePlanSource = "acp" | "none";
 
 export function expandHome(p: string): string {
   return p.startsWith("~") ? path.join(homedir(), p.slice(1)) : p;

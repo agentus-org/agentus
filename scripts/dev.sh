@@ -57,6 +57,7 @@ case "${1:-}" in
       AGENTUS_USERNAME="$DEV_USER" AGENTUS_PASSWORD="$DEV_PASS" \
       AGENTUS_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
       AGENTUS_TLS_PORT="${DEV_TLS_PORT:-0}" \
+      AGENTUS_ACP_V2_PLAN="${DEV_ACP_V2:-0}" \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
@@ -68,10 +69,11 @@ case "${1:-}" in
         // reap 9 live agent processes (its own session included). Keep exactly the keys below —
         // which is everything dev.sh sets — and drop every other identity-shaped key.
         const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
-          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_TLS_PORT", "DEV_TREE", "DEV_LOG_PATH"]);
+          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_TLS_PORT", "AGENTUS_ACP_V2_PLAN",
+          "DEV_TREE", "DEV_LOG_PATH"]);
         // knobs belonging to this script: consumed here, never forwarded to the server, not worth a line.
         const quiet = new Set(["DEV_PORT", "DEV_DATA", "DEV_USER", "DEV_PASS", "DEV_LOG",
-          "DEV_HERMES_CMD", "DEV_TLS_PORT", "LIVE_REPO", "LIVE_PORT"]);
+          "DEV_HERMES_CMD", "DEV_TLS_PORT", "DEV_ACP_V2", "LIVE_REPO", "LIVE_PORT"]);
         // "AGENTSL" is spelled short on purpose: the rename acceptance check greps this tree for the
         // old full name and must keep finding nothing but the two migration scripts.
         for (const k of Object.keys(process.env)) {

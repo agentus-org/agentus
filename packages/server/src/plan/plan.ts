@@ -62,14 +62,47 @@ export function clampExplanation(raw: unknown): string | null {
   return s.length > MAX_EXPLANATION ? s.slice(0, MAX_EXPLANATION) : s;
 }
 
-/** One writer per session.
+/** One writer per session — and it is the AGENT's, whenever it has something to say.
  *
- *  Native frames and the plan MCP tool can both exist for the same session (Hermes emits frames AND
- *  could be handed the tool), and two writers means two plans racing on one card. The rule: whoever
- *  got there first keeps it — a session already fed by native frames never accepts a tool write.
- *  Cheap, and it fails in the direction that is visible (the frame's plan is the one on screen). */
+ *  Native frames and the plan MCP tool can both exist for the same session, and two writers means
+ *  two plans racing on one card. The rule is not "whoever typed first" but *native priority*
+ *  (design-plan-service.md §3): a frame is the agent's own plan, so it is NEVER refused — it takes
+ *  the card over from a tool-written plan — and once a frame has landed, `current` is "acp" and the
+ *  tool is refused from then on. Failures land in the visible direction: the plan on screen is the
+ *  agent's. */
 export function acceptsWriteFrom(current: PlanSource | undefined, incoming: PlanSource): boolean {
+  if (incoming === "acp") return true; // the agent's own channel outranks any tool
   if (incoming === "server") return true; // the turn lifecycle is not a competing writer
   if (!current || current === "server") return true;
   return current === incoming;
+}
+
+/** ACP v2's plan updates (`session/update` → `plan_update`), behind an experiment switch.
+ *
+ *  v2 is still a draft: the SDK ships it under an experimental subpath and both ends of this wire
+ *  declare protocolVersion 1, so NOTHING may depend on it yet. Parsing it anyway costs one branch,
+ *  and it buys the property that matters for a draft schema — a client that ignores a frame it does
+ *  not understand renders a plan that is quietly wrong. Off unless asked for: an experiment switch,
+ *  not a feature flag. */
+export function v2PlanEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENTUS_ACP_V2_PLAN === "1";
+}
+
+/** Fold a v2 `plan_update` payload back into the v1 frame shape, or null when it carries nothing a
+ *  step list can render.
+ *
+ *  v2 wraps the entries one level deeper (`plan: { planId, type: "items", entries }`) and allows
+ *  two other content kinds — `markdown` and `file` — which are NOT step lists; guessing a list out
+ *  of them would put words on the card the agent never wrote as steps. It also allows several plans
+ *  per session (`planId`), which is why the id is returned rather than ignored: the caller decides
+ *  what to do with a second one. Kept pure (and exported) so the mapping can be unit-tested against
+ *  the draft schema without a server. */
+export function foldPlanUpdate(update: Record<string, unknown>): { entries: PlanItem[]; planId: string; meta: unknown } | null {
+  const plan = (update?.plan ?? null) as { planId?: unknown; type?: unknown; entries?: unknown } | null;
+  if (!plan || plan.type !== "items") return null;
+  return {
+    entries: normalizeItems(plan.entries),
+    planId: String(plan.planId ?? ""),
+    meta: update._meta ?? null,
+  };
 }

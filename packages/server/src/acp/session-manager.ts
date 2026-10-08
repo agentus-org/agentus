@@ -4,9 +4,12 @@
 // mode/config plumbing. UI holds zero intelligence (red line D): we only relay.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import type {
+  McpServer,
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
@@ -25,13 +28,14 @@ import type {
   PermissionDecision,
   PermissionDiff,
   PermissionRequestView,
+  PlanSnapshot,
   PromptAttachment,
   ServerEvent,
   SessionInfo,
   SessionModeState,
   TurnTrace,
 } from "@agentus/shared";
-import { acceptsWriteFrom, clampExplanation, demoteInProgress, hasUnfinished } from "../plan/plan.js";
+import { acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -168,6 +172,13 @@ interface LiveSession {
    *  Cleared after the first prompt, because after that the agent maintains the plan itself —
    *  re-sending it every turn would cost context and invite re-deriving finished work. */
   planReminderPending?: boolean;
+  /** Minted per agent process and handed to the plan MCP server through the HANDSHAKE (§4): it is
+   *  what keeps the tool's writes scoped to this one session even if the spawn command is copied
+   *  out of `ps`. Lives and dies with the process that received it. */
+  planToken: string;
+  /** ACP v2 lets a session carry several plans (`planId`); the card renders one. Whichever planId
+   *  shows up first is adopted and the rest are left alone — see the `plan_update` case. */
+  planId?: string;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -338,6 +349,7 @@ export class SessionManager {
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      planToken: randomUUID(),
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
@@ -379,7 +391,7 @@ export class SessionManager {
         fork: Boolean(caps.sessionCapabilities?.fork),
         load: Boolean(caps.loadSession),
       };
-      const res = await conn.newSession({ cwd, mcpServers: [] });
+      const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
@@ -475,6 +487,7 @@ export class SessionManager {
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      planToken: randomUUID(),
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
@@ -506,7 +519,7 @@ export class SessionManager {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
       let loaded = (await conn.loadSession({
-        sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: [],
+        sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
       // ── Did the agent actually adopt it? ────────────────────────────────────────────────────
       // Measured against the real CLI (scripts/probe-load-missing.mjs): for a session it does not
@@ -524,7 +537,7 @@ export class SessionManager {
         //  · there IS a transcript — the operator's conversation is the thing that is gone, and
         //    that must be said out loud rather than papered over with a session that starts blank.
         if (this.#store.maxSeq(id) === 0) {
-          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: [] })) as typeof loaded;
+          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live) })) as typeof loaded;
           const freshId = loaded?.sessionId;
           if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
           live.info.acpSessionId = freshId;
@@ -853,6 +866,39 @@ export class SessionManager {
     this.#updateSession(s);
   }
 
+  /** The spawn spec for a backend id, as the registry defines it right now. For the places that
+   *  hold a session but not the spec it was spawned with (fork, the hand-over wording) — resolved
+   *  fresh, so a row edited in the settings page takes effect on the next use. */
+  #specFor(backendId: string): BackendSpec {
+    const row = this.#store.getBackend(backendId);
+    return row ? rowToSpec(row) : (BACKENDS[backendId] ?? BACKENDS.hermes);
+  }
+
+  /** The plan MCP server to hand this agent at HANDSHAKE time — or nothing, when the agent emits
+   *  plan frames itself.
+   *
+   *  Injected rather than registered anywhere, on purpose: `mcpServers` is a per-session parameter
+   *  of `session/new` / `session/load` / `session/resume`, so the tool exists exactly while Agentus
+   *  is driving the session and vanishes for an agent started from the CLI, cron or Studio — which
+   *  is the whole difference from a `config.yaml` entry like the `ekko_studio_*` ones (§4).
+   *  The token in `env` is minted for THIS session, so a copied-out command writes only its own. */
+  #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
+    const source = spec.nativePlanSource ?? (spec.kind === "hermes" ? "acp" : "none");
+    if (source !== "none") return [];
+    return [
+      {
+        name: "agentus-plan",
+        command: process.execPath,
+        args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "../../mcp/plan-server.mjs")],
+        env: [
+          { name: "AGENTUS_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8787}` },
+          { name: "AGENTUS_PLAN_TOKEN", value: live.planToken },
+          { name: "AGENTUS_PLAN_SESSION", value: live.info.id },
+        ],
+      },
+    ];
+  }
+
   /** Fold an agent's ACP plan frame into the session's plan OBJECT.
    *
    *  The object (Store's `plans` row) is what the card renders, because it survives what the frame
@@ -864,9 +910,15 @@ export class SessionManager {
   #ingestPlan(sessionId: string, update: Record<string, unknown>): void {
     const prev = this.#store.getPlan(sessionId);
     if (!acceptsWriteFrom(prev?.source, "acp")) return;
+    const items = normalizeItems(update.entries);
+    // An EMPTY frame is "no update", never "clear" (design-plan-service §3): Hermes empties its
+    // todo list when a task ends, and a client that took that literally would wipe a finished plan
+    // off the card at the exact moment the operator wants to look at it — the bug this work started
+    // from. Nothing on this wire expresses "forget the plan".
+    if (!items.length) return;
     const meta = (update._meta ?? {}) as Record<string, unknown>;
     const plan = this.#store.upsertPlan(sessionId, {
-      items: update.entries,
+      items,
       // ACP v1 has no remark field; `_meta` is the protocol's own extension slot, so a writer that
       // has one has somewhere to put it. Absent means "say nothing", NOT "clear" — a frame that
       // carries no remark must not wipe the one a previous frame left on the card.
@@ -905,6 +957,58 @@ export class SessionManager {
     this.#emit({ t: "message", message: msg });
   }
 
+  /** The plan MCP tool's READ side. Only a RUNNING session can be read, and only with the token its
+   *  own handshake carried: the token dies with the process that was given it, which is what keeps
+   *  the tool scoped to one session rather than "any plan in this cockpit". */
+  planForMcp(sessionId: string, token: string):
+    | { ok: true; plan: PlanSnapshot | null }
+    | { ok: false; error: string } {
+    const live = this.#sessions.get(sessionId);
+    if (!live) return { ok: false, error: "no such running session" };
+    if (!token || token !== live.planToken) return { ok: false, error: "bad plan token" };
+    return { ok: true, plan: this.#store.getPlan(sessionId) };
+  }
+
+  /** The plan MCP tool's WRITE side — the generic channel for agents that cannot emit plan frames
+   *  (design-plan-service §6-B).
+   *
+   *  Two rules meet here. The token scopes the write to one session. And plan.ts's one-writer rule
+   *  decides who owns the card: a session already fed by native frames keeps them, and this write is
+   *  refused — `accepted: false` is a normal ANSWER, not an error, because the caller has to tell
+   *  the model the truth (it does not own this list) or the model will keep believing it does. */
+  writePlanFromMcp(sessionId: string, token: string, input: { items: unknown; explanation?: unknown }):
+    | { ok: true; accepted: boolean; reason?: string; plan: PlanSnapshot | null }
+    | { ok: false; error: string } {
+    const live = this.#sessions.get(sessionId);
+    if (!live) return { ok: false, error: "no such running session" };
+    if (!token || token !== live.planToken) return { ok: false, error: "bad plan token" };
+    const prev = this.#store.getPlan(sessionId);
+    if (!acceptsWriteFrom(prev?.source, "mcp")) {
+      return {
+        ok: true, accepted: false, plan: prev ?? null,
+        reason: `this session's plan is written by the agent's own ACP frames (source: ${prev?.source}), so the tool is ignored`,
+      };
+    }
+    const items = normalizeItems(input.items);
+    // Same rule as the frame path: an empty list is not a clear, it is a mistake worth naming.
+    if (!items.length) {
+      return {
+        ok: true, accepted: false, plan: prev ?? null,
+        reason: "an empty list is not a plan — send the steps as they stand, or leave the plan alone",
+      };
+    }
+    const plan = this.#store.upsertPlan(sessionId, {
+      items,
+      ...(input.explanation !== undefined ? { explanation: clampExplanation(input.explanation) } : {}),
+      source: "mcp",
+      // A write means work is happening again: the previous turn's terminal stamp no longer
+      // describes what this plan is doing.
+      terminal: null,
+    });
+    this.#emit({ t: "plan", sessionId, plan });
+    return { ok: true, accepted: true, plan };
+  }
+
   /** The plan, handed to an agent that just (re)started, as an ACP `resource` content block: a
    *  stable URI plus the steps still owed. The card is fed by the plan OBJECT, but the AGENT's own
    *  copy died with its process — this block is the only thing that tells it the plan exists
@@ -917,6 +1021,10 @@ export class SessionManager {
     const open = plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled");
     if (!open.length) return null;
     const lines = open.map((i) => `- [${i.status}] ${i.content}`).join("\n");
+    // How the agent keeps it current depends on which channel it actually has: an agent with its own
+    // todo tool must use that (its frames are what feed the card), while an MCP-only agent was handed
+    // `update_plan` in this very handshake. Telling the wrong one is telling it a tool it lacks.
+    const mcpDriven = (this.#specFor(s.info.backend).nativePlanSource ?? "none") === "none";
     return {
       type: "resource",
       resource: {
@@ -928,7 +1036,9 @@ export class SessionManager {
           "",
           lines,
           "",
-          "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+          mcpDriven
+            ? "Carry on with it, and keep it updated with the `update_plan` tool as you go: mark a step"
+            : "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
           "completed only once its work is actually verified, and drop or cancel what you are no",
           "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
         ].join("\n"),
@@ -1043,6 +1153,21 @@ export class SessionManager {
         msg = { sessionId: live.info.id, kind: "plan", payload: u, createdAt: Date.now() };
         this.#ingestPlan(live.info.id, u as Record<string, unknown>);
         break;
+      case "plan_update": {
+        // ACP v2's `plan_update` (still a draft — hence the switch, plan.ts:v2PlanEnabled). A v2
+        // agent may carry several plans; the card renders ONE, so the first planId seen is adopted
+        // and the rest are deliberately left alone rather than guessed at. The frame is folded back
+        // into the v1 shape so the transcript row an ARCHIVED card replays stays a single shape.
+        if (!v2PlanEnabled()) return;
+        const folded = foldPlanUpdate(u);
+        if (!folded) return; // a markdown/file plan is not a step list
+        if (!live.planId) live.planId = folded.planId;
+        else if (folded.planId && folded.planId !== live.planId) return;
+        const frame = { sessionUpdate: "plan", entries: folded.entries, _meta: folded.meta };
+        msg = { sessionId: live.info.id, kind: "plan", payload: frame, createdAt: Date.now() };
+        this.#ingestPlan(live.info.id, frame as Record<string, unknown>);
+        break;
+      }
       case "current_mode_update": {
         const m = u as { currentModeId?: string };
         if (live.info.modes && m.currentModeId) {
@@ -1379,6 +1504,8 @@ export class SessionManager {
     const fork = await conn.unstable_forkSession({
       sessionId: s.info.acpSessionId!,
       cwd: s.info.workspace || s.info.cwd,
+      // Deliberately NO plan tool: this fork exists to be asked for a title and then thrown away.
+      // Injecting one would spawn a second `agentus-plan` child per title for nothing.
       mcpServers: [],
     });
     const forkId = (fork as { sessionId?: string } | null)?.sessionId;
@@ -1509,7 +1636,8 @@ export class SessionManager {
     const res = (await source.conn.request("session/fork", {
       sessionId: source.info.acpSessionId,
       cwd,
-      mcpServers: [],
+      // A fork is a real session and keeps the parent's backend, so it gets the same plan channel.
+      mcpServers: this.#planMcpServers(this.#specFor(source.info.backend), source),
     })) as { sessionId?: unknown; modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | null;
     const acpSessionId = res?.sessionId ? String(res.sessionId) : "";
     if (!acpSessionId) throw new Error("the agent did not return a session id for the fork");

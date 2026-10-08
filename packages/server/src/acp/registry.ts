@@ -17,7 +17,7 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { BACKENDS, buildSpawnEnv, expandHome, type BackendSpec } from "./backends.js";
+import { BACKENDS, buildSpawnEnv, expandHome, type BackendSpec, type NativePlanSource } from "./backends.js";
 
 const run = promisify(execFile);
 
@@ -35,6 +35,13 @@ export interface BackendRow {
   label: string;
   /** spawn family — decides the arg shape and whether a home is injected */
   kind: BackendKind;
+  /**
+   * Which channel carries this agent's plan: `acp` (it emits plan frames itself, so we inject
+   * nothing) or `none` (we inject the `agentus-plan` MCP server at handshake time). A declaration
+   * the operator can flip when an agent gains or loses the native ability — the alternative is a
+   * code change per agent, which is exactly what this design exists to avoid.
+   */
+  nativePlanSource: NativePlanSource;
   cmd: string;
   /** args WITHOUT the profile flag (effectiveArgs() composes that) */
   args: string[];
@@ -204,6 +211,8 @@ export function seedRows(now = Date.now()): BackendRow[] {
       id,
       label: spec.label,
       kind,
+      // Hermes is the one agent that emits plan frames; everything else gets the MCP tool.
+      nativePlanSource: kind === "hermes" ? "acp" : "none",
       cmd: spec.cmd,
       args: [...spec.args],
       env: {},
@@ -227,6 +236,7 @@ export function rowToSpec(row: BackendRow): BackendSpec {
   const spec: BackendSpec = {
     id: row.id,
     kind: row.kind,
+    nativePlanSource: row.nativePlanSource,
     label: row.label,
     cmd: expandHome(row.cmd),
     args: [...row.args],
@@ -312,6 +322,12 @@ export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { r
       id,
       label: s(body.label) || base?.label || id,
       kind,
+      // Absent in a body means "keep what the row had"; a NEW row defaults by kind (hermes emits
+      // frames; nobody else is known to). Unknown values fall back rather than persist a typo.
+      nativePlanSource: (() => {
+        const raw = s(body.nativePlanSource) || base?.nativePlanSource || (kind === "hermes" ? "acp" : "none");
+        return raw === "none" ? "none" : "acp";
+      })(),
       cmd,
       args,
       env,

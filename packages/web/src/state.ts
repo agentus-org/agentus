@@ -68,6 +68,9 @@ export interface BackendView {
   cwd?: string | null;
   notes?: string;
   builtin?: boolean;
+  /** Which channel carries this backend's plan: `acp` = the agent emits plan frames itself,
+   *  `none` = the cockpit injects the agentus-plan MCP tool at handshake time. */
+  nativePlanSource?: "acp" | "none";
   warnings?: string[];
   /** last known health (system-written; see BackendHealth on the server) */
   health?: BackendHealthView;
@@ -142,6 +145,7 @@ export interface BackendInput {
   profile?: string | null;
   cwd?: string | null;
   notes?: string;
+  nativePlanSource?: string;
 }
 
 export interface SessionView {

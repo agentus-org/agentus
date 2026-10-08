@@ -17,6 +17,7 @@ import { cockpit, type BackendInspect, type BackendInput, type BackendView } fro
 const EMPTY: BackendInput = {
   id: "", label: "", kind: "hermes", cmd: "hermes", args: "acp",
   env: "", home: "", profile: "", cwd: "", notes: "",
+  nativePlanSource: "acp",
 };
 
 function argsToText(args?: string[] | string): string {
@@ -46,6 +47,7 @@ function draftOf(row: BackendView): BackendInput {
     profile: row.profile ?? "",
     cwd: row.cwd ?? "",
     notes: row.notes ?? "",
+    nativePlanSource: row.nativePlanSource ?? (row.kind === "hermes" ? "acp" : "none"),
   };
 }
 
@@ -261,6 +263,12 @@ export function BackendsPanel(): JSX.Element {
                 {row.profile ? <> · profile <code>{row.profile}</code></> : null}
                 {row.home ? <> · home <code>{row.home}</code></> : null}
                 {(row.env ?? []).length ? <> · env <code>{(row.env ?? []).join(", ")}</code></> : null}
+                {" "}
+                {/* Which channel writes this row's plan — the setting that decides whether a new
+                    agent gets plan cards without any adapter code. */}
+                {row.nativePlanSource === "acp"
+                  ? <> · 计划 <code>原生帧</code></>
+                  : <> · 计划 <code>agentus-plan 工具</code></>}
               </div>
               {row.notes ? <div className="be-row-note">{row.notes}</div> : null}
               {(row.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
@@ -390,6 +398,23 @@ export function BackendsPanel(): JSX.Element {
                       <b>额外环境</b> 里放 <code>PYTHONPATH</code> 就能让这一行跑那份源码树。
                     </p>
                   ) : null}
+                  <div className="set-row">
+                    <label>计划来源</label>
+                    <select
+                      className="set-select"
+                      value={draft.nativePlanSource ?? ((draft.kind ?? "hermes") === "hermes" ? "acp" : "none")}
+                      onChange={(e) => field("nativePlanSource", e.target.value)}
+                    >
+                      <option value="acp">agent 自己发计划帧（原生 ACP）</option>
+                      <option value="none">注入 agentus-plan 计划工具</option>
+                    </select>
+                  </div>
+                  <p className="set-hint be-kind-help">
+                    计划卡的数据由谁写：<b>原生</b> 适合自己会发 ACP <code>plan</code> 帧的 agent
+                    （Hermes）；<b>计划工具</b> 会在握手时给 agent 注入 <code>agentus-plan</code>
+                    （<code>update_plan</code>/<code>read_plan</code>），新 agent 不用改一行代码就有计划卡。
+                    两者互斥：一个会话只认一个写入者，先到的那个说了算。
+                  </p>
                   <div className="set-row">
                     <label>命令</label>
                     <input className="set-input" value={draft.cmd ?? ""} spellCheck={false} onChange={(e) => field("cmd", e.target.value)} placeholder="hermes 或 /path/to/hermes-dev" />

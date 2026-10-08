@@ -181,6 +181,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
 interface RawBackendRow {
   id: string; label: string; kind: string; cmd: string; args: string; env: string;
   home: string | null; profile: string | null; cwd: string | null; notes: string;
+  native_plan_source: string | null;
   builtin: number; created_at: number; updated_at: number;
   // health snapshot (M6.1) — system-written, see registry.BackendHealth
   last_check_status: string | null; last_check_kind: string | null;
@@ -196,6 +197,11 @@ function rowToBackend(r: RawBackendRow): BackendRow {
     id: r.id,
     label: r.label,
     kind: r.kind as BackendKind,
+    // A row predating this column (or one written by an older build) says nothing: derive it from
+    // the kind instead of inventing a third state the UI would have to render.
+    nativePlanSource: r.native_plan_source === "none" || r.native_plan_source === "acp"
+      ? r.native_plan_source
+      : (r.kind === "hermes" ? "acp" : "none"),
     cmd: r.cmd,
     args: (parseJson(r.args) as string[] | null) ?? [],
     env: (parseJson(r.env) as Record<string, string> | null) ?? {},
@@ -341,6 +347,9 @@ export class Store {
       "last_check_status", "last_check_kind", "last_check_error_code", "last_check_error_message",
       "last_check_guidance", "last_check_at", "last_success_at", "last_failure_at",
       "handshake", "handshake_at",
+      // P1 (plan service): which channel carries this backend's plan, `acp` | `none`. Nullable on
+      // purpose — a row that predates it derives an answer from its `kind` (see rowToBackend).
+      "native_plan_source",
     ]) {
       if (!beCols.has(col)) this.#db.exec(`alter table backends add column ${col} text`);
     }
@@ -873,15 +882,17 @@ export class Store {
     this.#db
       .prepare(
         `insert into backends (id, label, kind, cmd, args, env, home, profile, cwd, notes,
+                               native_plan_source,
                                builtin, created_at, updated_at,
                                last_check_status, last_check_kind, last_check_error_code,
                                last_check_error_message, last_check_guidance, last_check_latency_ms,
                                last_check_at, last_success_at, last_failure_at, handshake, handshake_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(id) do update set
            label = excluded.label, kind = excluded.kind, cmd = excluded.cmd, args = excluded.args,
            env = excluded.env, home = excluded.home, profile = excluded.profile, cwd = excluded.cwd,
            notes = excluded.notes,
+           native_plan_source = excluded.native_plan_source,
            updated_at = excluded.updated_at,
            -- the evidence travels with the row: a spawn-relevant edit replaces it with a cleared
            -- snapshot (coerceRow decides that), and a row that was never checked writes nulls.
@@ -897,6 +908,7 @@ export class Store {
       .run(
         row.id, row.label, row.kind, row.cmd, JSON.stringify(row.args), JSON.stringify(row.env ?? {}),
         row.home, row.profile, row.cwd, row.notes ?? "",
+        row.nativePlanSource ?? null,
         row.builtin ? 1 : 0, row.createdAt, row.updatedAt,
         row.health?.status ?? null, row.health?.kind ?? null, row.health?.errorCode ?? null,
         row.health?.message ?? null, row.health?.guidance ?? null, row.health?.latencyMs ?? null,

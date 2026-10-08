@@ -9,6 +9,7 @@
 //   MOCK_SLOW_MS=n     -> delay between chunks (default 60)
 //   MOCK_SINK=1        -> exit the process mid-turn (crash path for AC5/QA)
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
@@ -37,6 +38,27 @@ const MOCK_HERMES_EDIT = await (async () => {
 })();
 let seq = 0;
 const sessions = new Map();
+
+/**
+ * QA hook for the cockpit's plan tool (design-plan-service.md §6-B).
+ *
+ * The tool is INJECTED through the handshake, and the process that would actually spawn it is the
+ * AGENT — hermes does, this mock never does. So an end-to-end test of the write path needs that
+ * token from somewhere, and the obvious place (a mock reply) is a transcript row: a credential in
+ * the operator's UI. Opt-in instead: name a file in MOCK_PLAN_TOKEN_FILE and it lands there, 0600.
+ */
+function notePlanTool(mcpServers) {
+  const file = process.env.MOCK_PLAN_TOKEN_FILE;
+  if (!file || !Array.isArray(mcpServers)) return;
+  const tool = mcpServers.find((m) => m?.name === "agentus-plan");
+  if (!tool) return;
+  const env = Object.fromEntries((tool.env ?? []).map((e) => [e.name, e.value]));
+  try {
+    fs.writeFileSync(file, JSON.stringify({ ...env, command: tool.command, args: tool.args ?? [] }), { mode: 0o600 });
+  } catch (e) {
+    process.stderr.write(`[mock-agent] could not write ${file}: ${e.message}\n`);
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const send = async (conn, sid, update) => {
@@ -152,9 +174,10 @@ const agent = () => ({
     };
   },
 
-  async newSession({ cwd }) {
+  async newSession({ cwd, mcpServers }) {
     const sessionId = `mock-${++seq}`;
-    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [] });
+    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [], mcp: mcpServers ?? [] });
+    notePlanTool(mcpServers);
     // Announce slash commands the way a real agent does (available_commands_update),
     // so the cockpit's palette path is exercised without a real backend.
     setTimeout(() => {
@@ -182,7 +205,7 @@ const agent = () => ({
   // A real agent restores its own session state on load (hermes re-reads the persisted
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
-  async loadSession({ sessionId, cwd }) {
+  async loadSession({ sessionId, cwd, mcpServers }) {
     // MOCK_FORGET=1 answers like a REAL agent that has never seen this session: hermes returns an
     // EMPTY load result for an unknown id, and `refusal` on every prompt after (measured with
     // scripts/probe-load-missing.mjs). Without it, the mock's job is the friendly case — "a cold
@@ -196,11 +219,13 @@ const agent = () => ({
     // session ("no such session: mock-2") fails for reasons that have nothing to do with
     // the cockpit. Register the id as the parent's stand-in instead of inventing a new one.
     if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true, history: [] });
+      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true, history: [], mcp: mcpServers ?? [] });
       process.stderr.write(`[mock-agent] loadSession ${sessionId} -> restored (not in memory)\n`);
     }
     if (sessions.has(sessionId)) {
       const s = sessions.get(sessionId);
+      s.mcp = mcpServers ?? s.mcp ?? [];
+      notePlanTool(mcpServers);
       return {
         sessionId,
         modes: { currentModeId: s.currentModeId || "default", availableModes: MODES },
@@ -287,6 +312,23 @@ const agent = () => ({
       await send(agent._conn, sessionId, {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "BLOCKS " + JSON.stringify(shape) },
+      });
+      return { stopReason: "end_turn" };
+    }
+
+    // QA: what did the HANDSHAKE carry? The plan tool is injected per session, and its whole
+    // promise (§4) is that it exists HERE and nowhere else — so the declaration's shape is what a
+    // test asserts. Deliberately no env VALUES: that is where the per-session token lives.
+    if (/\[mcp\]/.test(text)) {
+      const shape = (s.mcp ?? []).map((m) => ({
+        name: m.name ?? null,
+        command: String(m.command ?? "").split("/").pop() ?? null,
+        args: (m.args ?? []).map((a) => String(a).split("/").pop()),
+        envNames: (m.env ?? []).map((e) => e.name),
+      }));
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "MCP " + JSON.stringify(shape) },
       });
       return { stopReason: "end_turn" };
     }
@@ -447,6 +489,26 @@ const agent = () => ({
           { content: "patch the flaky timing assert", status: "in_progress", priority: "high" },
           { content: "run full suite", status: "pending", priority: "medium" },
         ],
+      });
+    }
+    if (process.env.MOCK_PLAN_V2 === "1" || /\[planv2\]/.test(text)) {
+      // ACP v2's `plan_update` (draft): one level deeper than v1, plus the `planId` the v2 schema
+      // adds. NOTE: v2 documents an extra `cancelled` status, but THIS SDK revision's
+      // PlanEntryStatus is still pending|in_progress|completed and its validator silently DROPS an
+      // entry that fails it (the same trap the v1 block above warns about) — so a status the schema
+      // does not know cannot be put on this wire from here. The ingest's tolerance of unknown
+      // statuses is covered where it can be: scripts/qa/plan-v2-sweep.mts, at the unit level.
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "plan_update",
+        plan: {
+          planId: "main",
+          type: "items",
+          entries: [
+            { content: "v2 read the failing test", status: "completed", priority: "medium" },
+            { content: "v2 patch the flaky timing assert", status: "pending", priority: "high" },
+            { content: "v2 run full suite", status: "in_progress", priority: "medium" },
+          ],
+        },
       });
     }
     const effort = s.config?.reasoning_effort || "medium";
