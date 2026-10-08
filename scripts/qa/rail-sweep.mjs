@@ -49,6 +49,9 @@ await ev(`Promise.all([0,1,2].map((i)=>fetch('/api/sessions',{method:'POST',head
 // 所以：先把 prefs 归零、把浏览器那个键删掉、把残留的重命名行清掉。测的是代码，不是环境。
 const PREP = await ev(`(async () => {
   localStorage.removeItem('agentus.voice');
+  // A previous run may have left a rail SECTION folded (it is a persisted preference now), which
+  // would make the rail assertions below read an empty rail. Start from the default layout.
+  localStorage.removeItem('agentus.railSections');
   const st = await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({prefs:{autoRead:false}})}).then(r=>r.status);
   const list = await fetch('/api/sessions').then(r=>r.json());
@@ -90,6 +93,105 @@ const assets = await ev(`(async () => { const r = {};
   } return r; })()`);
 check("both brand icons are served", Object.values(assets).every((s) => s.startsWith("200")), JSON.stringify(assets));
 check("every row has a settings (⋯) button", rail.menuButtons === rail.rows, `buttons=${rail.menuButtons}`);
+
+// --- the rail reads as two sections, and 团队 is an honest placeholder -------------------
+// 团队 is deliberately not implemented: the assertions below pin the two things that would make
+// it a lie — a row that can be clicked/keyboard-focused, or one that does not say what it is.
+const sections = await ev(`(() => {
+  const labels = [...document.querySelectorAll('.rail-section')].map((e) => ({ text: e.textContent.trim(), y: Math.round(e.getBoundingClientRect().top) }));
+  const team = document.querySelector('[data-placeholder="team"]');
+  const r = team?.getBoundingClientRect();
+  const g = document.querySelector('.rail-group')?.getBoundingClientRect();
+  return {
+    labels,
+    tag: team?.tagName ?? null,
+    ariaDisabled: team?.getAttribute('aria-disabled') ?? null,
+    focusables: team ? team.querySelectorAll('button, a, input, select, textarea, [tabindex]').length : -1,
+    text: team?.textContent?.trim() ?? '',
+    teamY: r ? Math.round(r.top) : null,
+    groupsTop: g ? Math.round(g.top) : null,
+    inside: r ? r.left >= 0 && r.right <= window.innerWidth : false,
+  };
+})()`);
+check("the rail names two sections, 团队 above 工作空间",
+  sections.labels.length === 2 && sections.labels[0].text === "团队" && sections.labels[1].text === "工作空间" && sections.labels[0].y < sections.labels[1].y,
+  JSON.stringify(sections.labels));
+check("团队 sits above the first workspace",
+  sections.teamY !== null && (sections.groupsTop === null || sections.teamY < sections.groupsTop),
+  JSON.stringify({ teamY: sections.teamY, groupsTop: sections.groupsTop }));
+check("the 团队 row is inert and says so (a div, nothing focusable, aria-disabled)",
+  sections.tag === "DIV" && sections.focusables === 0 && sections.ariaDisabled === "true" && sections.text.includes("还没做") && sections.inside,
+  JSON.stringify(sections));
+
+// --- both sections FOLD (the operator asked for it after comparing the two rails) --------------
+// What has to hold: the head IS the control (a real button, aria-expanded), folding really empties
+// the section, the choice survives a reload (a layout preference, stored per browser), and a search
+// always opens it again — a match the operator cannot see is not a match.
+const snapshot = `(() => {
+  const expanded = Object.fromEntries([...document.querySelectorAll('.rail-section')].map((e) => [e.dataset.section, e.getAttribute('aria-expanded')]));
+  return {
+    expanded,
+    tag: document.querySelector('.rail-section')?.tagName ?? null,
+    groups: document.querySelectorAll('.rail-group').length,
+    rows: document.querySelectorAll('.session-item').length,
+    placeholder: !!document.querySelector('[data-placeholder="team"]'),
+    stored: JSON.parse(localStorage.getItem('agentus.railSections') || '{}'),
+  };
+})()`;
+const foldBefore = await ev(snapshot);
+const foldAfter = await ev(`(async () => {
+  document.querySelector('.rail-section[data-section="workspaces"]').click();
+  await new Promise((r) => setTimeout(r, 300));
+  return ${snapshot};
+})()`);
+check("both section heads are fold controls (a button that reports aria-expanded)",
+  foldBefore.tag === "BUTTON" && foldBefore.expanded.team === "true" && foldBefore.expanded.workspaces === "true",
+  JSON.stringify({ tag: foldBefore.tag, expanded: foldBefore.expanded }));
+check("folding 工作空间 really empties it (groups gone, the choice stored)",
+  foldAfter.groups === 0 && foldAfter.rows === 0 && foldAfter.expanded.workspaces === "false" && foldAfter.stored.workspaces === true,
+  JSON.stringify({ groups: foldAfter.groups, rows: foldAfter.rows, stored: foldAfter.stored }));
+
+await send("Page.reload", { ignoreCache: true });
+await sleep(3200);
+const foldReload = await ev(snapshot);
+check("the fold survives a reload (a preference, not a transient)",
+  foldReload.expanded.workspaces === "false" && foldReload.groups === 0 && foldReload.rows === 0,
+  JSON.stringify(foldReload));
+
+const foldSearch = await ev(`(async () => {
+  const input = document.querySelector('.rail-search');
+  const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  const type = (v) => { set.call(input, v); input.dispatchEvent(new Event('input', { bubbles: true })); };
+  type('mock');
+  await new Promise((r) => setTimeout(r, 400));
+  const searching = { groups: document.querySelectorAll('.rail-group').length, rows: document.querySelectorAll('.session-item').length,
+    expanded: document.querySelector('.rail-section[data-section="workspaces"]').getAttribute('aria-expanded'),
+    stored: JSON.parse(localStorage.getItem('agentus.railSections') || '{}') };
+  type('');
+  await new Promise((r) => setTimeout(r, 300));
+  // put the rail back the way the rest of this sweep expects to find it
+  document.querySelector('.rail-section[data-section="workspaces"]').click();
+  await new Promise((r) => setTimeout(r, 300));
+  const restored = { groups: document.querySelectorAll('.rail-group').length,
+    expanded: document.querySelector('.rail-section[data-section="workspaces"]').getAttribute('aria-expanded') };
+  // and prove the 团队 section folds too, then leave it open
+  document.querySelector('.rail-section[data-section="team"]').click();
+  await new Promise((r) => setTimeout(r, 250));
+  const teamFolded = { placeholder: !!document.querySelector('[data-placeholder="team"]'),
+    expanded: document.querySelector('.rail-section[data-section="team"]').getAttribute('aria-expanded') };
+  document.querySelector('.rail-section[data-section="team"]').click();
+  await new Promise((r) => setTimeout(r, 250));
+  return { searching, restored, teamFolded, teamBack: !!document.querySelector('[data-placeholder="team"]') };
+})()`);
+check("a search opens a folded section (and does not overwrite the preference)",
+  foldSearch.searching.groups > 0 && foldSearch.searching.rows > 0 && foldSearch.searching.expanded === "true"
+    && foldSearch.searching.stored.workspaces === true,
+  JSON.stringify(foldSearch.searching));
+check("unfolding restores the rail for the rest of the sweep", foldSearch.restored.groups > 0 && foldSearch.restored.expanded === "true",
+  JSON.stringify(foldSearch.restored));
+check("团队 folds too — its placeholder row goes away and comes back",
+  foldSearch.teamFolded.placeholder === false && foldSearch.teamFolded.expanded === "false" && foldSearch.teamBack === true,
+  JSON.stringify(foldSearch.teamFolded));
 
 // --- the chat header carries the auto-read switch, LEFT of the folder/panel pair
 const headToggle = await ev(`(() => {

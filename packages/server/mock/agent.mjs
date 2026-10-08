@@ -226,6 +226,36 @@ const agent = () => ({
       const s = sessions.get(sessionId);
       s.mcp = mcpServers ?? s.mcp ?? [];
       notePlanTool(mcpServers);
+      // ── MOCK_REPLAY=1: the REAL replay shape ────────────────────────────────────────────────
+      // Hermes re-sends its whole transcript on `session/load`: complete blocks (not chunks), and
+      // the reasoning ones carry NO messageId — so the cockpit cannot fold them by identity, and a
+      // store that appends them grows a row per block and stamps them all with the resume's clock.
+      // That is the shape measured on live on 2026-10-08 (1240 rows from one restart, every session
+      // pushed to 「刚刚」), so the mock has to be able to produce it for the rule to be testable.
+      if (process.env.MOCK_REPLAY === "1") {
+        const n = Math.max(1, Number(process.env.MOCK_REPLAY_BLOCKS || 4) || 4);
+        // Say it out loud: "the replay never ran" and "the replay was dropped" look identical from
+        // the outside, and only one of them is a passing test.
+        process.stderr.write(`[mock-agent] replaying ${n} blocks onto ${sessionId} (session/load)\n`);
+        for (let i = 0; i < n; i++) {
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "agent_thought_chunk",
+            content: {
+              type: "text",
+              text: `replayed thought ${i}: `
+                + "the agent restating its own reasoning at full length on a re-attach, with no id "
+                + "to fold it by. ".repeat(3),
+            },
+          });
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: `replayed answer ${i}: ` + "the agent restating its own answer at full length. ".repeat(4),
+            },
+          });
+        }
+      }
       return {
         sessionId,
         modes: { currentModeId: s.currentModeId || "default", availableModes: MODES },
@@ -365,7 +395,7 @@ const agent = () => ({
     // after as one `diff` item — which is why the cockpit must collapse it (read off
     // acp_adapter/edit_approval.py, 2026-10-06).
     const wantHermes = process.env.MOCK_HERMES_APPROVAL === "1" || /\[tool-hermes\]/.test(text);
-    const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
+    const wantThink = process.env.MOCK_THINK === "1" || /\[think(:\d+)?\]/.test(text);
     const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
     const wantPlan = process.env.MOCK_PLAN === "1" || /\[plan\]/.test(text);
     // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
@@ -377,7 +407,14 @@ const agent = () => ({
       // that omits it makes each chunk its own row — a transcript shape that only exists in QA
       // (measured 2026-10-06: 1336 rows in the DB for a 10-burst turn).
       const thinkId = `th-${sessionId}-${Date.now()}`;
-      for (const w of "pondering the user's request very deeply".split(" ")) {
+      // `[think:N]` streams N words instead of the default sentence: the long-thinking case (the
+      // operator's 「思考卡住不动、然后突然全刷出来」) needs a stream long enough that the reader can
+      // SEE whether it arrives progressively or in one lump.
+      const asked = /\[think:(\d+)\]/.exec(text);
+      const words = asked
+        ? Array.from({ length: Number(asked[1]) }, (_, i) => `思考片段${i}`)
+        : "pondering the user's request very deeply".split(" ");
+      for (const w of words) {
         await send(agent._conn, sessionId, {
           sessionUpdate: "agent_thought_chunk",
           messageId: thinkId,

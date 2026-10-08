@@ -21,7 +21,7 @@ import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
-  IconStop, IconVolume, IconVolumeOff, IconBrain,
+  IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "../../shared/src/index";
 
@@ -521,6 +521,17 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   // Which workspace groups the operator unrolled past RAIL_RECENT. In-memory like `closed`: a
   // reload returns to the recent view, which is the point of having one.
   const [more, setMore] = useState<Record<string, boolean>>({});
+  // ---- section folding: 团队 / 工作空间 ------------------------------------------------
+  // Unlike `closed`/`more` (in-memory, and deliberately reset by a reload), a folded SECTION is a
+  // layout preference: it survives the reload in localStorage, like the palette and the voice
+  // prefs. A search query always opens both — a result you cannot see is not a result.
+  const RAIL_FOLD_KEY = "agentus.railSections";
+  const [folded, setFolded] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem(RAIL_FOLD_KEY) ?? "{}") as Record<string, boolean>; } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(RAIL_FOLD_KEY, JSON.stringify(folded)); } catch { /* private mode: folding just won't stick */ }
+  }, [folded]);
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState("");
   // ---- row menus + inline rename ------------------------------------------------
@@ -635,6 +646,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
       .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : at(b) - at(a) || a.label.localeCompare(b.label)));
   }, [sessions, archived, activeId, needle]);
 
+  const teamOpen = Boolean(needle) || !folded.team;
+  const workspacesOpen = Boolean(needle) || !folded.workspaces;
+
   const onFork = async (id: string): Promise<void> => {
     setBusyId(id);
     setErr("");
@@ -692,16 +706,50 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
         </div>
       ) : null}
       <div className="session-list">
-        {groups.map((g) => {
+        {/* Two sections, in this order: 团队 above 工作空间 (AionUi's sider puts its team section
+            immediately above the project groups, and that is the shape the operator asked for).
+            团队 has no backend yet, so its row is a `div` with aria-disabled — nothing to click,
+            nothing to tab into — and it says 「还没做」 instead of pretending to work. When the
+            feature lands, this row becomes the entry point and the label stays. */}
+        {/* A section head is a fold control, not a label (AionUi's team section has exactly this
+            chevron, and the state is remembered there too). Folding is what the operator asked for
+            after comparing the two rails. */}
+        <button type="button" className={`rail-section ${teamOpen ? "open" : ""}`} data-section="team"
+                aria-expanded={teamOpen} aria-controls="rail-team"
+                title={teamOpen ? "折叠团队" : "展开团队"}
+                onClick={() => setFolded((f) => ({ ...f, team: !f.team }))}>
+          <IconChevronRight size={11} className={`rail-section-chev ${teamOpen ? "open" : ""}`} />
+          <span>团队</span>
+        </button>
+        {teamOpen ? (
+          <div className="rail-placeholder" data-placeholder="team" id="rail-team" aria-disabled="true"
+               title="团队 — 还没有实现，先占个位（现在的驾驶舱一条会话就是一个 agent，没有团队/成员的概念）">
+            <IconUsers size={13} />
+            <span className="rail-placeholder-name">还没做，先占个位</span>
+          </div>
+        ) : null}
+        {/* The workspaces themselves are the menu: each row below is one, and its sessions are
+            nested inside it. The label exists so the rail reads as a list of sections rather than
+            an undifferentiated pile of group headers. */}
+        <button type="button" className={`rail-section ${workspacesOpen ? "open" : ""}`} data-section="workspaces"
+                aria-expanded={workspacesOpen} aria-controls="rail-workspaces"
+                title={workspacesOpen ? "折叠工作空间" : "展开工作空间"}
+                onClick={() => setFolded((f) => ({ ...f, workspaces: !f.workspaces }))}>
+          <IconChevronRight size={11} className={`rail-section-chev ${workspacesOpen ? "open" : ""}`} />
+          <span>工作空间</span>
+        </button>
+        <div id="rail-workspaces">
+        {workspacesOpen ? groups.map((g) => {
           const isOpen = Boolean(needle) || !closed[g.path];
           const liveCount = g.items.filter((i) => !i.cold).length;
           // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
-          // The rule itself lives in `rail.ts` (with its own suite): hiding the conversation you are
-          // working in behind a click is a way to lose work, not a convenience, so the active group
-          // and every search show everything.
-          const holdsActive = g.items.some((i) => i.s.id === activeId);
+          // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
+          // group you are working in folds like every other one, and the row you are IN is pinned
+          // inside that limit instead — the conversation never disappears, the list still stops at N.
           const { shown, hidden } = splitRecent(g.items, {
-            searching: Boolean(needle), holdsActive, expanded: Boolean(more[g.path]),
+            searching: Boolean(needle),
+            isActive: (i) => i.s.id === activeId,
+            expanded: Boolean(more[g.path]),
           });
           return (
             <div className="rail-group" key={g.path}>
@@ -818,12 +866,13 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
               )}
             </div>
           );
-        })}
-        {!groups.length && (
+        }) : null}
+        {workspacesOpen && !groups.length && (
           <div className="rail-empty">
             {needle ? "no session matches that search." : "No sessions yet — create one."}
           </div>
         )}
+        </div>
       </div>
       {menu && menuInfo ? createPortal(<SessionMenu
           x={menu.x} y={menu.y} trigger={menu.trigger}

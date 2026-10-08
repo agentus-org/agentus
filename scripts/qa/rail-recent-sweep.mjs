@@ -121,9 +121,9 @@ const recol = await ev(`(async () => {
 check("「收起」 folds it back to the recent few", recol.rows === 5 && /展开其余/.test(recol.more),
   JSON.stringify(recol));
 
-// --- the group you are WORKING in shows everything -------------------------------------------
-// Hiding the conversation you are in — or one with an approval waiting in it — behind a click is a
-// way to lose work, not a convenience.
+// --- the group you are WORKING in folds too — but keeps the row you are in ---------------------
+// It used to be exempt (no folding at all). Now it folds to the same five, and the active row is
+// PINNED inside them, so the conversation can never be hidden while the list still stops at five.
 const activeOld = await ev(`(async () => {
   // activate the OLDEST session of the group (it is the one the recent-5 rule would hide)
   const oldest = ${JSON.stringify(seeded[0])};
@@ -134,10 +134,12 @@ const activeOld = await ev(`(async () => {
 await send("Page.navigate", { url: BASE });
 await sleep(3400);
 const activeView = await readGroup(DIR);
-check("the group holding the ACTIVE session shows every row", activeView.rows.length === 7,
+check("the group holding the ACTIVE session still folds to five", activeView.rows.length === 5,
   `rows=${activeView.rows.length} (resume HTTP ${activeOld})`);
-check("…while a sibling group still folds (the rule is per workspace)",
-  activeView.rows.length === 7, JSON.stringify(activeView));
+check("…and the row you are IN is still on screen (pinned into that five)",
+  activeView.rows.includes(seeded[0]), JSON.stringify({ rows: activeView.rows, active: seeded[0] }));
+check("…and the count is unchanged (the pin took a slot, it did not add a sixth row)",
+  /展开其余\s*2\s*条/.test(activeView.more), JSON.stringify(activeView.more));
 
 // --- a search shows every match --------------------------------------------------------------
 const searched = await ev(`(async () => {

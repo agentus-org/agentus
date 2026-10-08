@@ -160,6 +160,21 @@ case "${1:-}" in
     slug="${2:-$(git -C "$HERE" rev-parse --abbrev-ref HEAD | tr '/' '-')}"
     git -C "$HERE" diff --quiet && git -C "$HERE" diff --cached --quiet || { echo "[promote] the dev tree has uncommitted changes — commit them first"; exit 1; }
     tip="$(git -C "$HERE" rev-parse --short HEAD)"
+    # GUARD (2026-10-08, learned the hard way): this script publishes the dev tree's CURRENT HEAD,
+    # whatever branch that happens to be. Once that was a stale feature branch sitting one commit
+    # BEHIND origin/main, so the promote quietly published a ROLLBACK — live went back to the
+    # previous bundle (asset B4tKDeZd -> Bvgkcnwv), the just-fixed bug returned, and nothing in the
+    # output said "regression". Publishing is a forward move: refuse when origin/main already
+    # contains commits this HEAD does not (override with DEV_PROMOTE_FORCE=1 for a deliberate revert).
+    if [ "${DEV_PROMOTE_FORCE:-0}" != "1" ] && git -C "$HERE" rev-parse -q --verify origin/main >/dev/null; then
+      if git -C "$HERE" merge-base --is-ancestor "$tip" origin/main 2>/dev/null \
+         && [ "$(git -C "$HERE" rev-parse origin/main)" != "$(git -C "$HERE" rev-parse "$tip")" ]; then
+        echo "[promote] REFUSED: this HEAD ($tip) is BEHIND origin/main ($(git -C "$HERE" rev-parse --short origin/main))."
+        echo "[promote] promoting it would roll live BACK. Check out main (or merge it in), then promote again."
+        echo "[promote] (a deliberate rollback: DEV_PROMOTE_FORCE=1 bash scripts/dev.sh promote <slug>)"
+        exit 1
+      fi
+    fi
     old_tip="$(git -C "$LIVE" rev-parse HEAD 2>/dev/null || echo none)"
     echo "[promote] $HERE @ $tip  ->  $LIVE on run/$slug"
     token_file="$LIVE/packages/server/.data/auth.token"

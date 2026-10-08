@@ -291,7 +291,19 @@ await shotRow(".work-run-head", "transcript-run-open.png");
 // reload lands on whatever slot the app opens by DEFAULT — the sweep then measures a different
 // session and reports the fixture as empty (head="", kept=0). Re-open by URL.
 await ev(`location.href = ${JSON.stringify(BASE + "/?session=")} + ${JSON.stringify(sid)}`);
-await sleep(3200);
+// WAIT for the FIXTURE to be on screen — a re-open by URL is not instant, and a page that has not
+// finished loading its history renders ZERO rows. Measuring then reports the fixture as empty
+// (head="", kept=0) and reads as a product failure. Same rule as the other sweeps.
+{
+  let mounted = 0;
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    mounted = await ev("document.querySelectorAll('.stream-inner > *').length").catch(() => 0);
+    if (mounted > 5) break;
+  }
+  if (mounted <= 5) { console.error(`the fixture never came back on screen (rows=${mounted})`); process.exit(1); }
+}
+await sleep(800);
 // The page keeps a WINDOW of history and offers "load earlier" for the rest, so pull the whole
 // round back in first — otherwise this step would be measuring the window, not the folding.
 for (let i = 0; i < 30; i++) {

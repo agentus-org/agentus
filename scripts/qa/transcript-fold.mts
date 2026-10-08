@@ -157,5 +157,23 @@ function fresh(): { list: Block[]; index: Map<string, number> } {
     list[1]?.text === "AAAAAAAAAAAAAAAA", JSON.stringify(list[1]?.text));
 }
 
+// ---- a growing block must be a NEW object ----------------------------------------------------
+// The rows are memoized on the fields they read, and a comparator comparing `a.m.text === b.m.text`
+// is blind while both sides are the SAME object. The store used to grow the text in place, so the
+// thinking window rendered once and then showed its first characters for the whole turn and dumped
+// the rest at turn-end (operator report 2026-10-08). Identity has to change on every growth.
+{
+  const list: { key: string; kind: string; text: string }[] = [];
+  const index = new Map<string, number>();
+  const make = (k: string, row: { kind: string; text: string }) => ({ key: k, kind: row.kind, text: row.text });
+  foldTextRow(list, index, { key: "thought:t1", kind: "thought", text: "第一段", delta: "第一段" }, make);
+  const first = list[0];
+  foldTextRow(list, index, { key: "thought:t1", kind: "thought", text: "第二段", delta: "第二段", n: 6 }, make);
+  check("a grown block is a NEW object (a comparator comparing fields must be able to see the change)",
+    list[0] !== first, "the same object was written through");
+  check("…carrying the concatenated text", list[0]?.text === "第一段第二段", JSON.stringify(list[0]?.text));
+  check("…in the same slot (seq/order preserved)", list.length === 1 && index.get("thought:t1") === 0);
+}
+
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${ok} ok, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
