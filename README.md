@@ -42,7 +42,7 @@ The first slot you start will use the Hermes home **your own agent already uses*
 ### From a checkout (development)
 
 ```bash
-git clone https://github.com/agent-slot/agentus.git
+git clone https://github.com/agentus-org/agentus.git
 cd agentus
 npm start                     # installs if needed, builds, serves (scripts/start.sh)
 npm run dev -w @agentus/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)

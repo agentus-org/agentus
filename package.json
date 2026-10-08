@@ -5,11 +5,11 @@
  "license": "Apache-2.0",
  "repository": {
   "type": "git",
-  "url": "git+https://github.com/agent-slot/agentus.git"
+  "url": "git+https://github.com/agentus-org/agentus.git"
  },
- "homepage": "https://github.com/agent-slot/agentus#readme",
+ "homepage": "https://github.com/agentus-org/agentus#readme",
  "bugs": {
-  "url": "https://github.com/agent-slot/agentus/issues"
+  "url": "https://github.com/agentus-org/agentus/issues"
  },
  "bin": {
   "agentus": "bin/agentus.mjs"
