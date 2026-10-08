@@ -57,6 +57,11 @@ export const IconCheck = (p: IconProps = {}): JSX.Element => svg(<path d="m4 12.
 export const IconFolder = (p: IconProps = {}): JSX.Element =>
   svg(<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />, p);
 
+/** team — two people. The rail's 团队 row is a placeholder today (we have no team backend),
+ *  so this icon's whole job is to make that one row recognisable at a glance. */
+export const IconUsers = (p: IconProps = {}): JSX.Element =>
+  svg(<><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" /><circle cx="17" cy="9.2" r="2.2" /><path d="M16.2 20a4.6 4.6 0 0 1 5.3-3.2" /></>, p);
+
 export const IconHome = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h14V9.5" /></>, p);
 
