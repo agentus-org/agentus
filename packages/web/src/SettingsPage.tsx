@@ -109,7 +109,9 @@ interface Draft {
   hotwordsText: string;
 }
 
-const ACCENTS = ["#ffb454", "#5ba8d4", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
+/** Accent presets. The blue is the brand accent (assets/logo — the mark's nodes, #76BBDF),
+ *  so the cockpit can be tinted to match its own logo; the rest are just variety. */
+const ACCENTS = ["#ffb454", "#76bbdf", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
 
 function draftOf(v: SettingsView): Draft {
   return {
