@@ -11,3 +11,6 @@ dist/
 .data-notify-testbed/
 auth.secret
 auth.token
+
+# a worktree may borrow a sibling tree's modules through a symlink (it is not "node_modules/")
+node_modules

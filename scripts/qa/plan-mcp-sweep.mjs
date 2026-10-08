@@ -23,6 +23,7 @@
 // the file named by MOCK_PLAN_TOKEN_FILE (its own opt-in QA hook) because a token printed into a
 // transcript would be a credential in the operator's UI.
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -138,6 +139,21 @@ const hermesRow = builtinRows.find((r) => r.id === "hermes");
 check("the built-in hermes row is MCP-driven too (its frames are not rendered)",
   (hermesRow?.nativePlanSource ?? "none") === "none",
   `nativePlanSource=${hermesRow?.nativePlanSource}`);
+// The upgrade path, which the checks above cannot see: a fresh row is seeded WITH the value, while a
+// row that predates the column — i.e. every row an existing install already has — is NULL. Those are
+// the rows an operator's cockpit actually runs on, so assert the NULL case lands on the same default
+// (deriving it from the kind instead would report `acp` for Hermes while everything else says `none`).
+{
+  const db = new DatabaseSync(path.join(DATA, "agentus.sqlite"));
+  const stored = db.prepare("select native_plan_source from backends where id = 'hermes'").get();
+  db.prepare("update backends set native_plan_source = null where id = 'hermes'").run();
+  const nullRow = ((await api("/api/backends")).body ?? []).find((r) => r.id === "hermes");
+  check("a row whose column predates the feature (NULL) lands on the MCP-driven default",
+    nullRow?.nativePlanSource === "none", `nativePlanSource=${nullRow?.nativePlanSource}`);
+  db.prepare("update backends set native_plan_source = ? where id = 'hermes'")
+    .run(stored?.native_plan_source ?? null);
+  db.close();
+}
 await api("/api/backends/mock", {
   method: "PATCH",
   body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }),
@@ -279,6 +295,51 @@ check("a row that opted into `acp` renders the agent's frames again",
   acpPlan?.source === "acp" && (acpPlan?.items?.length ?? 0) >= 3,
   JSON.stringify({ source: acpPlan?.source, items: acpPlan?.items?.map((i) => i.content) }));
 await api(`/api/sessions/${s3.id}`, { method: "DELETE" });
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }) });
+
+// --- 5c: the tool takes over a card that an older build wrote from frames ---------------
+// This is the state the flip left behind on every session that already existed: a plan whose stored
+// source is `acp`, on a row that is now MCP-driven. Judging the writer by the stored source alone
+// refused the tool for good — the card froze on pre-flip content with nothing able to update it.
+await api("/api/backends/mock", {
+  method: "PATCH",
+  body: JSON.stringify({ ...before, nativePlanSource: "none", env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }),
+});
+const s4 = await freshSession("plan mcp sweep (takeover)");
+await say(s4.id, "[mcp] what did the handshake carry?");
+const env4 = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
+const mcp4 = mcpChild({
+  AGENTUS_PLAN_ENDPOINT: env4.AGENTUS_PLAN_ENDPOINT,
+  AGENTUS_PLAN_TOKEN: env4.AGENTUS_PLAN_TOKEN,
+  AGENTUS_PLAN_SESSION: env4.AGENTUS_PLAN_SESSION,
+});
+await mcp4.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
+const owns = await mcp4.call("tools/call", {
+  name: "update_plan", arguments: { items: [{ content: "tool writes an MCP-driven card", status: "in_progress" }] },
+});
+check("the tool writes an MCP-driven session's plan", /Plan saved/.test(textOf(owns)), textOf(owns).slice(0, 140));
+// Hand it to the frames (a row that renders them), then back — the plan keeps saying `acp`:
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...before, nativePlanSource: "acp" }) });
+await say(s4.id, "[plan] the agent's own frames");
+check("…a row that renders frames takes the card back",
+  (await planOf(s4.id))?.source === "acp", `source=${(await planOf(s4.id))?.source}`);
+const refused = await mcp4.call("tools/call", {
+  name: "update_plan", arguments: { items: [{ content: "tool write while frames own it", status: "pending" }] },
+});
+check("…and there the tool is refused, by name", /renders the agent's own ACP frames/.test(textOf(refused)),
+  textOf(refused).slice(0, 170));
+await api("/api/backends/mock", {
+  method: "PATCH",
+  body: JSON.stringify({ ...before, nativePlanSource: "none", env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }),
+});
+const takeover = await mcp4.call("tools/call", {
+  name: "update_plan", arguments: { items: [{ content: "the tool takes over a frame-written plan", status: "pending" }] },
+});
+check("an MCP-driven row's tool takes over a plan that frames wrote (the flip strands nothing)",
+  /Plan saved/.test(textOf(takeover)) && (await planOf(s4.id))?.source === "mcp",
+  `${textOf(takeover).slice(0, 90)} | source=${(await planOf(s4.id))?.source}`);
+mcp4.child.stdin.end();
+await api(`/api/sessions/${s4.id}`, { method: "DELETE" });
 await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }) });
 
 // --- 6: the child does not outlive its session ----------------------------------------

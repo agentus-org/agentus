@@ -80,6 +80,21 @@ export function acceptsWriteFrom(current: PlanSource | undefined, incoming: Plan
   return current === incoming;
 }
 
+/** Whether the plan TOOL may write this session's plan.
+ *
+ *  The comparison above is between the object's STORED source and the incoming one, and on an
+ *  MCP-driven row that is the wrong yardstick: the agent's frames are dropped at the door, so the
+ *  tool is the only writer the session has, and it must be able to take over a plan that an older
+ *  build wrote from frames. Judging by the stored source alone strands exactly those sessions — the
+ *  card keeps pre-flip content that nothing can update, and the tool answers "the frames wrote this"
+ *  about frames the cockpit is now ignoring.
+ *
+ *  A row that opted back into `acp` keeps the old ranking: its frames win, the tool is refused. */
+export function acceptsToolWrite(current: PlanSource | undefined, rowRendersFrames: boolean): boolean {
+  if (!rowRendersFrames) return true;
+  return acceptsWriteFrom(current, "mcp");
+}
+
 /** ACP v2's plan updates (`session/update` → `plan_update`), behind an experiment switch.
  *
  *  v2 is still a draft: the SDK ships it under an experimental subpath and both ends of this wire

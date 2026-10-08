@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { BackendId, PlanSnapshot, SessionStatus, StoredMessage } from "@agentus/shared";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 import { normalizeItems } from "../plan/plan.js";
+import { DEFAULT_NATIVE_PLAN_SOURCE } from "../acp/backends.js";
 
 /** Text that is genuinely NEW in `incoming`, given what we already accumulated.
  *
@@ -197,11 +198,14 @@ function rowToBackend(r: RawBackendRow): BackendRow {
     id: r.id,
     label: r.label,
     kind: r.kind as BackendKind,
-    // A row predating this column (or one written by an older build) says nothing: derive it from
-    // the kind instead of inventing a third state the UI would have to render.
+    // A row predating this column (or one written by an older build) says nothing, so it follows the
+    // same default as every other backend: MCP-driven. Deriving it from the kind here would smuggle
+    // the old "Hermes is special" rule back in behind the registry — a NULL row would report `acp`
+    // while the intent (and every freshly seeded row) says `none`, i.e. the flip would silently not
+    // apply to exactly the rows an upgrade leaves behind.
     nativePlanSource: r.native_plan_source === "none" || r.native_plan_source === "acp"
       ? r.native_plan_source
-      : (r.kind === "hermes" ? "acp" : "none"),
+      : DEFAULT_NATIVE_PLAN_SOURCE,
     cmd: r.cmd,
     args: (parseJson(r.args) as string[] | null) ?? [],
     env: (parseJson(r.env) as Record<string, string> | null) ?? {},
@@ -356,7 +360,7 @@ export class Store {
       "last_check_guidance", "last_check_at", "last_success_at", "last_failure_at",
       "handshake", "handshake_at",
       // P1 (plan service): which channel carries this backend's plan, `acp` | `none`. Nullable on
-      // purpose — a row that predates it derives an answer from its `kind` (see rowToBackend).
+      // purpose — a row that predates it follows the same default as a seeded one (see rowToBackend).
       "native_plan_source",
     ]) {
       if (!beCols.has(col)) this.#db.exec(`alter table backends add column ${col} text`);
