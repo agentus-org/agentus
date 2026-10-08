@@ -319,16 +319,28 @@ function lastOf(s: SessionInfo): number {
   return s.lastAt ?? s.createdAt;
 }
 
+/** The statuses a rail row can wear, in the operator's words. The raw wire value is protocol
+ *  vocabulary (`running`), and a tooltip that reads "hermes · running" names the class in the
+ *  wrong language — the row is a sentence about a session, not a debug dump. */
+const STATUS_WORD: Record<string, string> = {
+  starting: "启动中", ready: "待命", running: "运行中", error: "出错", closed: "已关闭",
+};
+
 function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
   const mark = BACKEND_MARK[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
   const [broken, setBroken] = useState(false);
   const useIcon = mark.icon && !broken;
+  // "which of these is working RIGHT NOW" is the one thing the operator scans the rail FOR, and a
+  // 7px static pixel does not answer it at this size. The running state gets MOTION (`.live`:
+  // a breathing halo on the mark, studio's streaming ring in our tokens, plus the pulsing dot);
+  // every other state stays still, which is what makes the moving row findable.
+  const live = !cold && status === "running";
   return (
     <span
-      className={`be-avatar be-${backend} ${cold ? "cold" : ""}`}
+      className={`be-avatar be-${backend} ${cold ? "cold" : ""} ${live ? "live" : ""}`}
       data-backend={backend}
       data-letter={mark.letter}
-      title={`${mark.label} · ${cold ? "已归档（冷会话）" : status}`}
+      title={`${mark.label} · ${cold ? "已归档（冷会话）" : STATUS_WORD[status] ?? status}`}
       aria-hidden="true"
     >
       {useIcon
