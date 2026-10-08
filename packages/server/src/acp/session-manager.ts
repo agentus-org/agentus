@@ -35,7 +35,7 @@ import type {
   SessionModeState,
   TurnTrace,
 } from "@agentus/shared";
-import { acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
+import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -996,9 +996,11 @@ export class SessionManager {
    *  (design-plan-service §6-B).
    *
    *  Two rules meet here. The token scopes the write to one session. And plan.ts's one-writer rule
-   *  decides who owns the card: a session already fed by native frames keeps them, and this write is
-   *  refused — `accepted: false` is a normal ANSWER, not an error, because the caller has to tell
-   *  the model the truth (it does not own this list) or the model will keep believing it does. */
+   *  decides who owns the card: on a row that renders frames they keep it and this write is refused —
+   *  `accepted: false` is a normal ANSWER, not an error, because the caller has to tell the model the
+   *  truth (it does not own this list) or the model will keep believing it does. On an MCP-driven row
+   *  the tool is the session's ONLY writer, so it takes the card over even when an older build had
+   *  written it from frames (`acceptsToolWrite`). */
   writePlanFromMcp(sessionId: string, token: string, input: { items: unknown; explanation?: unknown }):
     | { ok: true; accepted: boolean; reason?: string; plan: PlanSnapshot | null }
     | { ok: false; error: string } {
@@ -1006,10 +1008,11 @@ export class SessionManager {
     if (!live) return { ok: false, error: "no such running session" };
     if (!token || token !== live.planToken) return { ok: false, error: "bad plan token" };
     const prev = this.#store.getPlan(sessionId);
-    if (!acceptsWriteFrom(prev?.source, "mcp")) {
+    const rowRendersFrames = nativePlanSourceOf(this.#specFor(live.info.backend)) !== "none";
+    if (!acceptsToolWrite(prev?.source, rowRendersFrames)) {
       return {
         ok: true, accepted: false, plan: prev ?? null,
-        reason: `this session's plan is written by the agent's own ACP frames (source: ${prev?.source}), so the tool is ignored`,
+        reason: `this backend renders the agent's own ACP frames, and this session's plan (source: ${prev?.source}) is theirs, so the tool is ignored`,
       };
     }
     const items = normalizeItems(input.items);
