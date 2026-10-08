@@ -262,6 +262,8 @@ class Cockpit {
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #outbox: ClientCommand[] = [];
   #listeners = new Set<() => void>();
+  /** The pending coalesced publish (see bump) — one per frame at most. */
+  #frame: number | null = null;
   #snapshot: StoreSnapshot;
 
   /** Remember which slot the operator was in, so a reload (or a phone waking up)
@@ -526,12 +528,71 @@ class Cockpit {
     };
   }
 
+  /**
+   * Publish a new snapshot to the UI — at most ONCE PER FRAME.
+   *
+   * This used to notify every subscriber synchronously, and one of them is a `useSyncExternalStore`
+   * in the app shell, so each websocket frame re-rendered the WHOLE cockpit (the transcript, the rail,
+   * the plan card). A stream sends frames far faster than a frame can be painted, so the backlog grew
+   * without bound: measured 2026-10-08 on a slot holding 383 rendered rows, the server finished a turn
+   * at +59.9s and the page only showed the finished shape at **+99.9s** — forty seconds of it still
+   * drawing tool cards and 「▸ turn in progress…」 for a turn that was over, with a reload the only way
+   * out (the operator's exact report).
+   *
+   * Coalescing is safe because a snapshot is a FULL description of the state, not a delta: the reader
+   * gets the newest one, so nothing can be missed. Every mutation still lands in the snapshot before
+   * the broadcast — the scheduled pass recomputes it from the current state, so a burst of frames is
+   * one render of the sum of them.
+   */
   bump(): void {
     this.#version++;
+    if (this.#frame == null) {
+      // ⚠️ `requestAnimationFrame` does not exist under Node, and the state module is unit-tested
+      // there (scripts/qa/resume-tail.mts, store-fold.mts). Fall back to a macrotask so the tests
+      // still see one publish per burst, and to a synchronous publish as the last resort — a
+      // published snapshot is never wrong, only early.
+      if (typeof requestAnimationFrame === "function") {
+        this.#frame = requestAnimationFrame(() => {
+          this.#frame = null;
+          this.#publish();
+        });
+      } else if (typeof setTimeout === "function") {
+        this.#frame = setTimeout(() => {
+          this.#frame = null;
+          this.#publish();
+        }, 0) as unknown as number;
+      } else {
+        this.#publish();
+      }
+    }
+    this.#flushIfHidden();
+  }
+
+  /** Build the snapshot and tell the subscribers. Only `bump` calls this. */
+  #publish(): void {
+    if (this.#frame != null) {
+      // Same environment caveat as `bump`: rAF exists only in a browser; under Node the pending
+      // handle is a timer.
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.#frame);
+      else if (typeof clearTimeout === "function") clearTimeout(this.#frame as unknown as ReturnType<typeof setTimeout>);
+      this.#frame = null;
+    }
     // refresh busy mirrors from info
     for (const s of this.byId.values()) s.busy = s.info.status === "running";
     this.#snapshot = this.#build();
     for (const fn of this.#listeners) fn();
+  }
+
+  /**
+   * A requestAnimationFrame callback does NOT run while the tab is hidden (backgrounded phone, a
+   * minimised window), so a page that went to the background mid-stream would come back with a stale
+   * screen and no pending pass. Publish immediately in that case: nothing is being painted, so the
+   * cost that the coalescing exists to avoid is not being paid anyway.
+   */
+  #flushIfHidden(): void {
+    if (typeof document === "undefined" || !document.hidden) return;
+    if (this.#frame == null) return;
+    this.#publish();
   }
 
   connect(): void {
@@ -623,6 +684,11 @@ class Cockpit {
       for (const m of messages) this.#ingest(v, m);
       v.loaded = true;
       v.hasOlder = Boolean(hasOlder);
+      // A READ is history, and history is not still arriving: whatever `open` the frames above carried
+      // (they are stored rows, not a running stream), the rebuild decides. Otherwise a transcript read
+      // while an unrelated event marked a row would render a live 「思考中…」 window on a finished turn —
+      // and since nothing about that row changes afterwards, nothing would ever clear it.
+      this.#endOpenBubbles(v);
       this.#keepLastOpen(v); // mid-turn: resume appending into the open bubble
       this.bump();
       // …then ask the server for the plan OBJECT, which is what the card actually renders: the
@@ -1095,7 +1161,9 @@ class Cockpit {
           // reconnect tail (resume): merge into what we already rendered.
           // seq-dedup in #ingest drops the overlap; a rebuild here would lose
           // everything before the drop (QA#17).
-          for (const m of e.messages) this.#ingest(v, m);
+          // `resync` — not a plain merge: the rows the client last saw may have GROWN while the socket
+          // was down, so the tail re-states them and #ingest re-applies what it can fold by identity.
+          for (const m of e.messages) this.#ingest(v, m, { resync: true });
           v.lastAt = Date.now();
           break;
         }
@@ -1127,7 +1195,9 @@ class Cockpit {
         v.busy = true;
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
-        this.#endOpenBubbles(v); // new turn => fresh bubbles
+        // NOTE: the previous turn's bubbles are closed by the turn-end that preceded this (and by the
+        // `.live` fallback in App's foldWork). Do NOT re-run #endOpenBubbles here: a turn that starts
+        // while the previous one is still on screen would close a bubble that is about to grow again.
         break;
       }
       case "plan": {
@@ -1148,6 +1218,13 @@ class Cockpit {
       case "turn-end": {
         const v = this.#view(e.sessionId);
         v.busy = false;
+        // Close the block that was still arriving — a data change, so the transcript re-renders THAT
+        // row and drops its `.live` marking. Relying on "the last row of the fold, while busy" used to
+        // leave the window marked live FOREVER: the block carrying the marking is early in the turn
+        // (the agent keeps thinking after a tool call), nothing about it changes at turn-end, and a row
+        // that does not change does not re-render (measured 2026-10-08: the page kept showing a live
+        // 「思考中…」 window and 「▸ turn in progress…」 for 150s+ after the server said ready — the
+        // operator's 「早就结束了还一直在渲染中间过程，强制刷新才到完结态」). */
         this.#endOpenBubbles(v);
         if (e.error) v.msgs.push({ key: `err-${Date.now()}`, kind: "meta", text: e.error });
         break;
@@ -1208,13 +1285,14 @@ class Cockpit {
   #ingest(
     v: SessionView,
     m: StoredMessage,
-    opts?: { delta?: string; n?: number; list?: MsgView[]; index?: Map<string, number> },
+    opts?: { delta?: string; n?: number; list?: MsgView[]; index?: Map<string, number>; resync?: boolean },
   ): void {
     // A page of older rows is folded into a scratch list first (so it can be merged by block key
     // with what is already on screen), the live stream folds into the view itself.
     const list = opts?.list ?? v.msgs;
     const index = opts?.index ?? v.blocks;
     const delta = opts?.delta;
+    const p0 = m.payload as Record<string, unknown>;
     // Dedup REST-replay vs WS-live (QA#3) — but ONLY for append-only rows.
     // Tool rows are upserted server-side keeping their original seq, so a
     // seq-based guard would swallow every tool_call_update (QA#12: the card
@@ -1224,7 +1302,17 @@ class Cockpit {
     // a bubble reading "不是" and the rest of the reply nowhere). Growing frames carry `n` — the
     // block's total length — and are guarded by that instead (transcript.planTextFrame).
     const grew = delta !== undefined;
-    const upsertRow = m.kind === "tool" || m.kind === "meta" || m.seq <= 0 || grew;
+    // A re-delivered frame (the reconnect tail, `resync`) must be re-APPLIED, not skipped: the row the
+    // client last saw may have GROWN since — a streamed reply keeps its seq, a tool call's output lands
+    // later — and the seq guard would freeze that bubble at whatever version we happened to hold,
+    // permanently (until a reload). Re-applying is safe for every kind that folds by IDENTITY: a tool
+    // row upserts by callId, a KEYED text row replaces its own block, a user/meta row is skipped when
+    // its key is already held. An UNKEYED text row is the one case that cannot be re-applied — its rule
+    // is contiguous append, so a re-delivery would grow a second bubble — and it stays behind the guard.
+    const keyed = (m.kind === "agent" || m.kind === "thought") && blockKeyOf(m.kind, p0) !== null;
+    const reapply = opts?.resync === true
+      && (m.kind === "tool" || m.kind === "plan" || m.kind === "user" || m.kind === "meta" || keyed);
+    const upsertRow = reapply || m.kind === "tool" || m.kind === "meta" || m.seq <= 0 || grew;
     if (!upsertRow) {
       if (v.seen.has(m.seq)) return;
       v.seen.add(m.seq);
@@ -1241,6 +1329,9 @@ class Cockpit {
     const last = list[list.length - 1];
     switch (m.kind) {
       case "user":
+        // A re-delivered frame must not become a second bubble (see `reapply` above): the row's key IS
+        // its identity, and a user row is a turn boundary, so the counter advances only for a new one.
+        if (list.some((x) => x.key === `m${m.seq}`)) break;
         list.push({
           key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""), at,
           // names only — the bytes were never persisted (AttachmentSummary)
@@ -1271,8 +1362,18 @@ class Cockpit {
         );
         // A live frame keeps ITS bubble marked as the growing one, even when a tool card or a
         // thinking block arrived after it: that flag is what draws the streaming state.
+        //
+        // 🔴 Only while the session is ACTUALLY running, and the check has to be the session's own
+        // status rather than `busy`: a delta frame can arrive AFTER the turn-end that closed the block
+        // (the last reasoning chunk of a turn lands behind the final answer when the mock/host decides
+        // to answer in the middle), and `busy` is already false by then. Re-opening the flag there left
+        // a live 「思考中…」 window on screen forever — a row that no longer changes never re-renders,
+        // so nothing could ever clear it (measured 2026-10-08; the operator's 「早就结束了还一直在渲染中间
+        // 过程，强制刷新才到完结态」). The status is what the server last SAID, so a stale frame cannot
+        // outvote it.
         const block = list[idx];
-        if (delta !== undefined && block && (block.kind === "agent" || block.kind === "thought")) {
+        if (delta !== undefined && v.info.status === "running" && block
+          && (block.kind === "agent" || block.kind === "thought")) {
           block.open = true;
         }
         break;
@@ -1333,6 +1434,8 @@ class Cockpit {
         break;
       }
       case "meta":
+        // Same reason as a user row: a re-delivered meta frame must not double up.
+        if (list.some((x) => x.key === `m${m.seq}`)) break;
         list.push({ key: `m${m.seq}`, kind: "meta", text: text || JSON.stringify(p) });
         break;
     }

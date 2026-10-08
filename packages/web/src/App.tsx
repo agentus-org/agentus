@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView } from "./state";
@@ -12,6 +12,7 @@ import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
+import { RAIL_RECENT, splitRecent } from "./rail";
 import {
   browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
@@ -517,6 +518,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [q, setQ] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
+  // Which workspace groups the operator unrolled past RAIL_RECENT. In-memory like `closed`: a
+  // reload returns to the recent view, which is the point of having one.
+  const [more, setMore] = useState<Record<string, boolean>>({});
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState("");
   // ---- row menus + inline rename ------------------------------------------------
@@ -691,6 +695,14 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
         {groups.map((g) => {
           const isOpen = Boolean(needle) || !closed[g.path];
           const liveCount = g.items.filter((i) => !i.cold).length;
+          // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
+          // The rule itself lives in `rail.ts` (with its own suite): hiding the conversation you are
+          // working in behind a click is a way to lose work, not a convenience, so the active group
+          // and every search show everything.
+          const holdsActive = g.items.some((i) => i.s.id === activeId);
+          const { shown, hidden } = splitRecent(g.items, {
+            searching: Boolean(needle), holdsActive, expanded: Boolean(more[g.path]),
+          });
           return (
             <div className="rail-group" key={g.path}>
               <div className="rail-group-row">
@@ -730,7 +742,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
             </div>
               {isOpen ? (
                 <div className="rail-group-body">
-                  {g.items.map(({ s, cold }) => (
+                  {shown.map(({ s, cold }) => (
                     <div
                       key={s.id}
                       ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
@@ -789,6 +801,21 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
                   ))}
                 </div>
               ) : null}
+              {/* 「展开其余 N 条」 — the tail of this workspace, one click away. Rendered only when
+                  something is actually hidden (and never while a search is filtering: that view
+                  claims to show every match). */}
+              {isOpen && !needle && g.items.length > RAIL_RECENT && (
+                <button
+                  type="button"
+                  className={`rail-more ${more[g.path] ? "open" : ""}`}
+                  onClick={() => setMore((mm) => ({ ...mm, [g.path]: !mm[g.path] }))}
+                  aria-expanded={Boolean(more[g.path])}
+                  title={more[g.path] ? "只显示最近几个" : `展开这个工作空间里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
+                >
+                  <IconChevronRight size={10} className={`rail-more-chev ${more[g.path] ? "open" : ""}`} />
+                  {more[g.path] ? "收起" : `展开其余 ${g.items.length - RAIL_RECENT} 条`}
+                </button>
+              )}
             </div>
           );
         })}
@@ -1128,6 +1155,25 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
  *  more code than the behaviour is worth. */
 const streamReattach: { current: () => void } = { current: () => {} };
 
+const Busy = memo(function Busy({ busy }: { busy: boolean }): JSX.Element | null {
+  const [late, setLate] = useState(false);
+  // "still waiting" needs a clock, and a clock is the one thing that would drag the transcript into
+  // re-rendering every second. So the timer lives HERE, inside a component whose only prop is the flag:
+  // when it fires, it re-renders itself and nothing above it.
+  useEffect(() => {
+    if (!busy) { setLate(false); return; }
+    const t = window.setInterval(() => setLate(true), 5000);
+    return () => window.clearInterval(t);
+  }, [busy]);
+  if (!busy) return null;
+  return (
+    <>
+      <div className="stream-hint">▸ turn in progress…</div>
+      {late && <div className="stream-hint">⏳ still waiting for the agent…</div>}
+    </>
+  );
+});
+
 function Stream({ v }: { v: SessionView }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -1256,8 +1302,6 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     return () => clearTimeout(t);
   }, [v.busy, v.msgs.length]);
 
-  const showWait = v.busy && Date.now() - v.lastAt > 175_000;
-
   return (
     <div className="stream-wrap">
       <div className="stream" ref={ref} tabIndex={0}>
@@ -1269,11 +1313,14 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               </button>
             </div>
           )}
-          {foldWork(v.msgs, v.busy).map((row) => (row.kind === "work"
+          {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
-          {v.busy && <div className="stream-hint">▸ turn in progress…</div>}
-          {showWait && <div className="stream-hint">⏳ still waiting for the agent…</div>}
+          {/* 🔴 `showWait` used to be computed in THIS render from `Date.now() - v.lastAt`, so the
+              line only appeared when some unrelated event happened to re-render the transcript — which
+              is to say, never exactly 175s after the wait started. `Busy` owns that clock now: it ticks
+              itself and cannot drag the rows into a re-render. */}
+          <Busy busy={v.busy} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
@@ -1301,6 +1348,37 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
 /** One message. `last` marks the transcript tail — that is where the fork action lives
  *  (a fork means "carry this work on as a new session", which only makes sense from the
  *  end of what the agent currently holds), and copy is on every message. */
+// ---- the memo boundaries -------------------------------------------------------------------------
+// The stream re-renders the WHOLE row list on every published frame (the store hands out one snapshot
+// for the session; the row components are not told which row changed). That is fine only if an
+// unchanged row costs nothing to re-render — which is what these wrappers buy: 380 rows of a heavy
+// transcript render ONCE instead of once per frame while a turn streams.
+//
+// 🔴 Identity is NOT a valid "nothing changed" test here. The store updates a row IN PLACE
+// (`m.open = false` at turn-end, `existing.status = …` when a tool call settles, `#ingest` re-lighting
+// `open`), so a row can change while its object reference stays the same. A memo that short-circuits
+// on `a.m === b.m` therefore FREEZES the row on whatever it looked like first — measured 2026-10-08:
+// the thinking window's `live` prop flipped true→false at turn-end (the data was correct) but the
+// comparator returned "equal" on identity, the row never re-rendered, and the 「思考中…」 window stayed
+// on screen until a reload rebuilt every row. Compare the fields the component actually reads.
+const MemoThought = memo(Thought, (a, b) =>
+  a.live === b.live && a.m.key === b.m.key && a.m.text === b.m.text && a.m.at === b.m.at);
+const sameTool = (a: { m: MsgView }, b: { m: MsgView }) => {
+  const x = a.m as Extract<MsgView, { kind: "tool" }>;
+  const y = b.m as Extract<MsgView, { kind: "tool" }>;
+  return x.key === y.key && x.title === y.title && x.status === y.status
+    && x.detail === y.detail && x.input === y.input && x.at === y.at;
+};
+const MemoToolCard = memo(ToolCard, sameTool);
+const samePlan = (a: { m: MsgView; busy: boolean }, b: { m: MsgView; busy: boolean }) => {
+  const x = a.m as Extract<MsgView, { kind: "plan" }>;
+  const y = b.m as Extract<MsgView, { kind: "plan" }>;
+  return a.busy === b.busy && x.key === y.key && x.at === y.at
+    && x.terminal === y.terminal && x.explanation === y.explanation
+    && JSON.stringify(x.items) === JSON.stringify(y.items);
+};
+const MemoPlanCard = memo(PlanCard, samePlan);
+
 function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: boolean; busy: boolean; live?: boolean }): JSX.Element | null {
   switch (m.kind) {
     case "user":
@@ -1342,11 +1420,11 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
         </div>
       );
     case "thought":
-      return <Thought m={m} live={Boolean(live)} />;
+      return <MemoThought m={m} live={Boolean(live)} />;
     case "tool":
-      return <ToolCard m={m} />;
+      return <MemoToolCard m={m} />;
     case "plan":
-      return <PlanCard m={m} busy={busy} />;
+      return <MemoPlanCard m={m} busy={busy} />;
     case "meta":
       return <div className="msg meta"><div className="bubble">{m.text}</div></div>;
     default:
@@ -1530,11 +1608,62 @@ function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: 
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? live;
   const body = useRef<HTMLDivElement>(null);
+  const [stuck, setStuck] = useState(true);
+  // The window is about six lines, so "at the tail" is a small number here: the transcript's 140px
+  // would be most of this box.
+  const NEAR_THOUGHT = 24;
+  // ---- the reader is in charge of a live window -------------------------------
+  // A live window follows its own tail, but position alone cannot decide WHO is following: the
+  // newest line lands right under the viewport, so the smallest scroll-up was yanked back by the
+  // next chunk. Worse, this window sits INSIDE the transcript, so a gesture that landed here never
+  // reached the transcript at all — the reader had to fight this box first, which is exactly the
+  // reported 「要滑到很上面才停」. So: a gesture detaches NOW, and a detached window stays put until
+  // the reader asks for the tail again.
+  useEffect(() => {
+    const el = body.current;
+    if (!el || !live) return;
+    const atTail = (): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_THOUGHT;
+    // A scroll event from our own follow lands AT the tail and so keeps `stuck` true; a scroll the
+    // reader made to somewhere above it turns the follow off. Either way the position decides, which
+    // is why this one rule covers both.
+    const onScroll = (): void => setStuck(atTail());
+    const onWheel = (e: WheelEvent): void => { if (e.deltaY < 0) setStuck(false); };
+    let touchY = 0;
+    const onTouchStart = (e: TouchEvent): void => { touchY = e.touches[0]?.clientY ?? 0; };
+    // dragging the finger DOWN scrolls back toward older lines => detach
+    const onTouchMove = (e: TouchEvent): void => {
+      if ((e.touches[0]?.clientY ?? 0) > touchY + 4) setStuck(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") setStuck(false);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("keydown", onKey);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("keydown", onKey);
+    };
+    // `open` too: the box does not exist until the header is clicked, and a listener that only ran
+    // on mount would never be there for the reader who opened it mid-turn.
+  }, [live, open]);
   // a live window follows its own tail: text arrives in chunks and the reader should be at
   // the newest line without touching anything (deps by value, so this runs as the text grows)
   useEffect(() => {
-    if (live && body.current) body.current.scrollTop = body.current.scrollHeight;
-  }, [m.text, live]);
+    if (!live || !stuck) return;
+    const el = body.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [m.text, live, stuck]);
+  const toTail = (): void => {
+    setStuck(true);
+    const el = body.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
   return (
     <div className={`msg thought${live ? " live" : ""}`}>
       <button
@@ -1557,6 +1686,17 @@ function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: 
             </div>
           )}
         </div>
+      )}
+      {live && open && !stuck && (
+        <button
+          type="button"
+          className="thought-stick"
+          onClick={toTail}
+          title="follow the newest thinking again"
+          aria-label="follow the newest thinking again"
+        >
+          <IconArrowDown size={11} /> 回到最新
+        </button>
       )}
     </div>
   );
@@ -1591,7 +1731,7 @@ const TAIL_PREVIEW = 5;
  *  A run ENDS at an assistant reply (or a new prompt): the anchor must never swallow the answer,
  *  and text interleaved mid-turn keeps its true position — chronology stays exact. Fewer than two
  *  folded items is not worth a click: alone, a thought or a call reads better as itself. */
-function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
+function foldWork(msgs: MsgView[]): StreamRow[] {
   type Chunk =
     | { kind: "msg"; m: MsgView }
     | { kind: "work"; items: WorkItem[]; current: boolean };
@@ -1644,12 +1784,17 @@ function foldWork(msgs: MsgView[], busy: boolean): StreamRow[] {
     keep.forEach((m) => rows.push(asRow(m)));
   }
   // `tail` drives the fork affordance and must land on the last real MESSAGE: a work row is not
-  // something you can fork from. `live` marks the row that is still arriving (the live burst
-  // scrolls in its own small window).
+  // something you can fork from.
   const lastMsg = [...rows].reverse().find((r) => r.kind === "msg");
   if (lastMsg && lastMsg.kind === "msg") lastMsg.tail = true;
-  const tailRow = rows[rows.length - 1];
-  if (busy && tailRow && tailRow.kind === "msg") tailRow.live = true;
+  // `live` marks the row that is still ARRIVING — the small self-scrolling thinking window. It is read
+  // from the ROW's own state (`open`, cleared when the turn ends), never inferred from "the last row
+  // while busy": the block that stays live through a turn is the reasoning one, and a turn usually ends
+  // on the agent's answer — so a position-based marking could point at a row that never arrives again
+  // and leave it marked live forever.
+  for (const r of rows) {
+    if (r.kind === "msg" && (r.m.kind === "agent" || r.m.kind === "thought")) r.live = Boolean(r.m.open);
+  }
   return rows;
 }
 
@@ -1706,7 +1851,11 @@ function WorkRun({ items }: { items: WorkItem[] }): JSX.Element {
         </button>
         {open && (
           <div className="work-run-items">
-            {items.map((it) => (it.kind === "thought" ? <Thought key={it.key} m={it} live={false} /> : <ToolCard key={it.key} m={it} />))}
+            {/* A folded stretch is HISTORY: nothing inside it can change any more, so the wrapper
+                keeps it from re-rendering when a later frame touches something else. */}
+            {items.map((it) => (it.kind === "thought"
+              ? <MemoThought key={it.key} m={it} live={false} />
+              : <MemoToolCard key={it.key} m={it} />))}
           </div>
         )}
       </div>

@@ -330,6 +330,14 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // The session's own ACTIVITY clock — when the operator or the agent last really said something
+    // in it. A COLUMN, not a derived `max(messages.created_at)` (AionUi's model: `modified_at` on
+    // the conversation row, indexed, which is what its sidebar sorts by): every ingestion path
+    // writes rows, so a derived max() counts a history REPLAY as activity. Measured 2026-10-08 in
+    // the operator's own store — after one restart the rail said 「刚刚」 for eleven sessions at once,
+    // ordered by the order their agents happened to be resumed (10:44:52, :54, :58, 10:45:01, …).
+    const hadActivityClock = cols.has("last_activity_at");
+    if (!hadActivityClock) this.#db.exec("alter table sessions add column last_activity_at integer");
     // messages: the identity of one streamed block, so the chunks of one message accumulate into one
     // row instead of one row per token (see appendTextChunk).
     const mcols = new Set(
@@ -357,6 +365,11 @@ export class Store {
       this.#db.exec("alter table backends add column last_check_latency_ms integer");
     }
     this.#foldStreamedChunks();
+    // …then the one-time removal of what the REPLAYS already wrote (see #dedupeReplayedRows), and the
+    // clock for a store that predates the column — computed after the cleanup, so a session's time is
+    // when it was last talked to and not when its agent was last resumed.
+    this.#dedupeReplayedRows();
+    if (!hadActivityClock) this.#backfillActivity();
   }
 
   /**
@@ -378,16 +391,7 @@ export class Store {
     const FOLD_VERSION = 2;
     const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
     if (Number(v?.user_version ?? 0) >= FOLD_VERSION) return;
-    try {
-      const bak = `${this.#path}.pre-fold.bak`;
-      if (!fs.existsSync(bak)) {
-        this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
-        console.log(`[store] 折叠前已备份：${bak}`);
-      }
-    } catch (e) {
-      console.log(`[store] 备份失败，跳过折叠以免损坏历史：${String(e)}`);
-      return;
-    }
+    if (!this.#backup("fold")) return;
     const sessions = this.#db.prepare("select distinct session_id as id from messages").all() as unknown as { id: string }[];
     let before = 0;
     let after = 0;
@@ -439,6 +443,138 @@ export class Store {
     }
     this.#db.prepare(`pragma user_version = ${FOLD_VERSION}`).run();
     console.log(`[store] 历史分片已折叠：${before} 行 → ${after} 行`);
+  }
+
+  /**
+   * Copy the DB aside ONCE, before a destructive repair pass. False means no backup could be made
+   * (a read-only filesystem, a locked file) — the caller must then leave the data alone.
+   */
+  #backup(tag: string): boolean {
+    const bak = `${this.#path}.pre-${tag}.bak`;
+    try {
+      if (!fs.existsSync(bak)) {
+        this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
+        console.log(`[store] 修复前已备份：${bak}`);
+      }
+      return true;
+    } catch (e) {
+      console.log(`[store] 备份失败（${tag}），跳过这次修复以免损坏历史：${String(e)}`);
+      return false;
+    }
+  }
+
+  /**
+   * One-time removal of the rows a HISTORY REPLAY wrote as if they were fresh output.
+   *
+   * Whenever a slot re-attaches, the agent re-sends the tail of the conversation it holds as ordinary
+   * `session/update` notifications. The streaming kinds are folded by id/content, but a `tool_call`
+   * used to be APPENDED like new output, so one call became one row per re-attach. Measured
+   * 2026-10-08 in the operator's own store: 1224 calls replayed, **7507 extra rows**, the worst
+   * sitting in the transcript 17 times — every copy byte-identical, at timestamps that trace each
+   * restart (10-06 13:59 → 10-08 10:44). Text blocks the agent re-sent without a `messageId` did the
+   * same: 6487 rows repeated an earlier block of the same kind, character for character.
+   *
+   * Both are provable, so both are removed — with the discipline of the legacy fold: a backup first,
+   * a row only deleted when an EARLIER row of the same session holds the same bytes, and a repeat
+   * that does NOT match exactly left alone and reported (it may carry an update the live row never
+   * got).
+   *
+   * A legitimate repeat (the agent really says the same thing twice) is separated from a replay by
+   * one observable fact: a replay writes its copies in a BURST — several repeats inside the same
+   * second — while a live turn writes its new rows spread over the turn. So a text row is only
+   * removed when its second looks like that burst.
+   */
+  #dedupeReplayedRows(): void {
+    const DEDUPE_VERSION = 3;
+    const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
+    if (Number(v?.user_version ?? 0) >= DEDUPE_VERSION) return;
+    if (!this.#backup("dedupe")) return;
+    // The store's own floor for "this is a block, not an utterance" (`reemissionTarget`): below it a
+    // repeat is legitimately two messages ("好的" twice) and never a replay of one block.
+    const MIN_DUP_CHARS = 24;
+    const BURST_REPEATS_PER_SECOND = 3;
+    const del = this.#db.prepare("delete from messages where session_id = ? and seq = ?");
+    let before = 0;
+    let after = 0;
+    let toolsDropped = 0;
+    let textDropped = 0;
+    let kept = 0;
+    const sessions = this.#db
+      .prepare("select distinct session_id as id from messages")
+      .all() as unknown as { id: string }[];
+    for (const { id } of sessions) {
+      const rows = this.#db
+        .prepare("select * from messages where session_id = ? order by seq asc")
+        .all(id) as unknown as RawMessageRow[];
+      before += rows.length;
+      const doomed = new Set<number>();
+      // 1. one tool call is ONE row: a later row with the same `tool_call_id` and the same bytes is
+      //    that call replayed — never a second call.
+      const byCall = new Map<string, RawMessageRow>();
+      for (const r of rows) {
+        if (r.kind !== "tool" || !r.tool_call_id) continue;
+        const first = byCall.get(r.tool_call_id);
+        if (!first) {
+          byCall.set(r.tool_call_id, r);
+          continue;
+        }
+        if (normalizeText(first.payload) === normalizeText(r.payload)) {
+          doomed.add(r.seq);
+          toolsDropped += 1;
+        } else {
+          kept += 1;
+        }
+      }
+      // 2. an id-less text block the agent re-sent (its own recap): the copy is not a new message.
+      const repeats: RawMessageRow[] = [];
+      const seenText = new Set<string>();
+      for (const r of rows) {
+        if (r.kind !== "agent" && r.kind !== "thought") continue;
+        const text = normalizeText(textOf(parseJson(r.payload)));
+        if (!text) continue;
+        const key = `${r.kind}\u0000${text}`;
+        if (seenText.has(key)) repeats.push(r);
+        else seenText.add(key);
+      }
+      const perSecond = new Map<number, number>();
+      for (const r of repeats) {
+        const second = Math.floor(r.created_at / 1000);
+        perSecond.set(second, (perSecond.get(second) ?? 0) + 1);
+      }
+      for (const r of repeats) {
+        const text = normalizeText(textOf(parseJson(r.payload)));
+        if (text.length < MIN_DUP_CHARS) {
+          kept += 1;
+          continue;
+        }
+        if ((perSecond.get(Math.floor(r.created_at / 1000)) ?? 0) <= BURST_REPEATS_PER_SECOND) {
+          kept += 1;
+          continue;
+        }
+        doomed.add(r.seq);
+        textDropped += 1;
+      }
+      for (const seq of doomed) del.run(id, seq);
+      after += rows.length - doomed.size;
+    }
+    this.#db.prepare(`pragma user_version = ${DEDUPE_VERSION}`).run();
+    if (before !== after) {
+      console.log(
+        `[store] 重放行清理：${before} 行 → ${after} 行（工具行 ${toolsDropped}、文本行 ${textDropped}；`
+        + `另有 ${kept} 行内容并不完全相同，原样保留）`,
+      );
+    }
+  }
+
+  /** Give every session that predates the activity column its real last-activity time — computed
+   *  AFTER the replay cleanup, so it is when the conversation was last talked to and not when its
+   *  agent was last resumed. A session with no messages keeps NULL and falls back to creation. */
+  #backfillActivity(): void {
+    this.#db.exec(
+      `update sessions set last_activity_at =
+         (select max(m.created_at) from messages m where m.session_id = sessions.id)
+       where last_activity_at is null`,
+    );
   }
 
   upsertSession(s: SessionRow): void {
@@ -515,18 +651,35 @@ export class Store {
     return true;
   }
 
-  /** Highest persisted seq for a session (0 when empty) — the resume anchor. */
-  /** When each session last received a message, as a wall clock so sessions CAN be ordered
+  /** When each session last saw REAL activity, as a wall clock so sessions CAN be ordered
    *  against each other — `seq` is a per-session counter (primary key is session_id+seq), so
-   *  comparing it across sessions was meaningless. Sessions with no messages are absent;
-   *  callers fall back to creation time. */
-  lastMessageAt(): Map<string, number> {
+   *  comparing it across sessions was meaningless. The stored column wins (see the migration);
+   *  the rows are only a fallback for a session whose clock was never written. */
+  lastActivityAt(): Map<string, number> {
     const rows = this.#db
-      .prepare("select session_id as id, max(created_at) as at from messages group by session_id")
+      .prepare(
+        `select s.id as id,
+                coalesce(s.last_activity_at,
+                         (select max(m.created_at) from messages m where m.session_id = s.id),
+                         s.created_at) as at
+           from sessions s`,
+      )
       .all() as unknown as { id: string; at: number }[];
     return new Map(rows.map((r) => [r.id, r.at]));
   }
 
+  /** Advance a session's activity clock. Called for REAL activity only — a prompt the operator sent,
+   *  output a running agent produced. Deliberately never for a history replay: that is the whole
+   *  reason the clock lives in its own column instead of being derived from `messages`. */
+  touchActivity(sessionId: string, at: number): void {
+    this.#db
+      .prepare(
+        "update sessions set last_activity_at = ? where id = ? and (last_activity_at is null or last_activity_at < ?)",
+      )
+      .run(at, sessionId, at);
+  }
+
+  /** Highest persisted seq for a session (0 when empty) — the resume anchor. */
   maxSeq(sessionId: string): number {
     const row = this.#db
       .prepare("select max(seq) as m from messages where session_id = ?")
@@ -669,6 +822,37 @@ export class Store {
       if (reemissionTarget(textOf(parseJson(r.payload)), text)) return rowToMessage(r);
     }
     return undefined;
+  }
+
+  /**
+   * A tool call is ONE row, wherever the frame came from.
+   *
+   * The agent re-sends every call it still holds whenever it re-attaches (`session/load` on a
+   * resume), and those frames used to be appended like fresh output: measured 2026-10-08 in the
+   * operator's own store, 1224 calls had 7507 extra rows — the worst sitting in the transcript 17
+   * times, once per restart, each copy byte-identical. A call is identified by `toolCallId`, so a
+   * call we already hold is not a new call: the later frame is DROPPED (`isNew: false`).
+   *
+   * Deliberately NOT merged into the existing row, even though `tool_call_update` does exactly
+   * that: a replay carries the call as the agent remembers it, and letting an `in_progress`
+   * snapshot overwrite a live `completed` would walk the card backwards. Real updates arrive as
+   * `tool_call_update` (see upsertToolMessage); a replay that differs is reported by the one-time
+   * cleanup (#dedupeReplayedRows) rather than silently folded in here.
+   */
+  appendToolCall(m: Omit<StoredMessage, "seq"> & { kind: "tool"; toolCallId: string }): {
+    message: StoredMessage;
+    isNew: boolean;
+  } {
+    if (m.toolCallId) {
+      const exist = this.#db
+        .prepare(
+          `select * from messages where session_id = ? and tool_call_id = ? and kind = 'tool'
+            order by seq asc limit 1`,
+        )
+        .get(m.sessionId, m.toolCallId) as unknown as RawMessageRow | undefined;
+      if (exist) return { message: rowToMessage(exist), isNew: false };
+    }
+    return { message: this.appendMessage(m), isNew: true };
   }
 
   upsertToolMessage(sessionId: string, toolCallId: string, payload: unknown): StoredMessage | null {

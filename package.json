@@ -32,7 +32,10 @@
   "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
   "store-fold": "tsx scripts/qa/store-fold.mts",
   "live-stream": "tsx scripts/qa/live-stream.mts",
-  "open-target": "tsx scripts/qa/open-target.mts"
+  "open-target": "tsx scripts/qa/open-target.mts",
+ "rail-recent": "tsx scripts/qa/rail-recent.mts",
+ "resume-tail": "tsx scripts/qa/resume-tail.mts",
+ "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs"
  },
  "engines": {
   "node": ">=22"

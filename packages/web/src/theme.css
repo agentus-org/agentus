@@ -290,7 +290,17 @@ button { font: inherit; }
 .thought-chev.open, .tool-chev.open { transform: rotate(90deg); }
 .thought-meta { color: var(--text-dim); opacity: 0.75; font-variant-numeric: tabular-nums; }
 .msg.thought.live .thought-head { color: var(--thought); }
-.msg.thought .bubble.live { max-height: 6.6em; overflow-y: auto; overscroll-behavior: contain; }
+.msg.thought .bubble.live { max-height: 6.6em; overflow-y: auto; }
+/* Once the window's own scroll ends, the gesture must reach the TRANSCRIPT: with
+   `overscroll-behavior: contain` it was swallowed here, so the reader had to fight this six-line box
+   before the transcript would even hear the scroll — the reported 「要滑到很上面才停」. */
+.thought-stick {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 4px;
+  margin: 2px 0 0; padding: 2px 8px; border-radius: 999px; cursor: pointer;
+  background: var(--bg-raised); border: 1px solid var(--line); color: var(--text-dim);
+  font: inherit; font-size: 11px; letter-spacing: 0.3px;
+}
+.thought-stick:hover { color: var(--text); border-color: var(--text-dim); }
 /* ---- a stretch of the agent's WORK, folded into one row --------------------------------
    Ten calls AND ten reasoning bursts used to be twenty lines; now they are one — how many of
    each, which calls it touched, how it went — with the detail behind clicks (run → call → its
@@ -1190,6 +1200,15 @@ code.inline {
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-group-count { font-size: 10px; color: var(--text-dim); }
 .rail-group-body { padding-left: 4px; }
+/* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
+.rail-more {
+  display: flex; align-items: center; gap: 5px; width: calc(100% - 6px); margin: 1px 0 4px 6px;
+  padding: 3px 6px; background: transparent; border: none; border-radius: 6px; cursor: pointer;
+  color: var(--text-dim); font-family: inherit; font-size: 11px; text-align: left;
+}
+.rail-more:hover { background: var(--bg-raised); color: var(--text); }
+.rail-more-chev { transition: transform 0.12s ease; opacity: 0.7; }
+.rail-more-chev.open { transform: rotate(90deg); }
 .item-actions { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
 .item-btn {
   display: inline-flex; align-items: center; justify-content: center;

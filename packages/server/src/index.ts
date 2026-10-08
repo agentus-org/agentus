@@ -1115,8 +1115,15 @@ wss.on("connection", (ws) => {
           // `partial: true` tells the client to MERGE into what it already
           // rendered — a rebuild from this tail would drop the pre-drop prefix
           // (QA#17: 26 chars vanished after a mid-turn reconnect).
+          //
+          // The tail starts a few rows BEFORE the client's lastSeq, because that seq is the last row the
+          // client HOLDS, not the last version of it: a streamed reply is folded into one row that keeps
+          // its seq, and a tool call's output lands after the call row exists — both GROW after the client
+          // last saw them. Re-sending a row the client already has is free (the client re-applies it by
+          // identity), while missing the tail of a grown row leaves a bubble frozen mid-sentence.
+          const RESUME_OVERLAP = 8;
           for (const [sid, seq] of Object.entries(cmd.lastSeq)) {
-            const msgs = store.messagesAfter(sid, seq);
+            const msgs = store.messagesAfter(sid, Math.max(0, seq - RESUME_OVERLAP) - 1);
             if (msgs.length) sendEvt({ t: "messages", sessionId: sid, messages: msgs, hasMore: false, partial: true });
           }
           sendEvt(sessionsEvent());

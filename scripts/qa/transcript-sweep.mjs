@@ -143,28 +143,101 @@ await sleep(3200);
 const started = await prompt("[tools:10]");
 check("the work turn was accepted", started === 202 || started === 200, `HTTP ${started}`);
 
-// while it runs: the older items are ALREADY folded, and the newest burst is one small window
-let overflowed = null, peakLines = 0, maxKept = 0, liveHead = "";
+// --- ①a the live thinking window, measured WHILE the turn streams ----------------------
+// Order matters and it is not cosmetic: the whole point of the fix is that this window CLOSES the
+// moment the turn ends, so a page inspected afterwards has nothing left to look at. Everything about
+// the window — how tall it is, whether it follows its tail, whether a gesture detaches it — is
+// therefore gathered first, while it is still on screen.
+let peakLines = 0, maxKept = 0, liveHead = "", sawLive = false;
+const liveProbe = () => ev(`(() => {
+  const b = document.querySelector('.msg.thought.live .bubble.live');
+  const w = document.querySelector('.msg.thought.live');
+  return { there: Boolean(b),
+    sh: b ? b.scrollHeight : 0, ch: b ? b.clientHeight : 0, top: b ? b.scrollTop : 0,
+    len: b ? (b.textContent || '').length : 0,
+    head: w ? (w.querySelector('.thought-head')?.textContent || '').trim() : '' };
+})()`);
+// ONE lookup for the live window, before its turn is over: first sample what it looks like (height,
+// follow), then judge the gesture on it — in that order, because the window only exists while the
+// turn streams and the fix's whole job is to close it when the turn ends.
+let window1 = null;
+for (let i = 0; i < 160; i++) {
+  await sleep(120);
+  const live = await liveProbe();
+  if (live.there) { sawLive = true; liveHead = live.head; peakLines = Math.max(peakLines, Math.round(live.ch / 20)); window1 = live; break; }
+}
+check("…the newest burst is a `💭 思考中…` row in a SMALL window (≈6 lines), not a wall of text",
+  sawLive && /思考中/.test(liveHead) && peakLines >= 1 && peakLines <= 7.5,
+  JSON.stringify({ sawLive, peakLines, liveHead, window1 }));
+
+// --- ①b the reader is in charge of that window ------------------------------------------
+// Operator report (2026-10-08): 「输出思考的时候…我上滑要滑到很上面，它才会停止刷新到最下面」. The window sits
+// INSIDE the transcript, so a gesture that landed on it never reached the transcript at all — and the
+// window kept yanking itself back on every chunk. So: a gesture detaches NOW, it STAYS detached while
+// text keeps arriving, and the way back is a click (「回到最新」), never a yank.
+//
+// One question per moment, all inside a single page evaluation (the window can close mid-check, and a
+// round-trip between "find it" and "scroll it" is exactly how that race is lost):
+//   · if this mock's burst is shorter than the cap, pin the cap so the box can scroll at all — the
+//     subject is the GESTURE contract, not how tall the burst happens to be;
+//   · let the text grow, then read the follow state (a following window is at its tail);
+//   · wheel-up detaches; it must STAY detached while the text keeps arriving;
+//   · 「回到最新」 puts it back and takes itself away.
+const gesture = sawLive ? await ev(`(async () => {
+  const find = () => document.querySelector('.msg.thought.live .bubble.live');
+  let box = find();
+  if (!box) return { error: 'the window closed before the gesture' };
+  // a tight cap: one line tall makes the box scroll with even a short burst, and if the burst is a
+  // single line there is nothing to follow — the check accepts that case explicitly below.
+  box.style.maxHeight = '20px';
+  await new Promise((r) => setTimeout(r, 700));
+  box = find() || box;
+  const followed = { sh: box.scrollHeight, ch: box.clientHeight, top: box.scrollTop };
+  box.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+  box.scrollTop = 0;
+  await new Promise((r) => setTimeout(r, 250));
+  box.scrollTop = 0;
+  const at250 = box.scrollTop;
+  await new Promise((r) => setTimeout(r, 800));
+  const still = find() || box;
+  const out = { at250, top: still.scrollTop, h: still.scrollHeight, client: still.clientHeight,
+    followed, stick: Boolean(document.querySelector('.thought-stick')),
+    stickText: (document.querySelector('.thought-stick')?.textContent || '').trim() };
+  const btn = document.querySelector('.thought-stick');
+  if (btn) {
+    btn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const b2 = find();
+    out.backTop = b2 ? b2.scrollTop : -1;
+    out.backMax = b2 ? b2.scrollHeight - b2.clientHeight : -1;
+    out.backStick = Boolean(document.querySelector('.thought-stick'));
+  }
+  return out;
+})()`, 30000) : { error: "no live window (the turn ended before it could be tested)" };
+
+check("…and it follows its own tail while the text arrives (auto-scrolled, not stuck at the top)",
+  !gesture.error && Boolean(gesture.followed)
+    && (gesture.followed.sh <= gesture.followed.ch + 8 || gesture.followed.top > 4),
+  JSON.stringify(gesture.followed ?? gesture));
+check("a wheel-up on the live window detaches it (no yank back to the tail)",
+  !gesture.error && gesture.top <= 4, JSON.stringify(gesture));
+check("…and it STAYS where the reader left it while text keeps arriving",
+  !gesture.error && gesture.top <= 4 && gesture.h > gesture.client, JSON.stringify(gesture));
+check("…with a way back on screen, not a yank",
+  !gesture.error && gesture.stick && /回到最新/.test(gesture.stickText),
+  JSON.stringify({ stick: gesture.stick, text: gesture.stickText, error: gesture.error }));
+check("…and the click puts it back on the tail (the button goes away again)",
+  !gesture.error && gesture.backTop >= gesture.backMax - 24 && !gesture.backStick,
+  JSON.stringify({ top: gesture.backTop, max: gesture.backMax, stick: gesture.backStick, error: gesture.error }));
+
+// --- ①c the transcript's own fold, while the turn's rows are still there ---------------
 for (let i = 0; i < 300; i++) {
   await sleep(150);
   const s = await shape();
-  if (!s.head) {
-    if (i % 10 === 9 && (await status()) !== "running") break;
-    continue;
-  }
-  maxKept = Math.max(maxKept, s.keptThoughts + s.keptTools);
-  if (!s.lines) continue;
-  liveHead = s.liveHead;
-  peakLines = Math.max(peakLines, s.lines);
-  if (s.scroll > s.h + 8) { overflowed = s; break; }
+  if (s.head) maxKept = Math.max(maxKept, s.keptThoughts + s.keptTools);
+  if (!s.head && (await status()) !== "running") break;
+  if (s.head && (await status()) !== "running" && i > 20) break;
 }
-check("…and at most 5 work rows are on screen while it runs (the rest is always behind the fold)",
-  Boolean(liveHead) && maxKept > 0 && maxKept <= 5, `max work rows on screen = ${maxKept}`);
-check("…the newest burst is a `💭 思考中…` row in a SMALL window (≈6 lines), not a wall of text",
-  Boolean(overflowed) && peakLines > 1 && peakLines <= 7.5 && /思考中/.test(liveHead),
-  JSON.stringify({ peakLines, liveHead, scroll: overflowed?.scroll, h: overflowed?.h }));
-check("…and it follows its own tail while the text arrives (auto-scrolled, not stuck at the top)",
-  Boolean(overflowed) && overflowed.top > 4, JSON.stringify(overflowed ? { top: overflowed.top } : null));
 
 const end = await idle(90000);
 check("the work turn finished (otherwise the folding below is about a running turn)",
@@ -214,7 +287,10 @@ await shotRow(".work-run-head", "transcript-run-open.png");
 // --- ④ the NEXT round absorbs the kept tail -------------------------------------------
 // "下一轮开始的时候，那最后 5 条就自动合并到之前那一行里去". The clicks above left rows open by
 // hand, so reload first: this must be the DEFAULT state of a fresh page, not leftover state.
-await ev(`location.reload()`);
+// NOT `location.reload()`: the app consumes `?session=` and rewrites the address bar to `/`, so a
+// reload lands on whatever slot the app opens by DEFAULT — the sweep then measures a different
+// session and reports the fixture as empty (head="", kept=0). Re-open by URL.
+await ev(`location.href = ${JSON.stringify(BASE + "/?session=")} + ${JSON.stringify(sid)}`);
 await sleep(3200);
 // The page keeps a WINDOW of history and offers "load earlier" for the rest, so pull the whole
 // round back in first — otherwise this step would be measuring the window, not the folding.

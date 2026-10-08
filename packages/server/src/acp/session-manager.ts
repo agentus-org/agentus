@@ -200,7 +200,7 @@ export class SessionManager {
     // Most recently CHATTED first — the cockpit's left rail is a launch pad, not a log file, and
     // creation order is the wrong key for that: the session you talked to a minute ago is the
     // one you come back to, even when it is the oldest row in the list.
-    const lastAt = this.#store.lastMessageAt();
+    const lastAt = this.#store.lastActivityAt();
     return [...this.#sessions.values()]
       .map((s) => ({
         ...s.info,
@@ -355,7 +355,7 @@ export class SessionManager {
       planToken: randomUUID(),
     };
     this.#sessions.set(id, live);
-    live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
+    live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
     // the home is recorded with the row: it is the thing a later resume has to be checked against
     this.#store.upsertSession(sessionRow(live.info, plan.home));
 
@@ -493,7 +493,7 @@ export class SessionManager {
       planToken: randomUUID(),
     };
     this.#sessions.set(id, live);
-    live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
+    live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
     this.#store.upsertSession(sessionRow(live.info));
 
     child.stderr?.on("data", (d: Buffer) => {
@@ -702,7 +702,7 @@ export class SessionManager {
         usage: (r.usage ?? null) as SessionInfo["usage"],
         commands: normCommands(r.commands),
         lastSeq: this.#store.maxSeq(r.id),
-        lastAt: this.#store.lastMessageAt().get(r.id) ?? r.createdAt,
+        lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       }))
       // cold rows by the same rule as live ones (recent chat first), THEN take the page
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt)
@@ -1168,9 +1168,21 @@ export class SessionManager {
       case "agent_thought_chunk":
         msg = { sessionId: live.info.id, kind: "thought", payload: u, createdAt: Date.now() };
         break;
-      case "tool_call":
-        msg = { sessionId: live.info.id, kind: "tool", payload: u, toolCallId: String(u.toolCallId ?? ""), createdAt: Date.now() };
-        break;
+      case "tool_call": {
+        // ONE call = ONE row, wherever the frame came from. The agent re-sends every call it holds
+        // whenever it re-attaches (`session/load` on a resume / a restart), and appending those was
+        // what put a single call in a transcript 17 times (measured 2026-10-08: 7507 extra rows in
+        // the operator's store) and dragged every resumed session's activity clock to 「刚刚」.
+        const up = this.#store.appendToolCall({
+          sessionId: live.info.id, kind: "tool", payload: u,
+          toolCallId: String(u.toolCallId ?? ""), createdAt: Date.now(),
+        });
+        if (up.isNew) {
+          this.#touch(live, up.message.createdAt);
+          this.#emit({ t: "message", message: up.message });
+        }
+        return;
+      }
       case "tool_call_update": {
         // upsert into original row (design.md §8-5), never a new bubble
         const up = this.#store.upsertToolMessage(
@@ -1257,8 +1269,10 @@ export class SessionManager {
       // turn stays a small delta on the wire while the store stays the source of truth.
       if (msg.kind === "agent" || msg.kind === "thought") {
         const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind });
-        this.#touch(live, r.message.createdAt);
         if (r.delta || r.isNew) {
+          // A row that did NOT move is not activity. A re-attach replays blocks we already hold, and
+          // touching the clock for those is what made every resumed session read 「刚刚」 at once.
+          this.#touch(live, r.message.createdAt);
           // One message = one row, so a row that GREW keeps its seq. A client that deduplicated frames
           // by seq therefore dropped every chunk after the first one (measured: a phone bubble showing
           // "不是" with the rest of the reply nowhere, and the next frame landing in an empty bubble).
@@ -1633,6 +1647,10 @@ export class SessionManager {
    *  order — the rail stopped moving a session up the moment you talked to it. */
   #touch(live: LiveSession, at = Date.now()): void {
     live.info.lastAt = at;
+    // …and persist it: `lastAt` on the live object is only the projection the sockets see. The rail
+    // is rebuilt from the STORE on every list()/restart, so a clock that only ever lived in memory
+    // reset every session to its creation order the moment the process came back.
+    this.#store.touchActivity(live.info.id, at);
   }
 
   /** One cold row, in the same shape list()/archived() produce. */
@@ -1650,7 +1668,7 @@ export class SessionManager {
       usage: (r.usage ?? null) as SessionInfo["usage"],
       commands: normCommands(r.commands),
       lastSeq: this.#store.maxSeq(id),
-      lastAt: this.#store.lastMessageAt().get(id) ?? r.createdAt,
+      lastAt: this.#store.lastActivityAt().get(id) ?? r.createdAt,
     };
   }
 
