@@ -226,6 +226,36 @@ const agent = () => ({
       const s = sessions.get(sessionId);
       s.mcp = mcpServers ?? s.mcp ?? [];
       notePlanTool(mcpServers);
+      // ── MOCK_REPLAY=1: the REAL replay shape ────────────────────────────────────────────────
+      // Hermes re-sends its whole transcript on `session/load`: complete blocks (not chunks), and
+      // the reasoning ones carry NO messageId — so the cockpit cannot fold them by identity, and a
+      // store that appends them grows a row per block and stamps them all with the resume's clock.
+      // That is the shape measured on live on 2026-10-08 (1240 rows from one restart, every session
+      // pushed to 「刚刚」), so the mock has to be able to produce it for the rule to be testable.
+      if (process.env.MOCK_REPLAY === "1") {
+        const n = Math.max(1, Number(process.env.MOCK_REPLAY_BLOCKS || 4) || 4);
+        // Say it out loud: "the replay never ran" and "the replay was dropped" look identical from
+        // the outside, and only one of them is a passing test.
+        process.stderr.write(`[mock-agent] replaying ${n} blocks onto ${sessionId} (session/load)\n`);
+        for (let i = 0; i < n; i++) {
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "agent_thought_chunk",
+            content: {
+              type: "text",
+              text: `replayed thought ${i}: `
+                + "the agent restating its own reasoning at full length on a re-attach, with no id "
+                + "to fold it by. ".repeat(3),
+            },
+          });
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: `replayed answer ${i}: ` + "the agent restating its own answer at full length. ".repeat(4),
+            },
+          });
+        }
+      }
       return {
         sessionId,
         modes: { currentModeId: s.currentModeId || "default", availableModes: MODES },

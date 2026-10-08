@@ -167,6 +167,13 @@ interface LiveSession {
    *  slot being REPLACED, so its exit must not be read as "the agent died" — that would stamp
    *  `error` on the row its replacement is adopting and fire a turn-end on a slot mid-swap. */
   replacing?: boolean;
+  /** Set from spawn/resume until this slot's first prompt: the agent is re-sending its own history
+   *  (ACP `session/load` replays the transcript), so its frames are a RECORD of work already stored,
+   *  not new work. Persisting them wrote 1240 rows on one restart and moved every session's clock to
+   *  「刚刚」; the clock is the operator's "when was this last talked to", and a restart is not a
+   *  conversation. Cleared the moment the operator actually says something — from then on the agent
+   *  really is answering. */
+  replaying?: boolean;
   /** The plan hand-over is owed on the NEXT prompt: a freshly (re)started agent has no memory of
    *  the plan it was working on, while the cockpit still has it (design-plan-service.md §7).
    *  Cleared after the first prompt, because after that the agent maintains the plan itself —
@@ -353,6 +360,11 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      // Until this slot's first PROMPT, anything the agent says is its own history being replayed,
+      // not an answer (see #onSessionUpdate). A resumed agent re-sends its whole transcript on
+      // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
+      // into the live DB on one restart and pushed every session's clock to「刚刚」.
+      replaying: true,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
@@ -491,6 +503,11 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      // Until this slot's first PROMPT, anything the agent says is its own history being replayed,
+      // not an answer (see #onSessionUpdate). A resumed agent re-sends its whole transcript on
+      // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
+      // into the live DB on one restart and pushed every session's clock to「刚刚」.
+      replaying: true,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
@@ -749,6 +766,9 @@ export class SessionManager {
     }
     s.turnSeq += 1;
     s.busy = true;
+    // The operator has spoken: from here anything the agent says is an ANSWER, not its own history
+    // being replayed (see the replay window in #onSessionUpdate).
+    s.replaying = false;
     s.info.status = "running";
     this.#updateSession(s);
     // Timed from the announcement, not from the prompt call: the operator's wait INCLUDES the
@@ -1163,6 +1183,19 @@ export class SessionManager {
     }
     const u = params.update;
     const st = String(u.sessionUpdate ?? "");
+    // ── The replay window ──────────────────────────────────────────────────────────────────────
+    // From spawn/resume until this slot's first prompt, the agent is re-sending its own history
+    // (`session/load` replays the transcript). Those frames are a RECORD of work that is already in
+    // the store — persisting them is not "receiving work", and it is what wrote 1240 rows into the
+    // live DB on one restart and pushed every session's clock to 「刚刚」.
+    //
+    // Dropped only when we DO hold a transcript: a slot whose rows are gone has nothing else to
+    // rebuild from, so that replay is the only copy and it is kept.
+    const isTextFrame = st === "agent_message_chunk" || st === "agent_thought_chunk";
+    const isToolFrame = st === "tool_call" || st === "tool_call_update";
+    if (live.replaying && (isTextFrame || isToolFrame) && this.#store.maxSeq(live.info.id) > 0) {
+      return;
+    }
     let msg: Parameters<Store["appendMessage"]>[0] | null = null;
     switch (st) {
       case "agent_message_chunk":
