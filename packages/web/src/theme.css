@@ -109,7 +109,11 @@ button { font: inherit; }
   border-right: 1px solid var(--line); display: flex; flex-direction: column;
 }
 .sidebar header { padding: 14px 16px 10px; display: flex; align-items: baseline; gap: 8px; }
-.sidebar header .logo { color: var(--accent-text); font-weight: 700; letter-spacing: 0.5px; }
+.sidebar header .logo { color: var(--accent-text); font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 7px; }
+
+/* The mark, as an <img>: one traced SVG file per palette rather than paths inlined into the
+   bundle. The light-surface file is the brand art; dark surfaces get the lightened inks. */
+.brand-mark { display: block; flex: 0 0 auto; }
 .sidebar header .tagline { font-size: 11px; color: var(--text-dim); }
 .new-btn {
   margin: 0 12px 10px; padding: 9px; border-radius: 8px; cursor: pointer;
@@ -675,7 +679,7 @@ code.inline {
 
 /* ---- empty / modal ---- */
 .empty { margin: auto; text-align: center; color: var(--text-dim); }
-.empty .big { font-size: 42px; }
+.empty .big { font-size: 42px; display: flex; justify-content: center; margin-bottom: 4px; }
 .modal-bg {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
   /* Above the phone rail drawer (30) and its scrim (25): a modal opened from a drawer row —
@@ -779,7 +783,7 @@ code.inline {
   border-radius: 14px; padding: 26px 24px 20px; display: flex; flex-direction: column; gap: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
 }
-.auth-logo { color: var(--accent-text); font-weight: 700; font-size: 20px; letter-spacing: 0.5px; }
+.auth-logo { color: var(--accent-text); font-weight: 700; font-size: 20px; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: center; gap: 9px; }
 .auth-sub { font-size: 11.5px; color: var(--text-dim); margin-top: -8px; }
 .auth-note { font-size: 12.5px; color: var(--text-dim); padding: 6px 0; }
 .auth-field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }

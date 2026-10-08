@@ -7,6 +7,7 @@ import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
+import { BrandMark } from "./Brand";
 import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
@@ -191,7 +192,7 @@ function AuthScreen(): JSX.Element {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <div className="auth-logo">⛟ Agentus</div>
+        <div className="auth-logo"><BrandMark size={30} /> Agentus</div>
         <div className="auth-sub">keep your agents on the track</div>
         {splash ? (
           <div className="auth-note">正在检查登录状态…</div>
@@ -645,7 +646,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <header>
-        <span className="logo">⛟ Agentus</span>
+        <span className="logo"><BrandMark size={24} /> Agentus</span>
         <span className="tagline">keep your agents on the track</span>
         <button
           className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
@@ -893,7 +894,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
           <span className="title">Agentus</span>
         </div>
         <div className="empty">
-          <div className="big">⛟</div>
+          <div className="big"><BrandMark size={72} /></div>
           <p>No session selected.<br />Create one and point it at a real <code>hermes acp</code> / <code>qodercli --acp</code>.</p>
         </div>
       </div>

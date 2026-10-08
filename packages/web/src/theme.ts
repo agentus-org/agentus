@@ -139,3 +139,19 @@ export async function loadServerTheme(): Promise<void> {
 export function bootstrapTheme(): void {
   applyTheme(current);
 }
+
+/** Which palette is actually on screen right now, system preference resolved.
+ *  CSS switches itself with prefers-color-scheme, but an asset that cannot be recoloured
+ *  in CSS (the brand mark ships as an <img> so the traced SVG stays one file) has to ask. */
+export function useResolvedDark(): boolean {
+  const cfg = useTheme();
+  const systemDark = useSyncExternalStore(
+    (fn) => {
+      const mq = typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+      mq?.addEventListener("change", fn);
+      return () => mq?.removeEventListener("change", fn);
+    },
+    () => (typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)").matches : false),
+  );
+  return cfg.mode === "dark" || (cfg.mode === "system" && systemDark);
+}
