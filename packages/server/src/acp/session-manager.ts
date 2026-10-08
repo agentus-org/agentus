@@ -34,7 +34,7 @@ import type {
   SessionInfo,
   SessionModeState,
   TurnTrace,
-} from "@agentus/shared";
+} from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).

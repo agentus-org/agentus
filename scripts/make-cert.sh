@@ -19,7 +19,27 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${AGENTUS_TLS_DIR:-$ROOT_DIR/packages/server/.data/tls}"
+# Where the TLS material goes — it MUST be the directory the server reads it from, or the
+# listener silently stays off with a cert sitting next to it. Mirrors the resolution in
+# packages/server/src/index.ts (that file is the source of truth; keep the two in step):
+#   1. $AGENTUS_DATA   2. ~/.agentus (installed default, once it holds anything)
+#   3. <repo>/packages/server/.data (a checkout that predates the install layout)
+REPO_DATA="$ROOT_DIR/packages/server/.data"
+DEFAULT_DATA="$HOME/.agentus"
+if [ -n "${AGENTUS_DATA:-}" ]; then
+  DATA_DIR="$AGENTUS_DATA"
+elif [ -d "$DEFAULT_DATA" ] && [ -n "$(ls -A "$DEFAULT_DATA" 2>/dev/null)" ]; then
+  DATA_DIR="$DEFAULT_DATA"
+elif [ -d "$REPO_DATA" ] && [ -n "$(ls -A "$REPO_DATA" 2>/dev/null)" ]; then
+  DATA_DIR="$REPO_DATA"
+else
+  DATA_DIR="$DEFAULT_DATA"
+fi
+if [ ! -d "$DATA_DIR" ]; then
+  mkdir -p "$DATA_DIR"
+  chmod 700 "$DATA_DIR"   # it holds credentials and this key; the server creates it 0700 too
+fi
+OUT="${AGENTUS_TLS_DIR:-$DATA_DIR/tls}"
 LEAF_ONLY=0
 if [ "${1:-}" = "--leaf-only" ]; then LEAF_ONLY=1; shift; fi
 NAME="${1:-${AGENTUS_TLS_NAME:-i207f47592.wicp.vip}}"

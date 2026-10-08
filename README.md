@@ -17,28 +17,58 @@ agents: open several sessions in the browser, each one backed by a real
                                          · SQLite transcript + resume
 ```
 
-## Quick start
+## Install
 
 ```bash
-# Node >= 22.5 (needs node:sqlite; developed on v25)
-git clone https://github.com/agentus/agentus.git
-cd agentus
-
-# 1) run it — installs if needed, builds, serves
-npm start
+# Node >= 22.5 (the store is node:sqlite; developed on v25)
+npx agentus                      # …or: npm i -g agentus, then `agentus`
 # open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
-# then "+ new session", pick a backend + working directory
+# then "+ new session", pick a backend + a working directory
 ```
+
+`npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
+children with it. Flags: `--port 9000`, `--data <dir>`, `--open` (open the browser once it
+is up), `--where` (print the paths the server actually resolved — data dir, web bundle,
+companion APK — and exit without starting anything).
+
+**The one prerequisite npm cannot install for you is an agent CLI**: `hermes acp` (install
+Hermes on your PATH; `hermes acp --check` self-checks) or `qodercli --acp` (`qodercli login`
+first, else `newSession` fails with `-32000`). Without one the cockpit still runs and still
+logs in — you just have no backend to start a session on.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
+
+### From a checkout (development)
+
+```bash
+git clone https://github.com/agent-slot/agentus.git
+cd agentus
+npm start                     # installs if needed, builds, serves (scripts/start.sh)
+npm run dev -w @agentus/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
+npm run agentus               # the same CLI as `npx agentus`, straight from the checkout
+```
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
 stale, then serves. Use `AGENTUS_PORT=9000 npm start` to move the port.
 
-For front-end hot reload instead: `npm run dev -w @agentus/web` (Vite on :5173,
-`host: true` so your phone can reach it over LAN).
+### Where your state lives
+
+`~/.agentus` by default — `agentus.sqlite` (sessions and transcript), `credentials.json`,
+`auth.token` (the machine credential), `auth.secret`, `tls/`, `settings.json`. It is
+created 0700 on first boot, and the boot log prints it **and why that directory won**:
+
+| order | rule |
+|---|---|
+| 1 | `AGENTUS_DATA` when it is set — every launcher and dev/QA instance pins this |
+| 2 | `~/.agentus` once it holds something, or when there is no repo-side data yet |
+| 3 | `<repo>/packages/server/.data` — an existing checkout that predates this layout |
+
+Rule 3 is not a nicety: an install that quietly switched directories would come up with an
+empty session list, which reads exactly like "my sessions are gone". To move such a
+checkout over, boot it once with `AGENTUS_DATA=~/.agentus`. `agentus --where` prints what
+the server resolved, rather than making you guess.
 
 ### Backends
 
@@ -56,7 +86,7 @@ layer never changes.
 | var | default | meaning |
 |---|---|---|
 | `AGENTUS_PORT` | `8787` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
-| `AGENTUS_DATA` | `packages/server/.data` | SQLite location |
+| `AGENTUS_DATA` | `~/.agentus` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
@@ -189,7 +219,7 @@ session cookie cross the internet in clear text. So the server can speak TLS its
 
 ```bash
 scripts/make-cert.sh                    # self-signed, SAN = the name you actually type
-# -> packages/server/.data/tls/{cert.pem,key.pem} (0600, git-ignored)
+# -> $AGENTUS_DATA/tls/{cert.pem,key.pem} (0600, git-ignored) — ~/.agentus/tls by default
 # boot log then says: https://0.0.0.0:8443 (self-signed …) ; point a tunnel at THIS port
 ```
 
@@ -399,8 +429,10 @@ for archived slots, resume or delete.
 ```bash
 npm run typecheck
 npm run auth-smoke                        # 48 assertions: the lock, both credentials
-npm run workspace-smoke                   # 45: workspace field, file API, shell, attachments
+npm run backend-smoke                     # 42: the backend registry, spawn env, health evidence
+npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
+npm run tls-smoke                         # the second listener, real sockets + real certs
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent
 ```
 

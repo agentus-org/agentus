@@ -9,6 +9,8 @@ dist/
 # a password-equivalent machine credential — committing either would publish the lock.
 .data/
 .data-notify-testbed/
+# a packed artifact (npm pack) is a build product, never a commit
+*.tgz
 auth.secret
 auth.token
 

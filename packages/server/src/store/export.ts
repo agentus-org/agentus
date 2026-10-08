@@ -6,7 +6,7 @@
 // The fold here mirrors packages/web's ingest rules so the exported transcript reads
 // like the cockpit: consecutive agent/thought chunks join into one paragraph, a user
 // row breaks the paragraph, tool rows are discrete entries keyed by toolCallId.
-import type { StoredMessage } from "@agentus/shared";
+import type { StoredMessage } from "../../../shared/src/index.js";
 
 export interface ExportSessionHeader {
   id: string;

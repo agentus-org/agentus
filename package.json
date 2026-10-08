@@ -1,9 +1,37 @@
 {
  "name": "agentus",
- "version": "0.0.0",
- "private": true,
+ "version": "0.1.0",
  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
  "license": "Apache-2.0",
+ "repository": {
+  "type": "git",
+  "url": "git+https://github.com/agent-slot/agentus.git"
+ },
+ "homepage": "https://github.com/agent-slot/agentus#readme",
+ "bugs": {
+  "url": "https://github.com/agent-slot/agentus/issues"
+ },
+ "bin": {
+  "agentus": "bin/agentus.mjs"
+ },
+ "files": [
+  "bin/",
+  "packages/server/src/",
+  "packages/server/mock/",
+  "packages/server/mcp/",
+  "packages/server/package.json",
+  "packages/shared/src/",
+  "packages/shared/package.json",
+  "packages/web/dist/",
+  "scripts/make-cert.sh",
+  "docs/",
+  "NOTICE"
+ ],
+ "dependencies": {
+  "@agentclientprotocol/sdk": "1.5.1",
+  "tsx": "^4.19.0",
+  "ws": "^8.22.0"
+ },
  "workspaces": [
   "packages/*"
  ],
@@ -16,6 +44,8 @@
   "lint": "npm run lint -ws --if-present",
   "test": "npm run test -ws --if-present",
   "start": "bash scripts/start.sh",
+  "agentus": "node bin/agentus.mjs",
+  "prepack": "npm run build -w @agentus/web",
   "smoke": "node scripts/smoke.mjs",
   "backend-smoke": "node scripts/backend-registry-smoke.mjs",
   "auth-smoke": "node scripts/auth-smoke.mjs",
@@ -38,6 +68,6 @@
  "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs"
  },
  "engines": {
-  "node": ">=22"
+  "node": ">=22.5"
  }
 }

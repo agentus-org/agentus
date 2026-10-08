@@ -15,7 +15,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
-import type { PermissionRequestView, ServerEvent } from "@agentus/shared";
+import type { PermissionRequestView, ServerEvent } from "../../../shared/src/index.js";
 import { DEFAULT_NOTIFY_RULES } from "./types.js";
 import type {
   ActionCallback,

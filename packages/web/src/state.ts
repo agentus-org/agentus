@@ -9,7 +9,7 @@ import type {
   SessionInfo,
   StoredMessage,
   TurnTrace,
-} from "@agentus/shared";
+} from "../../shared/src/index";
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
 
 /** Plan step: ACP's own shape (content/status), plus the cockpit's terminal stamp. */

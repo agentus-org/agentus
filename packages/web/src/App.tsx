@@ -23,7 +23,7 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain,
 } from "./Icons";
-import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentus/shared";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "../../shared/src/index";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);

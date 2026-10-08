@@ -2,6 +2,17 @@
 // and behavioral rules studied from AionUi/hermes-studio (see docs/refs/),
 // but types are our own minimal surface for the WS envelope between
 // server <-> browser.
+//
+// WHY THERE IS NO `@agentus/shared` SPECIFIER ANYWHERE ANYMORE
+//   The cockpit ships as ONE npm package (`agentus`), not as three workspace
+//   packages: a global install must not need a registry scope, and the server runs
+//   this file in place. So every consumer imports it by relative path
+//   (`../../shared/src/index.js` from packages/server/src, `../../shared/src/index`
+//   from packages/web/src — bundler resolution wants no extension). Consequence: the
+//   `rootDir` option had to go from both package tsconfigs (it cannot contain a file
+//   outside src). This file stays the single source of truth for the wire contract;
+//   `packages/shared/package.json` survives only so the workspace layout and
+//   `tsconfig.base.json`'s include keep working in-repo.
 /** Backend ids are registry rows now (M6): the three builtin ones plus anything the operator
  *  adds in the cockpit ("hermes-fork", "hermes-live", …). The literal union keeps autocomplete
  *  for the builtins while letting a row id through. */
