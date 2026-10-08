@@ -5,6 +5,7 @@ import { cockpit, type BackendView, type BlockedSlot, type MsgView, type Session
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
+import { turnPulseState } from "./turn-state";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
 import { BrandMark } from "./Brand";
@@ -1086,6 +1087,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     <div className="chat-head">
       <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
       <span className="title" title={info.title}>{info.title}</span>
+      <TurnPulse busy={v.busy} lastAt={v.lastAt} />
       {v.perms.length > 0 ? (
         <button
           type="button"
@@ -1191,23 +1193,23 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
  *  more code than the behaviour is worth. */
 const streamReattach: { current: () => void } = { current: () => {} };
 
-const Busy = memo(function Busy({ busy }: { busy: boolean }): JSX.Element | null {
-  const [late, setLate] = useState(false);
-  // "still waiting" needs a clock, and a clock is the one thing that would drag the transcript into
-  // re-rendering every second. So the timer lives HERE, inside a component whose only prop is the flag:
-  // when it fires, it re-renders itself and nothing above it.
+/** A turn in flight, at ZERO vertical cost.
+ *
+ *  This is what replaced the two text lines at the transcript tail (`▸ turn in progress…`, then
+ *  `⏳ still waiting for the agent…`) — the operator's verdict was 「删掉吧，太占地方了吧，没必要啊，
+ *  下面的按钮显示终止态其实就能看出来在运行」. See `turn-state.ts` for what the dot says and why the
+ *  decision is a pure function: the clock ticks inside THIS component (props: the flag and the
+ *  last-activity stamp), so ticking it can never drag the transcript into a re-render. */
+const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; lastAt: number }): JSX.Element | null {
+  const [, tick] = useState(0);
   useEffect(() => {
-    if (!busy) { setLate(false); return; }
-    const t = window.setInterval(() => setLate(true), 5000);
+    if (!busy) return;
+    const t = window.setInterval(() => tick((x) => x + 1), 1000);
     return () => window.clearInterval(t);
   }, [busy]);
   if (!busy) return null;
-  return (
-    <>
-      <div className="stream-hint">▸ turn in progress…</div>
-      {late && <div className="stream-hint">⏳ still waiting for the agent…</div>}
-    </>
-  );
+  const { quiet, said } = turnPulseState(lastAt, Date.now());
+  return <span className={`turn-pulse ${quiet ? "quiet" : ""}`} role="status" aria-label={said} title={said} />;
 });
 
 function Stream({ v }: { v: SessionView }): JSX.Element {
@@ -1217,7 +1219,6 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
   const keepUntil = useRef(0);
   const [follow, setFollow] = useState(true);
   const [unseen, setUnseen] = useState(false);
-  const [, force] = useState(0);
 
   // How close to the bottom still counts as "following". Generous on purpose: a
   // 48px blind spot meant the smallest scroll-up got yanked back by the next
@@ -1331,13 +1332,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     void cockpit.loadEarlier(v.info.id);
   }, [v.rev, v.hasOlder, v.loadingOlder, v.info.id]);
 
-  // idle hint: running but silent for >3min => "still waiting" (AionUi F-RELIABILITY-02 lite)
-  useEffect(() => {
-    if (!v.busy) return;
-    const t = setTimeout(() => force((x) => x + 1), 180_000);
-    return () => clearTimeout(t);
-  }, [v.busy, v.msgs.length]);
-
+  // The transcript tail no longer carries a turn hint (operator: 「太占地方了」) — the turn's state
+  // lives in the chat head (`TurnPulse`) and in the rail row, both of which cost no row here.
   return (
     <div className="stream-wrap">
       <div className="stream" ref={ref} tabIndex={0}>
@@ -1352,11 +1348,6 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
-          {/* 🔴 `showWait` used to be computed in THIS render from `Date.now() - v.lastAt`, so the
-              line only appeared when some unrelated event happened to re-render the transcript — which
-              is to say, never exactly 175s after the wait started. `Busy` owns that clock now: it ticks
-              itself and cannot drag the rows into a re-render. */}
-          <Busy busy={v.busy} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
