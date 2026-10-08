@@ -767,6 +767,8 @@ code.inline {
   .perm-change-row { min-height: 44px; }
   /* the rail's per-directory 「+」, always visible on touch (no hover to reveal it) */
   .rail-group .group-add { width: 32px; height: 30px; }
+  /* a fold head is a control on a touch screen: give it a thumb's worth of height */
+  .rail-section { min-height: 34px; margin-top: 6px; }
 
   /* slash palette: full-width rows a thumb can hit while the keyboard is up */
   .slash-palette { max-height: 40vh; }
@@ -1179,11 +1181,17 @@ code.inline {
 }
 
 /* ---- rail: the two sections (团队, 工作空间) --------------------------------- */
-/* A section is a label, not a control: it names what follows and never reacts to a click. */
+/* A section head is a fold control: a full-width button so the whole row is the target, with the
+   chevron the eye reads as one (same shape as the per-workspace head below). */
 .rail-section {
-  display: flex; align-items: center; gap: 6px; margin: 9px 6px 3px;
+  display: flex; align-items: center; gap: 4px; width: calc(100% - 12px); margin: 9px 6px 3px;
+  background: transparent; border: none; font-family: inherit; text-align: left;
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
+  padding: 3px 6px; border-radius: 6px; cursor: pointer;
 }
+.rail-section:hover { color: var(--text); }
+.rail-section-chev { flex: 0 0 auto; transition: transform 0.12s ease; }
+.rail-section-chev.open { transform: rotate(90deg); }
 .rail-section:first-child { margin-top: 3px; }
 /* 团队 is a placeholder with no backend behind it, so its row is inert by construction: a div
    (nothing to tab into, nothing to click) with a dashed edge, and it says what it is. A row that
