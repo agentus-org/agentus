@@ -1499,10 +1499,24 @@ code.inline {
   width: 7px; height: 7px; border-radius: 50%;
   border: 1px solid var(--bg); background: var(--text-dim);
 }
-.be-avatar .be-dot.running { background: var(--ok); }
+.be-avatar .be-dot.running { background: var(--ok); animation: pulse 1.2s infinite; }
 .be-avatar .be-dot.starting { background: var(--accent); }
 .be-avatar .be-dot.error { background: var(--err); }
 .be-avatar .be-dot.closed { background: var(--text-dim); }
+/* One row working means the operator can leave it and come back — so the running row has to be
+   findable without reading it, and at 20px a 7px dot does not do that. Motion is the carrier:
+   a halo breathes around the agent mark (studio's `streaming` glow on its rail row, drawn in our
+   tokens rather than as a rainbow) beside the pulsing dot. Only `running` moves — a still rail is
+   what makes the one moving row obvious, and every other state is honestly motionless. */
+.be-avatar.live { animation: rail-live 1.8s ease-in-out infinite; }
+@keyframes rail-live {
+  0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ok) 55%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 10%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .be-avatar.live, .be-avatar .be-dot.running { animation: none; }
+  .be-avatar.live { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 55%, transparent); }
+}
 
 /* rename happens in place: the row becomes an input, the input keeps the row's height */
 .title-input {
