@@ -1,13 +1,17 @@
-// The head's turn dot, decided on its own (no DOM, no server).
+// The turn's state, decided on its own (no DOM, no server): the head dot AND the tail line.
 //
-// The turn's state used to be two text lines at the transcript tail; the operator deleted them and the
-// half worth keeping — «this turn has gone QUIET» — became a breathing dot beside the session title.
-// Its 60-second boundary cannot be waited for in a browser sweep, so the boundary and the wording are
-// asserted here with an injected `now`, and `scripts/qa/turn-pulse-sweep.mjs` only checks that the dot
-// actually gets DRAWN (and that the deleted lines are really gone from the transcript).
+// The turn's state used to be two text lines at the transcript tail; the operator deleted them, the
+// quiet half became a breathing dot beside the session title, and then he asked for the tail line
+// back as ONE row with the elapsed time counted from the send (see `turn-state.ts`). Both live here:
+// the dot's 60-second boundary and the line's duration wording cannot be waited for in a browser
+// sweep, so they are asserted with injected stamps, and the browser sweeps only check what got DRAWN.
 //
 // Run: npm run turn-pulse
-import { SILENT_AFTER_MS, turnPulseState } from "../../packages/web/src/turn-state.ts";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BACKEND_MARK, markOf } from "../../packages/web/src/agents.ts";
+import { durationWords, SILENT_AFTER_MS, turnPulseState } from "../../packages/web/src/turn-state.ts";
 
 let ok = 0;
 let failed = 0;
@@ -51,6 +55,34 @@ const at = (msAgo: number) => turnPulseState(T - msAgo, T);
   const future = turnPulseState(T + 5_000, T);
   check("a last-activity stamp in the future yields gap 0, not a negative wait", future.gapMs === 0, String(future.gapMs));
   check("…and stays in the working state", !future.quiet);
+}
+
+// ---- the tail line's number: ONE formatter, because both indicators state the same quantity -----
+{
+  check("0s reads as a duration, not as a raw ms count", durationWords(0) === "0 秒", durationWords(0));
+  check("sub-minute durations stay in 秒", durationWords(45_000) === "45 秒", durationWords(45_000));
+  check("…rounded, not truncated (999ms is 1 秒)", durationWords(999) === "1 秒", durationWords(999));
+  check("a minute is named in 分 秒", durationWords(90_000) === "1 分 30 秒", durationWords(90_000));
+  check("exactly 60s still carries the 0 秒", durationWords(60_000) === "1 分 0 秒", durationWords(60_000));
+  check("an hour is a duration, not an overflow", durationWords(3_600_000) === "60 分 0 秒", durationWords(3_600_000));
+  check("a backwards clock never prints a negative wait", durationWords(-5_000) === "0 秒", durationWords(-5_000));
+  check("the head's quiet wording reuses it (one number, one set of words)",
+    turnPulseState(T - 90_000, T).said.includes(durationWords(90_000)), turnPulseState(T - 90_000, T).said);
+}
+
+// ---- who an agent IS: the table the rail row and the transcript label both draw from -------------
+{
+  const here = dirname(fileURLToPath(import.meta.url));
+  const shipped = (p: string): boolean => existsSync(resolve(here, "../../packages/web/public", p.replace(/^\//, "")));
+  const h = markOf("hermes"), q = markOf("qoder"), m = markOf("mock");
+  check("hermes carries the artwork AND the word the operator named", h.icon === "/coding-agents/hermes.png" && h.label === "Hermes", `${h.icon} ${h.label}`);
+  check("…and the web package actually ships that file", shipped(h.icon ?? ""), h.icon ?? "");
+  check("qoder does too", q.icon === "/coding-agents/qoder.svg" && q.label === "Qoder" && shipped(q.icon ?? ""), `${q.icon} ${q.label}`);
+  check("an agent with no artwork still gets a word and a monogram", !m.icon && m.label === "Mock" && m.letter === "M", `${m.label}/${m.letter}`);
+  check("an unknown backend is never blank (monogram + its own id)", markOf("mystery").letter === "M" && markOf("mystery").label === "mystery", JSON.stringify(markOf("mystery")));
+  check("a team session (no backend) yields an empty label — the call site falls back to 旧词 AGENT", markOf("").label === "");
+  check("both marks resolve through the ONE table (rail and transcript cannot drift)",
+    BACKEND_MARK.hermes === h && BACKEND_MARK.mock === m);
 }
 
 console.log(`\n${ok} ok, ${failed} failed`);
