@@ -13,6 +13,7 @@ import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import { RAIL_RECENT, splitRecent } from "./rail";
+import { copyText } from "./clipboard";
 import {
   browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
@@ -245,32 +246,6 @@ function AuthScreen(): JSX.Element {
  *  is in the tooltip), and a group collapses, so twenty sessions across four projects stay
  *  readable. Live and cold sessions live in the same group: they belong to the same work,
  *  and splitting them by process state was a machine's view, not the operator's. */
-/** Copy text. `navigator.clipboard` only exists in a SECURE CONTEXT, and the cockpit's LAN
- *  entry is plain `http://<lan-ip>:8787` — so the execCommand path is load-bearing here, not
- *  a legacy courtesy (measured: on that origin navigator.clipboard is undefined while the
- *  https entry has it). Returns whether the text actually made it. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
-  } catch { /* fall through to the textarea path */ }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.top = "-1000px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, ta.value.length);
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
 /** One-click copy for a message (studio puts this on every bubble, AionUi on every turn). */
 function CopyButton({ text, what = "消息" }: { text: string; what?: string }): JSX.Element {
   const [state, setState] = useState<"" | "ok" | "no">("");
@@ -2795,8 +2770,15 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
   );
 }
 
+/** Per-session composer drafts (AionUi's SendBox store, kept in memory).
+ *  Switching sessions must not carry one session's half-typed prompt into another, and
+ *  coming back must restore it — the operator asked for exactly that ("各个会话输入框的草稿
+ *  应该隔离"). Module scope, on purpose: a draft is this tab's working state, and a reload
+ *  dropping it is AionUi's behaviour too (its store is a plain Map). */
+const draftsBySession = new Map<string, string>();
+
 function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onCloseCall: () => void }): JSX.Element {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => draftsBySession.get(v.info.id) ?? "");
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
@@ -2805,6 +2787,24 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   const composerRef = useRef<HTMLDivElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  // IME guard. While a composition is up (pinyin/汉字 candidates), the Enter that PICKS a
+  // candidate is a plain keydown on the textarea — so the send handler fired and a message
+  // left mid-word (the operator's 「拼音模式下输入 app，按回车选中英文，消息直接发出了」).
+  // A ref set by the composition events covers Chrome and Safari (in Safari the committing
+  // keydown precedes `compositionend`, and in Chrome `isComposing` is unreliable by itself).
+  const composing = useRef(false);
+  // The session the box currently holds text for: a switch saves under the old id and loads
+  // under the new one (`text` stays the source of truth inside a session).
+  const draftSid = useRef(v.info.id);
+  useEffect(() => { draftsBySession.set(draftSid.current, text); }, [text]);
+  useEffect(() => {
+    if (draftSid.current === v.info.id) return;
+    draftsBySession.set(draftSid.current, text);
+    draftSid.current = v.info.id;
+    setText(draftsBySession.get(v.info.id) ?? "");
+    setPaletteHidden(false);
+    setPick(0);
+  }, [v.info.id, text]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [attachErr, setAttachErr] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -3057,7 +3057,12 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               setPaletteHidden(false);
               setPick(0);
             }}
+            onCompositionStart={() => { composing.current = true; }}
+            onCompositionEnd={() => { composing.current = false; }}
             onKeyDown={(e) => {
+              // Never act on a key that belongs to the IME: Enter/arrows are picking a
+              // candidate, not sending or navigating.
+              if (composing.current || e.nativeEvent.isComposing) return;
               if (paletteOpen && matches.length) {
                 if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
                 if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }

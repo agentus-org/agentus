@@ -755,6 +755,52 @@ export function nativeMicAvailable(): boolean {
   }
 }
 
+/** Can this page capture audio at all — the app's native microphone, or the browser's own
+ *  `getUserMedia`? An INSECURE ORIGIN (plain `http://` on a LAN IP) hides `navigator.mediaDevices`
+ *  entirely; that is the browser's rule, not ours (measured 2026-10-08: on `http://<lan-ip>:8787`
+ *  it is `undefined`, while `localhost` and the https entry have it). */
+export function micCaptureAvailable(): boolean {
+  return nativeMicAvailable() || typeof navigator.mediaDevices?.getUserMedia === "function";
+}
+
+/** Why the microphone is unavailable, in terms the operator can act on. The old text
+ *  ("this browser cannot record audio") blamed the browser for what is an ORIGIN problem — the
+ *  operator's report was exactly that error on a LAN page whose browser was fine. */
+export function micUnavailableMessage(): string {
+  if (typeof window !== "undefined" && !window.isSecureContext) {
+    const host = typeof location !== "undefined" ? location.hostname : "";
+    const https = host ? `https://${host}:8443` : "https://<主机>:8443";
+    return `当前页面是明文 http，浏览器不允许网页录音。改用 https 入口（${https}）或本机 localhost；手机上也可以用 Agentus app。`;
+  }
+  return "this browser cannot record audio";
+}
+
+/** Open the device's own recorder and hand back the finished file, or null when dismissed.
+ *  `<input capture>` needs no secure context — it is the one microphone-shaped door left open on
+ *  a plain-http origin. On mobile it records; on a desktop it degrades to picking an audio file. */
+function pickAudioFile(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "audio/*";
+    input.setAttribute("capture", "microphone");
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    let settled = false;
+    const done = (f: File | null): void => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(f);
+    };
+    input.onchange = () => done(input.files?.[0] ?? null);
+    // A dismissed picker fires no `change`; the window coming back is the only signal.
+    window.addEventListener("focus", () => { window.setTimeout(() => done(input.files?.[0] ?? null), 600); }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
 class Dictation {
   #state: DictationState = { status: "idle", text: "", interim: "", error: "", engine: null, seconds: 0 };
   #listeners = new Set<() => void>();
@@ -933,9 +979,12 @@ class Dictation {
       this.#set({
         status: "error",
         engine: null,
-        error: want === "server" || serverOk
-          ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTUS_STT_BASE_URL)"
-          : "no dictation available in this browser — set the server STT endpoint or use Chromium/Edge",
+        error: (typeof window !== "undefined" && !window.isSecureContext && !micCaptureAvailable()
+          ? `${micUnavailableMessage()} `
+          : "")
+          + (want === "server" || serverOk
+            ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTUS_STT_BASE_URL)"
+            : "no dictation available in this browser — set the server STT endpoint or use Chromium/Edge"),
       });
       return false;
     } catch (e) {
@@ -998,7 +1047,12 @@ class Dictation {
    *  they configured — and unlike the batch path, words appear as they are spoken. */
   async #startStream(prefs: VoicePrefs, sessionId?: string): Promise<void> {
     const bridge = nativeMicAvailable() ? bridgeMic() : null;
-    if (!bridge && !navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
+    if (!bridge && typeof navigator.mediaDevices?.getUserMedia !== "function") {
+      // No live capture — an insecure origin (plain http on a LAN IP) hides `getUserMedia`.
+      // The device's own recorder is the only door left; take it instead of refusing.
+      await this.#startFileCapture(prefs);
+      return;
+    }
     const Ctor = (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
     if (!bridge && !Ctor) throw new Error("this browser cannot process audio");
     // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
@@ -1220,7 +1274,12 @@ class Dictation {
   }
 
   async #startServer(prefs: VoicePrefs): Promise<void> {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("this browser cannot record audio");
+    if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
+      // Same insecure-origin case as #startStream: the batch path cannot use the app's bridge,
+      // so the device's own recorder is the fallback.
+      await this.#startFileCapture(prefs);
+      return;
+    }
     // Ask for the microphone *after* telling the UI we are waiting: getUserMedia does
     // not resolve until the operator answers the permission prompt, and without this
     // the button looked dead for as long as the prompt was up (QA R53).
@@ -1244,20 +1303,23 @@ class Dictation {
     this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
   }
 
-  async #finishServer(prefs: VoicePrefs): Promise<void> {
-    if (this.#timer) {
-      window.clearInterval(this.#timer);
-      this.#timer = null;
-    }
-    const blob = new Blob(this.#chunks, { type: this.#chunks[0]?.type || "audio/webm" });
-    this.#chunks = [];
-    this.#media = null;
-    if (!blob.size) {
-      // A microphone that produced no bytes is a real failure (muted device, a stream
-      // that never started). Saying nothing here would look like the feature is broken.
-      this.#set({ status: "error", error: "nothing was recorded — check the microphone" });
+  /** No live capture (an insecure origin hides `getUserMedia`): fall back to the device's own
+   *  recorder through `<input capture>`, whose finished file is exactly what the batch STT path
+   *  takes. One utterance per invocation and no live level, but on a plain-http LAN entry it is
+   *  the difference between "dictation works" and "this browser cannot record audio". */
+  async #startFileCapture(prefs: VoicePrefs): Promise<void> {
+    this.#set({ status: "requesting", engine: "server", error: "" });
+    const file = await pickAudioFile();
+    if (!file) {
+      this.#set({ status: "idle", text: "", interim: "", error: "" });
       return;
     }
+    await this.#uploadAudio(prefs, file);
+  }
+
+  /** POST one recorded clip to the server's STT and keep the text. Shared by the MediaRecorder
+   *  path and the `<input capture>` fallback — one upload, one place the error is shaped. */
+  async #uploadAudio(prefs: VoicePrefs, blob: Blob): Promise<void> {
     this.#set({ status: "transcribing" });
     try {
       const res = await fetch(`/api/stt?language=${encodeURIComponent(prefs.lang)}`, {
@@ -1272,6 +1334,23 @@ class Dictation {
     } catch (e) {
       this.#set({ status: "error", error: String((e as Error)?.message ?? e) });
     }
+  }
+
+  async #finishServer(prefs: VoicePrefs): Promise<void> {
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    const blob = new Blob(this.#chunks, { type: this.#chunks[0]?.type || "audio/webm" });
+    this.#chunks = [];
+    this.#media = null;
+    if (!blob.size) {
+      // A microphone that produced no bytes is a real failure (muted device, a stream
+      // that never started). Saying nothing here would look like the feature is broken.
+      this.#set({ status: "error", error: "nothing was recorded — check the microphone" });
+      return;
+    }
+    await this.#uploadAudio(prefs, blob);
   }
 
   /** Stop and keep what was heard (the composer takes `text`). */

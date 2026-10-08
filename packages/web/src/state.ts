@@ -1293,6 +1293,22 @@ class Cockpit {
     }
   }
 
+  /** Fold every thought block except `keepKey` (`null` closes them all).
+   *
+   *  A thinking burst is "the live one" only while it is the block being WRITTEN: the moment
+   *  the agent moves on — a tool call, a reply, or the next burst — the finished one folds to
+   *  its `💭 思考 · N 字` header. `open` used to be cleared only at turn-end (#endOpenBubbles),
+   *  so every burst of a turn stayed expanded and the transcript read as a wall of reasoning
+   *  (measured 2026-10-08, the operator's 「保留的那 5 条里，思考消息都是展开的」). Deferred
+   *  here rather than in App: the flag is store state, and a row folded on the far side of a
+   *  re-render is exactly the shape that used to freeze (`transcript.foldTextRow`). */
+  #foldThoughts(list: MsgView[], keepKey: string | null): void {
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      if (m.kind === "thought" && m.open && m.key !== keepKey) list[i] = { ...m, open: false };
+    }
+  }
+
   #ingest(
     v: SessionView,
     m: StoredMessage,
@@ -1304,6 +1320,9 @@ class Cockpit {
     const index = opts?.index ?? v.blocks;
     const delta = opts?.delta;
     const p0 = m.payload as Record<string, unknown>;
+    // Set when this frame is a thought block (see the fold after the switch): the block being
+    // written stays open, everything else folds.
+    let thoughtKey: string | null = null;
     // Dedup REST-replay vs WS-live (QA#3) — but ONLY for append-only rows.
     // Tool rows are upserted server-side keeping their original seq, so a
     // seq-based guard would swallow every tool_call_update (QA#12: the card
@@ -1387,6 +1406,8 @@ class Cockpit {
           && (block.kind === "agent" || block.kind === "thought") && !block.open) {
           list[idx] = { ...block, open: true };
         }
+        // This thought is the one being written; every other thought folds (after the switch).
+        if (kind === "thought") thoughtKey = list[idx]?.key ?? null;
         break;
       }
       case "tool": {
@@ -1460,6 +1481,9 @@ class Cockpit {
         list.push({ key: `m${m.seq}`, kind: "meta", text: text || JSON.stringify(p) });
         break;
     }
+    // The burst fold: a frame that is not the thought block being written closes every other
+    // thought, so only the newest (still-growing) burst stays expanded.
+    this.#foldThoughts(list, thoughtKey);
     this.lastSeq[v.info.id] = Math.max(this.lastSeq[v.info.id] ?? 0, m.seq);
     v.rev += 1;
     v.lastAt = Date.now();

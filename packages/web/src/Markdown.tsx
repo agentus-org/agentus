@@ -19,6 +19,7 @@
 //  * Copy buttons are wired once per container via a click handler, not one React
 //    listener per code block (a long answer can hold dozens).
 import { useEffect, useMemo, useRef } from "react";
+import { copyText } from "./clipboard";
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as MarkdownItInstance, RendererRule } from "markdown-it";
 import DOMPurify from "dompurify";
@@ -127,11 +128,11 @@ export function Markdown({ text }: { text: string }): JSX.Element {
       if (!target) return;
       const block = target.closest(".md-code")?.querySelector("code");
       const code = block?.textContent ?? "";
-      void navigator.clipboard?.writeText(code).then(() => {
-        target.textContent = "copied";
-        window.setTimeout(() => { target.textContent = "copy"; }, 1200);
-      }).catch(() => {
-        target.textContent = "copy failed";
+      // `copyText`, not `navigator.clipboard` directly: on the plain-http LAN entry the
+      // clipboard API does not exist, and a bare `navigator.clipboard?.writeText(...).then`
+      // threw on the undefined — no copy AND no feedback (the reported 「点击后没有触发复制」).
+      void copyText(code).then((ok) => {
+        target.textContent = ok ? "copied" : "copy failed";
         window.setTimeout(() => { target.textContent = "copy"; }, 1200);
       });
     };
