@@ -15,22 +15,34 @@ export const RAIL_RECENT = 5;
  *
  * Rules, in order — and each one is a case where hiding a row costs the operator something real:
  *  · a search shows every match (that view claims to have found them);
- *  · the group holding the ACTIVE session shows everything: hiding the conversation you are working
- *    in — or a session with an approval waiting in it — behind a click is not a convenience;
  *  · an unrolled group shows everything (that is what the click bought);
  *  · otherwise the newest `limit` are shown, and the count that is left is returned for the label.
+ *
+ * The group holding the ACTIVE session does NOT get a pass any more (it used to): a workspace with
+ * twelve sessions was the one place the rail refused to fold, which is where folding was wanted most
+ * (operator, 2026-10-08). Instead the active row is KEPT INSIDE the limit — see `isActive` below — so
+ * the count never grows past `limit` while the conversation you are in can never be hidden.
  *
  * The caller passes items already sorted newest-first — a group is ordered once, for the sort, and
  * this rule must not disagree with what is on screen.
  */
 export function splitRecent<T>(
   items: readonly T[],
-  opts: { limit?: number; searching?: boolean; holdsActive?: boolean; expanded?: boolean } = {},
+  opts: { limit?: number; searching?: boolean; expanded?: boolean; isActive?: (item: T) => boolean } = {},
 ): { shown: T[]; hidden: number } {
   const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? RAIL_RECENT)));
   const all = [...items];
-  if (opts.searching || opts.holdsActive || opts.expanded || all.length <= limit) {
+  if (opts.searching || opts.expanded || all.length <= limit) {
     return { shown: all, hidden: 0 };
   }
-  return { shown: all.slice(0, limit), hidden: all.length - limit };
+  const shown = all.slice(0, limit);
+  // The conversation the operator is IN stays on screen: it is the one row whose absence would lose
+  // work rather than save space, and the rail highlights it — dropping it would leave the open session
+  // with no row pointing at it. Pin it in place of the OLDEST shown row, so the count stays `limit`
+  // instead of growing by one.
+  if (opts.isActive) {
+    const at = all.findIndex((x) => opts.isActive!(x));
+    if (at >= limit) shown[shown.length - 1] = all[at];
+  }
+  return { shown, hidden: all.length - shown.length };
 }

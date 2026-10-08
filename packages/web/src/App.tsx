@@ -696,12 +696,13 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
           const isOpen = Boolean(needle) || !closed[g.path];
           const liveCount = g.items.filter((i) => !i.cold).length;
           // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
-          // The rule itself lives in `rail.ts` (with its own suite): hiding the conversation you are
-          // working in behind a click is a way to lose work, not a convenience, so the active group
-          // and every search show everything.
-          const holdsActive = g.items.some((i) => i.s.id === activeId);
+          // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
+          // group you are working in folds like every other one, and the row you are IN is pinned
+          // inside that limit instead — the conversation never disappears, the list still stops at N.
           const { shown, hidden } = splitRecent(g.items, {
-            searching: Boolean(needle), holdsActive, expanded: Boolean(more[g.path]),
+            searching: Boolean(needle),
+            isActive: (i) => i.s.id === activeId,
+            expanded: Boolean(more[g.path]),
           });
           return (
             <div className="rail-group" key={g.path}>

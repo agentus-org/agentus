@@ -35,10 +35,33 @@ const items = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1
   check("an empty group stays empty (nothing to expand)", shown.length === 0);
 }
 
-// ---- the four cases where everything is shown -----------------------------------------------
+// ---- the cases where everything is shown -----------------------------------------------------
+// The group holding the ACTIVE session used to be one of them. It is NOT any more: a workspace with
+// twelve sessions was the one place the rail refused to fold (operator, 2026-10-08: 「默认显示会话
+// 数量是多少啊，能调整成5吗」). The active row is pinned INSIDE the limit instead.
 {
-  const { shown, hidden } = splitRecent(items(20), { holdsActive: true });
-  check("the group holding the ACTIVE session shows everything", shown.length === 20 && hidden === 0);
+  const list = items(20); // 1 = newest … 20 = oldest
+  const { shown, hidden } = splitRecent(list, { isActive: (x) => x === 12 });
+  check("an active group shows exactly the limit (no exemption any more)",
+    shown.length === RAIL_RECENT && hidden === 15, `shown=${shown.length} hidden=${hidden}`);
+  check("…and the conversation the operator is IN is on screen anyway (pinned)",
+    shown.includes(12), JSON.stringify(shown));
+  check("…in the slot of the OLDEST row that would have been shown (the count stays at the limit)",
+    shown[shown.length - 1] === 12, JSON.stringify(shown));
+  check("…and the newest ones are untouched", shown.slice(0, 4).join(",") === "1,2,3,4",
+    JSON.stringify(shown));
+}
+{
+  // an active row inside the newest few changes nothing
+  const { shown } = splitRecent(items(20), { isActive: (x) => x === 3 });
+  check("an active row already among the newest few needs no pinning",
+    shown.join(",") === "1,2,3,4,5", JSON.stringify(shown));
+}
+{
+  // a group where the active session is the FIRST row (the ordinary case: you are in the newest one)
+  const { shown, hidden } = splitRecent(items(9), { isActive: (x) => x === 1 });
+  check("the ordinary case (working in the newest session) folds to five",
+    shown.length === 5 && hidden === 4 && shown[0] === 1, JSON.stringify({ shown, hidden }));
 }
 {
   const { shown } = splitRecent(items(20), { searching: true });
@@ -49,8 +72,8 @@ const items = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1
   check("an unrolled group shows everything (that is what the click bought)", shown.length === 20 && hidden === 0);
 }
 {
-  // …and the rules combine: a search inside a group that also holds the active session is still all
-  const { shown } = splitRecent(items(9), { searching: true, holdsActive: true, expanded: false });
+  // …and the rules combine: a search shows every match even while a session in it is active
+  const { shown } = splitRecent(items(9), { searching: true, isActive: (x) => x === 8, expanded: false });
   check("the rules do not fight each other", shown.length === 9);
 }
 
