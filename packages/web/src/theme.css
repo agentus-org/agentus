@@ -1182,12 +1182,16 @@ code.inline {
 
 /* ---- rail: the two sections (团队, 工作空间) --------------------------------- */
 /* A section head is a fold control: a full-width button so the whole row is the target, with the
-   chevron the eye reads as one (same shape as the per-workspace head below). */
+   chevron the eye reads as one (same shape as the per-workspace head below).
+   INDENT LADDER (the operator: 「子段落都在外面…工作空间里面的子目录稍微缩进一点点」): every level's
+   text column is the next level's icon column, so nesting is read from the layout instead of guessed.
+     section chevron 10 · section label 25 · a workspace's chevron 25 · its folder 41 · its name 58
+     a session row's bullet starts at 23 and its title lines up with the workspace name at 58. */
 .rail-section {
-  display: flex; align-items: center; gap: 4px; width: calc(100% - 12px); margin: 9px 6px 3px;
+  display: flex; align-items: center; gap: 4px; width: calc(100% - 10px); margin: 9px 10px 3px 0;
   background: transparent; border: none; font-family: inherit; text-align: left;
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
-  padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  padding: 3px 2px; border-radius: 6px; cursor: pointer;
 }
 .rail-section:hover { color: var(--text); }
 .rail-section-chev { flex: 0 0 auto; transition: transform 0.12s ease; }
@@ -1197,7 +1201,7 @@ code.inline {
    (nothing to tab into, nothing to click) with a dashed edge, and it says what it is. A row that
    looks pressable and does nothing is worse than a row that admits it is not ready. */
 .rail-placeholder {
-  display: flex; align-items: center; gap: 6px; margin: 0 6px 2px; padding: 5px 7px; border-radius: 6px;
+  display: flex; align-items: center; gap: 6px; margin: 0 10px 2px; padding: 5px 7px; border-radius: 6px;
   border: 1px dashed var(--line); color: var(--text-dim); font-size: 11px; cursor: default;
 }
 .rail-placeholder-name { color: var(--text); opacity: 0.75; }
@@ -1208,13 +1212,14 @@ code.inline {
 /* The head and its 「+」 are two buttons on one line: the head keeps the whole row (clicking
    the directory still collapses it) and the + sits at its right edge, revealed on hover like
    the row menu, always visible on a touch screen. They cannot be nested — a button inside a
-   button is invalid — hence the row wrapper. */
+   button is invalid — hence the row wrapper. The head is inset one step (11px) so a workspace
+   reads as a child of the 工作空间 section it sits in. */
 .rail-group-row { display: flex; align-items: center; gap: 2px; }
 .rail-group-head {
   display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; text-align: left;
   background: transparent; border: none; color: var(--text-dim); cursor: pointer;
   font-family: inherit; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
-  padding: 5px 6px; border-radius: 6px;
+  padding: 5px 6px; border-radius: 6px; margin-left: 11px;
 }
 .rail-group-head:hover { background: var(--bg-raised); color: var(--text); }
 .group-add { flex: 0 0 auto; opacity: 0; transition: opacity 0.12s; }
@@ -1224,10 +1229,10 @@ code.inline {
 .rail-group-chev.open { transform: rotate(90deg); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-group-count { font-size: 10px; color: var(--text-dim); }
-.rail-group-body { padding-left: 4px; }
+.rail-group-body { padding-left: 15px; }
 /* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
 .rail-more {
-  display: flex; align-items: center; gap: 5px; width: calc(100% - 6px); margin: 1px 0 4px 6px;
+  display: flex; align-items: center; gap: 5px; width: calc(100% - 15px); margin: 1px 0 4px 15px;
   padding: 3px 6px; background: transparent; border: none; border-radius: 6px; cursor: pointer;
   color: var(--text-dim); font-family: inherit; font-size: 11px; text-align: left;
 }
