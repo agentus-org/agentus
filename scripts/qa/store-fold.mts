@@ -279,6 +279,46 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   store.close();
 }
 
+// ---- 6. the mass-resume clock repair ----------------------------------------------------------
+// A resume burst writes its non-identical copies AND bumps every session's clock to the restart. With
+// the copies kept (they differ from what was stored), only the burst signature can put the times back.
+{
+  const burstDb = path.join(dir, "burst.sqlite");
+  const store = new Store(burstDb);
+  const T = 1_700_000_000_000;
+  const RESTART = T + 86_400_000;
+  const ids = ["b-1", "b-2", "b-3", "b-4", "b-5"];
+  ids.forEach((id, i) => {
+    store.upsertSession({
+      id, backend: "mock", acpSessionId: `a-${i}`, cwd: "/tmp", title: `t-${i}`, status: "idle",
+      pid: null, createdAt: 1, closedAt: null, home: null,
+    } as never);
+    // the real conversation
+    store.appendMessage({
+      sessionId: id, kind: "agent", createdAt: T + i,
+      payload: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `真实回复 ${i} 的内容，足够长以便被当作一个块而不是一句话。` }, messageId: `m-${i}` },
+    } as never);
+    // the replay, a day later, inside the same 30 seconds as its siblings — and NOT byte-identical,
+    // so the conservative dedupe keeps it (this is the residue the burst rule exists for)
+    store.appendMessage({
+      sessionId: id, kind: "agent", createdAt: RESTART + i,
+      payload: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `真实回复 ${i} 的内容，足够长以便被当作一个块而不是一句话。（重发版）` } },
+    } as never);
+    store.touchActivity(id, RESTART + i);
+  });
+  const before = ids.map((id) => store.lastActivityAt().get(id));
+  check("fixture: every session's clock sits at the restart", before.every((c) => (c ?? 0) >= RESTART), JSON.stringify(before));
+  store.close();
+  new DatabaseSync(burstDb).exec("pragma user_version = 3"); // the state the live store is in
+  const repaired = new Store(burstDb); // …and this is the release start
+  const after = ids.map((id) => repaired.lastActivityAt().get(id));
+  check("the burst repair puts every session back to its real last activity",
+    after.every((c, i) => c === T + i), JSON.stringify(after.map((c) => (c ?? 0) - T)));
+  check("…and the replayed rows it could not prove are copies are still there",
+    ids.every((id) => repaired.messagesTail(id, 50).messages.length === 2));
+  repaired.close();
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${ok} ok, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

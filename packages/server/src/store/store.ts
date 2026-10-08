@@ -489,7 +489,11 @@ export class Store {
    * removed when its second looks like that burst.
    */
   #dedupeReplayedRows(): void {
-    const DEDUPE_VERSION = 3;
+    // v4: the live store ran v3 DURING the release restart — the migration walked the rows, set its
+    // version, and only THEN did the resize/resume replays write the 1240 duplicates. A store that
+    // already carries v3 therefore still holds them, so the walk is worth repeating; v4 also puts
+    // back the activity clock the same replay bumped (see the tail of this method).
+    const DEDUPE_VERSION = 4;
     const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
     if (Number(v?.user_version ?? 0) >= DEDUPE_VERSION) return;
     if (!this.#backup("dedupe")) return;
@@ -561,11 +565,90 @@ export class Store {
       for (const seq of doomed) del.run(id, seq);
       after += rows.length - doomed.size;
     }
+    // The same replay also bumped the session's ACTIVITY clock — `#touch` fires on any write, so a
+    // resumed slot's rail time jumped to the moment its agent was re-attached (measured on live:
+    // eleven sessions at once, 10:44:52 → 10:45:20). With the copies now gone, a clock that sits
+    // AHEAD of the session's newest surviving row is provably that bump and nothing else, so put it
+    // back to the row that is actually there. A session with no messages left keeps what it has.
+    const clock = this.#db
+      .prepare(
+        `update sessions set last_activity_at =
+           (select max(m.created_at) from messages m where m.session_id = sessions.id)
+         where last_activity_at is not null
+           and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
+      )
+      .run();
     this.#db.prepare(`pragma user_version = ${DEDUPE_VERSION}`).run();
     if (before !== after) {
       console.log(
         `[store] 重放行清理：${before} 行 → ${after} 行（工具行 ${toolsDropped}、文本行 ${textDropped}；`
         + `另有 ${kept} 行内容并不完全相同，原样保留）`,
+      );
+    }
+    if (clock.changes > 0) {
+      console.log(`[store] 活动时钟复位：${clock.changes} 个会话的时间被重放推到了重启那一刻，已按真实最后一行改回`);
+    }
+    this.#repairReplayClocks();
+  }
+
+  /**
+   * The residue of the same replay, for sessions the conservative dedupe had to leave alone.
+   *
+   * A replayed block that is not byte-identical to what the store already held is KEPT (it may carry
+   * an update the stored copy never got) — and with the row kept, `#touch`'s clock stays at the
+   * restart too. Measured 2026-10-08 on the live store: eight sessions' rail times all sat inside one
+   * 30-second window (the moment their agents were re-attached), which is the signature this reads.
+   *
+   * The rule is the observable one — real conversations do not end eight at a time: a 90-second
+   * window holding four or more sessions' clocks is a mass resume, and a session whose clock falls in
+   * such a window goes back to its newest row written BEFORE the window opened. A session in the
+   * window with no earlier row is reported, never guessed at. Running it on a store with no such
+   * window is a no-op, so it is safe to leave standing.
+   */
+  #repairReplayClocks(): void {
+    const WINDOW_MS = 90_000;
+    const MIN_SESSIONS = 4;
+    const rows = this.#db
+      .prepare("select id, last_activity_at as clock from sessions where last_activity_at is not null order by last_activity_at asc")
+      .all() as unknown as { id: string; clock: number }[];
+    // The densest windows first: an anchor at each clock, merged into maximal groups.
+    const groups: { lo: number; hi: number; ids: Set<string> }[] = [];
+    for (const anchor of rows) {
+      const inWindow = rows.filter((r) => r.clock >= anchor.clock && r.clock <= anchor.clock + WINDOW_MS);
+      if (inWindow.length < MIN_SESSIONS) continue;
+      const lo = anchor.clock;
+      const hi = anchor.clock + WINDOW_MS;
+      const hit = groups.find((g) => lo <= g.hi && hi >= g.lo);
+      if (hit) {
+        hit.lo = Math.min(hit.lo, lo);
+        hit.hi = Math.max(hit.hi, hi);
+        inWindow.forEach((r) => hit.ids.add(r.id));
+      } else {
+        groups.push({ lo, hi, ids: new Set(inWindow.map((r) => r.id)) });
+      }
+    }
+    if (!groups.length) return;
+    const earlier = this.#db.prepare(
+      "select max(created_at) as m from messages where session_id = ? and created_at < ?",
+    );
+    const upd = this.#db.prepare("update sessions set last_activity_at = ? where id = ?");
+    let moved = 0;
+    let stuck = 0;
+    for (const g of groups) {
+      for (const id of g.ids) {
+        const to = (earlier.get(id, g.lo) as { m: number | null }).m;
+        if (to === null) {
+          stuck += 1;
+          continue;
+        }
+        upd.run(to, id);
+        moved += 1;
+      }
+    }
+    if (moved || stuck) {
+      console.log(
+        `[store] 重放时钟再修：${moved} 个会话的时间被按「重启前最后一行」改回（${groups.length} 段集中重连窗口）`
+        + (stuck ? `；${stuck} 个会话在这之前没有行，保持原样` : ""),
       );
     }
   }
