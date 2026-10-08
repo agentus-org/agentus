@@ -130,7 +130,7 @@ And against real data — the one-off used when this landed, on the operator's o
 
 ```bash
 # rows → the CLIENT's fold, over the operator API
-curl -s -H "Authorization: Bearer $(cat packages/server/.data/auth.token)" \
+curl -s -H "Authorization: Bearer $(cat "${AGENTUS_DATA:-$HOME/.agentus}/auth.token")" \
   'http://127.0.0.1:8787/api/sessions/<id>/messages?tail=1'
 ```
 

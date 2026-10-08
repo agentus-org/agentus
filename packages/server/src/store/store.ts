@@ -3,7 +3,7 @@
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { BackendId, PlanSnapshot, SessionStatus, StoredMessage } from "@agentus/shared";
+import type { BackendId, PlanSnapshot, SessionStatus, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 import { normalizeItems } from "../plan/plan.js";
 import { DEFAULT_NATIVE_PLAN_SOURCE } from "../acp/backends.js";

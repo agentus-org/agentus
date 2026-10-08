@@ -14,7 +14,7 @@
  *     leftover `in_progress` step is demoted to `pending` (nothing is running it anymore) and the
  *     snapshot carries an honest terminal stamp.
  */
-import type { PlanItem } from "@agentus/shared";
+import type { PlanItem } from "../../../shared/src/index.js";
 
 /** Studio caps its plan remark at 1000 chars; take the same bound rather than invent one. */
 export const MAX_EXPLANATION = 1000;

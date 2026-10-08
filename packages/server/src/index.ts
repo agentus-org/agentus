@@ -23,7 +23,7 @@ import { openDashscopeStream } from "./dashscope.js";
 import { initSettings, publicSettings, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
-import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "@agentus/shared";
+import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "../../shared/src/index.js";
 
 const PORT = Number(process.env.AGENTUS_PORT ?? 8787);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
@@ -31,11 +31,44 @@ const PORT = Number(process.env.AGENTUS_PORT ?? 8787);
 // cwd-relative path would silently open a second database (the operator's slots would
 // "disappear"). Both entry points must land on the same store.
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
-const DATA_DIR = process.env.AGENTUS_DATA ?? path.resolve(HERE, "../.data");
+// WHERE STATE LIVES — sqlite, credentials.json, auth.token, tls/, settings.json.
+//   1. `AGENTUS_DATA` when it is set. Every launcher and dev/QA instance pins it, so the
+//      rules below can never move a running install's data out from under it.
+//   2. `~/.agentus` once it holds something, or when there is no repo-side data yet.
+//   3. the in-repo `<repo>/packages/server/.data`, if it exists and ~/.agentus does not —
+//      an existing checkout keeps its sessions instead of silently starting empty (that
+//      failure mode looks exactly like "all my sessions vanished"; the boot log says which
+//      directory won and how to move).
+// NOTHING may write inside node_modules: for an installed package
+// `<pkg>/packages/server/.data` is deleted by the next `npm i -g agentus`, taking the
+// transcript, the login and the TLS key with it.
+const DEFAULT_DATA_DIR = path.join(homedir(), ".agentus");
+const REPO_DATA_DIR = path.resolve(HERE, "../.data");
+const hasData = (dir: string): boolean => {
+  try { return fs.statSync(dir).isDirectory() && fs.readdirSync(dir).length > 0; } catch { return false; }
+};
+// An empty AGENTUS_DATA counts as unset (a launcher that clears a variable writes
+// `AGENTUS_DATA=`), otherwise it would resolve to the shell's cwd.
+const ENV_DATA_DIR = process.env.AGENTUS_DATA?.trim() || null;
+const DATA_DIR = ENV_DATA_DIR
+  ?? (hasData(DEFAULT_DATA_DIR) || !hasData(REPO_DATA_DIR) ? DEFAULT_DATA_DIR : REPO_DATA_DIR);
+const DATA_DIR_SOURCE = ENV_DATA_DIR
+  ? "from AGENTUS_DATA"
+  : DATA_DIR === REPO_DATA_DIR
+    ? "in-repo packages/server/.data"
+    : hasData(DEFAULT_DATA_DIR) ? "existing ~/.agentus" : "default ~/.agentus (created on this boot)";
 const WEB_DIST = process.env.AGENTUS_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
 // The Android companion artifact (/notify links to it, /agentus-companion.apk streams it).
-// Path is relative to THIS FILE: src → packages/server → packages → repo root.
-const APK_FILE = process.env.AGENTUS_APK ?? path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk");
+// First candidate is relative to THIS FILE (src → packages/server → packages → repo root,
+// i.e. a checkout that built the APK); a published install has no android/ tree, so the
+// data dir is the place to drop a downloaded artifact. Missing file is not fatal — the
+// routes answer 404 and the panel says 尚未构建.
+const APK_FILE = process.env.AGENTUS_APK
+  ?? [
+    path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk"),
+    path.join(DATA_DIR, "agentus-companion.apk"),
+  ].find((p) => fs.existsSync(p))
+  ?? path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk");
 // Optional second listener, TLS (see the block right before listen). Declared up here
 // because the request handler also serves the public cert — a phone that has to trust a
 // self-signed issuer needs to fetch the cert from somewhere, and that somewhere should
@@ -49,7 +82,22 @@ const TLS_KEY = process.env.AGENTUS_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.p
 const TLS_CA = process.env.AGENTUS_TLS_CA ?? path.join(DATA_DIR, "tls", "ca.pem");
 const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY);
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+// `agentus --where` (bin/agentus.mjs) asks the ONE place that decides these paths to say
+// what it decided, then exits — before any listener, store or subprocess exists. Print and
+// exit here rather than re-deriving the same rules in the CLI: "where is my data" must not
+// have two answers.
+if (process.env.AGENTUS_PRINT_PATHS) {
+  const has = (p: string) => (fs.existsSync(p) ? "present" : "MISSING");
+  console.log(`[agentus] node          ${process.versions.node}`);
+  console.log(`[agentus] data dir      ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
+  console.log(`[agentus] web bundle    ${WEB_DIST}  (${has(path.join(WEB_DIST, "index.html"))})`);
+  console.log(`[agentus] companion apk ${APK_FILE}  (${has(APK_FILE)})`);
+  console.log(`[agentus] tls listener  ${TLS_READY ? `on :${TLS_PORT} (${TLS_CERT})` : `off (AGENTUS_TLS_PORT=${TLS_PORT}, cert ${has(TLS_CERT)})`}`);
+  console.log(`[agentus] http port     ${PORT}`);
+  process.exit(0);
+}
+
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); // 0700: credentials + TLS key live here
 const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 // M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
 // the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
@@ -1295,6 +1343,12 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 httpServer.listen(PORT, "0.0.0.0", () => {
   installSafetyNet(); // we own the port: from here on, survive per-request errors
   console.log(`[agentus-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+  // Which directory a boot actually opened is the one fact that must never be guessed:
+  // a wrong answer here reads as "my sessions are gone" and every other log line is fine.
+  console.log(`[agentus-server] data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`
+    + (DATA_DIR === REPO_DATA_DIR
+      ? `\n[agentus-server]   this install defaults to ${DEFAULT_DATA_DIR}; AGENTUS_DATA=${DEFAULT_DATA_DIR} moves it (a new dir starts with an empty session list)`
+      : ""));
   // Auth state belongs in the boot log: "is this thing locked, and with which
   // password?" is the first question anyone asks when it is on a LAN.
   if (!authStatus.enabled) {
@@ -1319,7 +1373,9 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   if (!fs.existsSync(path.join(WEB_DIST, "index.html"))) {
     console.error(
       `[agentus-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
-      + `[agentus-server]   build it with:  NODE_ENV=development npm run build -w @agentus/web`,
+      + (fs.existsSync(path.resolve(HERE, "../../web/src"))
+        ? `[agentus-server]   build it with:  NODE_ENV=development npm run build -w @agentus/web`
+        : `[agentus-server]   this package looks damaged (no prebuilt bundle) — reinstall it:  npm i -g agentus@latest`),
     );
   }
 });
