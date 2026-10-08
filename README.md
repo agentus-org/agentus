@@ -433,6 +433,8 @@ npm run backend-smoke                     # 42: the backend registry, spawn env,
 npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
 npm run tls-smoke                         # the second listener, real sockets + real certs
+npm run package-smoke                     # packs, installs into a throwaway prefix + HOME, boots
+                                          # that install, drives a mock turn, checks ~/.agentus
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent
 ```
 

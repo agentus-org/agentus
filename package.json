@@ -46,6 +46,7 @@
   "start": "bash scripts/start.sh",
   "agentus": "node bin/agentus.mjs",
   "prepack": "npm run build -w @agentus/web",
+  "package-smoke": "node scripts/qa/package-install.mjs",
   "smoke": "node scripts/smoke.mjs",
   "backend-smoke": "node scripts/backend-registry-smoke.mjs",
   "auth-smoke": "node scripts/auth-smoke.mjs",
