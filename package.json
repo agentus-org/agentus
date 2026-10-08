@@ -22,6 +22,7 @@
   "workspace-smoke": "node scripts/workspace-smoke.mjs",
   "voice-smoke": "node scripts/voice-smoke.mjs",
   "sentence-units": "tsx scripts/qa/sentence-units.mts",
+  "plan-service-sweep": "node scripts/qa/plan-service-sweep.mjs",
   "tls-smoke": "node scripts/tls-smoke.mjs",
   "notify-testbed": "tsx scripts/notify-testbed.mts",
   "notify-smoke": "tsx scripts/notify-smoke.mts",

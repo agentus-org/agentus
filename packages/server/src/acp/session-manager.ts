@@ -31,6 +31,7 @@ import type {
   SessionModeState,
   TurnTrace,
 } from "@agentus/shared";
+import { acceptsWriteFrom, clampExplanation, demoteInProgress, hasUnfinished } from "../plan/plan.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -162,6 +163,11 @@ interface LiveSession {
    *  slot being REPLACED, so its exit must not be read as "the agent died" — that would stamp
    *  `error` on the row its replacement is adopting and fire a turn-end on a slot mid-swap. */
   replacing?: boolean;
+  /** The plan hand-over is owed on the NEXT prompt: a freshly (re)started agent has no memory of
+   *  the plan it was working on, while the cockpit still has it (design-plan-service.md §7).
+   *  Cleared after the first prompt, because after that the agent maintains the plan itself —
+   *  re-sending it every turn would cost context and invite re-deriving finished work. */
+  planReminderPending?: boolean;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -207,10 +213,15 @@ export class SessionManager {
         /* already gone */
       }
       if (row.status !== "closed") {
+        // Only a turn that was ACTUALLY in flight can be reported as interrupted. A `ready` session
+        // had finished its turn, and restamping its plan would replace an honest "回合结束" with
+        // "已打断" — a lie the restart invents on its own (measured: a plan the mock had already
+        // closed out came back stamped interrupted after a restart).
+        const wasRunning = row.status === "running";
         this.#store.upsertSession({ ...row, status: "error", closedAt: Date.now(), pid: null });
         // A crash between turns left the plan card mid-work with nothing to finish it; the
         // startup reclaim is the one that owns the run now, so it closes the card honestly.
-        this.#finalizePlan(row.id, "interrupted");
+        if (wasRunning) this.#finalizePlan(row.id, "interrupted");
       }
     }
     return killed;
@@ -326,7 +337,7 @@ export class SessionManager {
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
+      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
@@ -463,7 +474,7 @@ export class SessionManager {
         commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(),
+      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastMessageAt().get(id) ?? live.info.createdAt;
@@ -713,6 +724,13 @@ export class SessionManager {
     }
     const blocks = buildPromptBlocks(text, attachments);
     if (!blocks.length) throw new Error("empty prompt");
+    // The plan hand-over, owed once per agent process (§7): a restarted agent never knew about the
+    // plan, and nothing else on this wire would tell it (ACP has no server->agent state channel).
+    if (s.planReminderPending) {
+      s.planReminderPending = false;
+      const reminder = this.#planReminder(s);
+      if (reminder) blocks.push(reminder);
+    }
     s.turnSeq += 1;
     s.busy = true;
     s.info.status = "running";
@@ -835,24 +853,90 @@ export class SessionManager {
     this.#updateSession(s);
   }
 
+  /** Fold an agent's ACP plan frame into the session's plan OBJECT.
+   *
+   *  The object (Store's `plans` row) is what the card renders, because it survives what the frame
+   *  does not: the agent's own todo state dies with its process, and with it every reason to keep
+   *  believing the frames still sitting in the log (design-plan-service.md §1).
+   *
+   *  One writer per session (plan.ts): a plan hand-delivered through the plan MCP tool is not
+   *  overwritten by frames, and vice versa — two writers means two plans racing on one card. */
+  #ingestPlan(sessionId: string, update: Record<string, unknown>): void {
+    const prev = this.#store.getPlan(sessionId);
+    if (!acceptsWriteFrom(prev?.source, "acp")) return;
+    const meta = (update._meta ?? {}) as Record<string, unknown>;
+    const plan = this.#store.upsertPlan(sessionId, {
+      items: update.entries,
+      // ACP v1 has no remark field; `_meta` is the protocol's own extension slot, so a writer that
+      // has one has somewhere to put it. Absent means "say nothing", NOT "clear" — a frame that
+      // carries no remark must not wipe the one a previous frame left on the card.
+      ...(meta["agentus/explanation"] !== undefined
+        ? { explanation: clampExplanation(meta["agentus/explanation"]) }
+        : {}),
+      source: "acp",
+      // A fresh snapshot means the run is moving again: the last turn's terminal stamp no longer
+      // describes this one.
+      terminal: null,
+    });
+    this.#emit({ t: "plan", sessionId, plan });
+  }
+
   /** Turn lifecycle closes the plan card (the Studio rule: the agent may never set the
    *  execution state — only the run does). A leftover `in_progress` step is demoted back to
    *  `pending` (nothing runs it anymore) and the card gets an honest terminal line; without
    *  this, a crash or an interrupted turn leaves the card pretending to work forever.
-   *  Writes only when the newest plan still has unfinished steps — a plan the agent closed
-   *  out itself (all completed) needs no banner. Idempotent per state. */
+   *  Writes only when the plan still has unfinished steps — a plan the agent closed out itself
+   *  (all completed) needs no banner. Idempotent per state. */
   #finalizePlan(sessionId: string, state: "ended" | "interrupted" | "failed"): void {
-    const last = this.#store.latestPlanMessage(sessionId);
-    if (!last) return;
-    const p = last.payload as Record<string, unknown>;
-    if (p._slotPlanTerminal === state) return;
-    const entries = Array.isArray(p.entries) ? (p.entries as Record<string, unknown>[]) : [];
-    if (!entries.some((e) => e.status === "in_progress" || e.status === "pending")) return;
-    const demoted = entries.map((e) => (e.status === "in_progress" ? { ...e, status: "pending" } : e));
-    const stored = this.#store.appendMessage({
-      sessionId, kind: "plan", payload: { ...p, entries: demoted, _slotPlanTerminal: state }, createdAt: Date.now(),
+    const plan = this.#store.getPlan(sessionId);
+    if (!plan) return;
+    if (plan.terminal === state) return;
+    if (!hasUnfinished(plan.items)) return;
+    const items = demoteInProgress(plan.items);
+    const stored = this.#store.upsertPlan(sessionId, { items, source: plan.source, terminal: state });
+    // The OBJECT is the live card's truth; the transcript row is what an ARCHIVE card replays later
+    // (it keeps the cockpit-only `_slotPlanTerminal` field the archived card reads).
+    const msg = this.#store.appendMessage({
+      sessionId, kind: "plan",
+      payload: { sessionUpdate: "plan", entries: items, _slotPlanTerminal: state },
+      createdAt: Date.now(),
     });
-    this.#emit({ t: "message", message: stored });
+    this.#emit({ t: "plan", sessionId, plan: stored });
+    this.#emit({ t: "message", message: msg });
+  }
+
+  /** The plan, handed to an agent that just (re)started, as an ACP `resource` content block: a
+   *  stable URI plus the steps still owed. The card is fed by the plan OBJECT, but the AGENT's own
+   *  copy died with its process — this block is the only thing that tells it the plan exists
+   *  (design-plan-service.md §7). Returns null when there is nothing to hand over: no plan at all,
+   *  or one whose steps are all closed (spending context to say "you are done" is worse than
+   *  saying nothing). */
+  #planReminder(s: LiveSession): unknown | null {
+    const plan = this.#store.getPlan(s.info.id);
+    if (!plan) return null;
+    const open = plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled");
+    if (!open.length) return null;
+    const lines = open.map((i) => `- [${i.status}] ${i.content}`).join("\n");
+    return {
+      type: "resource",
+      resource: {
+        uri: `agentus://plan/${s.info.id}`,
+        mimeType: "text/plain",
+        text: [
+          "This session has an unfinished plan. It is kept by the cockpit and survives your",
+          "restarts; your own in-memory task list does not.",
+          "",
+          lines,
+          "",
+          "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+          "completed only once its work is actually verified, and drop or cancel what you are no",
+          "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+        ].join("\n"),
+      },
+      // ACP reserves `_meta` for the client: tagging our own blocks is what lets us tell them from
+      // the operator's words later (and strip them from anything we echo back).
+      _meta: { "agentus/plan-reminder": true },
+    };
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -953,7 +1037,11 @@ export class SessionManager {
         return;
       }
       case "plan":
+        // The AGENT's channel. The frame still lands in the transcript (that is what the per-turn
+        // archive card replays), but the cockpit's LIVE card is fed by the plan OBJECT below — the
+        // one that outlives the agent's process (see plan/plan.ts).
         msg = { sessionId: live.info.id, kind: "plan", payload: u, createdAt: Date.now() };
+        this.#ingestPlan(live.info.id, u as Record<string, unknown>);
         break;
       case "current_mode_update": {
         const m = u as { currentModeId?: string };

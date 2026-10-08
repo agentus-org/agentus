@@ -1402,6 +1402,9 @@ function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
           ))}
         </ol>
       ) : null}
+      {/* The plan's own remark, one dim line under the steps (Studio's `plan-explanation`): why
+          this update, or what the scope is now. Shown expanded, so the collapsed bar stays one line. */}
+      {open && plan.explanation ? <p className="plan-explanation">{plan.explanation}</p> : null}
     </div>
   );
 }
@@ -1449,6 +1452,8 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
             ))}
           </ol>
         ) : null}
+        {/* The plan's own remark, one dim line under the steps (Studio's `plan-explanation`). */}
+        {open && m.explanation ? <p className="plan-explanation">{m.explanation}</p> : null}
       </div>
     </div>
   );

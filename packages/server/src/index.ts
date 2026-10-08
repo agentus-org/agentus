@@ -620,6 +620,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       // after the request was raised never saw the event, and would otherwise show nothing.
       return send(res, 200, { live: mgr.list(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
     }
+    // The session's plan object — what the cockpit's card renders. STATE too, and the one piece of
+    // it that cannot be replayed: after the agent process died there are no frames left to read,
+    // and this row is the only thing that still knows the plan (design-plan-service.md §1/§8).
+    const planReq = /^\/api\/sessions\/([^/]+)\/plan$/.exec(url.pathname);
+    if (planReq && req.method === "GET") {
+      return send(res, 200, { plan: store.getPlan(decodeURIComponent(planReq[1])) });
+    }
     // Directory browser for the new-slot workspace picker (dirs only, one level).
     if (url.pathname === "/api/fs/dirs" && req.method === "GET") {
       try {

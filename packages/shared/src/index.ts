@@ -167,6 +167,10 @@ export type ServerEvent =
   /** per-turn trace: what model/effort/mode this turn is actually running with
    *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
   | { t: "turn-start"; sessionId: string; trace?: TurnTrace }
+  /** The session's plan object — the TRUTH the card renders, not the transcript's frames. Sent on
+   *  every change, and the same object is available over GET /api/sessions/:id/plan, so a page that
+   *  loads after the agent process died still renders the real plan instead of nothing. */
+  | { t: "plan"; sessionId: string; plan: PlanSnapshot }
   /** context-window usage for a slot (ACP usage_update) */
   | { t: "usage"; sessionId: string; usage: UsageView }
   | { t: "error"; error: string };
@@ -176,6 +180,36 @@ export interface TurnTrace {
   provider?: string;
   effort?: string | null;
   mode?: string | null;
+}
+
+/** One step of a plan: ACP's own shape (`PlanEntry` in v1) and nothing more. There is no per-step
+ *  note in the protocol, so we do not invent one — Studio keeps its remark at the plan level
+ *  (`PlanSnapshot.explanation`), and so do we. */
+export interface PlanItem {
+  content: string;
+  /** pending | in_progress | completed | cancelled — unknown values pass through (v2 reserves
+   *  `_`-prefixed ones), because dropping what we do not understand shows a quietly wrong plan. */
+  status: string;
+  priority?: string;
+}
+
+/** The session's plan as the SERVER holds it.
+ *
+ *  Why the server and not the transcript: an ACP plan frame is a replace-semantics SNAPSHOT, and the
+ *  agent's own todo state dies with its process — so a plan read from replayed frames can be empty
+ *  or stale exactly when it matters (after a restart). The object below has a monotonic `revision`
+ *  so a client can treat it as a cursor. */
+export interface PlanSnapshot {
+  sessionId: string;
+  revision: number;
+  items: PlanItem[];
+  /** plan-level remark, Studio-style ("brief reason for the update or scope change"), ≤1000 chars */
+  explanation?: string | null;
+  /** who wrote it: a native ACP frame, the plan MCP tool, or the server's own turn lifecycle */
+  source: "acp" | "mcp" | "server";
+  /** set by the turn lifecycle when the run ended with unfinished steps */
+  terminal?: string | null;
+  updatedAt: number;
 }
 
 // ---- WS envelope (browser -> server) ----

@@ -271,6 +271,26 @@ const agent = () => ({
     s.cancelled = false;
     const text = prompt.map((p) => p.text || "").join(" ");
 
+    // QA: report the SHAPE of what arrived, not just its text. A client may attach STRUCTURED
+    // blocks — the cockpit hands a resumed agent the session's plan as an ACP `resource` — and the
+    // difference between "the operator typed this" and "the client attached this" is exactly what a
+    // test needs to see. `text` above only reads `.text`, so a resource block is otherwise invisible
+    // to this mock (measured 2026-10-08: the plan hand-over could not be verified at all).
+    if (process.env.MOCK_BLOCKS === "1" || /\[blocks\]/.test(text)) {
+      const shape = prompt.map((p) => ({
+        type: p.type ?? "?",
+        resourceUri: p.resource?.uri ?? null,
+        // the attached text itself, so a test can assert WHICH plan was handed over
+        body: (p.resource?.text || p.text || "").slice(0, 600),
+        meta: p._meta ?? null,
+      }));
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "BLOCKS " + JSON.stringify(shape) },
+      });
+      return { stopReason: "end_turn" };
+    }
+
     // A title request (the cockpit's 重新生成) is answered from what this session already
     // knows. On a FORK that is the parent's copied transcript, so the count is the proof the
     // copy arrived; a session with no parent cannot be a title fork at all.

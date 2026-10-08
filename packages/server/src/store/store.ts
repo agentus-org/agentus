@@ -3,8 +3,9 @@
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { BackendId, SessionStatus, StoredMessage } from "@agentus/shared";
+import type { BackendId, PlanSnapshot, SessionStatus, StoredMessage } from "@agentus/shared";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
+import { normalizeItems } from "../plan/plan.js";
 
 /** Text that is genuinely NEW in `incoming`, given what we already accumulated.
  *
@@ -220,6 +221,37 @@ function rowToBackend(r: RawBackendRow): BackendRow {
   };
 }
 
+interface RawPlanRow {
+  session_id: string;
+  revision: number;
+  items: string;
+  explanation: string | null;
+  source: string;
+  terminal: string | null;
+  updated_at: number;
+}
+
+/** What a plan write carries. `explanation: undefined` means "keep the remark that is there"
+ *  (only an agent writes one, and most plan updates carry none) — see `upsertPlan`. */
+export interface PlanPatch {
+  items: unknown;
+  explanation?: string | null;
+  source: PlanSnapshot["source"];
+  terminal?: string | null;
+}
+
+function rowToPlan(r: RawPlanRow): PlanSnapshot {
+  return {
+    sessionId: r.session_id,
+    revision: r.revision,
+    items: normalizeItems(parseJson(r.items)),
+    explanation: r.explanation,
+    source: r.source === "acp" || r.source === "mcp" ? r.source : "server",
+    terminal: r.terminal,
+    updatedAt: r.updated_at,
+  };
+}
+
 export class Store {
   #db: DatabaseSync;
   /** Kept for the one-time fold's backup file (see #foldStreamedChunks). */
@@ -264,6 +296,15 @@ export class Store {
         home text, profile text, cwd text, notes text not null default '',
         builtin integer not null default 0,
         created_at integer not null, updated_at integer not null
+      );
+      -- The session's plan, ONE row per session. Deliberately not derived from the message log:
+      -- a plan frame in the transcript records what an agent once SAID, while this row is what the
+      -- session HAS — the difference is the restart case, where the agent's own todo state died with
+      -- its process and the frames on screen are stale (design-plan-service.md §1).
+      create table if not exists plans (
+        session_id text primary key, revision integer not null default 0,
+        items text not null, explanation text, source text not null,
+        terminal text, updated_at integer not null
       );
     `);
     // The DB now holds the speech endpoint's key, so it is the operator's secret material:
@@ -491,16 +532,48 @@ export class Store {
     return (row.m ?? 0) + 1;
   }
 
-  /** The newest plan row of a session, or null. Plans are whole-list snapshots
-   *  (ACP replace semantics), so the last row is the current truth. */
-  latestPlanMessage(sessionId: string): StoredMessage | null {
-    const exist = this.#db
+  /** The session's plan object, or null when it never made one.
+   *
+   *  This — not the transcript — is what the cockpit's card renders, because the two are not the
+   *  same thing: a plan frame that survives in the message log is a record of what an agent once
+   *  said; this row is what the session actually has. The restart case is exactly where they part
+   *  (design-plan-service §1): the frames died with the agent's process, this did not. */
+  getPlan(sessionId: string): PlanSnapshot | null {
+    const row = this.#db
       .prepare(
-        `select seq, session_id, kind, payload, tool_call_id, created_at from messages
-         where session_id = ? and kind = 'plan' order by seq desc limit 1`,
+        `select session_id, revision, items, explanation, source, terminal, updated_at
+         from plans where session_id = ?`,
       )
-      .get(sessionId) as RawMessageRow | undefined;
-    return exist ? rowToMessage(exist) : null;
+      .get(sessionId) as RawPlanRow | undefined;
+    return row ? rowToPlan(row) : null;
+  }
+
+  /** Write the plan object; returns the stored snapshot.
+   *
+   *  `revision` moves on EVERY write (a terminal-only stamp included) so a client can treat it as a
+   *  cursor. `explanation: undefined` keeps the remark already there; `null` clears it. */
+  upsertPlan(sessionId: string, patch: PlanPatch): PlanSnapshot {
+    const prev = this.getPlan(sessionId);
+    const explanation =
+      patch.explanation === undefined ? (prev?.explanation ?? null) : patch.explanation;
+    this.#db
+      .prepare(
+        `insert into plans (session_id, revision, items, explanation, source, terminal, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?)
+         on conflict(session_id) do update set
+           revision = excluded.revision, items = excluded.items, explanation = excluded.explanation,
+           source = excluded.source, terminal = excluded.terminal, updated_at = excluded.updated_at`,
+      )
+      .run(
+        sessionId,
+        (prev?.revision ?? 0) + 1,
+        JSON.stringify(normalizeItems(patch.items)),
+        explanation,
+        patch.source,
+        patch.terminal ?? null,
+        Date.now(),
+      );
+    return this.getPlan(sessionId) as PlanSnapshot;
   }
 
   appendMessage(m: Omit<StoredMessage, "seq">): StoredMessage {

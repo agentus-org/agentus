@@ -354,6 +354,9 @@ button { font: inherit; }
 .plan-step.cancelled .step-icon { color: var(--err); }
 .plan-step.cancelled .step-title { color: var(--text-dim); text-decoration: line-through; }
 .plan-step .step-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* The plan's own remark (Studio's `plan-explanation`): one dim line under the steps, deliberately
+   quieter than the steps themselves — it is a note about the plan, not a step of it. */
+.plan-explanation { margin: 6px 0 2px; padding-top: 4px; border-top: 1px dashed var(--line); font-size: 12px; opacity: .7; overflow-wrap: anywhere; }
 /* The LIVE plan pinned above the composer (above the context strip): one collapsed line with a
    per-step dot row, so the count is readable without expanding anything. */
 .plan-bar { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 1px 8px; margin-bottom: 6px; background: var(--bg-panel); }

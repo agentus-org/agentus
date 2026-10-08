@@ -4,6 +4,7 @@
 import type {
   ClientCommand,
   PermissionRequestView,
+  PlanSnapshot,
   ServerEvent,
   SessionInfo,
   StoredMessage,
@@ -22,6 +23,8 @@ export interface LivePlan {
   items: PlanStep[];
   /** set by the server's turn lifecycle when the run ended with unfinished steps */
   terminal?: string;
+  /** the plan's own remark, Studio-style: why this update / what the scope is now (≤1000 chars) */
+  explanation?: string;
   at?: number;
   /** user-turn ordinal: a plan frame from a later turn retires this one into the transcript */
   turn: number;
@@ -43,6 +46,8 @@ export type MsgView =
       key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[];
       /** set by the server's turn lifecycle when the run ended with unfinished steps */
       terminal?: string;
+      /** the plan's own remark (why this update / what changed) */
+      explanation?: string;
       at?: number;
     }
   | { key: string; kind: "meta"; text: string };
@@ -615,6 +620,12 @@ class Cockpit {
       v.hasOlder = Boolean(hasOlder);
       this.#keepLastOpen(v); // mid-turn: resume appending into the open bubble
       this.bump();
+      // …then ask the server for the plan OBJECT, which is what the card actually renders: the
+      // transcript is what the agent SAID, the object is what the session HAS. Applied after the
+      // replay so it wins — and it is the only thing that can fill the card when the agent's process
+      // (and with it its own todo state, and any reason to keep trusting those frames) is gone
+      // (design-plan-service.md §1).
+      void this.#loadPlan(v);
     } catch {
       /* offline etc */
     }
@@ -952,6 +963,70 @@ class Cockpit {
     void this.refreshArchived();
   }
 
+  /** Fold a plan snapshot into the view — ONE rule, used by BOTH writers: an ACP frame from the
+   *  agent, and the server's plan object (the copy that outlives the agent's process,
+   *  design-plan-service.md §3). TWO destinations:
+   *   · the snapshot born in the CURRENT turn becomes the LIVE plan — pinned above the composer,
+   *     never in the transcript (the operator asked for exactly this: a plan you can always see
+   *     while you type, instead of hunting for it in the scroll);
+   *   · a snapshot arriving in a LATER turn retires the previous live plan into the transcript, at
+   *     the END of the turn it belonged to (`turnStart` = this turn's user row) — the same rule
+   *     Studio's positionTaskPlansAtTurnEnd implements. */
+  #applyPlan(
+    v: SessionView,
+    items: PlanStep[],
+    terminal: string | undefined,
+    at: number | undefined,
+    explanation?: string,
+  ): void {
+    const live = v.plan;
+    if (!live) {
+      v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn };
+      return;
+    }
+    if (live.turn === v.turn) {
+      // same turn: the snapshot replaces the list in place (the agent rewriting its own plan)
+      live.items = items;
+      live.terminal = terminal;
+      live.explanation = explanation;
+      return;
+    }
+    // a new turn produced a plan: retire the old one to the END of ITS turn
+    const at2 = v.turnStart > 0 && v.turnStart <= v.msgs.length ? v.turnStart : v.msgs.length;
+    v.msgs.splice(at2, 0, {
+      key: live.key, kind: "plan", items: live.items, terminal: live.terminal,
+      explanation: live.explanation, at: live.at,
+    });
+    v.blocks = reindexBlocks(v.msgs);
+    v.turnStart = Math.min(v.turnStart + 1, v.msgs.length);
+    v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn };
+  }
+
+  /** The server's plan object, as an event. Same folding as a frame — but this one also arrives in
+   *  the case where no frame ever will, which is precisely the case the card used to get wrong. */
+  #applyServerPlan(v: SessionView, plan: PlanSnapshot): void {
+    this.#applyPlan(
+      v,
+      plan.items.map((i) => ({ content: i.content, status: i.status, priority: i.priority })),
+      plan.terminal ?? undefined,
+      plan.updatedAt,
+      plan.explanation ?? undefined,
+    );
+  }
+
+  /** Ask for the plan object when a session opens. A failure here is not a hole: the replayed frames
+   *  are still whatever they are. */
+  async #loadPlan(v: SessionView): Promise<void> {
+    try {
+      const { plan } = await this.#req<{ plan: PlanSnapshot | null }>(`/api/sessions/${v.info.id}/plan`);
+      if (!plan) return;
+      this.#applyServerPlan(v, plan);
+      this.bump();
+    } catch {
+      /* offline etc. */
+    }
+  }
+
   #view(id: string): SessionView {
     let v = this.byId.get(id);
     if (!v) {
@@ -1048,6 +1123,15 @@ class Cockpit {
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
         this.#endOpenBubbles(v); // new turn => fresh bubbles
+        break;
+      }
+      case "plan": {
+        // The plan OBJECT — the card's truth (design-plan-service.md §3). It arrives on every change
+        // AND on connect, so a page that loads after the agent process died still shows the plan
+        // instead of nothing.
+        const v = this.#view(e.sessionId);
+        this.#applyServerPlan(v, e.plan);
+        v.lastAt = Date.now();
         break;
       }
       case "usage": {
@@ -1221,35 +1305,26 @@ class Cockpit {
         //    same rule Studio's positionTaskPlansAtTurnEnd implements.
         // `_slotPlanTerminal` is the cockpit's own field — the server's turn lifecycle stamps it
         // when a run ends with unfinished steps; the agent can never write it.
+        const meta = (p._meta ?? {}) as Record<string, unknown>;
         const items = ((p.entries ?? []) as PlanStep[]).map((e) => ({
           content: String(e?.content ?? ""), status: String(e?.status ?? "pending"), priority: e?.priority,
         }));
         const terminal = typeof p._slotPlanTerminal === "string" ? p._slotPlanTerminal : undefined;
+        // ACP v1 has no remark field, so a writer that has one puts it in `_meta` (the protocol's own
+        // extension slot). Absent means "nothing to say", never "clear what is there".
+        const explanation = typeof meta["agentus/explanation"] === "string"
+          ? String(meta["agentus/explanation"]) : undefined;
         if (opts?.list) {
           // A paged older batch is history: fold it into that page's own card (one per page —
           // these rows are far behind the live edge, so per-turn placement buys nothing).
           const old = list.find((x) => x.kind === "plan");
-          if (old && old.kind === "plan") { old.items = items; old.terminal = terminal; }
-          else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, at });
+          if (old && old.kind === "plan") { old.items = items; old.terminal = terminal; old.explanation = explanation; }
+          else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, explanation, at });
           break;
         }
-        const live = v.plan;
-        if (!live) {
-          v.plan = { key: `plan-${v.turn}`, items, terminal, at, turn: v.turn };
-        } else if (live.turn === v.turn) {
-          // same turn: the snapshot replaces the list in place (the agent rewriting its own plan)
-          live.items = items;
-          live.terminal = terminal;
-        } else {
-          // a new turn produced a plan: retire the old one to the END of ITS turn
-          const at2 = v.turnStart > 0 && v.turnStart <= v.msgs.length ? v.turnStart : v.msgs.length;
-          v.msgs.splice(at2, 0, {
-            key: live.key, kind: "plan", items: live.items, terminal: live.terminal, at: live.at,
-          });
-          v.blocks = reindexBlocks(v.msgs);
-          v.turnStart = Math.min(v.turnStart + 1, v.msgs.length);
-          v.plan = { key: `plan-${v.turn}`, items, terminal, at, turn: v.turn };
-        }
+        // Both writers fold through ONE rule: this frame, and the server's plan object (see
+        // #applyPlan — the object is the copy that survives the agent's process).
+        this.#applyPlan(v, items, terminal, at, explanation);
         break;
       }
       case "meta":
