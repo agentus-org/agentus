@@ -91,6 +91,35 @@ const assets = await ev(`(async () => { const r = {};
 check("both brand icons are served", Object.values(assets).every((s) => s.startsWith("200")), JSON.stringify(assets));
 check("every row has a settings (⋯) button", rail.menuButtons === rail.rows, `buttons=${rail.menuButtons}`);
 
+// --- the rail reads as two sections, and 团队 is an honest placeholder -------------------
+// 团队 is deliberately not implemented: the assertions below pin the two things that would make
+// it a lie — a row that can be clicked/keyboard-focused, or one that does not say what it is.
+const sections = await ev(`(() => {
+  const labels = [...document.querySelectorAll('.rail-section')].map((e) => ({ text: e.textContent.trim(), y: Math.round(e.getBoundingClientRect().top) }));
+  const team = document.querySelector('[data-placeholder="team"]');
+  const r = team?.getBoundingClientRect();
+  const g = document.querySelector('.rail-group')?.getBoundingClientRect();
+  return {
+    labels,
+    tag: team?.tagName ?? null,
+    ariaDisabled: team?.getAttribute('aria-disabled') ?? null,
+    focusables: team ? team.querySelectorAll('button, a, input, select, textarea, [tabindex]').length : -1,
+    text: team?.textContent?.trim() ?? '',
+    teamY: r ? Math.round(r.top) : null,
+    groupsTop: g ? Math.round(g.top) : null,
+    inside: r ? r.left >= 0 && r.right <= window.innerWidth : false,
+  };
+})()`);
+check("the rail names two sections, 团队 above 工作空间",
+  sections.labels.length === 2 && sections.labels[0].text === "团队" && sections.labels[1].text === "工作空间" && sections.labels[0].y < sections.labels[1].y,
+  JSON.stringify(sections.labels));
+check("团队 sits above the first workspace",
+  sections.teamY !== null && (sections.groupsTop === null || sections.teamY < sections.groupsTop),
+  JSON.stringify({ teamY: sections.teamY, groupsTop: sections.groupsTop }));
+check("the 团队 row is inert and says so (a div, nothing focusable, aria-disabled)",
+  sections.tag === "DIV" && sections.focusables === 0 && sections.ariaDisabled === "true" && sections.text.includes("还没做") && sections.inside,
+  JSON.stringify(sections));
+
 // --- the chat header carries the auto-read switch, LEFT of the folder/panel pair
 const headToggle = await ev(`(() => {
   const head = document.querySelector('.chat-head');

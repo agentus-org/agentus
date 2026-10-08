@@ -21,7 +21,7 @@ import {
   IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
   IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
-  IconStop, IconVolume, IconVolumeOff, IconBrain,
+  IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "@agentus/shared";
 
@@ -692,6 +692,25 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
         </div>
       ) : null}
       <div className="session-list">
+        {/* Two sections, in this order: 团队 above 工作空间 (AionUi's sider puts its team section
+            immediately above the project groups, and that is the shape the operator asked for).
+            团队 has no backend yet, so its row is a `div` with aria-disabled — nothing to click,
+            nothing to tab into — and it says 「还没做」 instead of pretending to work. When the
+            feature lands, this row becomes the entry point and the label stays. */}
+        <div className="rail-section" data-section="team">
+          <span>团队</span>
+        </div>
+        <div className="rail-placeholder" data-placeholder="team" aria-disabled="true"
+             title="团队 — 还没有实现，先占个位（现在的驾驶舱一条会话就是一个 agent，没有团队/成员的概念）">
+          <IconUsers size={13} />
+          <span className="rail-placeholder-name">还没做，先占个位</span>
+        </div>
+        {/* The workspaces themselves are the menu: each row below is one, and its sessions are
+            nested inside it. The label exists so the rail reads as a list of sections rather than
+            an undifferentiated pile of group headers. */}
+        <div className="rail-section" data-section="workspaces">
+          <span>工作空间</span>
+        </div>
         {groups.map((g) => {
           const isOpen = Boolean(needle) || !closed[g.path];
           const liveCount = g.items.filter((i) => !i.cold).length;

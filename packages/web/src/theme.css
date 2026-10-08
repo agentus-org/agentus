@@ -1178,6 +1178,23 @@ code.inline {
   .send-btn { width: 44px; height: 36px; }
 }
 
+/* ---- rail: the two sections (团队, 工作空间) --------------------------------- */
+/* A section is a label, not a control: it names what follows and never reacts to a click. */
+.rail-section {
+  display: flex; align-items: center; gap: 6px; margin: 9px 6px 3px;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
+}
+.rail-section:first-child { margin-top: 3px; }
+/* 团队 is a placeholder with no backend behind it, so its row is inert by construction: a div
+   (nothing to tab into, nothing to click) with a dashed edge, and it says what it is. A row that
+   looks pressable and does nothing is worse than a row that admits it is not ready. */
+.rail-placeholder {
+  display: flex; align-items: center; gap: 6px; margin: 0 6px 2px; padding: 5px 7px; border-radius: 6px;
+  border: 1px dashed var(--line); color: var(--text-dim); font-size: 11px; cursor: default;
+}
+.rail-placeholder-name { color: var(--text); opacity: 0.75; }
+.rail-placeholder-note { margin-left: auto; font-size: 10px; }
+
 /* ---- rail: sessions grouped by the directory they work in ------------------- */
 .rail-group { margin-bottom: 2px; }
 /* The head and its 「+」 are two buttons on one line: the head keeps the whole row (clicking
