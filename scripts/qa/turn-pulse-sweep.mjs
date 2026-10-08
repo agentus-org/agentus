@@ -1,11 +1,15 @@
-// QA: the transcript tail is CLEAN and the turn's state lives in the chat head.
+// QA: the turn's state in the chat head — a breathing dot beside the session title.
 //
-// Two text lines used to sit at the end of every transcript — `▸ turn in progress…`, then `⏳ still
-// waiting for the agent…` — and the operator deleted them: 「太占地方了… 下面的按钮显示终止态其实就能
-// 看出来在运行」. What replaced them is a breathing dot beside the session title (`.turn-pulse`), whose
-// GREEN/AMBER decision is unit-tested with an injected clock (`scripts/qa/turn-pulse.mts`) — a browser
-// sweep cannot wait 60s. This one asserts the render side only, plus that the deleted lines are really
-// gone from the page (a deletion is a claim about what is NOT there, so it needs its own check).
+// THE LINE AT THE TRANSCRIPT TAIL IS A DIFFERENT SWEEP. Two static text lines used to sit at the end
+// of every transcript (`▸ turn in progress…`, `⏳ still waiting for the agent…`); the operator deleted
+// them (「太占地方了… 下面的按钮显示终止态其实就能看出来在运行」) and a zero-height dot took over the half
+// worth keeping — «this turn has gone QUIET». He then asked for the tail line back as ONE row carrying
+// the elapsed time (see `turn-line-sweep.mjs` for that, content and clock included).
+//
+// This one asserts the DOT: its GREEN/AMBER decision is unit-tested with an injected clock
+// (`scripts/qa/turn-pulse.mts`) — a browser sweep cannot wait 60s — so the render side is checked
+// here, plus the fact that the two DELETED strings are really gone from the page (a deletion is a
+// claim about what is NOT there, so it needs its own check).
 //
 //   PORT=8901 node scripts/qa/turn-pulse-sweep.mjs
 const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
@@ -73,7 +77,13 @@ try {
   check("it starts in the working state", !/quiet/.test(live.cls ?? ""), live.cls);
   check("its tooltip names the state (no numbers while output flows)", /正在工作/.test(live.said ?? ""), live.said);
   check("it is exposed to assistive tech (role=status + a label)", (live.aria ?? "").length > 0 && /正在工作/.test(live.aria), live.aria);
-  check("the transcript tail STILL carries no hint line mid-turn", live.rows === 0, `hints=${live.rows}`);
+  // The tail carries ONE line again — the operator asked for it back (「显示处理中，并显示已经处理的时长」),
+  // so this sweep's job is the DOT: the line's own content, its spinner and the way its clock counts
+  // from the send are asserted in `scripts/qa/turn-line-sweep.mjs`. What must stay true HERE is that
+  // the two DELETED strings never come back.
+  check("the tail carries one hint line, not the deleted pair", live.rows === 1, `hints=${live.rows}`);
+  check("…and neither deleted string appears anywhere on the page",
+    !/turn in progress|still waiting for the agent/.test((await ev(`document.body.textContent`)) ?? ""));
   check("the head did not grow because of it (one row, 46px floor)", live.headH <= 60, `head=${live.headH}px`);
 
   // ---- the ESCALATION, with the page's own clock advanced -------------------------------------

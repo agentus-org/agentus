@@ -154,6 +154,15 @@ export interface SessionView {
   msgs: MsgView[];
   perms: PermissionRequestView[];
   busy: boolean;
+  /** When the CURRENT turn began, in the operator's terms: the moment his message went out
+   *  (`turn-start`), not the first token that came back. The tail line counts from here, so the
+   *  number answers "how long have I been waiting", which is the question he asked it to answer.
+   *  null while no turn is running — and also for a page that loaded MID-turn, where the frame was
+   *  before our time: the tail line then anchors on its own first paint (an undercount, never a
+   *  number invented from `lastAt`, which every incoming frame resets). The server knows the real
+   *  start (`durationMs` on turn-end) but does not put it on the wire, and a server change is a
+   *  restart, so this stamp is client-side by design. */
+  busySince: number | null;
   loaded: boolean; // history fetched
   /** The LIVE plan: it is not in `msgs` at all — the composer pins it above the input. The
    *  transcript only ever shows ARCHIVED plans (previous turns), placed at the end of the turn
@@ -1107,7 +1116,7 @@ class Cockpit {
     if (!v) {
       v = {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
-        msgs: [], perms: [], busy: false, loaded: false, hasOlder: false, loadingOlder: false,
+        msgs: [], perms: [], busy: false, busySince: null, loaded: false, hasOlder: false, loadingOlder: false,
         minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(), blocks: new Map(),
         plan: null, turn: 0, turnStart: 0,
       };
@@ -1197,6 +1206,7 @@ class Cockpit {
       case "turn-start": {
         const v = this.#view(e.sessionId);
         v.busy = true;
+        v.busySince = Date.now(); // the tail line's zero: the operator's send, not the first token
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
         // NOTE: the previous turn's bubbles are closed by the turn-end that preceded this (and by the
@@ -1222,6 +1232,7 @@ class Cockpit {
       case "turn-end": {
         const v = this.#view(e.sessionId);
         v.busy = false;
+        v.busySince = null; // a finished turn has no elapsed time; a later frame must not inherit it
         // Close the block that was still arriving — a data change, so the transcript re-renders THAT
         // row and drops its `.live` marking. Relying on "the last row of the fold, while busy" used to
         // leave the window marked live FOREVER: the block carrying the marking is early in the turn

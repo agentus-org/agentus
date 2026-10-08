@@ -5,7 +5,8 @@ import { cockpit, type BackendView, type BlockedSlot, type MsgView, type Session
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
-import { turnPulseState } from "./turn-state";
+import { durationWords, turnPulseState } from "./turn-state";
+import { markOf } from "./agents";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
 import { BrandMark } from "./Brand";
@@ -304,16 +305,6 @@ function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
   );
 }
 
-/** The agent's mark. Hermes and Qoder ship real brand icons (hermes.png from the
- *  hermes-studio assets, qoder's favIcon from qoder.com) — use them wherever a backend
- *  has official artwork. The monogram stays as the fallback path (mock agent, missing
- *  asset, broken img) so a row ALWAYS renders something identifiable. */
-const BACKEND_MARK: Record<string, { letter: string; label: string; icon?: string }> = {
-  hermes: { letter: "H", label: "Hermes", icon: "/coding-agents/hermes.png" },
-  qoder: { letter: "Q", label: "Qoder", icon: "/coding-agents/qoder.svg" },
-  mock: { letter: "M", label: "Mock" },
-};
-
 /** When this session was last talked to (creation time when it has no messages yet). The rail
  *  orders by it, so the row also SHOWS it — one definition, used by the sort and by the label. */
 function lastOf(s: SessionInfo): number {
@@ -328,7 +319,7 @@ const STATUS_WORD: Record<string, string> = {
 };
 
 function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
-  const mark = BACKEND_MARK[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
+  const mark = markOf(backend);
   const [broken, setBroken] = useState(false);
   const useIcon = mark.icon && !broken;
   // "which of these is working RIGHT NOW" is the one thing the operator scans the rail FOR, and a
@@ -348,6 +339,26 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
         ? <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
         : mark.letter}
       {!cold ? <span className={`be-dot ${status}`} /> : null}
+    </span>
+  );
+}
+
+/** WHO is speaking, on the message itself. The label there used to read "AGENT" — that names the
+ *  class, not the agent, while the rail right beside it showed a face. Studio puts the mark on every
+ *  message; we reuse the rail's own artwork (`/coding-agents/*`) so one agent looks the same in both
+ *  places.
+ *
+ *  A backend with NO artwork (the mock agent) renders no mark here at all: the name is printed right
+ *  beside it, and the rail's monogram in front of the word would read as 「MMock」. The monogram exists
+ *  for the rail because a rail row has no room for a name; this row does. A broken image falls back to
+ *  the same nothing, leaving the name — which is the identification either way. */
+function AgentMark({ backend }: { backend: string }): JSX.Element | null {
+  const mark = markOf(backend);
+  const [broken, setBroken] = useState(false);
+  if (!mark.icon || broken) return null;
+  return (
+    <span className="agent-mark" data-backend={backend} aria-hidden="true">
+      <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
     </span>
   );
 }
@@ -1212,6 +1223,39 @@ const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; las
   return <span className={`turn-pulse ${quiet ? "quiet" : ""}`} role="status" aria-label={said} title={said} />;
 });
 
+/** The turn's progress line, at the transcript tail — the position the operator picked, in the shape
+ *  both references share (studio's `LiveReasoningStatus.vue`, AionUi's `ThoughtDisplay.tsx`): a
+ *  spinner, one word, and the elapsed time. It is the ONE number we had nowhere, and it counts from
+ *  the SEND (`busySince`, stamped on `turn-start`) so it answers 「我等了多久」 rather than 「模型说了
+ *  多久」.
+ *
+ *  The clock lives in HERE, for the reason the deleted `Busy` also owned its own: a ticking second
+ *  must not drag the transcript's rows into a re-render. */
+const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since: number | null }): JSX.Element | null {
+  // Re-stamped on every (busy, since) change, so a SECOND message sent into a running turn restarts
+  // the clock — the operator asked for the count from the send. A page that loaded MID-turn has no
+  // `turn-start` for this turn: it anchors on first sight, which undercounts instead of inventing a
+  // start out of `lastAt` (a stamp every incoming frame resets).
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!busy) { setAnchor(null); return; }
+    setAnchor(since ?? Date.now());
+    setNow(Date.now());
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [busy, since]);
+  if (!busy) return null;
+  const startedAt = anchor ?? since;
+  return (
+    <div className="stream-hint" role="status" data-anchor={startedAt ?? undefined}>
+      <span className="stream-spin" aria-hidden="true" />
+      <span>处理中</span>
+      {startedAt != null ? <span className="elapsed">({durationWords(now - startedAt)})</span> : null}
+    </div>
+  );
+});
+
 function Stream({ v }: { v: SessionView }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -1347,7 +1391,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           )}
           {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
-            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} busy={v.busy} last={row.tail} live={row.live} />))}
+            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} />))}
+          <TurnLine busy={v.busy} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
@@ -1406,7 +1451,7 @@ const samePlan = (a: { m: MsgView; busy: boolean }, b: { m: MsgView; busy: boole
 };
 const MemoPlanCard = memo(PlanCard, samePlan);
 
-function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: boolean; busy: boolean; live?: boolean }): JSX.Element | null {
+function Bubble({ m, sid, backend, last, busy, live }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean }): JSX.Element | null {
   switch (m.kind) {
     case "user":
       return (
@@ -1434,7 +1479,10 @@ function Bubble({ m, sid, last, busy, live }: { m: MsgView; sid: string; last: b
     case "agent":
       return (
         <div className="msg agent">
-          <div className="role">AGENT</div>
+          <div className="role with-mark">
+            <AgentMark backend={backend} />
+            {markOf(backend).label || "AGENT"}
+          </div>
           <div className="bubble">
             <Markdown text={m.text} />
             <div className="bubble-actions">
