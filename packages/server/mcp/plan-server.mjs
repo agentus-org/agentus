@@ -4,9 +4,10 @@
  *
  * WHY THIS EXISTS
  * The cockpit owns a session's plan (design-plan-service.md §2-3) and an agent's own todo list
- * dies with its process. Agents that emit ACP `plan` frames feed that object natively; every
- * OTHER agent gets this tool instead, so a new backend needs **zero adapter code**: it just has
- * to speak MCP.
+ * dies with its process. So the plan the card renders is the cockpit's OBJECT, and this tool is
+ * how the agent keeps it current: every backend is handed it at handshake time (a row can still
+ * opt back into rendering its own ACP frames — `nativePlanSource: "acp"`). An agent needs **zero
+ * adapter code**: it just has to speak MCP.
  *
  * HOW IT IS REACHED (and why that is safe)
  * Nothing registers this server in an agent's own config. The cockpit only ever hands it over as
@@ -35,12 +36,14 @@ const TOOLS = [
   {
     name: "update_plan",
     description:
-      "Publish this session's plan (the step list the operator sees above your messages). Call it " +
-      "when you START a multi-step task, and again each time a step's status changes — a plan that " +
-      "is not updated is a plan that lies. `items` is the WHOLE list as it stands now (a snapshot, " +
-      "not a delta): include every step, finished or not, in order. Statuses: pending, " +
-      "in_progress (at most one at a time), completed, cancelled. The cockpit keeps this plan " +
-      "across your restarts; your own in-memory task list does not survive one.",
+      "Publish this session's plan — the step list the operator watches in the Agentus cockpit, one " +
+      "progress dot per step. PREFER THIS over any checklist/todo tool of your own: this list is the " +
+      "one the cockpit DISPLAYS, and it survives your restarts, while a built-in task list dies with " +
+      "your process (the cockpit does not read it and will not show it). Call it when you START a " +
+      "multi-step task, and again each time a step's status changes — a plan that is not updated is a " +
+      "plan that lies. `items` is the WHOLE list as it stands now (a snapshot, not a delta): include " +
+      "every step, finished or not, in order. Statuses: pending, in_progress (at most one at a time), " +
+      "completed, cancelled.",
     inputSchema: {
       type: "object",
       properties: {

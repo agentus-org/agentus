@@ -17,7 +17,7 @@ import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { BACKENDS, buildSpawnEnv, expandHome, type BackendSpec, type NativePlanSource } from "./backends.js";
+import { BACKENDS, buildSpawnEnv, expandHome, DEFAULT_NATIVE_PLAN_SOURCE, type BackendSpec, type NativePlanSource } from "./backends.js";
 
 const run = promisify(execFile);
 
@@ -211,8 +211,10 @@ export function seedRows(now = Date.now()): BackendRow[] {
       id,
       label: spec.label,
       kind,
-      // Hermes is the one agent that emits plan frames; everything else gets the MCP tool.
-      nativePlanSource: kind === "hermes" ? "acp" : "none",
+      // Every backend is MCP-driven by default — including Hermes, whose frames the cockpit
+      // deliberately ignores so the card always reflects the plan OBJECT (which survives a restart).
+      // A row may still opt into `acp` by hand; see NativePlanSource.
+      nativePlanSource: DEFAULT_NATIVE_PLAN_SOURCE,
       cmd: spec.cmd,
       args: [...spec.args],
       env: {},
@@ -322,10 +324,11 @@ export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { r
       id,
       label: s(body.label) || base?.label || id,
       kind,
-      // Absent in a body means "keep what the row had"; a NEW row defaults by kind (hermes emits
-      // frames; nobody else is known to). Unknown values fall back rather than persist a typo.
+      // Absent in a body means "keep what the row had"; a NEW row defaults to the MCP channel
+      // (nobody's frames are trusted by default any more). Unknown values fall back rather than
+      // persist a typo.
       nativePlanSource: (() => {
-        const raw = s(body.nativePlanSource) || base?.nativePlanSource || (kind === "hermes" ? "acp" : "none");
+        const raw = s(body.nativePlanSource) || base?.nativePlanSource || DEFAULT_NATIVE_PLAN_SOURCE;
         return raw === "none" ? "none" : "acp";
       })(),
       cmd,

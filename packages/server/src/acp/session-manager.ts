@@ -13,7 +13,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
-import { BACKENDS, buildSpawnEnv, type BackendSpec } from "./backends.js";
+import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
@@ -179,6 +179,9 @@ interface LiveSession {
   /** ACP v2 lets a session carry several plans (`planId`); the card renders one. Whichever planId
    *  shows up first is adopted and the rest are left alone — see the `plan_update` case. */
   planId?: string;
+  /** One log line per agent process the first time a frame is ignored, so a reader of the log can
+   *  tell "the cockpit is dropping these on purpose" from "the agent stopped emitting them". */
+  planFramesDropped?: boolean;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -874,8 +877,8 @@ export class SessionManager {
     return row ? rowToSpec(row) : (BACKENDS[backendId] ?? BACKENDS.hermes);
   }
 
-  /** The plan MCP server to hand this agent at HANDSHAKE time — or nothing, when the agent emits
-   *  plan frames itself.
+  /** The plan MCP server to hand this agent at HANDSHAKE time — or nothing, for a row that has
+   *  opted back into native frames (`nativePlanSource: "acp"`).
    *
    *  Injected rather than registered anywhere, on purpose: `mcpServers` is a per-session parameter
    *  of `session/new` / `session/load` / `session/resume`, so the tool exists exactly while Agentus
@@ -883,8 +886,7 @@ export class SessionManager {
    *  is the whole difference from a `config.yaml` entry like the `ekko_studio_*` ones (§4).
    *  The token in `env` is minted for THIS session, so a copied-out command writes only its own. */
   #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
-    const source = spec.nativePlanSource ?? (spec.kind === "hermes" ? "acp" : "none");
-    if (source !== "none") return [];
+    if (nativePlanSourceOf(spec) !== "none") return [];
     return [
       {
         name: "agentus-plan",
@@ -897,6 +899,27 @@ export class SessionManager {
         ],
       },
     ];
+  }
+
+  /** Does this session's plan come from the agent's own ACP frames?
+   *
+   *  Only when the row opted into `nativePlanSource: "acp"`. Every other backend — Hermes included —
+   *  is MCP-driven, and its frames are DROPPED rather than rendered: a frame describes the agent's
+   *  PROCESS-LOCAL todo list, and the cockpit shows the plan OBJECT precisely because that list does
+   *  not survive a restart (design-plan-service.md §1). Dropping the frame at the door also keeps
+   *  the transcript free of plan rows that nothing ever updated. */
+  #framesAccepted(live: LiveSession): boolean {
+    if (nativePlanSourceOf(this.#specFor(live.info.backend)) === "acp") return true;
+    // Said once per agent process: an agent may emit a frame every turn, and the operator reading
+    // the log should be able to see that the cockpit is ignoring them on purpose.
+    if (!live.planFramesDropped) {
+      live.planFramesDropped = true;
+      console.log(
+        `[agentus] plan frame ignored for ${live.info.id}: backend '${live.info.backend}' is MCP-driven ` +
+        `(the card is fed by the agentus-plan tool)`,
+      );
+    }
+    return false;
   }
 
   /** Fold an agent's ACP plan frame into the session's plan OBJECT.
@@ -1021,10 +1044,24 @@ export class SessionManager {
     const open = plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled");
     if (!open.length) return null;
     const lines = open.map((i) => `- [${i.status}] ${i.content}`).join("\n");
-    // How the agent keeps it current depends on which channel it actually has: an agent with its own
-    // todo tool must use that (its frames are what feed the card), while an MCP-only agent was handed
-    // `update_plan` in this very handshake. Telling the wrong one is telling it a tool it lacks.
-    const mcpDriven = (this.#specFor(s.info.backend).nativePlanSource ?? "none") === "none";
+    // How the agent keeps it current depends on which channel it actually has: an agent whose row
+    // opted into native frames must use its own todo tool (those frames are what feed the card),
+    // while an MCP-driven agent — which is every backend by default, Hermes included — was handed
+    // `update_plan` in this very handshake, and its own todo tool does NOT reach the card.
+    const mcpDriven = nativePlanSourceOf(this.#specFor(s.info.backend)) === "none";
+    const closing = mcpDriven
+      ? [
+          "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
+          "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
+          "not be seen there. Mark a step completed once its work is actually verified, and drop or",
+          "cancel what you are no longer doing. If you disagree with an item, change it rather than",
+          "quietly skipping it.",
+        ]
+      : [
+          "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+          "completed only once its work is actually verified, and drop or cancel what you are no",
+          "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+        ];
     return {
       type: "resource",
       resource: {
@@ -1036,11 +1073,7 @@ export class SessionManager {
           "",
           lines,
           "",
-          mcpDriven
-            ? "Carry on with it, and keep it updated with the `update_plan` tool as you go: mark a step"
-            : "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
-          "completed only once its work is actually verified, and drop or cancel what you are no",
-          "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+          ...closing,
         ].join("\n"),
       },
       // ACP reserves `_meta` for the client: tagging our own blocks is what lets us tell them from
@@ -1147,9 +1180,13 @@ export class SessionManager {
         return;
       }
       case "plan":
-        // The AGENT's channel. The frame still lands in the transcript (that is what the per-turn
-        // archive card replays), but the cockpit's LIVE card is fed by the plan OBJECT below — the
-        // one that outlives the agent's process (see plan/plan.ts).
+        // The AGENT's channel — honoured only for a row that opted into it (see #framesAccepted).
+        // For every MCP-driven backend this frame is dropped here: it describes the agent's own
+        // process-local todo list, and the card is fed by the plan OBJECT instead, so rendering it
+        // would put a list on screen that dies with the next restart.
+        if (!this.#framesAccepted(live)) return;
+        // Still lands in the transcript (that is what the per-turn archive card replays), while the
+        // cockpit's LIVE card is fed by the plan OBJECT below — the one that outlives the process.
         msg = { sessionId: live.info.id, kind: "plan", payload: u, createdAt: Date.now() };
         this.#ingestPlan(live.info.id, u as Record<string, unknown>);
         break;
@@ -1159,6 +1196,7 @@ export class SessionManager {
         // and the rest are deliberately left alone rather than guessed at. The frame is folded back
         // into the v1 shape so the transcript row an ARCHIVED card replays stays a single shape.
         if (!v2PlanEnabled()) return;
+        if (!this.#framesAccepted(live)) return; // same rule as the v1 frame above
         const folded = foldPlanUpdate(u);
         if (!folded) return; // a markdown/file plan is not a step list
         if (!live.planId) live.planId = folded.planId;

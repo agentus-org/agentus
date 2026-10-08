@@ -17,7 +17,7 @@ import { cockpit, type BackendInspect, type BackendInput, type BackendView } fro
 const EMPTY: BackendInput = {
   id: "", label: "", kind: "hermes", cmd: "hermes", args: "acp",
   env: "", home: "", profile: "", cwd: "", notes: "",
-  nativePlanSource: "acp",
+  nativePlanSource: "none",
 };
 
 function argsToText(args?: string[] | string): string {
@@ -47,7 +47,7 @@ function draftOf(row: BackendView): BackendInput {
     profile: row.profile ?? "",
     cwd: row.cwd ?? "",
     notes: row.notes ?? "",
-    nativePlanSource: row.nativePlanSource ?? (row.kind === "hermes" ? "acp" : "none"),
+    nativePlanSource: row.nativePlanSource ?? "none",
   };
 }
 
@@ -402,18 +402,20 @@ export function BackendsPanel(): JSX.Element {
                     <label>计划来源</label>
                     <select
                       className="set-select"
-                      value={draft.nativePlanSource ?? ((draft.kind ?? "hermes") === "hermes" ? "acp" : "none")}
+                      value={draft.nativePlanSource ?? "none"}
                       onChange={(e) => field("nativePlanSource", e.target.value)}
                     >
+                      <option value="none">注入 agentus-plan 计划工具（推荐）</option>
                       <option value="acp">agent 自己发计划帧（原生 ACP）</option>
-                      <option value="none">注入 agentus-plan 计划工具</option>
                     </select>
                   </div>
                   <p className="set-hint be-kind-help">
-                    计划卡的数据由谁写：<b>原生</b> 适合自己会发 ACP <code>plan</code> 帧的 agent
-                    （Hermes）；<b>计划工具</b> 会在握手时给 agent 注入 <code>agentus-plan</code>
-                    （<code>update_plan</code>/<code>read_plan</code>），新 agent 不用改一行代码就有计划卡。
-                    两者互斥：一个会话只认一个写入者，先到的那个说了算。
+                    计划卡的数据由谁写：<b>计划工具</b> 会在握手时给 agent 注入 <code>agentus-plan</code>
+                    （<code>update_plan</code>/<code>read_plan</code>），工具写的计划存在座舱里、重启不丢，
+                    新 agent 不用改一行代码就有计划卡 —— 所有后端默认走这条。<b>原生</b> 是逃生口：只有
+                    在这个 agent 自己发的 ACP <code>plan</code> 帧比座舱对象更可信时才选它，选了之后
+                    该会话的帧才会被渲染（否则帧一律丢弃）。
+                    两者不会打架：MCP 驱动的会话里原生帧整条被丢弃，卡片只由工具写。
                   </p>
                   <div className="set-row">
                     <label>命令</label>

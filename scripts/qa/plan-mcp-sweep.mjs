@@ -5,13 +5,16 @@
 //
 // What it proves, and why each part is here:
 //   1. the capability bit GATES injection. The mock row is `nativePlanSource: none`, so its handshake
-//      carries `agentus-plan`; flipped to `acp`, a new session's handshake carries nothing. That gate
-//      is the whole reason Hermes — which emits frames itself — never gets a second writable list.
+//      carries `agentus-plan`; flipped to `acp`, a new session's handshake carries nothing. Every
+//      backend — Hermes included — defaults to `none`: the cockpit renders the plan OBJECT it owns,
+//      because the agent's own todo list dies with its process (design-plan-service.md §1).
 //   2. the injected env works END TO END. The first half is a real `plan-server.mjs` child speaking
 //      MCP over stdio (initialize → tools/list → tools/call), the second half is the cockpit's plan
 //      object: an `update_plan` writes it, `read_plan` reads it back.
-//   3. ONE WRITER. Once the session has seen a native frame, the tool is refused rather than merged
-//      (two writers = two plans racing on one card).
+//   3. the agent's own frames are IGNORED for an MCP-driven session — they neither move the card nor
+//      leave a plan row in the transcript (that row would replay as an archive card nobody updated).
+//      A row that explicitly opts into `acp` gets them rendered again (section 5b), which is what
+//      keeps the escape hatch honest.
 //   4. an EMPTY list is not a clear — it is refused by name, and the plan on screen survives.
 //   5. the child exits when its stdin closes, which is what stops a cockpit that opens and closes
 //      slots all day from accumulating one orphaned MCP process per session.
@@ -127,6 +130,14 @@ const TOKEN_FILE = path.join(DATA, `plan-mcp-sweep-${process.pid}.json`);
 const before = (await api("/api/backends/mock")).body;
 check("the mock backend is declared as having NO native plan channel (so it must be injected one)",
   before?.nativePlanSource === "none", `nativePlanSource=${before?.nativePlanSource}`);
+// Hermes included: its frames are exactly the ones that used to leave a card lying about work that
+// no longer existed anywhere (they describe a process-local todo list). A row may still opt into
+// `acp` by hand — that is section 5b.
+const builtinRows = (await api("/api/backends")).body ?? [];
+const hermesRow = builtinRows.find((r) => r.id === "hermes");
+check("the built-in hermes row is MCP-driven too (its frames are not rendered)",
+  (hermesRow?.nativePlanSource ?? "none") === "none",
+  `nativePlanSource=${hermesRow?.nativePlanSource}`);
 await api("/api/backends/mock", {
   method: "PATCH",
   body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }),
@@ -153,7 +164,7 @@ await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...bef
 const s2 = await freshSession("plan mcp sweep (acp)");
 await say(s2.id, "[mcp] what did the handshake carry?");
 const declaredAcp = JSON.parse((await lastReply(s2.id)).replace(/^MCP\s*/, "") || "[]");
-check("an `acp` backend is handed NOTHING (Hermes keeps one list, its own)",
+check("an `acp` backend is handed NOTHING (a row that asked for its own frames has no second list)",
   Array.isArray(declaredAcp) && declaredAcp.length === 0, JSON.stringify(declaredAcp));
 // …and the session we already had keeps working: the choice is per session, not a global switch.
 await api("/api/sessions/" + s2.id, { method: "DELETE" });
@@ -180,6 +191,13 @@ const listed = await mcp.call("tools/list");
 const toolNames = (listed?.result?.tools ?? []).map((t) => t.name);
 check("…and offers exactly update_plan + read_plan",
   JSON.stringify(toolNames) === JSON.stringify(["update_plan", "read_plan"]), JSON.stringify(toolNames));
+// The description is the ONLY place an agent learns that this list is the one on screen and that its
+// own todo tool is not — the operator asked for that emphasis, so it is asserted rather than trusted.
+const updateTool = (listed?.result?.tools ?? []).find((t) => t.name === "update_plan");
+const updateDesc = updateTool?.description ?? "";
+check("…and the tool tells the agent to PREFER it (this list is what the cockpit displays)",
+  /PREFER THIS/.test(updateDesc) && /Agentus cockpit/.test(updateDesc) && /restarts/.test(updateDesc),
+  updateDesc.slice(0, 220));
 
 const written = await mcp.call("tools/call", {
   name: "update_plan",
@@ -228,20 +246,40 @@ check("an empty list is refused by name (Hermes' own clear-todos frame must not 
   /empty list is not a plan/.test(textOf(emptied)), textOf(emptied).slice(0, 140));
 check("…and the three steps are still there", (await planOf(sid))?.items?.length === 3);
 
-// --- 5: one writer per session --------------------------------------------------------
+// --- 5: an MCP-driven session IGNORES the agent's own plan frames ----------------------
+// The plan object exists precisely because the agent's todo list is process-local and dies with it
+// (design-plan-service.md §1). So for an MCP-driven session a frame is dropped at the door: it must
+// not move the card, and its own step list must never reach the transcript (an archived card replaying
+// a list nothing ever updated is the bug this work started from). A turn-end archive of the OBJECT is
+// fine, and expected.
+const planRowText = async (id) =>
+  ((await api(`/api/sessions/${id}/messages`)).body?.messages ?? [])
+    .filter((m) => m.kind === "plan").map((m) => JSON.stringify(m.payload ?? {})).join("\n");
+const rowsBefore = await planRowText(sid);
 await say(sid, "[plan] the agent's own frames");
 const afterFrame = await planOf(sid);
-check("a native frame takes the card over", afterFrame?.source === "acp" && afterFrame?.items?.length === 3,
-  JSON.stringify({ source: afterFrame?.source, first: afterFrame?.items?.[0]?.content }));
+check("an MCP-driven session IGNORES the agent's own plan frame (the card stays the tool's)",
+  afterFrame?.source === "mcp" && afterFrame?.items?.length === 3,
+  JSON.stringify({ source: afterFrame?.source, items: afterFrame?.items?.map((i) => i.content) }));
+check("…and the frame's own list never reaches the transcript (no plan row carries it)",
+  !/read the failing test/.test(await planRowText(sid)),
+  `rows before: ${rowsBefore ? "present" : "none"}`);
 const late = await mcp.call("tools/call", {
   name: "update_plan", arguments: { items: [{ content: "tool write after frames", status: "pending" }] },
 });
-check("…and a later tool write is REFUSED rather than merged (one writer, the frame's)",
-  /ignored/i.test(textOf(late)) && /unchanged/.test(textOf(late)), textOf(late).slice(0, 200));
-const stillFrames = await planOf(sid);
-check("…so the object still holds the agent's plan, not the tool's",
-  stillFrames?.source === "acp" && stillFrames?.items?.every((i) => !/tool write after frames/.test(i.content)),
-  JSON.stringify({ source: stillFrames?.source, items: stillFrames?.items?.map((i) => i.content) }));
+check("…and the tool keeps the card, with nothing to fight over",
+  /Plan saved/.test(textOf(late)), textOf(late).slice(0, 160));
+
+// --- 5b: the escape hatch — a row that ASKS for frames still gets them -----------------
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...before, nativePlanSource: "acp" }) });
+const s3 = await freshSession("plan mcp sweep (acp escape hatch)");
+await say(s3.id, "[plan] the agent's own frames");
+const acpPlan = await planOf(s3.id);
+check("a row that opted into `acp` renders the agent's frames again",
+  acpPlan?.source === "acp" && (acpPlan?.items?.length ?? 0) >= 3,
+  JSON.stringify({ source: acpPlan?.source, items: acpPlan?.items?.map((i) => i.content) }));
+await api(`/api/sessions/${s3.id}`, { method: "DELETE" });
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...before, env: { ...(before?.env ?? {}), MOCK_PLAN_TOKEN_FILE: TOKEN_FILE } }) });
 
 // --- 6: the child does not outlive its session ----------------------------------------
 const dying = mcpChild({

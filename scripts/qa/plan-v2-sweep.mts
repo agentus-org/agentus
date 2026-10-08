@@ -95,6 +95,13 @@ const auth = await api("/api/sessions");
 // An unauthorized answer is not an empty cockpit: without this the whole wire half passes vacuously.
 if (auth.status !== 200) throw new Error(`cannot reach ${BASE} with ${dataDir}/auth.token (HTTP ${auth.status})`);
 
+// This sweep exercises the FRAME path (v1 and v2 alike), which is now an OPT-IN: every backend
+// defaults to MCP-driven, where a frame is dropped at the door (session-manager `#framesAccepted`).
+// So it declares the capability BEFORE opening its session — the channel rides the handshake — and
+// restores the row at the end.
+const mockRowBefore = (await api("/api/backends/mock")).body;
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...mockRowBefore, nativePlanSource: "acp" }) });
+
 const sess = (await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "mock", cwd: "/tmp", title: "plan v2 sweep" }) })).body;
 if (!sess?.id) throw new Error(`the sweep could not open a mock session: ${JSON.stringify(sess).slice(0, 160)}`);
 const sid = sess.id;
@@ -150,5 +157,6 @@ check("…and its frames do land in the transcript (what an archived card replay
   `v2 frames seen earlier: ${frames.length}`);
 
 await api(`/api/sessions/${sid}`, { method: "DELETE" });
+await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...mockRowBefore }) });
 console.log(`\nplan-v2-sweep: ${pass} passed, ${fail} failed  (server mode: v2 ${mode})`);
 process.exit(fail ? 1 : 0);

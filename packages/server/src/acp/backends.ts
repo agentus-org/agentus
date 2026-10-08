@@ -68,8 +68,12 @@ export const BACKENDS: Record<string, BackendSpec> = {
     cmd: process.env.AGENTUS_HERMES_CMD || "hermes",
     args: ["acp"],
     check: ["acp", "--check"],
-    // Hermes emits ACP `plan` frames (acp_adapter/events.py) — the native channel, no injection.
-    nativePlanSource: "acp",
+    // Hermes CAN emit ACP `plan` frames (acp_adapter/events.py), but the cockpit deliberately does
+    // NOT use them for the card: an agent's own todo state dies with its process, so a restart used
+    // to leave the card lying about work that no longer exists anywhere (design-plan-service.md §1).
+    // Hermes is therefore MCP-driven like everything else, and its frames are ignored (§5 of the
+    // same doc). `nativePlanSource: "acp"` survives only as a PER-ROW escape hatch.
+    nativePlanSource: "none",
     isolation: {
       homeVar: "HERMES_HOME",
       homeDefault: defaultHermesHome,
@@ -106,8 +110,23 @@ export const BACKENDS: Record<string, BackendSpec> = {
 
 export type BackendId = keyof typeof BACKENDS;
 
-/** Which channel carries a backend's plan. See BackendSpec.nativePlanSource. */
+/** Which channel carries a backend's plan. See BackendSpec.nativePlanSource.
+ *
+ *  `none` is the default AND the shipping configuration for every backend: the cockpit's plan
+ *  object is the only plan that survives an agent restart, so the `agentus-plan` MCP tool is what
+ *  writes (and what the agent is told to prefer). `acp` is a per-row escape hatch for an agent whose
+ *  frames you have decided to trust more than the object — it is the ONLY case in which frames are
+ *  rendered. */
 export type NativePlanSource = "acp" | "none";
+
+/** What a backend's plan channel is when its row does not say. One constant, so the registry's
+ *  derivation, the built-in specs and the session manager cannot drift apart. */
+export const DEFAULT_NATIVE_PLAN_SOURCE: NativePlanSource = "none";
+
+/** The channel a spec resolves to, defaulting rather than throwing on an absent value. */
+export function nativePlanSourceOf(spec: { nativePlanSource?: NativePlanSource }): NativePlanSource {
+  return spec.nativePlanSource ?? DEFAULT_NATIVE_PLAN_SOURCE;
+}
 
 export function expandHome(p: string): string {
   return p.startsWith("~") ? path.join(homedir(), p.slice(1)) : p;

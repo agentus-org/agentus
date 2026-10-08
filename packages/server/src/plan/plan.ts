@@ -64,12 +64,15 @@ export function clampExplanation(raw: unknown): string | null {
 
 /** One writer per session — and it is the AGENT's, whenever it has something to say.
  *
- *  Native frames and the plan MCP tool can both exist for the same session, and two writers means
- *  two plans racing on one card. The rule is not "whoever typed first" but *native priority*
- *  (design-plan-service.md §3): a frame is the agent's own plan, so it is NEVER refused — it takes
- *  the card over from a tool-written plan — and once a frame has landed, `current` is "acp" and the
- *  tool is refused from then on. Failures land in the visible direction: the plan on screen is the
- *  agent's. */
+ *  Both channels can exist for the same session, and two writers means two plans racing on one card.
+ *  The rule is not "whoever typed first" but *native priority*: a frame is the agent's own plan, so
+ *  it is NEVER refused — it takes the card over from a tool-written plan — and once a frame has
+ *  landed, `current` is "acp" and the tool is refused from then on. Failures land in the visible
+ *  direction: the plan on screen is the agent's.
+ *
+ *  Since every backend is MCP-driven by default, `incoming: "acp"` is now only ever seen from a row
+ *  that opted back into frames (session-manager's `#framesAccepted` drops the rest at the door), so
+ *  this is a backstop rather than the everyday path. */
 export function acceptsWriteFrom(current: PlanSource | undefined, incoming: PlanSource): boolean {
   if (incoming === "acp") return true; // the agent's own channel outranks any tool
   if (incoming === "server") return true; // the turn lifecycle is not a competing writer

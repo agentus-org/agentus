@@ -49,6 +49,11 @@ const ev = async (x, to = 25000) => {
 
 // --- a session on the MOCK backend ---------------------------------------------------
 await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
+// This sweep drives the FRAME path, which is now an OPT-IN: every backend defaults to MCP-driven,
+// where a frame is dropped at the door (session-manager `#framesAccepted`). Declare it on the mock
+// row BEFORE opening the session — the channel rides the handshake — and put the row back at the end.
+const mockRowBefore = await ev(`fetch('/api/backends/mock').then(r=>r.json())`);
+await ev(`fetch('/api/backends/mock',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(${JSON.stringify(mockRowBefore)},{nativePlanSource:'acp'}))}).then(r=>r.status)`);
 const sess = await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:'/tmp',title:'plan sweep'})}).then(r=>r.json())`);
 check("the sweep could open a mock session (no tokens are spent by this sweep)", Boolean(sess?.id), JSON.stringify(sess).slice(0, 200));
 const sid = sess.id;
@@ -201,5 +206,6 @@ const second = await blocksOfLastTurn();
 check("the hand-over happens ONCE per agent process, not on every turn",
   Array.isArray(second) && second.length === 1, JSON.stringify(second)?.slice(0, 180));
 
+await ev(`fetch('/api/backends/mock',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(${JSON.stringify(mockRowBefore)},{nativePlanSource:${JSON.stringify(mockRowBefore?.nativePlanSource ?? "none")}}))}).then(r=>r.status)`).catch(() => null);
 console.log(`\nplan-service-sweep: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

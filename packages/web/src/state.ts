@@ -68,8 +68,9 @@ export interface BackendView {
   cwd?: string | null;
   notes?: string;
   builtin?: boolean;
-  /** Which channel carries this backend's plan: `acp` = the agent emits plan frames itself,
-   *  `none` = the cockpit injects the agentus-plan MCP tool at handshake time. */
+  /** Which channel carries this backend's plan: `none` = the cockpit injects the agentus-plan MCP
+   *  tool at handshake time (every backend's default — the card renders the cockpit's object, which
+   *  survives a restart), `acp` = an escape hatch that renders the agent's own plan frames instead. */
   nativePlanSource?: "acp" | "none";
   warnings?: string[];
   /** last known health (system-written; see BackendHealth on the server) */
