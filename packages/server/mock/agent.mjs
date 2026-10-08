@@ -395,7 +395,7 @@ const agent = () => ({
     // after as one `diff` item — which is why the cockpit must collapse it (read off
     // acp_adapter/edit_approval.py, 2026-10-06).
     const wantHermes = process.env.MOCK_HERMES_APPROVAL === "1" || /\[tool-hermes\]/.test(text);
-    const wantThink = process.env.MOCK_THINK === "1" || /\[think\]/.test(text);
+    const wantThink = process.env.MOCK_THINK === "1" || /\[think(:\d+)?\]/.test(text);
     const willSink = process.env.MOCK_SINK === "1" || /\[sink\]/.test(text);
     const wantPlan = process.env.MOCK_PLAN === "1" || /\[plan\]/.test(text);
     // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
@@ -407,7 +407,14 @@ const agent = () => ({
       // that omits it makes each chunk its own row — a transcript shape that only exists in QA
       // (measured 2026-10-06: 1336 rows in the DB for a 10-burst turn).
       const thinkId = `th-${sessionId}-${Date.now()}`;
-      for (const w of "pondering the user's request very deeply".split(" ")) {
+      // `[think:N]` streams N words instead of the default sentence: the long-thinking case (the
+      // operator's 「思考卡住不动、然后突然全刷出来」) needs a stream long enough that the reader can
+      // SEE whether it arrives progressively or in one lump.
+      const asked = /\[think:(\d+)\]/.exec(text);
+      const words = asked
+        ? Array.from({ length: Number(asked[1]) }, (_, i) => `思考片段${i}`)
+        : "pondering the user's request very deeply".split(" ");
+      for (const w of words) {
         await send(agent._conn, sessionId, {
           sessionUpdate: "agent_thought_chunk",
           messageId: thinkId,

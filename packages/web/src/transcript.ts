@@ -129,7 +129,15 @@ export function foldTextRow<T extends { kind: string }>(
     return push(row.delta ?? row.text); // unreachable: skip/create both handled above
   }
   if (plan.action === "skip") return { pushed: false, at };
-  blocks[at].text = plan.action === "append" ? blocks[at].text + plan.add : plan.text;
+  // 🔴 REPLACE the block, never write through it. The row components are memoized on the fields they
+  // read (App's MemoThought/MemoToolCard…), and a comparator comparing `a.m.text === b.m.text` is
+  // BLIND while both sides are the same object: the store used to grow the text in place, so an
+  // unchanged identity made every growth look like "nothing changed" and the row kept rendering
+  // whatever it showed first. Measured 2026-10-08 on a 1200-row transcript: the thinking bubble held
+  // its first 6 characters for the whole turn and then dumped all 850 at once at turn-end (the
+  // operator's 「思考展示卡在那里不动…突然把所有的刷新出来了」) — the turn-end `open` flip was the only
+  // change that ever made it re-render. A fresh object makes the change visible to `memo`.
+  list[at] = { ...(list[at] as unknown as Record<string, unknown>), text: plan.action === "append" ? blocks[at].text + plan.add : plan.text } as unknown as T;
   return { pushed: false, at };
 }
 

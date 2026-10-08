@@ -728,7 +728,11 @@ class Cockpit {
           // the store's row is the truth, but a live block can be ahead of a stale page
           const live = have as Extract<MsgView, { kind: "agent" | "thought" }>;
           const older = b as Extract<MsgView, { kind: "agent" | "thought" }>;
-          if (older.text.length > live.text.length) live.text = older.text;
+          // Replace (see foldTextRow): the row must change IDENTITY for its memo to see the text.
+          if (older.text.length > live.text.length) {
+            const li = v.msgs.indexOf(live);
+            if (li >= 0) v.msgs[li] = { ...live, text: older.text } as typeof live;
+          }
           continue;
         }
         fresh.push(b);
@@ -1274,12 +1278,19 @@ class Cockpit {
   }
 
   #endOpenBubbles(v: SessionView): void {
-    for (const m of v.msgs) if (m.kind === "agent" || m.kind === "thought") m.open = false;
+    // Replace, never write through: see transcript.foldTextRow for why an in-place edit is
+    // invisible to the memoized rows (and why the turn-end flip used to dump the whole block).
+    for (let i = 0; i < v.msgs.length; i++) {
+      const m = v.msgs[i];
+      if ((m.kind === "agent" || m.kind === "thought") && m.open) v.msgs[i] = { ...m, open: false };
+    }
   }
 
   #keepLastOpen(v: SessionView): void {
     const l = v.msgs[v.msgs.length - 1];
-    if (l && (l.kind === "agent" || l.kind === "thought") && v.busy) l.open = true;
+    if (l && (l.kind === "agent" || l.kind === "thought") && v.busy && !l.open) {
+      v.msgs[v.msgs.length - 1] = { ...l, open: true };
+    }
   }
 
   #ingest(
@@ -1373,8 +1384,8 @@ class Cockpit {
         // outvote it.
         const block = list[idx];
         if (delta !== undefined && v.info.status === "running" && block
-          && (block.kind === "agent" || block.kind === "thought")) {
-          block.open = true;
+          && (block.kind === "agent" || block.kind === "thought") && !block.open) {
+          list[idx] = { ...block, open: true };
         }
         break;
       }
@@ -1387,11 +1398,18 @@ class Cockpit {
         const input = extractToolInput(p);
         // upsert semantics (design.md §8-5): update, never append a second bubble
         if (existing) {
-          if (p.title) existing.title = String(p.title);
-          if (p.status) existing.status = String(p.status);
-          // output grows across tool_call_update frames — replace, never append twice
-          if (detail) existing.detail = detail;
-          if (input) existing.input = input;
+          // Replace, never write through (same reason as foldTextRow): a tool card whose status or
+          // output lands later must be able to re-render.
+          const ai = list.indexOf(existing);
+          const next = {
+            ...existing,
+            title: p.title ? String(p.title) : existing.title,
+            status: p.status ? String(p.status) : existing.status,
+            // output grows across tool_call_update frames — replace, never append twice
+            detail: detail ?? existing.detail,
+            input: input ?? existing.input,
+          };
+          if (ai >= 0) list[ai] = next;
         } else {
           list.push({
             key: `tc-${tcId}`, kind: "tool", toolCallId: tcId, at,
@@ -1424,7 +1442,10 @@ class Cockpit {
           // A paged older batch is history: fold it into that page's own card (one per page —
           // these rows are far behind the live edge, so per-turn placement buys nothing).
           const old = list.find((x) => x.kind === "plan");
-          if (old && old.kind === "plan") { old.items = items; old.terminal = terminal; old.explanation = explanation; }
+          if (old && old.kind === "plan") {
+            const pi = list.indexOf(old);
+            list[pi] = { ...old, items, terminal, explanation };
+          }
           else list.push({ key: `m${m.seq}`, kind: "plan", items, terminal, explanation, at });
           break;
         }
