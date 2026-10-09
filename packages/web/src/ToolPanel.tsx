@@ -1,5 +1,5 @@
-// The workspace panel behind the head's ▤ button: a file browser and a terminal,
-// both rooted in the slot's workspace.
+// The workspace panel behind the head's ▤ button: a file browser, a preview/editor and a
+// terminal, all rooted in the slot's workspace.
 //
 // Studio study (hermes-studio's FilesPanel/TerminalPanel) settled two questions:
 //  * one panel with tabs, not two floating drawers — the head has room for exactly
@@ -7,13 +7,15 @@
 //  * the panel is rooted at the *session workspace*, so switching slots switches the
 //    tree (their `activeWorkspacePath`), which is why workspace is a field on the
 //    slot rather than a global setting.
-// What we did not copy: their tree does lazy loading with an expanded-path cache and
-// a per-file editor with dirty tracking. This panel is a *browser* (see the API:
-// /api/fs/file is read-only) — writing files is the agent's job, and an editor in
-// the cockpit would be a second source of truth for the workspace.
+// What we did not copy, and then did: their tree does lazy loading with an expanded-path cache
+// and a per-file editor with dirty tracking. We deliberately skipped the editor ("writing files
+// is the agent's job"), and the operator overruled that on 2026-10-09 — so the preview pane
+// (FilePreview.tsx) now renders per file type and can save, with the conflict rule that makes
+// an editor safe next to an agent: see writeTextFile in packages/server/src/fs.ts.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionView } from "./state";
 import { cockpit } from "./state";
+import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
@@ -36,13 +38,11 @@ interface Listing {
   root?: string | null;
 }
 
-interface Preview {
+/** A file the panel should open — set by a click in the tree, or pushed in from elsewhere
+ *  (a file link inside a reply: see fileBus.ts). */
+export interface PanelTarget {
   path: string;
-  name: string;
-  size: number;
-  content: string;
-  truncated: boolean;
-  binary: boolean;
+  line?: number;
 }
 
 function humanSize(bytes?: number): string {
@@ -63,10 +63,12 @@ function stripAnsi(input: string): string {
     .replace(/\r(?!\n)/g, "");                              // bare CR: keep the line, drop the return
 }
 
-export function ToolPanel({ v, onClose, onPickWorkspace }: {
+export function ToolPanel({ v, onClose, onPickWorkspace, focus }: {
   v: SessionView;
   onClose: () => void;
   onPickWorkspace: () => void;
+  /** a file pushed in from outside the panel (a link in a reply); the panel opens on it */
+  focus?: PanelTarget | null;
 }): JSX.Element {
   // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
   useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
@@ -75,20 +77,31 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
   const [path, setPath] = useState(root);
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<Preview | null>(null);
+  const [target, setTarget] = useState<PanelTarget | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Switching slots re-roots the panel: the tree belongs to the slot's workspace.
   useEffect(() => {
     setPath(root);
-    setPreview(null);
+    setTarget(null);
   }, [root, v.info.id]);
 
-  const load = useCallback(async (target: string) => {
+  // A file link clicked in a reply: show the files tab, follow the browser to that file's
+  // directory, and open it. Separate from the click path above because the operator may be
+  // looking at the terminal tab when the click lands.
+  useEffect(() => {
+    if (!focus) return;
+    setTab("files");
+    setTarget(focus);
+    const dir = focus.path.replace(/\/[^/]*$/, "") || "/";
+    setPath(dir);
+  }, [focus]);
+
+  const load = useCallback(async (target0: string) => {
     setLoading(true);
     setError("");
     try {
-      const data = await cockpit.listEntries(target);
+      const data = await cockpit.listEntries(target0);
       setListing(data);
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
@@ -99,17 +112,13 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
 
   useEffect(() => { void load(path); }, [path, load]);
 
-  const open = async (entry: Entry): Promise<void> => {
+  const open = (entry: Entry): void => {
     if (entry.kind === "dir") {
       setPath(entry.path);
-      setPreview(null);
+      setTarget(null);
       return;
     }
-    try {
-      setPreview(await cockpit.readFile(entry.path));
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    }
+    setTarget({ path: entry.path });
   };
 
   // Breadcrumbs are relative to the workspace root when we are inside it: absolute
@@ -197,9 +206,9 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
             {listing?.entries.map((e) => (
               <button
                 key={e.path}
-                className={`file-row ${preview?.path === e.path ? "sel" : ""}`}
+                className={`file-row ${target?.path === e.path ? "sel" : ""}`}
                 title={e.path}
-                onClick={() => void open(e)}
+                onClick={() => open(e)}
               >
                 {e.kind === "dir" ? <IconFolder size={14} /> : <IconFile size={14} />}
                 <span className="file-name">{e.name}</span>
@@ -210,22 +219,12 @@ export function ToolPanel({ v, onClose, onPickWorkspace }: {
             {listing && !listing.entries.length ? <div className="tool-note">empty directory</div> : null}
             {listing?.truncated ? <div className="tool-note">list capped at {listing.entries.length} entries</div> : null}
           </div>
-          {preview ? (
-            <div className="file-preview">
-              <div className="file-preview-head">
-                <span className="file-name">{preview.name}</span>
-                <span className="file-size">
-                  {humanSize(preview.size)}{preview.truncated ? " · showing the head" : ""}
-                </span>
-                <span className="head-spacer" />
-                <button className="icon-btn" title="close preview" aria-label="close preview" onClick={() => setPreview(null)}>
-                  <IconClose size={13} />
-                </button>
-              </div>
-              {preview.binary
-                ? <div className="tool-note">binary file — no preview</div>
-                : <pre className="file-text">{preview.content}</pre>}
-            </div>
+          {target ? (
+            <FilePreviewPane
+              path={target.path}
+              line={target.line}
+              onClose={() => setTarget(null)}
+            />
           ) : null}
         </div>
       ) : (

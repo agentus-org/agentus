@@ -15,7 +15,7 @@ import { SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, seedRows, startupCheck } from "./acp/registry.js";
-import { FsError, listDirs, readTextFile } from "./fs.js";
+import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
@@ -734,6 +734,79 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const maxBytes = Number(url.searchParams.get("maxBytes") || 0) || undefined;
         return send(res, 200, readTextFile(req0, { maxBytes }));
       } catch (e) {
+        if (e instanceof FsError) {
+          return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
+        }
+        throw e;
+      }
+    }
+    // What IS this file? The panel asks before reading: an image or a PDF should not be pulled
+    // through the text endpoint to learn that it is not text, and `kind` decides which renderer
+    // and whether an editor is offered. Cheap: a stat plus a hash, no bytes decoded.
+    if (url.pathname === "/api/fs/stat" && req.method === "GET") {
+      try {
+        return send(res, 200, statFile(url.searchParams.get("path")));
+      } catch (e) {
+        if (e instanceof FsError) {
+          return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
+        }
+        throw e;
+      }
+    }
+    // The file's RAW BYTES, for the renderers that need the real thing: an <img> in a reply,
+    // a PDF in the preview panel, an audio/video tag. Before this existed there was no way to
+    // show a local image at all (the read endpoint decodes utf-8 text and calls binary files
+    // "binary file"), so every `![shot](/Users/…/shot.png)` an agent wrote was a broken image.
+    //
+    // Same trust model as the endpoints above: any path the server process can read, because
+    // the operator can already point an agent at any directory and browse it via /api/fs/dirs.
+    // Behind the same auth gate. `inline` on purpose — a preview must not turn into a download.
+    if (url.pathname === "/api/fs/raw" && req.method === "GET") {
+      try {
+        const req0 = url.searchParams.get("path");
+        if (!req0) return send(res, 400, { error: "path is required", code: "bad_path" });
+        const info = statFile(req0);
+        res.writeHead(200, {
+          "content-type": info.contentType,
+          "content-length": String(info.size),
+          "cache-control": "no-store",
+          "content-disposition": "inline",
+        });
+        const stream = fs.createReadStream(info.path);
+        stream.on("error", () => res.destroy());
+        // The operator may close the panel mid-stream; an unhandled 'error' on the response
+        // would crash the process for a click that is not an error.
+        res.on("close", () => stream.destroy());
+        return stream.pipe(res);
+      } catch (e) {
+        if (e instanceof FsError) {
+          return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
+        }
+        throw e;
+      }
+    }
+    // Save an edit made in the panel. 409 carries the CURRENT bytes when the file changed on
+    // disk while the operator was typing, so the UI can offer to reload instead of choosing
+    // silently whose work to lose (see writeTextFile).
+    if (url.pathname === "/api/fs/file" && (req.method === "PUT" || req.method === "POST")) {
+      const body = await readJson(req);
+      try {
+        const path0 = typeof body.path === "string" ? body.path : "";
+        if (!path0) return send(res, 400, { error: "path is required", code: "bad_path" });
+        const content = typeof body.content === "string" ? body.content : "";
+        const ifHash = typeof body.ifHash === "string" ? body.ifHash : undefined;
+        return send(res, 200, { ok: true, ...writeTextFile(path0, content, { ifHash }) });
+      } catch (e) {
+        if (e instanceof ChangedOnDiskError) {
+          return send(res, 409, {
+            error: "changed_on_disk",
+            path: e.target,
+            hash: e.currentHash,
+            content: e.currentContent,
+            truncated: e.truncated,
+            hint: "the file changed on disk since you opened it",
+          });
+        }
         if (e instanceof FsError) {
           return send(res, e.code === "not_found" ? 404 : 400, { error: e.message, code: e.code });
         }

@@ -14,6 +14,8 @@ import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
+import type { PanelTarget } from "./ToolPanel";
+import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, splitRecent } from "./rail";
 import { copyText } from "./clipboard";
 import {
@@ -948,6 +950,13 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
   // here so switching slots keeps the panel open on the new slot's workspace.
   const [panelOpen, setPanelOpen] = useState(false);
+  // A file pushed into the panel from outside it — a file link or an image in a reply
+  // (fileBus.ts). A fresh object each time, so clicking the same link twice reopens it.
+  const [panelFocus, setPanelFocus] = useState<PanelTarget | null>(null);
+  useEffect(() => onOpenLocalFile((req) => {
+    setPanelOpen(true);
+    setPanelFocus({ ...req });
+  }), []);
   const [pickWorkspace, setPickWorkspace] = useState(false);
   // The call overlay is launched from the HEAD (it is a way of talking to the session,
   // like the other head controls) but lives in the composer, so the state sits here:
@@ -997,6 +1006,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
             v={active}
             onClose={() => setPanelOpen(false)}
             onPickWorkspace={() => setPickWorkspace(true)}
+            focus={panelFocus}
           />
         )}
       </div>
@@ -1391,7 +1401,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           )}
           {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
-            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} />))}
+            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} base={v.info.workspace ?? undefined} />))}
           <TurnLine busy={v.busy} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
@@ -1451,7 +1461,7 @@ const samePlan = (a: { m: MsgView; busy: boolean }, b: { m: MsgView; busy: boole
 };
 const MemoPlanCard = memo(PlanCard, samePlan);
 
-function Bubble({ m, sid, backend, last, busy, live }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean }): JSX.Element | null {
+function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean; base?: string }): JSX.Element | null {
   switch (m.kind) {
     case "user":
       return (
@@ -1484,7 +1494,7 @@ function Bubble({ m, sid, backend, last, busy, live }: { m: MsgView; sid: string
             {markOf(backend).label || "AGENT"}
           </div>
           <div className="bubble">
-            <Markdown text={m.text} />
+            <Markdown text={m.text} base={base} />
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条回复" />

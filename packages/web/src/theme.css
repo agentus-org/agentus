@@ -988,12 +988,43 @@ code.inline {
 .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { font-size: 10.5px; color: var(--text-dim); font-family: var(--mono); }
 .file-enter { opacity: 0.45; }
-.file-preview { border-top: 1px solid var(--line); max-height: 48%; display: flex; flex-direction: column; }
-.file-preview-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11.5px; }
+.file-preview { border-top: 1px solid var(--line); flex: 2 1 0; min-height: 150px; display: flex; flex-direction: column; }
+.file-preview-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11.5px;
+  border-bottom: 1px solid var(--line);
+}
+.file-preview-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.file-preview-body > * { min-height: 0; }
 .file-text {
   margin: 0; padding: 4px 9px 10px; overflow: auto; white-space: pre;
   font-family: var(--mono); font-size: 11.5px; line-height: 1.45; color: var(--text);
 }
+/* the file as the browser draws it: image · pdf · audio · video */
+.file-image-wrap { display: flex; padding: 8px; align-items: flex-start; }
+.file-image { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+.file-frame { flex: 1; min-height: 260px; width: 100%; border: 0; background: var(--bg-raised); }
+.file-audio { width: calc(100% - 16px); margin: 8px; }
+.file-video { max-width: 100%; max-height: 100%; margin: 8px; }
+.file-fallback { padding-top: 6px; }
+/* source view: one row per line, so a #L12 link can point at one */
+.file-view-toggle { display: flex; gap: 6px; padding: 4px 8px 0; }
+.file-source { font-family: var(--mono); font-size: 11.5px; line-height: 1.45; padding: 4px 0 10px; overflow-x: auto; }
+.file-line { display: flex; gap: 8px; padding: 0 9px; white-space: pre; }
+.file-line.hit { background: rgba(var(--accent-rgb), 0.14); box-shadow: inset 2px 0 0 var(--accent-text); }
+.file-ln { flex: 0 0 34px; text-align: right; color: var(--text-dim); opacity: 0.6; user-select: none; }
+.file-lt { flex: 1; }
+.file-edit {
+  flex: 1; min-height: 220px; border: 0; outline: 0; resize: none; padding: 8px 10px;
+  background: var(--code-bg); color: var(--code-fg); white-space: pre; overflow: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+}
+.file-dirty { color: var(--accent-text); }
+.file-conflict {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  font-size: 11.5px; color: var(--text); background: rgba(var(--accent-rgb), 0.12);
+  border-bottom: 1px solid var(--line);
+}
+.file-md { padding: 6px 10px 12px; }
 .tool-note { padding: 8px; font-size: 11.5px; color: var(--text-dim); }
 .tool-error { padding: 6px 9px; font-size: 11.5px; color: var(--err); }
 /* terminal */
@@ -1082,6 +1113,17 @@ code.inline {
 }
 .md a { color: var(--accent-text); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
 .md a:hover { border-bottom-color: var(--accent-text); }
+/* A path in a reply is a file you can open, not a URL: it reads as a chip so the eye can tell
+   it from a link out, and clicking it opens the workspace panel (Markdown.tsx → fileBus.ts). */
+.md a.md-file-link {
+  font-family: var(--mono); font-size: 0.94em; padding: 0 3px; border-bottom-color: transparent;
+  border-radius: 4px; background: rgba(var(--accent-rgb), 0.10);
+}
+.md a.md-file-link:hover { background: rgba(var(--accent-rgb), 0.20); }
+.md-file-line { color: var(--text-dim); }
+/* an image the agent produced locally: rendered inline, click for full size */
+.md a.md-img-link { border-bottom: none; display: inline-block; max-width: 100%; }
+.md img.md-img { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); display: block; margin: 6px 0; }
 .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 .md code {
   font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: 4px;

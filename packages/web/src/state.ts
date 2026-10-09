@@ -803,11 +803,35 @@ class Cockpit {
     return await this.#req(`/api/fs/dirs?files=1&path=${encodeURIComponent(path)}`);
   }
 
-  /** Read-only file preview for the panel. */
+  /** Read a file for the panel: text plus what the panel needs to render and edit it
+   *  (`kind`, `hash`, `editable` — see the server's fs.ts, one table decides both sides). */
   async readFile(path: string): Promise<{
     path: string; name: string; size: number; content: string; truncated: boolean; binary: boolean;
+    kind: string; contentType: string; mtimeMs: number; hash: string; editable: boolean;
   }> {
     return await this.#req(`/api/fs/file?path=${encodeURIComponent(path)}`);
+  }
+
+  /** Stat only — no bytes. The panel asks this first so an image or a PDF is not pulled
+   *  through the text endpoint, and so a cheap poll can notice the agent rewriting the file
+   *  the editor is showing. */
+  async statFile(path: string): Promise<{
+    path: string; name: string; kind: string; contentType: string; size: number;
+    mtimeMs: number; hash: string; editable: boolean;
+  }> {
+    return await this.#req(`/api/fs/stat?path=${encodeURIComponent(path)}`);
+  }
+
+  /** Save an edit from the panel. `ifHash` is the hash the editor loaded: the server refuses
+   *  (409, with the current bytes) rather than overwrite a rewrite the agent made meanwhile. */
+  async writeFile(path: string, content: string, ifHash?: string): Promise<{
+    ok: true; path: string; size: number; mtimeMs: number; hash: string;
+  }> {
+    return await this.#req(`/api/fs/file`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, content, ...(ifHash ? { ifHash } : {}) }),
+    }, { retry: false });
   }
 
   /** Fork a session: the agent copies its context into a new session (ACP
@@ -1560,3 +1584,12 @@ function extractToolInput(p: Record<string, unknown>): string {
 }
 
 export const cockpit = new Cockpit();
+
+/** The URL that serves a local file's raw bytes (auth rides on the session cookie, same as
+ *  every other /api call). Used by the panel's image/PDF/audio viewers AND by the markdown
+ *  renderer, so an `![](/Users/…/shot.png)` an agent wrote actually shows the picture.
+ *  Both callers must go through this: one place to change if the route ever moves. */
+export function rawFileUrl(path: string): string {
+  return `/api/fs/raw?path=${encodeURIComponent(path)}`;
+}
+
