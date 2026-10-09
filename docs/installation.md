@@ -42,10 +42,10 @@ npm i -g agentus           # …or install it, then run `agentus`
 `npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
 children with it.
 
-### One command — from the repository
+### One command — the installer script
 
-The repository is **private today**, so the `curl | bash` line below needs repo access; without
-it use `npx agentus` above (same install, minus the Node check and the per-user fallback).
+The same install from the repository's own script, with the checks and the fallbacks spelled out
+(no `sudo`, ever):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash

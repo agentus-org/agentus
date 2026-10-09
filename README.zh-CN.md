@@ -26,8 +26,7 @@ npx agentus                      # 或者 npm i -g agentus 然后直接跑 `agen
 # 然后「+ 新建会话」，选一个后端和一个工作目录
 ```
 
-从仓里装（仓目前是 private，所以这条要么有权限、要么用上面的 `npx agentus`；`scripts/install.sh`
-和上面是同一件事，多了 Node 版本检查和装到用户目录的回退）：
+也可以直接从仓里跑安装脚本 —— 同一件事，多了 Node 版本检查和装到用户目录的回退（**绝不**用 `sudo`）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash

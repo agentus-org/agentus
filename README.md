@@ -28,8 +28,8 @@ npx agentus                      # …or: npm i -g agentus, then `agentus`
 # then "+ new session", pick a backend + a working directory
 ```
 
-From the repository (it is private today, so this needs access — otherwise use `npx agentus`
-above; `scripts/install.sh` is the same install, with a Node check and a per-user fallback):
+Or run the installer straight from the repository — same install, plus a Node check and a
+per-user fallback (`sudo` never):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash

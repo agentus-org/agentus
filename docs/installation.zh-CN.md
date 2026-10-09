@@ -39,9 +39,9 @@ npm i -g agentus           # 或者装上，然后直接跑 `agentus`
 
 `npx agentus` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
 
-### 一条命令 —— 从仓里装
+### 一条命令 —— 仓里的安装脚本
 
-仓**目前是 private**，所以下面这条 `curl | bash` 需要有仓权限；没有就用上面的 `npx agentus`（同一件事）。
+和上面同一件事，把检查与回退写在脚本里（**绝不**用 `sudo`）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
