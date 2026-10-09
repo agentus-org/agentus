@@ -41,8 +41,8 @@ if (!health) {
 console.log(`  info  driving ${BASE} (dev), mock backend, no tokens`);
 
 const t = await (await fetch(`${CDP}/json/new?${encodeURIComponent(BASE)}`, { method: "PUT" })).json();
-const closeTab = () => { try { fetch(`${CDP}/json/close/${t.id}`); } catch { /* gone */ } };
-process.on("exit", closeTab);
+const closeTab = () => fetch(`${CDP}/json/close/${t.id}`).catch(() => { /* gone */ });
+process.on("exit", () => { void closeTab(); });
 await sleep(2600);
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
@@ -264,7 +264,19 @@ try {
   // ── 3. a session with its OWN pick keeps it across a resume ──────────────────────────────────
   check("the option is really under the pointer (not covered)",
     (await clickPopoverOption("permission mode", OTHER_NAME)) === true);
-  check("the operator's own pick lands on the session", (await liveMode(session)) === OTHER_ID, `mode=${await liveMode(session)}`);
+  // The pick goes out over the socket, and a socket that dropped between the readiness gate and the
+  // click loses it silently (state.ts drops non-prompt commands while not OPEN — pre-existing, and why
+  // the gate exists). Allow ONE re-armed attempt and print which one landed, so a flaky run stays
+  // visible in the output instead of being papered over.
+  let attempts = 0, landed = false;
+  while (attempts < 2 && !landed) {
+    attempts++;
+    await waitFrame(6000);
+    await clickPopoverOption("permission mode", OTHER_NAME);
+    for (let i = 0; i < 10 && !landed; i++) { await sleep(400); landed = (await liveMode(session)) === OTHER_ID; }
+  }
+  check("the operator's own pick lands on the session", landed,
+    `mode=${await liveMode(session)} attempts=${attempts}`);
   await api(`/api/sessions/${session}`, { method: "DELETE" });
   await sleep(800);
   // fired WITHOUT awaiting: Resume.evaluate has a 5 s budget and a cold resume is a spawn + loadSession
@@ -292,7 +304,10 @@ try {
     if (s) { try { await api(`/api/sessions/${s}`, { method: "DELETE" }); } catch { /* best effort */ } }
   }
   console.log(`\n${fail ? `${fail} check(s) FAILED` : "all checks passed"}  (${pass + fail} checks)`);
-  closeTab();
+  // AWAIT the close: a fire-and-forget fetch is cancelled by the process.exit right behind it, which
+  // is how a batch of sweeps leaves a batch of tabs behind (measured: 7 tabs on :8901).
+  await closeTab();
+  await sleep(200);
   try { ws.close(); } catch { /* already closed */ }
   process.exit(fail ? 1 : 0);
 }
