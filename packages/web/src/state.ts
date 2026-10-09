@@ -235,6 +235,9 @@ interface ResumeRefusal {
 /** Snapshot shape handed to useSyncExternalStore. */
 export interface StoreSnapshot {
   sessions: SessionInfo[];
+  /** Cold rows that are NOT archived — they belong in 工作空间 beside the live ones, so the rail
+   *  keeps showing a crashed or idle-reaped slot instead of filing it away. */
+  cold: SessionInfo[];
   archived: SessionInfo[];
   activeId: string | null;
   active: SessionView | undefined;
@@ -275,6 +278,8 @@ class AuthRequired extends Error {
 
 class Cockpit {
   sessions: SessionInfo[] = [];
+  /** On disk, no process, NOT archived: 工作空间 material, wearing `cold`. */
+  cold: SessionInfo[] = [];
   archived: SessionInfo[] = [];
   byId = new Map<string, SessionView>();
   activeId: string | null = null;
@@ -432,6 +437,7 @@ class Cockpit {
     this.conn = "offline";
     if (wasIn || this.sessions.length) {
       this.sessions = [];
+      this.cold = [];
       this.archived = [];
       this.byId.clear();
       this.activeId = null;
@@ -457,7 +463,7 @@ class Cockpit {
       this.authError = "";
       this.bump();
       this.connect();
-      void this.refreshArchived();
+      void this.refreshRows();
     } catch (e) {
       if (e instanceof AuthRequired) return; // #req already flipped us out
       const msg = `无法连接服务端：${String((e as Error).message ?? e)}`;
@@ -551,6 +557,7 @@ class Cockpit {
   #build(): StoreSnapshot {
     return {
       sessions: this.sessions,
+      cold: this.cold,
       archived: this.archived,
       activeId: this.activeId,
       active: this.activeId ? this.byId.get(this.activeId) : undefined,
@@ -655,7 +662,7 @@ class Cockpit {
         }
       }
       this.bump();
-      void this.refreshArchived();
+      void this.refreshRows();
       // A page that reloaded with prompts still queued finishes the job it was holding: give the
       // socket a beat to replay session state, then let those queues go.
       window.setTimeout(() => this.drainPersistedQueues(), 700);
@@ -997,6 +1004,7 @@ class Cockpit {
       // the source may need resuming first, and the fork itself is a spawn + load
       { timeoutMs: 120_000, retry: false });
     if (!this.sessions.some((s) => s.id === info.id)) this.sessions = [info, ...this.sessions];
+    this.cold = this.cold.filter((s) => s.id !== info.id);
     this.archived = this.archived.filter((s) => s.id !== info.id);
     this.setActive(info.id);
     return info.id;
@@ -1071,11 +1079,12 @@ class Cockpit {
     return body.id;
   }
 
-  /** Pull the cold-slot list (sessions on disk with no live process, QA#8/AC5).
-   *  Kept as REST (not a WS event) so the rail still fills when the socket is down. */
-  async refreshArchived(): Promise<void> {
+  /** Pull the two ON-DISK lists: cold rows (no process, not archived) and the operator's archive.
+   *  Kept as REST (not only a WS event) so the rail still fills when the socket is down. */
+  async refreshRows(): Promise<void> {
     try {
-      const { archived } = await this.#req<{ archived: SessionInfo[] }>("/api/sessions");
+      const { cold, archived } = await this.#req<{ cold?: SessionInfo[]; archived?: SessionInfo[] }>("/api/sessions");
+      this.cold = cold ?? [];
       this.archived = archived ?? [];
       this.bump();
     } catch {
@@ -1115,7 +1124,7 @@ class Cockpit {
     const info = res.info;
     const view = this.byId.get(id);
     if (view) view.info = { ...view.info, ...info };
-    for (const list of [this.sessions, this.archived]) {
+    for (const list of [this.sessions, this.cold, this.archived]) {
       const i = list.findIndex((s) => s.id === id);
       if (i >= 0) list[i] = { ...list[i], ...info };
     }
@@ -1128,7 +1137,9 @@ class Cockpit {
       const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
       this.#view(id).info = info;
       if (!this.sessions.some((s) => s.id === id)) this.sessions = [info, ...this.sessions];
-      this.archived = this.archived.filter((s) => s.id !== id);
+      this.cold = this.cold.filter((s) => s.id !== id);
+      // NOT removed from `archived` unconditionally: a resume does not clear the flag, so a row the
+      // operator archived and then restored stays in 已归档 (as a live row) until they un-archive it.
       this.setActive(id);
       await this.loadHistory(id);
     } catch (e) {
@@ -1139,7 +1150,8 @@ class Cockpit {
       // homes, and offer the only action that helps — delete it (the transcript is the operator's;
       // the dead handoff is not).
       if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing")) {
-        const info = this.sessions.find((s) => s.id === id) ?? this.archived.find((s) => s.id === id);
+        const info = this.sessions.find((s) => s.id === id) ?? this.cold.find((s) => s.id === id)
+          ?? this.archived.find((s) => s.id === id);
         this.blocked = {
           id,
           title: info?.title ?? id,
@@ -1162,7 +1174,7 @@ class Cockpit {
       const info = await this.#req<SessionInfo>(`/api/sessions/${id}/restart`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
       const view = this.#view(id);
       view.info = { ...view.info, ...info };
-      for (const list of [this.sessions, this.archived]) {
+      for (const list of [this.sessions, this.cold, this.archived]) {
         const i = list.findIndex((s) => s.id === id);
         if (i >= 0) list[i] = { ...list[i], ...info };
       }
@@ -1205,26 +1217,65 @@ class Cockpit {
   /** Delete a cold slot for good (row + transcript). The rail only ever grows
    *  otherwise — "on disk · N" with no way back down. */
   purgeCold(id: string): void {
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    this.cold = this.cold.filter((s) => s.id !== id);
     this.archived = this.archived.filter((s) => s.id !== id);
     this.byId.delete(id);
     this.bump();
     void this.#req(`/api/sessions/${id}`, { method: "DELETE" })
-      .catch(() => this.refreshArchived())
-      .then(() => this.refreshArchived());
+      .catch(() => this.refreshRows())
+      .then(() => this.refreshRows());
   }
 
-  closeSession(id: string): void {
-    void this.#req(`/api/sessions/${id}`, { method: "DELETE" }).catch(() => {});
-    this.byId.delete(id);
-    if (this.activeId === id) {
-      const next = this.sessions.find((s) => s.id !== id);
-      this.activeId = next?.id ?? null;
-      this.#rememberActive(this.activeId);
+  /** 归档 / 取消归档 — the operator's own STORAGE decision, taken independently of the process (the
+   *  server stops a live slot's child as part of archiving it, which is why the row can leave 工作空间
+   *  in the same breath). The server is the truth here: its sessions frame carries all three buckets,
+   *  and this only makes the rail move without waiting for the round trip.
+   *
+   *  Restoring is deliberately TWO statements (out of 已归档, then wake it) — see
+   *  unarchiveAndResume — so a slot that cannot be adopted leaves a visible cold row instead of an
+   *  error nobody asked for. */
+  async setArchived(id: string, on: boolean): Promise<SessionInfo | null> {
+    try {
+      const info = await this.#req<SessionInfo>(
+        `/api/sessions/${id}/${on ? "archive" : "unarchive"}`,
+        { method: "POST" },
+      );
+      const view = this.byId.get(id);
+      if (view) view.info = { ...view.info, ...info };
+      if (on) {
+        this.sessions = this.sessions.filter((s) => s.id !== id);
+        this.cold = this.cold.filter((s) => s.id !== id);
+        if (!this.archived.some((s) => s.id === id)) this.archived = [info, ...this.archived];
+        if (this.activeId === id) this.#pickNextActive();
+      } else {
+        this.archived = this.archived.filter((s) => s.id !== id);
+        if (!this.sessions.some((s) => s.id === id) && !this.cold.some((s) => s.id === id)) {
+          this.cold = [info, ...this.cold];
+        }
+      }
+      this.bump();
+      return info;
+    } catch (e) {
+      this.#setNet(false, `${on ? "归档" : "取消归档"}失败：${String((e as Error).message ?? e)}`);
+      return null;
     }
-    this.sessions = this.sessions.filter((s) => s.id !== id);
-    this.bump();
-    // the closed transcript is still on disk → show it as a cold slot right away
-    void this.refreshArchived();
+  }
+
+  /** The rail's 「取消归档并恢复」: take it out of 已归档, then wake it. */
+  async unarchiveAndResume(id: string): Promise<void> {
+    await this.setArchived(id, false);
+    await this.resume(id);
+  }
+
+  /** The session to fall back to when the active one stops being 工作空间 material (it was archived
+   *  or purged). Kept identical to the old close-time behaviour: the newest remaining row wins —
+   *  a live one first, then cold, then anything archived. */
+  #pickNextActive(): void {
+    const next = this.sessions[0] ?? this.cold[0] ?? this.archived[0] ?? null;
+    this.activeId = next?.id ?? null;
+    this.#rememberActive(this.activeId);
+    if (next && !this.sessions.some((s) => s.id === next.id)) void this.loadHistory(next.id);
   }
 
   /** Fold a plan snapshot into the view — ONE rule, used by BOTH writers: an ACP frame from the
@@ -1311,9 +1362,24 @@ class Cockpit {
       case "hello":
         break;
       case "sessions": {
-        const live = new Set(e.sessions.map((s) => s.id));
+        // Three buckets from the server (live / cold-but-not-archived / archived), and "does it still
+        // exist" is their UNION: an archived row keeps its view (the operator can leave it open and
+        // read it after putting it away), and pruning by the live list alone would throw away a
+        // transcript that is still perfectly readable.
         this.sessions = e.sessions;
-        for (const s of e.sessions) this.#view(s.id).info = s;
+        this.cold = e.cold ?? [];
+        this.archived = e.archived ?? [];
+        const live = new Set([
+          ...e.sessions.map((s) => s.id),
+          ...this.cold.map((s) => s.id),
+          ...this.archived.map((s) => s.id),
+        ]);
+        for (const s of [...e.sessions, ...this.cold, ...this.archived]) {
+          const v = this.#view(s.id);
+          // `cold` is the server's word for "no process" — keep it on the view's own info, or a
+          // button that depends on liveness (resume vs switch) reads the wrong state.
+          v.info = { ...v.info, ...s };
+        }
         // Requests still waiting for an answer are STATE, not only events: a page that loads or
         // refreshes after they were raised never saw the event, and would show an empty screen
         // while an agent sits there waiting for a human (the operator's exact complaint).
@@ -1333,13 +1399,18 @@ class Cockpit {
           this.activeId = null;
           this.#rememberActive(null);
         }
-        if (!this.activeId && e.sessions.length) {
+        if (!this.activeId && live.size) {
           // restore the slot the operator left, else the newest one (server list
-          // is already newest-first — QA#7)
+          // is already newest-first — QA#7). Cold/archived rows count too: an instance whose only
+          // session is a resting slot should still open it instead of showing an empty cockpit.
           const remembered = this.#restoreActive();
-          const pick = remembered && live.has(remembered) ? remembered : e.sessions[0].id;
-          this.activeId = pick;
-          void this.loadHistory(pick);
+          const pick = remembered && live.has(remembered)
+            ? remembered
+            : (e.sessions[0]?.id ?? this.cold[0]?.id ?? this.archived[0]?.id);
+          if (pick) {
+            this.activeId = pick;
+            void this.loadHistory(pick);
+          }
         }
         break;
       }

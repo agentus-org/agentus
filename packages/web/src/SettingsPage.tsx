@@ -39,7 +39,10 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
   },
   {
     id: "agent", label: "智能体", hint: "槽位跑哪个后端",
-    items: [{ anchor: "set-backends", label: "后端" }],
+    items: [
+      { anchor: "set-backends", label: "后端" },
+      { anchor: "set-lifecycle", label: "槽位空闲回收" },
+    ],
   },
   {
     id: "notify", label: "通知", hint: "手机上怎么收到",
@@ -78,6 +81,10 @@ interface SettingsView {
   theme: ThemeConfig;
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
+  /** agent-process knobs (settings.agent): the idle-reclaim threshold, 0 = off */
+  agent?: { idleKillMin: number };
+  agentDefaults?: { idleKillMin: number };
+  agentIdleRange?: [number, number];
   updatedAt: number;
 }
 
@@ -150,6 +157,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [acc, setAcc] = useState<AccountInfo | null>(null);
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
+  // 槽位空闲回收 (settings.agent). Its own immediate-save control like the prefs toggles: it is one
+  // number that decides whether agent processes get killed, and making it ride the general 保存
+  // button would leave the operator wondering whether it took effect.
+  const [idleKill, setIdleKill] = useState<number | null>(null);
+  const [idleMsg, setIdleMsg] = useState("");
 
   const load = useCallback(async (): Promise<void> => {
     setErr("");
@@ -167,6 +179,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (!res.ok) throw new Error(data.error ?? `settings ${res.status}`);
       setView(data);
       setDraft((cur) => cur ?? draftOf(data));
+      if (typeof data.agent?.idleKillMin === "number") setIdleKill(data.agent.idleKillMin);
       await loadVoiceCaps(true);
       setCaps(voiceCaps());
       const [m, h] = await Promise.all([
@@ -189,6 +202,30 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   useEffect(() => { void load(); }, [load]);
 
   const dirty = Boolean(view && draft && !sameDraft(draft, draftOf(view)));
+
+  /** 槽位空闲回收 saves on its own (a number field, on blur): it is not part of the voice draft, and a
+   *  half-typed number must never be stored — the server clamps the range again on its side. */
+  const saveIdle = async (): Promise<void> => {
+    if (idleKill == null) return;
+    const [lo, hi] = view?.agentIdleRange ?? [0, 60];
+    const v = Math.max(lo, Math.min(hi, Math.round(idleKill)));
+    setIdleKill(v);
+    setIdleMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { idleKillMin: v } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setIdleMsg(v === 0 ? "已保存：空闲槽位不再被回收。" : `已保存：空闲 ${v} 分钟后停掉 agent 进程。`);
+    } catch (e) {
+      setIdleMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
 
   const save = async (): Promise<boolean> => {
     if (!draft) return false;
@@ -454,6 +491,37 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
         <h4 className="set-group" id="grp-voice" data-setgroup="voice">语音</h4>
         {/* ---------- 语音识别 ---------- */}
+        {/* ---------- 槽位空闲回收（智能体） ---------- */}
+        <section className="set-card" id="set-lifecycle" data-setgroup="agent">
+          <h3>槽位空闲回收</h3>
+          <p className="set-hint">
+            空闲超过这个时长后，自动停掉槽位的 <b>agent 进程</b> 以释放内存 —— 对话记录、模型、思考深度全都
+            保留，点一下该槽位就会重新起来（状态显示「已回收（空闲）」）。这是「回收进程」，不是「归档会话」：
+            归档只在你手动点击时发生，两者互不影响。数值对齐 AionUi 的「Agent 空闲超时」，<b>0 = 关闭</b>。
+          </p>
+          <div className="set-row">
+            <label>Agent 空闲超时（分钟）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.agentIdleRange?.[0] ?? 0}
+                max={view?.agentIdleRange?.[1] ?? 60}
+                step={5}
+                value={idleKill ?? view?.agentDefaults?.idleKillMin ?? 5}
+                onChange={(e) => setIdleKill(Number(e.target.value))}
+                onBlur={() => void saveIdle()}
+              />
+              <span className="set-hint">
+                {idleKill === 0
+                  ? "已关闭：空闲的槽位不会被回收（长跑任务可以这么做）"
+                  : `空闲 ${idleKill ?? view?.agentDefaults?.idleKillMin ?? 5} 分钟后回收`}
+              </span>
+            </div>
+          </div>
+          {idleMsg ? <p className="set-hint">{idleMsg}</p> : null}
+        </section>
+
         <section className="set-card" id="set-asr" data-setgroup="voice">
           <h3>语音识别（ASR）</h3>
           <p className="set-hint">

@@ -379,6 +379,9 @@ function groupSessions(all: { s: SessionInfo; cold: boolean }[], activeKey: stri
  *  wrong language — the row is a sentence about a session, not a debug dump. */
 const STATUS_WORD: Record<string, string> = {
   starting: "启动中", ready: "待命", running: "运行中", error: "出错", closed: "已关闭",
+  // not an error and not the operator's doing: the cockpit stopped an idle process to reclaim memory,
+  // and one click brings it back (设置 → 智能体 → Agent 空闲超时).
+  reaped: "已回收（空闲）",
 };
 
 function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
@@ -395,7 +398,9 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
       className={`be-avatar be-${backend} ${cold ? "cold" : ""} ${live ? "live" : ""}`}
       data-backend={backend}
       data-letter={mark.letter}
-      title={`${mark.label} · ${cold ? "已归档（冷会话）" : STATUS_WORD[status] ?? status}`}
+      // "cold" is about the PROCESS, not about the archive — the row's own title says whether the
+      // session was put away, and a crashed slot must not be labelled 已归档 (that is the bug).
+      title={`${mark.label} · ${cold ? "无进程" : STATUS_WORD[status] ?? status}`}
       aria-hidden="true"
     >
       {useIcon
@@ -430,15 +435,21 @@ function AgentMark({ backend }: { backend: string }): JSX.Element | null {
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onCloseSession, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, archived, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
-  info: SessionInfo; cold: boolean; canFork: boolean;
+  info: SessionInfo; cold: boolean; /** the operator put it away — independent of `cold` */
+  archived: boolean; canFork: boolean;
   onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
   onFork: () => void; onWorkspace: () => void;
   onExport: () => void;
   /** Live slots only: swap the agent process under this slot — same session and picks, new pid. */
   onRestart: () => void;
-  onResume: () => void; onCloseSession: () => void; onDelete: () => void;
+  onResume: () => void;
+  /** 归档 / 取消归档：the operator's storage decision (the server stops a live process as part of it) */
+  onArchive: () => void; onUnarchive: () => void;
+  /** 取消归档并恢复 — the one action that means "bring this conversation back to where I work" */
+  onUnarchiveResume: () => void;
+  onDelete: () => void;
 }): JSX.Element {
   const panel = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLElement | null>(trigger);
@@ -493,12 +504,18 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
       {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
       {item("导出会话（Markdown）", <IconDownload size={14} />, onExport)}
       {item("复制会话 ID", <IconCopy size={14} />, () => { void copyText(info.id); })}
-      {cold
-        ? item("取消归档并恢复", <IconResume size={14} />, onResume)
-        : item("重启 agent 进程", <IconPower size={14} />, onRestart)}
-      {cold
-        ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true)
-        : item("归档会话", <IconArchive size={14} />, onCloseSession)}
+      {/* Two independent questions, so two independent controls. ① is there a process (wake it /
+          restart it)? ② did the operator put it away? Collapsing them into one row was the old bug:
+          「归档会话」 silently meant 「关掉进程」, and a crashed slot looked archived. */}
+      {archived && cold
+        ? item("取消归档并恢复", <IconResume size={14} />, onUnarchiveResume)
+        : cold
+          ? item("恢复会话", <IconResume size={14} />, onResume)
+          : item("重启 agent 进程", <IconPower size={14} />, onRestart)}
+      {archived
+        ? (cold ? null : item("取消归档", <IconResume size={14} />, onUnarchive))
+        : item("归档会话", <IconArchive size={14} />, onArchive)}
+      {cold ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true) : null}
     </div>
   );
 }
@@ -515,7 +532,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   railWidth: number;
   railHandle: JSX.Element;
 }): JSX.Element {
-  const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const { sessions, cold, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   // ---- presence: tell the server which session is on screen, so the phone can stay quiet while
   // I am looking at it (设置 → 手机通知 → 我正在看这个会话时不推). "Looking at it" means the tab is
   // visible AND I touched the machine recently — a laptop left open with the cockpit on screen is
@@ -693,27 +710,45 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
       setRetitling("");
     }
   };
-  const menuInfo = menu ? (sessions.find((x) => x.id === menu.id) ?? archived.find((x) => x.id === menu.id) ?? null) : null;
-  const menuCold = menu ? !sessions.some((x) => x.id === menu.id) : false;
+  const menuInfo = menu
+    ? (sessions.find((x) => x.id === menu.id) ?? cold.find((x) => x.id === menu.id)
+      ?? archived.find((x) => x.id === menu.id) ?? null)
+    : null;
+  // Both facts come from the ROW (the server sends them with every list), never from which bucket it
+  // arrived in: an archived row can be live, and a cold row is not necessarily archived.
+  const menuCold = Boolean(menuInfo?.cold);
+  const menuArchived = Boolean(menuInfo?.archivedAt);
+  const pickInfo = pickFor
+    ? (sessions.find((x) => x.id === pickFor) ?? cold.find((x) => x.id === pickFor)
+      ?? archived.find((x) => x.id === pickFor) ?? null)
+    : null;
   const needle = q.trim().toLowerCase();
   const match = (s: { title: string; backend: string; cwd: string; workspace?: string | null }) =>
     !needle || `${s.title} ${s.backend} ${s.workspace || s.cwd}`.toLowerCase().includes(needle);
 
+  // 工作空间 holds every row that is NOT archived: the ones with a process (live) and the ones
+  // without (cold — closed, crashed, or reclaimed for being idle). A dead slot is still a slot the
+  // operator may want back, so it belongs here — NOT under 已归档, which is now a statement about
+  // what HE decided (see the archived flag) rather than about what happened to a process.
   const groups = useMemo(
-    () =>
-      groupSessions(
-        sessions.map((s) => ({ s, cold: false })).filter(({ s }) => match(s)),
-        activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : ""
-      ),
-    [sessions, activeId, needle]
+    () => {
+      const rows = [
+        ...sessions.map((s) => ({ s, cold: Boolean(s.cold) })),
+        ...cold.map((s) => ({ s, cold: true })),
+      ].filter(({ s }) => match(s));
+      const activeRow = [...sessions, ...cold].find((s) => s.id === activeId);
+      return groupSessions(rows, activeRow?.workspace ?? activeRow?.cwd ?? "");
+    },
+    [sessions, cold, activeId, needle]
   );
 
-  // 已归档 is a section of its own (parallel to 工作空间, as the operator asked), but built by the
-  // SAME grouping rule — same directories, same ordering — so the two sections read alike. Archived
-  // rows are exactly what `sessions` no longer holds: a closed session keeps its record and loses
-  // its process, which is what the rail calls `cold`.
+  // 已归档 is a section of its own (parallel to 工作空间, as the operator asked), built by the SAME
+  // grouping rule — same directories, same ordering — so the two sections read alike. Its contents
+  // are chosen by the ARCHIVE FLAG, not by liveness: a session the operator put away belongs here
+  // whatever its process is doing, and a session that merely lost its process stays in 工作空间.
+  // `cold` comes from the server with each row (an archived row that has been resumed is live).
   const archivedGroups = useMemo(
-    () => groupSessions(archived.map((s) => ({ s, cold: true })).filter(({ s }) => match(s)), ""),
+    () => groupSessions(archived.map((s) => ({ s, cold: Boolean(s.cold) })).filter(({ s }) => match(s)), ""),
     [archived, needle]
   );
 
@@ -800,7 +835,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                     ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
                     className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
                     data-session={s.id}
-                    title={cold ? `${s.title} — 已归档，点一下取消归档并恢复` : s.title}
+                    title={s.archivedAt
+                      ? `${s.title} — 已归档${cold ? "（进程已停）" : ""}，点一下打开；菜单里可取消归档并恢复`
+                      : `${s.title}${cold ? " — 进程已停，点一下恢复" : ""}`}
                     onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
                     onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
                     onTouchEnd={pressClear}
@@ -809,7 +846,11 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                     onClick={(e) => {
                       if (pressFired.current) { pressFired.current = false; e.preventDefault(); return; }
                       if (editing === s.id) return;
-                      if (cold) void cockpit.resume(s.id); else cockpit.setActive(s.id);
+                      // An ARCHIVED row opens for reading: it was put away on purpose, so a plain
+                      // click must not quietly undo that (the menu's 「取消归档并恢复」 is the
+                      // statement that means it). A cold row in 工作空间 wakes on click, as before.
+                      if (cold && !s.archivedAt) void cockpit.resume(s.id);
+                      else cockpit.setActive(s.id);
                     }}
                   >
                     <BackendAvatar backend={s.backend} cold={cold} status={s.status} />
@@ -993,7 +1034,8 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
       </div>
       {menu && menuInfo ? createPortal(<SessionMenu
           x={menu.x} y={menu.y} trigger={menu.trigger}
-          info={menuInfo} cold={menuCold} canFork={Boolean(menuInfo.acpSessionId) || menuCold}
+          info={menuInfo} cold={menuCold} archived={menuArchived}
+          canFork={Boolean(menuInfo.acpSessionId) || menuCold}
           onDismiss={() => setMenu(null)}
           onRename={() => startRename(menuInfo)}
           retitling={retitling === menuInfo.id}
@@ -1010,14 +1052,17 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
             document.body.appendChild(a); a.click(); a.remove();
           }}
           onResume={() => { setMenu(null); void cockpit.resume(menuInfo.id); }}
+          onArchive={() => {
+            setMenu(null);
+            if (confirm(`归档“${menuInfo.title}”？\n\n收进「已归档」，随时可以取消归档并恢复。${
+              menuCold ? "" : "运行中的 agent 进程会一起停掉（对话记录保留）。"}`)) void cockpit.setArchived(menuInfo.id, true);
+          }}
+          onUnarchive={() => { setMenu(null); void cockpit.setArchived(menuInfo.id, false); }}
+          onUnarchiveResume={() => { setMenu(null); void cockpit.unarchiveAndResume(menuInfo.id); }}
           onRestart={() => {
             setMenu(null);
             // The one honest warning: this kills the process, so a turn in flight dies with it.
             if (confirm(`重启“${menuInfo.title}”的 agent 进程？\n\n旧进程退出、新进程接管同一个会话：对话记录、模型和思考深度都保留，只有进程换新（改完代码或改了后端配置后，用它让槽位吃到新东西）。正在跑的这一轮会被中断。`)) void cockpit.restart(menuInfo.id);
-          }}
-          onCloseSession={() => {
-            setMenu(null);
-            if (confirm(`归档“${menuInfo.title}”？\n\nagent 进程会退出，记录保留在归档里（随时可取消归档并恢复）。`)) cockpit.closeSession(menuInfo.id);
           }}
           onDelete={() => {
             setMenu(null);
@@ -1032,8 +1077,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
               文件面板与终端以它为根。运行中的 agent 仍留在启动时的目录 —— 新目录对下一次恢复生效。
             </div>
             <WorkspacePicker
-              value={(sessions.find((x) => x.id === pickFor) ?? archived.find((x) => x.id === pickFor))?.workspace
-                ?? (sessions.find((x) => x.id === pickFor) ?? archived.find((x) => x.id === pickFor))?.cwd ?? ""}
+              value={pickInfo?.workspace ?? pickInfo?.cwd ?? ""}
               onChange={(path) => { const id = pickFor; setPickFor(""); void cockpit.setWorkspace(id, path); }}
             />
             <div className="row"><button className="cancel" onClick={() => setPickFor("")}>取消</button></div>
