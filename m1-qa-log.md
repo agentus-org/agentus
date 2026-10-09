@@ -291,7 +291,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 ## R45–R45c · 公网隧道（SakuraFrp）+ 应用层 HTTP Basic
 
-**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentus`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `REDACTED-TUNNEL`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
+**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentus`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `<tunnel-host>`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
 
 **R45a 认证分层实测**
 - j→Mac:8787 前置条件 OK（`/healthz` 200），隧道启动成功、online=true。
@@ -301,7 +301,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **R45b/R45c 浏览器端到端（真 Edge + CDP）**
 - 裸访问隧道 URL → 自签证书拦一次（`NET::ERR_CERT_AUTHORITY_INVALID`）。
 - 首次测试用 URL 内嵌凭据（`https://user:pass@host`）→ 应用能加载但**页内 fetch 全废**：`Request cannot be constructed from a URL that includes credentials`（Chrome 行为，非产品 bug）→ 改用正规 CDP：`Security.setIgnoreCertificateErrors` + `Fetch.enable({handleAuthRequests:true})` 响应 `Fetch.authRequired` 填凭据。
-- 换新 origin（`dx./lt.REDACTED-TUNNEL`）严格复验：**匿名 → 1 次 Basic 挑战 → 应用加载 → 登录 admin → 驾驶舱 `● online`（WS 穿隧道成功）、rail 16 槽**；`/api/auth/me` 返回 `{who:"admin",kind:"session"}`。
+- 换新 origin（`dx./<tunnel-host>`）严格复验：**匿名 → 1 次 Basic 挑战 → 应用加载 → 登录 admin → 驾驶舱 `● online`（WS 穿隧道成功）、rail 16 槽**；`/api/auth/me` 返回 `{who:"admin",kind:"session"}`。
 - Cookie 走 HTTPS 隧道时为 `Secure: true / HttpOnly: true / SameSite: Lax` → natfrp 确实转发了 `X-Forwarded-Proto: https`，代码里的判定生效。
 
 **自动化**：`npm run auth-smoke` 扩到 **40 项**（新增 server D：Basic 开启下匿名 `/healthz`、`/`、`/api` 全 401、挑战头存在、错口令 401、对口令 200、WS 无凭据拒、WS 有凭据 `hello`）。全绿。
@@ -312,16 +312,16 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **代码**（`auth.ts`）：`AGENTUS_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
 
-**配置**：口令改为 `REDACTED-PASS`（与现有 nano_ssh/openclaw 等服务的 `auth_pass` 同口令，少记一个）。
+**配置**：口令改为 `<REDACTED-PASS>`（与现有 nano_ssh/openclaw 等服务的 `auth_pass` 同口令，少记一个）。
 
 **实测**
 | 场景 | 结果 |
 |---|---|
 | 本机匿名 / 错口令 | 401 / 401 |
-| 本机 `admin:REDACTED-PASS`、`:REDACTED-PASS`（空用户名）、`随便填:REDACTED-PASS` | 全 200 |
+| 本机 `admin:<REDACTED-PASS>`、`:<REDACTED-PASS>`（空用户名）、`随便填:<REDACTED-PASS>` | 全 200 |
 | 隧道外匿名 / 带正确口令 | 401 / 200（返回真实 `/healthz` JSON） |
-| 隧道外 `whatever:REDACTED-PASS` | 200 |
-| 浏览器（新 origin `yd.REDACTED-TUNNEL`，用户名随便填 `admin`） | 1 次挑战 → 登录页 → 应用登录 → 驾驶舱 **`● online`**（WS 穿隧道） |
+| 隧道外 `whatever:<REDACTED-PASS>` | 200 |
+| 浏览器（新 origin `<tunnel-host>`，用户名随便填 `admin`） | 1 次挑战 → 登录页 → 应用登录 → 驾驶舱 **`● online`**（WS 穿隧道） |
 
 **自动化**：`auth-smoke` 扩到 **48 项** —— 新增 server E（`:pass` 形式：匿名仍 401 即"没有静默关闭"、空用户名/任意用户名过、错口令 401、WS 通过）与 server F（裸 `pass` 形式）。全绿。
 
@@ -331,18 +331,18 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **改动**
 - `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("AGENTUS_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
-- 樱花侧写回 `extra = "auth_pass = REDACTED-PASS\nauto_https = auto"` 并重启 frpc 单元（`extra` 二次确认）。
+- 樱花侧写回 `extra = "auth_pass = <REDACTED-PASS>\nauto_https = auto"` 并重启 frpc 单元（`extra` 二次确认）。
 
 **实测**
 | 场景 | 结果 |
 |---|---|
 | 本地 / 局域网匿名 | `GET /` **200**（无 Basic 提示）、`/api/sessions` 401（登录门）、`/healthz` 200 |
-| 隧道匿名 | **SakuraFrp 访问认证页**（"当前 IP REDACTED-IP 尚未完成访问认证"），非 401 |
+| 隧道匿名 | **SakuraFrp 访问认证页**（"当前 IP <REDACTED-IP> 尚未完成访问认证"），非 401 |
 | 樱花认证页 | 表单 `#pw` 访问密码 + 「记住我」+ 提交；提交后提示"认证成功, 现在可以关闭页面并正常连接隧道了" → **IP 级授权**，需重新访问 |
 | 认证后重新访问（真浏览器） | 直接进驾驶舱（会话 Cookie 仍有效）→ rail 16 槽、**`● online`**、`/api/sessions` 200 |
 | **关键验证：WebSocket 是否穿得过樱花那层** | **穿得过** —— 认证授权后 WS 正常建立并保持（这是双层方案能否成立的前提） |
 
-截图：`screens/11-sakura-auth-page.png`（樱花认证页）、`screens/12-tunnel-via-sakura-auth.png`（隧道内的驾驶舱，页脚 `● online · REDACTED-TUNNEL`）。
+截图：`screens/11-sakura-auth-page.png`（樱花认证页）、`screens/12-tunnel-via-sakura-auth.png`（隧道内的驾驶舱，页脚 `● online · <tunnel-host>`）。
 
 **副作用记录**：`launch.py` 里 `env.pop` 之后，本地开发若想再开 Basic 只需取消 `basic_auth.txt` 注释里的那行；`auth-smoke` 的 48 项里 server D/E/F 用显式环境变量自起服务器，不受本次关闭影响（仍全绿）。
 

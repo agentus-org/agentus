@@ -298,7 +298,7 @@ await sleep(300);
 // malformed-looking config must FAIL CLOSED (gate everyone) rather than silently
 // turn the lock off. That is the regression this section guards.
 const dataE = mkdtempSync(path.join(tmpdir(), "agentus-authE-"));
-const ONLY_PW = "REDACTED-PASS";
+const ONLY_PW = "pw-only-fixture";
 const e = await boot(8895, dataE, { AGENTUS_BASIC_AUTH: `:${ONLY_PW}`, AGENTUS_AUTH: "off" });
 const pw = (user) => ({ authorization: `Basic ${Buffer.from(`${user}:${ONLY_PW}`).toString("base64")}` });
 
