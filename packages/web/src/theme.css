@@ -935,7 +935,18 @@ code.inline {
    The panel is a sibling of the chat column, not an overlay on desktop: reading a
    file while the agent keeps streaming is the whole point of having it. */
 .main-body { flex: 1; display: flex; min-height: 0; }
-.chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-col {
+  flex: 1; display: flex; flex-direction: column; min-width: 0;
+  /* The chat column is the SIZING CONTAINER for the reply column and the composer (the
+     `@container` rule at the end of this file). Why a container and not a viewport width:
+     the operator reported 「会话页会向左右延展，我们好像没有」 and the reference (AionUi,
+     `pages/conversation/utils/chatSurfaceWidth.ts` + `Messages/messages.css`) sizes its chat
+     surface off the column it is handed, `calc(100% - clamp(80px,10cqw,240px))` — so a widened
+     window widens the transcript, and opening the workspace panel (which takes 430px from
+     THIS column) shrinks the gutter with it. A `vw`-based rule would keep the gutter sized for
+     a column that no longer exists and squeeze the text exactly when the panel is open. */
+  container-type: inline-size;
+}
 .tool-panel {
   width: min(430px, 42vw); flex: 0 0 auto; display: flex; flex-direction: column;
   min-height: 0; border-left: 1px solid var(--line); background: var(--bg-panel);
@@ -1969,3 +1980,27 @@ code.inline {
   .be-modal { width: 100%; max-height: 92vh; border-radius: 14px 14px 0 0; }
 }
 @media (max-width: 720px) { .be-row { flex-direction: column; } }
+
+/* ---- the reply column and the composer size themselves off the CHAT COLUMN -------------
+   Reported: 「在电脑端，会话页会向左右延展，我们好像没有自动延展」. Both were a hard 780px
+   (`max-width`), so a wide window bought nothing but margin. Referenced behaviour is AionUi's
+   chat surface (`Messages/messages.css`): full width until the container is wide enough, then
+   `calc(100% - clamp(80px, 10cqw, 240px))` — a gutter allotted in proportion to the column.
+
+   Two deliberate choices:
+     · **The threshold is where the two rules MEET, not a round number.** At a column of ~870px
+       the fluid form and the 780px cap are the same width (`870 - clamp(80,87,240) ≈ 783`), so
+       the column grows monotonically through the switch instead of jumping or shrinking.
+     · **It is a container query, not a media query**, so opening the workspace panel (which
+       takes 430px from this column) drops back under the threshold and the transcript fills the
+       narrower column instead of keeping a gutter sized for a column that no longer exists.
+   A phone (column ≤ 720px) never matches it, so the mobile layout is untouched.
+
+   Placed at the END of the file on purpose: `.composer-inner` is defined ~1400 lines above and
+   an equal-specificity rule that comes later wins the cascade. */
+@container (min-width: 870px) {
+  .stream-inner, .composer-inner {
+    max-width: none;
+    width: calc(100% - clamp(80px, 10cqw, 240px));
+  }
+}
