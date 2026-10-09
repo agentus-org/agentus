@@ -416,6 +416,11 @@ export class SessionManager {
       live.info.models = readModels(res);
       // the row just proved itself: remember that, plus what the agent said it can do
       this.#noteBackendCheck(String(backend), { ok: true, latencyMs: Date.now() - spawnStarted }, handshakeFrom(init, res));
+      // The row's DEFAULT permission mode, applied HERE: on a brand-new session, before the first
+      // prompt. Hermes reads its mode through a live getter (acp_adapter/server.py `policy_getter`),
+      // so the very first turn is already governed by it. A later `resume()` never passes through
+      // this method — that is exactly what keeps a per-session pick from being silently undone.
+      await this.#applyDefaultMode(live);
       this.#updateSession(live);
       return live.info;
     } catch (err) {
@@ -825,6 +830,47 @@ export class SessionManager {
     }
     console.log(`[agentus] cancel sent for ${sessionId}`);
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
+  }
+
+  /**
+   * Put a NEW session into its backend row's default permission mode (BackendRow.defaultMode).
+   * Called from `create()` only — see the call site for why a resume must never do this.
+   *
+   * Three refusals are deliberate:
+   *  · a row with no default sends NOTHING (the agent keeps its own default) — so a registry the
+   *    operator never touched behaves exactly as it did before this existed;
+   *  · a mode the agent did not advertise is not sent either: it would come back as a refusal nobody
+   *    sees, and the settings row already wears a warning saying the pick does not match this
+   *    agent's handshake (registry.rowWarnings);
+   *  · a failure NEVER fails the slot. The session is usable, just in the agent's own mode — and the
+   *    log line is the only evidence of which of those two happened, so it is not optional.
+   */
+  async #applyDefaultMode(live: LiveSession): Promise<void> {
+    const wanted = (this.#store.getBackend(String(live.info.backend))?.defaultMode ?? "").trim();
+    if (!wanted) return;
+    const modes = live.info.modes;
+    const acpSessionId = live.info.acpSessionId;
+    if (!modes || !live.conn || !acpSessionId) return;
+    const ids = (modes.availableModes ?? []).map((m) => m.id);
+    if (!ids.includes(wanted)) {
+      console.log(
+        `[agentus] session ${live.info.id}: default permission mode "${wanted}" is not advertised by ` +
+          `${String(live.info.backend)} (${ids.join(", ") || "no modes"}) — sending nothing`,
+      );
+      return;
+    }
+    if (modes.currentModeId === wanted) return;
+    try {
+      await live.conn.setSessionMode({ sessionId: acpSessionId, modeId: wanted });
+      live.info.modes = { ...modes, currentModeId: wanted };
+      console.log(`[agentus] session ${live.info.id}: default permission mode -> ${wanted}`);
+    } catch (e) {
+      // qodercli advertises modes but answered -32601 in the design probe, so "advertised but not
+      // implemented" is a real case — same tolerance as setMode(), and never a failed spawn.
+      console.log(
+        `[agentus] session ${live.info.id}: default permission mode "${wanted}" not applied: ${errMessage(e)}`,
+      );
+    }
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {

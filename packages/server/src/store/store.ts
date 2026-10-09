@@ -182,6 +182,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
 interface RawBackendRow {
   id: string; label: string; kind: string; cmd: string; args: string; env: string;
   home: string | null; profile: string | null; cwd: string | null; notes: string;
+  default_mode: string | null;
   native_plan_source: string | null;
   builtin: number; created_at: number; updated_at: number;
   // health snapshot (M6.1) — system-written, see registry.BackendHealth
@@ -212,6 +213,9 @@ function rowToBackend(r: RawBackendRow): BackendRow {
     home: r.home ?? null,
     profile: r.profile ?? null,
     cwd: r.cwd ?? null,
+    // A row predating the column (or a seeded one) says nothing: send no mode at all, so the agent
+    // keeps its own default. No mode name is invented here — "缺省" must mean "不上手".
+    defaultMode: (r.default_mode ?? "").trim() || null,
     notes: r.notes ?? "",
     builtin: r.builtin === 1,
     health: {
@@ -304,6 +308,8 @@ export class Store {
         id text primary key, label text not null, kind text not null,
         cmd text not null, args text not null default '[]', env text not null default '{}',
         home text, profile text, cwd text, notes text not null default '',
+        -- the ACP mode a NEW session from this row starts in (null = the agent's own default)
+        default_mode text,
         builtin integer not null default 0,
         created_at integer not null, updated_at integer not null
       );
@@ -362,6 +368,9 @@ export class Store {
       // P1 (plan service): which channel carries this backend's plan, `acp` | `none`. Nullable on
       // purpose — a row that predates it follows the same default as a seeded one (see rowToBackend).
       "native_plan_source",
+      // The permission mode a new session starts in. Nullable like the rest: a row that predates the
+      // column means "send nothing" (the agent's own default), not "some mode we invented".
+      "default_mode",
     ]) {
       if (!beCols.has(col)) this.#db.exec(`alter table backends add column ${col} text`);
     }
@@ -1153,16 +1162,18 @@ export class Store {
     this.#db
       .prepare(
         `insert into backends (id, label, kind, cmd, args, env, home, profile, cwd, notes,
+                               default_mode,
                                native_plan_source,
                                builtin, created_at, updated_at,
                                last_check_status, last_check_kind, last_check_error_code,
                                last_check_error_message, last_check_guidance, last_check_latency_ms,
                                last_check_at, last_success_at, last_failure_at, handshake, handshake_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(id) do update set
            label = excluded.label, kind = excluded.kind, cmd = excluded.cmd, args = excluded.args,
            env = excluded.env, home = excluded.home, profile = excluded.profile, cwd = excluded.cwd,
            notes = excluded.notes,
+           default_mode = excluded.default_mode,
            native_plan_source = excluded.native_plan_source,
            updated_at = excluded.updated_at,
            -- the evidence travels with the row: a spawn-relevant edit replaces it with a cleared
@@ -1179,6 +1190,7 @@ export class Store {
       .run(
         row.id, row.label, row.kind, row.cmd, JSON.stringify(row.args), JSON.stringify(row.env ?? {}),
         row.home, row.profile, row.cwd, row.notes ?? "",
+        row.defaultMode ?? null,
         row.nativePlanSource ?? null,
         row.builtin ? 1 : 0, row.createdAt, row.updatedAt,
         row.health?.status ?? null, row.health?.kind ?? null, row.health?.errorCode ?? null,

@@ -73,6 +73,9 @@ export interface BackendView {
    *  tool at handshake time (every backend's default — the card renders the cockpit's object, which
    *  survives a restart), `acp` = an escape hatch that renders the agent's own plan frames instead. */
   nativePlanSource?: "acp" | "none";
+  /** The permission mode a NEW session from this row starts in (an ACP mode id), or null/absent for
+   *  "send nothing, the agent keeps its own default". Never applied to a resumed session. */
+  defaultMode?: string | null;
   warnings?: string[];
   /** last known health (system-written; see BackendHealth on the server) */
   health?: BackendHealthView;
@@ -101,7 +104,7 @@ export interface BackendHandshakeView {
   protocolVersion: number | null;
   loadSession: boolean | null;
   fork: boolean | null;
-  modes: { currentModeId: string | null; available: string[] } | null;
+  modes: { currentModeId: string | null; available: string[]; names?: Record<string, string> } | null;
   configOptions: { id: string; name: string | null; currentValue: string | null }[];
   models: { currentModelId: string | null; available: string[] } | null;
   commands: string[];
@@ -146,6 +149,7 @@ export interface BackendInput {
   home?: string | null;
   profile?: string | null;
   cwd?: string | null;
+  defaultMode?: string | null;
   notes?: string;
   nativePlanSource?: string;
 }

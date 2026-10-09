@@ -197,6 +197,8 @@ async function main() {
     const forkRow = {
       id: "qa-fork", label: "QA fork", kind: "hermes", cmd: HERMES_CMD, args: "acp",
       env: { PYTHONPATH: FORK }, home, profile: "default",
+      // the row's default permission mode: asserted against the real adapter in 4c
+      defaultMode: "dont_ask",
       notes: "smoke: fork tree + throwaway home",
     };
     const created = await api("POST", "/api/backends", forkRow);
@@ -293,6 +295,86 @@ async function main() {
         && Array.isArray(mockAfter.handshake.commands),
       `protocol=${mockAfter?.handshake?.protocolVersion} load=${mockAfter?.handshake?.loadSession} modes=${Boolean(mockAfter?.handshake?.modes)}`);
 
+    // 4b. the row's DEFAULT permission mode — 「在智能体设置中设置默认选中权限」. The mock advertises
+    //     three modes (default / accept_edits / dont_ask) and implements setSessionMode, so the whole
+    //     create-time path is provable here with no token and no real agent. What matters is not that
+    //     the mode can be set (the session popover does that) but WHERE it applies: a NEW session
+    //     only, never over a conversation's own pick.
+    check("a row that names no default sends nothing (the agent's own mode survives)",
+      mockAfter?.defaultMode === null || mockAfter?.defaultMode === undefined,
+      `defaultMode=${JSON.stringify(mockAfter?.defaultMode)}`);
+    check("the cached handshake carries mode NAMES too (the settings picker offers these)",
+      typeof mockAfter?.handshake?.modes?.names?.dont_ask === "string",
+      JSON.stringify(mockAfter?.handshake?.modes?.names ?? null));
+
+    const mkSession = async (backend, title) => {
+      const r = await api("POST", "/api/sessions", { backend, cwd: tmpdir(), title });
+      if (r.status !== 201) return { r, live: null };
+      const id = r.json?.id;
+      let live = null;
+      for (let i = 0; i < 90 && !live; i++) {
+        await sleep(1000);
+        live = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === id) ?? null;
+        if (live && live.status !== "starting") break;
+      }
+      return { r, live };
+    };
+
+    const created2 = await api("POST", "/api/backends", {
+      id: "qa-mode", label: "QA default mode", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      defaultMode: "dont_ask", notes: "smoke: default permission mode",
+    });
+    check("a row can be created with a default permission mode", created2.status === 201,
+      `status=${created2.status} ${created2.text.slice(0, 120)}`);
+    const modeRow = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-mode");
+    check("...and it round-trips through GET /api/backends", modeRow?.defaultMode === "dont_ask",
+      `defaultMode=${modeRow?.defaultMode}`);
+
+    const s1 = await mkSession("qa-mode", "default mode smoke");
+    check("a NEW session comes up in the row's default permission mode",
+      s1.live?.modes?.currentModeId === "dont_ask" && s1.r.json?.modes?.currentModeId === "dont_ask",
+      `live=${s1.live?.modes?.currentModeId} create=${s1.r.json?.modes?.currentModeId} ${s1.live?.lastError ?? ""}`);
+
+    // The per-session pick wins, and resuming must NOT re-apply the row default over it — the failure
+    // this checks for is a default that silently overwrites what a conversation was already using.
+    const pick = await api("POST", `/api/sessions/${s1.live?.id}/mode`, { modeId: "accept_edits" });
+    check("the session's own permission pick still wins", pick.status === 200,
+      `status=${pick.status} ${pick.text.slice(0, 100)}`);
+    await api("DELETE", `/api/sessions/${s1.live?.id}`);
+    await sleep(800);
+    const rs = await api("POST", `/api/sessions/${s1.live?.id}/resume`);
+    check("the archived slot resumes", rs.status === 200, `status=${rs.status} ${rs.text.slice(0, 120)}`);
+    let rLive = null;
+    for (let i = 0; i < 90 && !rLive; i++) {
+      await sleep(1000);
+      rLive = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === s1.live?.id) ?? null;
+      if (rLive && rLive.status !== "starting") break;
+    }
+    check("a resumed session keeps ITS pick (the row default is not re-applied)",
+      rLive?.modes?.currentModeId === "accept_edits",
+      `mode=${rLive?.modes?.currentModeId} status=${rLive?.status} ${rLive?.lastError ?? ""}`);
+    await api("DELETE", `/api/sessions/${s1.live?.id}`);
+
+    // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
+    // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".
+    await api("PATCH", "/api/backends/qa-mode", { defaultMode: "no_such_mode" });
+    const warned = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-mode");
+    check("a default the agent never advertised is called out on the row",
+      (warned?.warnings ?? []).some((w) => String(w).includes("no_such_mode")),
+      JSON.stringify(warned?.warnings ?? []));
+    check("editing the default mode keeps the row's handshake (it is not a spawn-relevant field)",
+      Boolean(warned?.handshake?.at), `handshake=${Boolean(warned?.handshake?.at)}`);
+    const s2 = await mkSession("qa-mode", "unadvertised default mode");
+    check("...and it is NOT sent (the session comes up in the agent's own mode)",
+      s2.live?.modes?.currentModeId === "default",
+      `mode=${s2.live?.modes?.currentModeId} status=${s2.live?.status} ${s2.live?.lastError ?? ""}`);
+    await api("DELETE", `/api/sessions/${s2.live?.id}`);
+    await sleep(500);
+    const delMode = await api("DELETE", "/api/backends/qa-mode");
+    check("the default-mode row deletes once its sessions are gone", delMode.status === 200,
+      `status=${delMode.status} ${delMode.text.slice(0, 100)}`);
+
     // 4c. a row that really spawns the operator's tree (only where that tree exists)
     if (LOCAL.hermes) {
       const hs = await api("POST", "/api/sessions", { backend: "qa-fork", cwd: tmpdir(), title: "hermes row smoke" });
@@ -306,6 +388,20 @@ async function main() {
       }
       check("the hermes slot reached a non-starting state", Boolean(hLive) && hLive.status !== "starting",
         `status=${hLive?.status} ${hLive?.lastError ?? ""}`);
+      // The REAL adapter contract for the round's feature: a hermes session created from a row that
+      // names a default permission mode comes up in it. Judgeable only against what THIS hermes
+      // advertises (an older runtime may offer no modes at all), so it is asserted, not assumed.
+      const forkModes = ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork")?.handshake?.modes;
+      if (forkModes?.available?.includes("dont_ask")) {
+        check("a real hermes session comes up in the row's default permission mode",
+          hLive?.modes?.currentModeId === "dont_ask", `mode=${hLive?.modes?.currentModeId}`);
+        check("...and the row keeps it across the create (the setting is not consumed)",
+          ((await api("GET", "/api/backends")).json ?? []).find((b) => b.id === "qa-fork")?.defaultMode === "dont_ask",
+          "qa-fork.defaultMode");
+      } else {
+        skip("the hermes default-permission-mode check",
+          `this hermes advertises modes: ${JSON.stringify(forkModes?.available ?? null)}`);
+      }
       const env = hLive?.pid ? psEnv(hLive.pid) : {};
       // The home is the isolation proof that must hold every time (the child writes there, not into
       // the live runtime). PYTHONPATH is printed, not asserted: the hermes CLI may drop it while

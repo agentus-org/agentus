@@ -53,6 +53,18 @@ export interface BackendRow {
   profile: string | null;
   /** default working directory for new slots (null = the dialog asks) */
   cwd: string | null;
+  /**
+   * The permission mode a NEW session from this row starts in — an ACP mode id (`default` /
+   * `accept_edits` / `dont_ask` today), or null for "send nothing, the agent keeps its own default".
+   *
+   * Applied at CREATION only: a resumed session already carries the mode its operator picked for it
+   * (Hermes persists it in the session's own meta), so re-applying the row's default on load would
+   * silently undo a per-session choice — the row declares where a conversation STARTS, nothing more.
+   *
+   * A mode the agent did not advertise is not sent (see rowWarnings): the session then comes up in
+   * the agent's own mode, and the row says so instead of the pick quietly doing nothing.
+   */
+  defaultMode: string | null;
   notes: string;
   /** seeded row (the ones that used to be env-driven); editable, but flagged in the UI */
   builtin: boolean;
@@ -191,7 +203,7 @@ export interface BackendHandshake {
   loadSession: boolean | null;
   /** agentCapabilities.sessionCapabilities.fork */
   fork: boolean | null;
-  modes: { currentModeId: string | null; available: string[] } | null;
+  modes: { currentModeId: string | null; available: string[]; names?: Record<string, string> } | null;
   configOptions: { id: string; name: string | null; currentValue: string | null }[];
   models: { currentModelId: string | null; available: string[] } | null;
   /** slash commands the agent announced (session/update or newSession) */
@@ -223,6 +235,9 @@ export function seedRows(now = Date.now()): BackendRow[] {
       home: null,
       profile: null,
       cwd: null,
+      // Nothing is sent: a freshly seeded row behaves exactly as the pre-feature cockpit did, and
+      // the operator opts a row in from the settings page.
+      defaultMode: null,
       notes: notes[id] ?? "",
       builtin: true,
       health: emptyHealth(),
@@ -283,8 +298,30 @@ export function planFor(row: BackendRow): BackendPlan {
   }
 }
 
-const ID_RE = /^[a-z0-9][a-z0-9._-]{0,40}$/;
+/**
+ * Everything a row should wear as a warning in the settings list, resolved in ONE place: the spawn
+ * concerns (`planFor`) plus the declarations that are silently INERT when they disagree with what the
+ * agent advertised. The failure this exists to prevent is a pick the operator set, believes in, and
+ * never sees take effect.
+ *
+ * The default mode is only judgeable against a real handshake — before the row's first session the
+ * cockpit knows nothing about that agent's modes, and a "cannot check yet" line would sit on every
+ * fresh row.
+ */
+export function rowWarnings(row: BackendRow): string[] {
+  const out = [...planFor(row).warnings];
+  const wanted = (row.defaultMode ?? "").trim();
+  const advertised = row.handshake?.modes?.available ?? [];
+  if (wanted && advertised.length && !advertised.includes(wanted)) {
+    out.push(
+      `默认权限「${wanted}」不在这个后端上次握手报出的档位里（${advertised.join(" / ")}）` +
+        `—— 新建会话不会用它，会话会照 agent 自己的默认来。`,
+    );
+  }
+  return out;
+}
 
+const ID_RE = /^[a-z0-9][a-z0-9._-]{0,40}$/;
 /** Shape an arbitrary request body into a row. `base` = the row being edited (PATCH). */
 export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { row?: BackendRow; error?: string } {
   const now = Date.now();
@@ -337,6 +374,10 @@ export function coerceRow(body: Record<string, unknown>, base?: BackendRow): { r
       home: body.home === undefined ? (base?.home ?? null) : (s(body.home) || null),
       profile: body.profile === undefined ? (base?.profile ?? null) : (s(body.profile) || null),
       cwd: body.cwd === undefined ? (base?.cwd ?? null) : (s(body.cwd) || null),
+      // Not spawn-relevant, so it is deliberately ABSENT from `edited` below: which mode a new
+      // session starts in says nothing about which command this row resolves to, and clearing the
+      // health/handshake evidence over it would forget what the agent can do.
+      defaultMode: body.defaultMode === undefined ? (base?.defaultMode ?? null) : (s(body.defaultMode) || null),
       notes: body.notes === undefined ? (base?.notes ?? "") : s(body.notes),
       builtin: base?.builtin ?? false,
       // Health is evidence about the CURRENT spawn definition, so changing that definition
@@ -554,6 +595,14 @@ export function handshakeFrom(
     ? {
         currentModeId: s.modes.currentModeId ?? null,
         available: (s.modes.availableModes ?? []).map((m) => m.id),
+        // The DISPLAY name travels with the id: the settings page offers these as the default-mode
+        // picker (「Accept Edits」, not `accept_edits`), and this cache is the only place a row that
+        // is not running can learn what its agent calls its modes.
+        names: Object.fromEntries(
+          (s.modes.availableModes ?? [])
+            .filter((m) => m.id)
+            .map((m) => [m.id, (m as { name?: string }).name || m.id]),
+        ),
       }
     : null;
   const models = s.models

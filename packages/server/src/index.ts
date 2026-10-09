@@ -14,7 +14,7 @@ import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } 
 import { SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
-import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, seedRows, startupCheck } from "./acp/registry.js";
+import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
@@ -620,7 +620,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             // settings page shows it next to the row: it is the one declaration an operator may
             // want to flip when an agent gains (or loses) native plan support.
             nativePlanSource: row.nativePlanSource,
-            warnings: plan.warnings,
+            // Which permission mode a NEW session from this row starts in (null = the agent's own
+            // default); the settings page edits it next to the other row declarations.
+            defaultMode: row.defaultMode,
+            warnings: rowWarnings(row),
             health: row.health, handshake: row.handshake,
           };
         }),
@@ -633,7 +636,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (store.getBackend(row.id)) return send(res, 409, { error: `backend ${row.id} already exists` });
       store.upsertBackend(row);
       const plan = planFor(row);
-      return send(res, 201, { ok: true, id: row.id, warnings: plan.warnings });
+      return send(res, 201, { ok: true, id: row.id, warnings: rowWarnings(row) });
     }
     const beMatch = url.pathname.match(/^\/api\/backends\/([\w.-]+)(\/.*)?$/);
     if (beMatch) {
@@ -643,7 +646,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (!existing) return send(res, 404, { error: `unknown backend: ${beId}` });
       if (req.method === "GET" && beSub === "") {
         const plan = planFor(existing);
-        return send(res, 200, { ...existing, home: plan.home, warnings: plan.warnings });
+        return send(res, 200, { ...existing, home: plan.home, warnings: rowWarnings(existing) });
       }
       if ((req.method === "PATCH" || req.method === "PUT") && beSub === "") {
         const body = (await readJson(req)) as Record<string, unknown>;
@@ -651,7 +654,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!row) return send(res, 400, { error });
         store.upsertBackend(row);
         const plan = planFor(row);
-        return send(res, 200, { ok: true, id: row.id, warnings: plan.warnings });
+        return send(res, 200, { ok: true, id: row.id, warnings: rowWarnings(row) });
       }
       if (req.method === "DELETE" && beSub === "") {
         // A row that OPEN sessions still name must stay: deleting it would leave them pointing

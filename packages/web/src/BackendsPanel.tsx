@@ -17,6 +17,7 @@ import { cockpit, type BackendInspect, type BackendInput, type BackendView } fro
 const EMPTY: BackendInput = {
   id: "", label: "", kind: "hermes", cmd: "hermes", args: "acp",
   env: "", home: "", profile: "", cwd: "", notes: "",
+  defaultMode: "",
   nativePlanSource: "none",
 };
 
@@ -46,9 +47,18 @@ function draftOf(row: BackendView): BackendInput {
     home: row.home ?? "",
     profile: row.profile ?? "",
     cwd: row.cwd ?? "",
+    defaultMode: row.defaultMode ?? "",
     notes: row.notes ?? "",
     nativePlanSource: row.nativePlanSource ?? "none",
   };
+}
+
+/** The name a row's cached handshake calls one of its modes. Falls back to the id: a row edited
+ *  before its last handshake, or a mode the agent has since dropped, must still render as SOMETHING
+ *  rather than as a blank cell. */
+function modeLabel(row: BackendView, id: string): string {
+  const name = row.handshake?.modes?.names?.[id];
+  return name && name !== id ? `${name}（${id}）` : id;
 }
 
 function Badge({ tone, children }: { tone: "warn" | "danger" | "dim" | "ok"; children: React.ReactNode }): JSX.Element {
@@ -188,13 +198,43 @@ export function BackendsPanel(): JSX.Element {
   const field = <K extends keyof BackendInput>(k: K, v: BackendInput[K]) =>
     setDraft((d) => ({ ...(d ?? EMPTY), [k]: v }));
 
+  // The default-permission picker's options are what THIS row's agent advertised the last time it
+  // really started — the cached handshake is the only thing that can name a stopped row's modes. A
+  // row that has never run a session has no handshake, so the picker honestly offers only 「不指定」
+  // (the id is not guessable from the cockpit: it is the agent's own vocabulary).
+  const editingRow = editing ? rows.find((r) => r.id === editing) ?? null : null;
+  const handshakeModes = editingRow?.handshake?.modes ?? null;
+  const modeChoices = (handshakeModes?.available ?? []).map((id) => ({
+    id,
+    name: handshakeModes?.names?.[id] ?? id,
+  }));
+  // A stored pick this agent no longer advertises stays visible (and selected) instead of being
+  // silently dropped from the list — the row is where it must be correctable.
+  const staleMode = Boolean(draft?.defaultMode) && !modeChoices.some((m) => m.id === draft?.defaultMode);
+
   const save = async () => {
     if (!draft) return;
     setBusy("save"); setErr(""); setMsg("");
     try {
       if (editing) {
-        const patch = { ...draft };
-        delete (patch as { id?: string }).id; // the id is the key, not a patchable field
+        // Send ONLY what changed. The server treats the PRESENCE of a spawn-relevant field as "this
+        // row was redefined" and invalidates its health + cached handshake — so a full-body save
+        // (which is what `{...draft}` is) wipes that evidence on every edit, including one that only
+        // moved the default permission. Worse, `env` arrives as the NAME list with empty values, so a
+        // full-body save silently blanks the values the operator never touched.
+        const before = rows.find((r) => r.id === editing);
+        const orig = before ? draftOf(before) : null;
+        const patch: Record<string, unknown> = {};
+        if (orig) {
+          for (const [k, v] of Object.entries(draft)) {
+            if (k === "id") continue;
+            if (String((orig as Record<string, unknown>)[k] ?? "") !== String(v ?? "")) patch[k] = v;
+          }
+        } else {
+          Object.assign(patch, draft);
+          delete patch.id; // the id is the key, not a patchable field
+        }
+        if (!Object.keys(patch).length) { setMsg("没有改动"); setDraft(null); setEditing(null); return; }
         await cockpit.updateBackend(editing, patch);
       } else {
         await cockpit.createBackend(draft);
@@ -269,6 +309,9 @@ export function BackendsPanel(): JSX.Element {
                 {row.nativePlanSource === "acp"
                   ? <> · 计划 <code>原生帧</code></>
                   : <> · 计划 <code>agentus-plan 工具</code></>}
+                {/* Where a NEW session from this row starts, permission-wise (the operator's ask:
+                    「在智能体设置中设置默认选中权限」). */}
+                {row.defaultMode ? <> · 默认权限 <code>{modeLabel(row, row.defaultMode)}</code></> : null}
               </div>
               {row.notes ? <div className="be-row-note">{row.notes}</div> : null}
               {(row.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
@@ -445,6 +488,29 @@ export function BackendsPanel(): JSX.Element {
                     <label>默认工作目录</label>
                     <input className="set-input" value={draft.cwd ?? ""} spellCheck={false} onChange={(e) => field("cwd", e.target.value)} placeholder="留空 = 新建会话时再选" />
                   </div>
+                  <div className="set-row">
+                    <label>默认权限</label>
+                    <select
+                      className="set-select"
+                      value={draft.defaultMode ?? ""}
+                      onChange={(e) => field("defaultMode", e.target.value)}
+                    >
+                      <option value="">不指定（用 agent 自己的默认）</option>
+                      {modeChoices.map((m) => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                      {staleMode ? (
+                        <option value={draft.defaultMode ?? ""}>{draft.defaultMode}（不在缓存档位里）</option>
+                      ) : null}
+                    </select>
+                  </div>
+                  <p className="set-hint be-kind-help">
+                    新建会话时按这里选中，第一句话就已经按它来；会话里随时能改，
+                    <b>恢复旧会话不会被它覆盖</b>（那是你在那段会话里的选择）。档位来自这个后端上次的握手：
+                    {modeChoices.length
+                      ? <> 现在是 {modeChoices.map((m) => m.name).join(" / ")}。</>
+                      : <> 这个行还没起过会话，所以只有「不指定」——新建一个会话（不用发消息）握手一次就有了。</>}
+                  </p>
                   <div className="set-row">
                     <label>备注</label>
                     <input className="set-input" value={draft.notes ?? ""} onChange={(e) => field("notes", e.target.value)} />
