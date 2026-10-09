@@ -22,6 +22,7 @@ export type SessionStatus =
   | "starting" // subprocess spawned, initialize/newSession in flight
   | "ready" // accepts prompts
   | "running" // a prompt turn is in flight
+  | "reaped" // no process: it was idle past the operator's threshold (settings.agent.idleKillMin)
   | "error" // subprocess died or handshake failed
   | "closed";
 
@@ -74,6 +75,15 @@ export interface SessionInfo {
    *  This — not `createdAt`, and not `lastSeq` (a per-session counter) — is what the rail
    *  orders by: "which of these did I last talk to". */
   lastAt?: number;
+  /** The operator PUT THIS SESSION AWAY: it belongs in the rail's 已归档 section, whatever its
+   *  process is doing. This is a STORAGE state, not a liveness one — the rail used to infer
+   *  `archived` from `has no process`, which filed a crashed slot and a deliberately archived
+   *  one in the same place (the operator's complaint: 「我设想的点击归档是一种存储态」). */
+  archivedAt?: number | null;
+  /** No agent process right now — it was closed, it crashed, or it was REAPED for being idle.
+   *  Derived server-side and sent with the row, so the client never infers liveness from which
+   *  list a row arrived in (that inference is what merged 已归档 with 死了). */
+  cold?: boolean;
 }
 
 export interface AvailableCommandView {
@@ -148,7 +158,7 @@ export interface PermissionDiff {
 // ---- WS envelope (server -> browser) ----
 export type ServerEvent =
   | { t: "hello"; clientId: string; resumed: boolean }
-  | { t: "sessions"; sessions: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
+  | { t: "sessions"; sessions: SessionInfo[]; /** rows on disk with NO process and no archive flag — they belong in 工作空间 beside the live ones (a crashed slot must not look archived, and must not vanish from the rail either) */ cold?: SessionInfo[]; /** rows the operator explicitly archived (archivedAt set) — the 已归档 section, whatever their process state */ archived?: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
   | { t: "session"; session: SessionInfo }
   | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean; partial?: boolean }
   | { t: "message"; message: StoredMessage; /** text to APPEND for a streamed block that grew (absent

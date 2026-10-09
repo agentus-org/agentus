@@ -209,10 +209,17 @@ export class SessionManager {
     // one you come back to, even when it is the oldest row in the list.
     const lastAt = this.#store.lastActivityAt();
     return [...this.#sessions.values()]
+      // An ARCHIVED session is not 工作空间 material, whatever its process is doing (resume leaves the
+      // flag alone, so a restored-then-archived slot can be live). It is listed by `archived()`
+      // instead — one row in one bucket, or the rail shows the same slot twice.
+      .filter((s) => this.#store.getSession(s.info.id)?.archivedAt == null)
       .map((s) => ({
         ...s.info,
         lastSeq: this.#store.maxSeq(s.info.id),
         lastAt: lastAt.get(s.info.id) ?? s.info.createdAt,
+        archivedAt: null,
+        // a row in the manager's map has a process, by definition
+        cold: false,
       }))
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt);
   }
@@ -704,31 +711,72 @@ export class SessionManager {
     });
   }
 
-  /** Sessions we know about on disk but have no process for (rail's cold slots). */
-  archived(limit = 20): SessionInfo[] {
+  /** Rows the OPERATOR put away — 已归档. Chosen by the archive FLAG, not by liveness: a session
+   *  the operator archived belongs there whatever its process is doing, and a session that merely
+   *  lost its process (crashed, was closed, or was reaped for being idle) does NOT — that was the
+   *  old rule, and it turned 已归档 into a drawer where the operator's own intent was
+   *  indistinguishable from debris.
+   *
+   *  No cap: this list is curated by hand, so hiding its tail would hide the operator's own work.
+   *  Real removal is the ✕ purge button (DELETE on a cold row). */
+  archived(): SessionInfo[] {
+    const lastAtAll = this.#store.lastActivityAt();
     return this.#store
-      // include closed rows: "close" means "kill the process, keep the transcript as a cold
-      // slot" (that is what the UI's close prompt promises) — filtering status!='closed' made
-      // the slot vanish from the rail entirely, leaving the transcript unreachable even though
-      // it was still on disk. Real deletion is the separate ✕ purge button.
       .listSessions(true)
-      .filter((r) => !this.#sessions.has(r.id))
-      .map((r) => ({
-        id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
-        workspace: r.workspace ?? null,
-        models: (r.models ?? null) as SessionInfo["models"],
-        contextLimit: r.contextLimit ?? null,
-        title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
-        modes: (r.modes ?? null) as SessionModeState | null,
-        configOptions: (r.configOptions ?? []) as ConfigOptionView[],
-        usage: (r.usage ?? null) as SessionInfo["usage"],
-        commands: normCommands(r.commands),
-        lastSeq: this.#store.maxSeq(r.id),
-        lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
-      }))
+      .filter((r) => r.archivedAt != null)
+      .map((r) => {
+        const live = this.#sessions.get(r.id);
+        // An archived row can still have a process — resume does not touch the flag — and then it is
+        // NOT cold: the rail must draw a live row (and clicking it hands over the floor rather than
+        // waking anything), or the operator is told a slot is asleep while it is running.
+        return live
+          ? {
+              ...live.info,
+              lastSeq: this.#store.maxSeq(r.id),
+              lastAt: lastAtAll.get(r.id) ?? r.createdAt,
+              archivedAt: r.archivedAt ?? null,
+              cold: false,
+            }
+          : this.#infoFromRow(r);
+      })
+      .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0) || (b.lastAt ?? 0) - (a.lastAt ?? 0));
+  }
+
+  /** Cold rows that are NOT archived: on disk, no process, still part of 工作空间. A crashed slot,
+   *  one the operator closed, or one THIS cockpit reaped for being idle — all of them must stay
+   *  reachable in the rail (the old rule showed them under 已归档; the older one dropped them out of
+   *  the list entirely, which is how a transcript became unreachable while still on disk).
+   *
+   *  Capped, unlike `archived()`: crash debris accumulates without anyone choosing it, and the rail
+   *  has its own recent-N rule anyway. */
+  cold(limit = 20): SessionInfo[] {
+    return this.#store
+      .listSessions(true)
+      .filter((r) => r.archivedAt == null && !this.#sessions.has(r.id))
+      .map((r) => this.#infoFromRow(r))
       // cold rows by the same rule as live ones (recent chat first), THEN take the page
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt)
       .slice(0, limit);
+  }
+
+  /** One row in the shape list()/cold()/archived() produce, from a stored row. */
+  #infoFromRow(r: SessionRow): SessionInfo {
+    return {
+      id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
+      workspace: r.workspace ?? null,
+      models: (r.models ?? null) as SessionInfo["models"],
+      contextLimit: r.contextLimit ?? null,
+      title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
+      modes: (r.modes ?? null) as SessionModeState | null,
+      configOptions: (r.configOptions ?? []) as ConfigOptionView[],
+      usage: (r.usage ?? null) as SessionInfo["usage"],
+      commands: normCommands(r.commands),
+      lastSeq: this.#store.maxSeq(r.id),
+      lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
+      archivedAt: r.archivedAt ?? null,
+      // no process by construction: this path only ever runs for a row that is not in the map
+      cold: true,
+    };
   }
 
   async prompt(
@@ -1153,17 +1201,87 @@ export class SessionManager {
 
   async closeSession(sessionId: string): Promise<void> {
     const s = this.#need(sessionId);
-    for (const { resolve, timer } of s.pendingPermissions.values()) {
+    this.#stop(s, "closed");
+    this.#emitSessions();
+  }
+
+  /** 归档 / 取消归档 — the operator's own STORAGE decision, taken independently of the process.
+   *
+   *  Archiving a LIVE session stops its process too: 「我把它收起来了」 and 「它还在后台吃内存」
+   *  contradict each other, and demanding a close first would make the archive a two-step ritual that
+   *  says nothing about intent. Un-archiving only moves the flag — the row lands back in 工作空间 as
+   *  a cold slot, and the rail's 「取消归档并恢复」 wakes it with a separate resume (so a restore that
+   *  fails to load leaves a visible cold slot rather than an error nobody asked for). */
+  async setArchived(id: string, on: boolean): Promise<SessionInfo> {
+    const live = this.#sessions.get(id);
+    const row = this.#store.getSession(id);
+    if (!row) throw new Error(`no such session: ${id}`);
+    if (on && live) this.#stop(live, "archived");
+    this.#store.setArchived(id, on ? Date.now() : null);
+    this.#emitSessions();
+    return this.#sessions.get(id)?.info ?? this.#coldInfo(id);
+  }
+
+  /** Stop a slot's agent process and record WHY it went away. The row always survives with its
+   *  transcript: the transcript is the operator's, the process is ours to reclaim.
+   *
+   *  `reaped` is its own status on purpose — 「它怎么变冷了」 has three different answers (I closed
+   *  it / it crashed / the cockpit reclaimed it for being idle) and a rail that shows one word for
+   *  all three teaches the operator to distrust the column. */
+  #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): void {
+    for (const { resolve, timer } of live.pendingPermissions.values()) {
       clearTimeout(timer);
       resolve({ outcome: { outcome: "cancelled" } });
     }
-    s.pendingPermissions.clear();
-    s.child?.kill("SIGTERM");
-    s.info.status = "closed";
-    const row = this.#store.getSession(sessionId);
-    if (row) this.#store.upsertSession({ ...row, status: "closed", closedAt: Date.now(), pid: null });
-    this.#sessions.delete(sessionId);
-    this.#emitSessions();
+    live.pendingPermissions.clear();
+    live.child?.kill("SIGTERM");
+    live.info.status = why === "reaped" ? "reaped" : "closed";
+    live.info.pid = null;
+    const row = this.#store.getSession(live.info.id);
+    if (row) {
+      this.#store.upsertSession({
+        ...row, status: live.info.status, closedAt: Date.now(), pid: null,
+      });
+    }
+    this.#sessions.delete(live.info.id);
+  }
+
+  /** Reclaim idle slots: stop the agent process of a session nobody has touched for the operator's
+   *  threshold. Deliberately NOT an archive — the row stays in 工作空间 wearing `reaped` and a click
+   *  brings it back. AionUi ships exactly this switch (设置 → 系统 → 「Agent 空闲超时（分钟）」,
+   *  default 5, 1–60) and the guards below are what its changelog had to add after the first version
+   *  killed agents that were still working: never touch a slot mid-turn, one waiting on a human, or
+   *  one the operator is WATCHING right now (a reply that lands while he reads it must not be killed
+   *  under him).
+   *
+   *  `idleMs()` is read on every tick, so a settings change applies with no restart; 0 = off. */
+  startIdleReaper(opts: { idleMs: () => number; watched?: (id: string) => boolean; intervalMs?: number }): () => void {
+    const interval = opts.intervalMs ?? 30_000;
+    const tick = (): void => {
+      const idleMs = opts.idleMs();
+      if (!(idleMs > 0)) return;
+      const now = Date.now();
+      let reaped = 0;
+      for (const s of [...this.#sessions.values()]) {
+        if (s.busy || s.pendingPermissions.size) continue;
+        if (s.info.status === "starting" || s.info.status === "running") continue;
+        if (opts.watched?.(s.info.id)) continue;
+        const lastAt = s.info.lastAt ?? s.info.createdAt;
+        if (now - lastAt < idleMs) continue;
+        console.log(
+          `[agentus] idle reap: ${s.info.id} (${Math.round((now - lastAt) / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
+        );
+        this.#stop(s, "reaped");
+        reaped += 1;
+      }
+      // Only speak when something changed: a frame every tick would be noise on the socket (and on
+      // the phone's notification path, which observes this same stream).
+      if (reaped) this.#emitSessions();
+    };
+    const timer = setInterval(tick, interval);
+    // A server that will not exit because of the reclaim timer is a worse bug than the memory it saves.
+    timer.unref?.();
+    return () => clearInterval(timer);
   }
 
   /** The list every client needs to be current: the rows PLUS what is already waiting for an
@@ -1735,22 +1853,14 @@ export class SessionManager {
     this.#store.touchActivity(live.info.id, at);
   }
 
-  /** One cold row, in the same shape list()/archived() produce. */
+  /** One cold row, in the same shape list()/cold()/archived() produce. */
   #coldInfo(id: string): SessionInfo {
     const r = this.#store.getSession(id);
     if (!r) throw new Error(`no such session: ${id}`);
     return {
-      id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
-      workspace: r.workspace ?? null, contextLimit: r.contextLimit ?? null,
+      ...this.#infoFromRow(r),
+      // the one difference from the list path: the model's own window, which the resume card prints
       modelContextLimit: this.#store.getModelLimit(((r.models ?? null) as SessionInfo["models"])?.currentModelId ?? null),
-      models: (r.models ?? null) as SessionInfo["models"],
-      title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
-      modes: (r.modes ?? null) as SessionModeState | null,
-      configOptions: (r.configOptions ?? []) as ConfigOptionView[],
-      usage: (r.usage ?? null) as SessionInfo["usage"],
-      commands: normCommands(r.commands),
-      lastSeq: this.#store.maxSeq(id),
-      lastAt: this.#store.lastActivityAt().get(id) ?? r.createdAt,
     };
   }
 
@@ -1794,6 +1904,8 @@ export class SessionManager {
       pid: null,
       createdAt: now,
       closedAt: null,
+      // a fork is a NEW conversation: it is nobody's archive (the parent's flag is not inherited)
+      archivedAt: null,
       // the agent just told us the fork's modes/options — keep them so the new slot shows
       // the right permission mode and thinking depth before it is even resumed
       modes: res?.modes ?? source.info.modes ?? null,
@@ -1844,6 +1956,9 @@ function sessionRow(i: SessionInfo, home: string | null = null) {
   return {
     id: i.id, backend: i.backend, acpSessionId: i.acpSessionId, cwd: i.cwd,
     title: i.title, status: i.status, pid: i.pid, createdAt: i.createdAt, closedAt: null,
+    // never written by this upsert (the archive flag has its own statement — see setArchived):
+    // carried here only so the row type stays honest.
+    archivedAt: i.archivedAt ?? null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
     models: i.models ?? null,

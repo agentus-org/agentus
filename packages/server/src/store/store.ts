@@ -75,6 +75,9 @@ export interface SessionRow {
   pid: number | null;
   createdAt: number;
   closedAt: number | null;
+  /** When the OPERATOR put this session away (已归档). Null = it belongs in 工作空间. A storage
+   *  state: it says nothing about whether a process is running (see SessionInfo.archivedAt). */
+  archivedAt: number | null;
   /** JSON round-trip of the ACP mode state + config options, so a resumed
    *  session (M4-lite) comes back with the operator's mode/effort intact. */
   modes?: unknown;
@@ -105,7 +108,7 @@ export interface SessionRow {
 interface RawSessionRow {
   id: string; backend: BackendId; acp_session_id: string | null; cwd: string;
   title: string; auto_title?: string | null; status: SessionStatus; pid: number | null;
-  created_at: number; closed_at: number | null;
+  created_at: number; closed_at: number | null; archived_at?: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
   workspace?: string | null;
@@ -169,7 +172,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
   return {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
     title: r.title, autoTitle: r.auto_title ?? null, status: r.status, pid: r.pid,
-    createdAt: r.created_at, closedAt: r.closed_at,
+    createdAt: r.created_at, closedAt: r.closed_at, archivedAt: r.archived_at ?? null,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
     workspace: r.workspace ?? null,
@@ -340,6 +343,13 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // WHEN THE OPERATOR PUT THE SESSION AWAY (已归档 — a STORAGE state). Before this column the rail
+    // inferred "archived" from "has no process", so a slot that merely crashed (or was killed by an
+    // idle reap) filed itself under 已归档 next to the ones the operator really put away, and
+    // 「我在归档一栏里看到的」 stopped meaning anything. NULL is the honest default for every existing
+    // row: nobody ever archived them, they were just dead. The 已归档 section starts empty and fills
+    // with what the operator actually archives.
+    if (!cols.has("archived_at")) this.#db.exec("alter table sessions add column archived_at integer");
     // The session's own ACTIVITY clock — when the operator or the agent last really said something
     // in it. A COLUMN, not a derived `max(messages.created_at)` (AionUi's model: `modified_at` on
     // the conversation row, indexed, which is what its sidebar sorts by): every ingestion path
@@ -700,6 +710,16 @@ export class Store {
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
           JSON.stringify(s.models ?? null), s.title, s.home ?? null);
     }
+  }
+
+  /** Put this session away — or take it back out (已归档). Its OWN statement, like `home`: the
+   *  archive flag is the one thing the operator sets directly, and a routine row upsert (a status
+   *  change, a rename, an idle reap) must not be able to clear it. Returns whether a row matched. */
+  setArchived(sessionId: string, at: number | null): boolean {
+    const info = this.#db
+      .prepare("update sessions set archived_at = ? where id = ?")
+      .run(at, sessionId);
+    return Number(info.changes ?? 0) > 0;
   }
 
   /** Record (or adopt) the home a session was created under. Used when a legacy row — created
