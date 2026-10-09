@@ -100,10 +100,61 @@ export function contrastRatio(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-/** The floor an accent-as-TEXT colour must clear. 4.5 is WCAG AA for normal text; the extra
+/** The floor an accent-as-TEXT colour must clear. 4.8 is WCAG AA for normal text; the extra
  *  0.3 is headroom, because these labels are 11–13.5px and are read as a *distinction* from
  *  the body text rather than as body text. */
 const ACCENT_TEXT_FLOOR = 4.8;
+
+/** The CHROMA an accent-as-TEXT colour must carry — measured in HSV saturation,
+ *  `(max-min)/max`, because that is the "how far from grey is this" axis a reader sees and
+ *  because HSL saturation is a poor proxy for it at high lightness (a pale blue and a vivid
+ *  blue can share an HSL saturation and look nothing alike).
+ *
+ *  Contrast alone does not make an accent label read as the accent. This palette's neutral text
+ *  is a blue-grey (`--text` #d7e2ea, `--text-dim` #9eaab3), so a pale, low-chroma accent drawn
+ *  among it looks like "the same colour, slightly brighter" — the operator's report
+ *  「左边那些字颜色不是很明显，不是很突出」, filed twice, and the measurement agreed with him: his
+ *  #76bbdf sits at HSV 0.47 saturation, ~20 points below the neutral-adjacent greys it has to
+ *  beat, while the built-in amber palette never showed the problem (it is authored at 0.67).
+ *  So a chromatic accent is re-issued at this floor with hue held; the built-in amber is already
+ *  above it and therefore untouched. */
+const ACCENT_TEXT_SAT = 0.66;
+
+/** Below this saturation the accent is not "a colour" at all — a deliberately grey accent
+ *  (studio ships one) must stay grey, and re-saturating #888888 would invent red. */
+const ACCENT_TEXT_SAT_MIN = 0.18;
+
+/** HSV saturation of a #rrggbb colour: 0 for any grey, whatever its hue claims. */
+function hsvSaturation(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const max = Math.max(r, g, b);
+  if (max === 0) return 0;
+  return (max - Math.min(r, g, b)) / max;
+}
+
+/** The same colour at `target` HSV saturation (hue and value held), or the colour itself when it
+ *  is already at least that vivid. Used to hold the operator's hue while insisting on chroma. */
+function raiseHsvSaturation(hex: string, target: number): string {
+  const [r0, g0, b0] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r0, g0, b0);
+  const min = Math.min(r0, g0, b0);
+  const d = max - min;
+  if (max === 0 || d === 0) return hex; // a pure grey has no hue to hold
+  if (d / max >= target) return hex;
+  // +0.01 because the channels come back as integers: asking for exactly the floor can land a
+  // hair under it (a sweep asserted >= 0.66 and measured 0.6599), and the floor is a floor.
+  const want = Math.min(1, target + 0.01);
+  // hue in turns, the same formula hexToHsl uses, then HSV -> RGB with the value held
+  const hue = max === r0 ? ((g0 - b0) / d + (g0 < b0 ? 6 : 0)) / 6 : max === g0 ? ((b0 - r0) / d + 2) / 6 : ((r0 - g0) / d + 4) / 6;
+  const c = max * want;
+  const x = c * (1 - Math.abs(((hue * 6) % 2) - 1));
+  const m = max - c;
+  const seg = Math.floor(hue * 6) % 6;
+  const parts: [number, number, number][] = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]];
+  const [rr, gg, bb] = parts[seg];
+  const to = (v: number): string => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${to(rr)}${to(gg)}${to(bb)}`;
+}
 
 /** #rrggbb -> [hue, saturation, lightness] with all three in 0..1 (hue in turns). */
 function hexToHsl(hex: string): [number, number, number] {
@@ -137,24 +188,31 @@ function hslToHex(h: number, s: number, l: number): string {
  *  light surface it came out WEAKER than the body text (5.7:1 vs 15.1:1) — an accent label
  *  cannot stand out by being the faintest thing on the screen.
  *
- *  So: if the accent already clears the floor, use it UNCHANGED (that is what a hand-picked
- *  brand blue should look like, and it is what the built-in amber palette does by hand: in
- *  dark mode its `--accent-text` IS `--accent`). Otherwise walk LIGHTNESS in the readable
- *  direction with hue and saturation held, so the fix for a low-contrast accent is a darker
- *  or lighter version of the SAME colour rather than a greyer one. */
+ *  So: hold the operator's hue, insist on a real CHROMA (a pale accent among a blue-grey palette
+ *  reads as "the same colour, brighter"), and then move only LIGHTNESS as far as readability
+ *  requires — never toward grey. Also read the floor against the surface the label is actually
+ *  drawn on, so a light panel gets a darker label and a dark one a lighter one. */
 export function accentTextColor(accent: string, panel: string): string {
   if (!hexToRgbTriplet(accent)) return accent;
-  if (contrastRatio(accent, panel) >= ACCENT_TEXT_FLOOR) return accent;
   const [h, s, l0] = hexToHsl(accent);
   const dir = luminance(panel) > 0.5 ? -1 : 1; // a light surface needs a darker label, a dark one a lighter
-  let best = accent;
-  for (let step = 1; step <= 100; step += 1) {
-    const l = l0 + dir * step * 0.01;
-    if (l <= 0 || l >= 1) break;
-    best = hslToHex(h, s, l);
-    if (contrastRatio(best, panel) >= ACCENT_TEXT_FLOOR) break;
+  const readable = (hex: string): boolean => contrastRatio(hex, panel) >= ACCENT_TEXT_FLOOR;
+  const chromatic = hsvSaturation(accent) >= ACCENT_TEXT_SAT_MIN;
+  // Walk lightness outward from the operator's own, and at each stop take the VIVID candidate
+  // whenever it is readable — that is the colour that reads as the accent rather than as grey.
+  // When both are readable the vivid one wins; when only the untouched one is (a saturated violet
+  // cannot clear the floor on a near-black panel at all) readability wins, and the saturation
+  // still never drops below what the operator picked. Compare against the hex we started from,
+  // so a fully-saturated accent is returned byte-identical.
+  for (let step = 0; step <= 100; step += 1) {
+    const ll = l0 + dir * step * 0.01;
+    if (step > 0 && (ll <= 0 || ll >= 1)) break;
+    const plain = step === 0 ? accent : hslToHex(h, s, ll);
+    const vivid = chromatic ? raiseHsvSaturation(plain, ACCENT_TEXT_SAT) : plain;
+    if (readable(vivid)) return vivid;
+    if (readable(plain)) return plain;
   }
-  return best;
+  return accent;
 }
 
 /** The surface an accent-coloured LABEL sits on — `.sidebar`'s wordmark, `+ new session`, the

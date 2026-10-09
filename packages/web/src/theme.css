@@ -5,7 +5,12 @@
   --bg-raised: #182430;
   --line: #223140;
   --text: #d7e2ea;
-  --text-dim: #7b8fa0;
+  /* Secondary text. Was #7b8fa0 = 5.25:1 on the panel (4.71:1 on the hover row — under AA) and a
+     blue-grey like the body text, so the operator's own report 「看不太清」 outranked the fact that
+     every checker passed. Now 7.40:1 on the panel / 6.64:1 on a hovered row, and less blue, so a
+     chromatic accent separates from it by CHROMA instead of by brightness. References: AionUi's
+     dark secondary is #ced3da (all the way to ~11:1), hermes-studio's is #a0a0a0. */
+  --text-dim: #9eaab3;
   --accent: #ffb454;
   --accent-rgb: 255, 180, 84;
   --accent-dim: #8a6230;
@@ -41,7 +46,9 @@
   --bg-raised: #eaeef4;
   --line: #d7dde6;
   --text: #1c2735;
-  --text-dim: #566475;
+  /* 8.74:1 on white, 7.50:1 on the hover surface (was #566475 = 6.10 / 5.19). See the dark block
+     for why: legibility first, and less blue so the accent separates by chroma. */
+  --text-dim: #424c57;
   --accent: #d98116;
   --accent-rgb: 217, 129, 22;
   --accent-dim: #e0b070;
@@ -71,7 +78,7 @@
     --bg-raised: #eaeef4;
     --line: #d7dde6;
     --text: #1c2735;
-    --text-dim: #566475;
+    --text-dim: #424c57;
     --accent: #d98116;
     --accent-rgb: 217, 129, 22;
     --accent-dim: #e0b070;
