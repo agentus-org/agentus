@@ -342,8 +342,14 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       return;
     }
     wsRef.current = ws;
-    ws.onopen = () => setStatus("ready");
+    // A superseded socket must not touch the UI. The effect can run again (a StrictMode remount, or
+    // the workspace being re-pointed) while the first socket is still handshaking, and its `error` /
+    // `close` events would otherwise stick: the panel said "terminal socket failed" *while* the
+    // current socket was connected and streaming, which is worse than no message at all.
+    const live = (): boolean => wsRef.current === ws;
+    ws.onopen = () => { if (!live()) return; setStatus("ready"); setError(""); };
     ws.onmessage = (ev) => {
+      if (!live()) return;
       let msg: { t?: string; data?: string; error?: string; cwd?: string; tty?: boolean };
       try {
         msg = JSON.parse(String(ev.data));
@@ -357,6 +363,7 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       }
       if (msg.t === "term-ready") {
         setStatus("ready");
+        setError("");
         if (typeof msg.tty === "boolean") setTty(msg.tty);
         return;
       }
@@ -370,10 +377,11 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       }
     };
     ws.onclose = () => {
-      if (closed) return;
+      if (closed || !live()) return;
       setStatus((cur) => (cur === "error" ? cur : "closed"));
     };
     ws.onerror = () => {
+      if (!live()) return;
       // The browser gives no detail; the close handler reports the state.
       setError((cur) => cur || "terminal socket failed");
     };

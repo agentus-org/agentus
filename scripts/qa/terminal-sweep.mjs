@@ -119,6 +119,13 @@ console.log("== the terminal is a terminal, not a text box ==");
 check(await until(`Boolean(document.querySelector('.term-host .xterm'))`, 10000), "xterm.js is mounted in the panel");
 check(!(await ev(`Boolean(document.querySelector('.term-input input'))`)), "the old line-input row is gone");
 check(await until(`!!document.querySelector('.term-dot.ready')`, 15000), "the shell socket reports ready");
+// A connector that opens a socket twice (a remount while the first is still handshaking) must not
+// leave the first socket's failure on screen: the panel said "terminal socket failed" while the
+// live socket was connected and streaming.
+await sleep(1200);
+check(!(await ev(`Boolean(document.querySelector('.tool-panel .tool-error'))`)),
+  "and no stale socket error is on screen while it is streaming",
+  String(await ev(`(document.querySelector('.tool-panel .tool-error')||{}).textContent||''`)));
 const ttyWord = await ev(`(() => { const s = document.querySelector('.term-status'); return s ? s.textContent : '' })()`);
 check(!!ttyWord, "the bar says which kind of shell this is", String(ttyWord));
 
