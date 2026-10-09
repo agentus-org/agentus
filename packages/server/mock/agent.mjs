@@ -401,6 +401,41 @@ const agent = () => ({
     // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
     const slow = /\[slow\]/.test(text) ? Math.max(SLOW, 900) : SLOW;
 
+    // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).
+    // Numeric AND text cells, deliberately NOT in any sorted order, and a local file link plus a
+    // relative image, so "clicking a header reorders the rows" and "a relative path resolves" are
+    // measurable claims instead of a screenshot someone has to squint at. The directory is
+    // overridable because the sweep creates its own fixtures.
+    if (/\[table\]/.test(text)) {
+      const dir = process.env.MOCK_TABLE_DIR || "/tmp/agentus-qa-files";
+      const rows = [
+        ["zeta", "10", "1.2 MB"],
+        ["alpha", "9", "900 kB"],
+        ["mu", "100", "12 MB"],
+        ["beta", "2", "3 kB"],
+        ["kappa", "33", "44 kB"],
+        ["gamma", "7", "8 kB"],
+      ];
+      const reply = [
+        "### table fixture",
+        "",
+        "| name | count | size |",
+        "| --- | --- | --- |",
+        ...rows.map((r) => `| ${r.join(" | ")} |`),
+        "",
+        `a local file: [note.md](file://${dir}/note.md#L2) and a bare ${dir}/app.py:2`,
+        "",
+        "![shot](shot.png)",
+        "",
+      ].join("\n");
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: randomUUID(),
+        content: { type: "text", text: reply },
+      });
+      return { stopReason: "end_turn" };
+    }
+
     if (wantThink) {
       // ONE `messageId` per burst, like the real adapter sends: ACP gives every chunk of one
       // thought block the same id, and the cockpit/server coalesce on it (`block_key`). A mock

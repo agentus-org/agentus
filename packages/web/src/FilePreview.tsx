@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cockpit, rawFileUrl } from "./state";
 import { renderMarkdown } from "./Markdown";
+import { enhanceTables } from "./tableSort";
 import { IconArrowLeft, IconDownload, IconFile } from "./Icons";
 
 interface StatInfo {
@@ -305,6 +306,12 @@ function RichBody({ file }: { file: Loaded }): JSX.Element {
 function TextBody({ file, line }: { file: Loaded; line?: number }): JSX.Element {
   const [showSource, setShowSource] = useState(Boolean(line) || file.kind !== "markdown");
   const ref = useRef<HTMLDivElement>(null);
+  const mdRef = useRef<HTMLDivElement>(null);
+
+  // A table in a previewed markdown file sorts exactly like one in a reply.
+  useEffect(() => {
+    if (!showSource) enhanceTables(mdRef.current);
+  }, [showSource, file.content]);
 
   useEffect(() => {
     setShowSource(Boolean(line) || file.kind !== "markdown");
@@ -338,6 +345,7 @@ function TextBody({ file, line }: { file: Loaded; line?: number }): JSX.Element 
       ) : (
         <div
           className="md file-md"
+          ref={mdRef}
           dangerouslySetInnerHTML={{ __html: renderMarkdown(file.content, file.path.replace(/\/[^/]*$/, "") || "/") }}
         />
       )}

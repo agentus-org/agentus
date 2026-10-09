@@ -1132,6 +1132,47 @@ code.inline {
 .md pre { margin: 0; padding: 8px 10px; overflow-x: auto; background: var(--code-bg); color: var(--code-fg); }
 .md pre code { padding: 0; background: transparent; border: none; color: inherit; font-size: 12px; line-height: 1.5; }
 .md table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
+/* table tools: sortable headers + filter + full-screen reader (tableSort.ts) */
+.md-table-bar { display: flex; align-items: center; gap: 6px; margin: 8px 0 -2px; }
+.md-table-filter {
+  flex: 1; min-width: 0; max-width: 240px; font-size: 11.5px; padding: 3px 7px;
+  background: var(--bg-input, var(--bg-raised)); color: var(--text);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+.md-table-btn {
+  font-size: 11px; line-height: 1; padding: 3px 7px; cursor: pointer;
+  background: var(--bg-raised); color: var(--text-dim); border: 1px solid var(--line); border-radius: 5px;
+}
+.md-table-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+.md-table-sort {
+  display: inline-flex; align-items: center; gap: 4px; width: 100%;
+  font: inherit; font-weight: inherit; text-align: left; cursor: pointer;
+  background: none; border: 0; padding: 0; color: inherit;
+}
+.md-table-sort:hover { color: var(--accent-text); }
+.md-table-sort-indicator { font-size: 9px; opacity: 0.55; }
+.md th[aria-sort="ascending"] .md-table-sort-indicator,
+.md th[aria-sort="descending"] .md-table-sort-indicator { opacity: 1; color: var(--accent-text); }
+/* full-screen table reader — on a phone the CONTENT rotates, because iOS cannot lock
+   orientation (tableSort.ts#openTableOverlay) */
+.md-table-overlay {
+  position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: rgba(0, 0, 0, 0.62); backdrop-filter: blur(1.5px);
+}
+.md-table-overlay .md-table-bar { margin: 8px; }
+.md-table-overlay .md-table-btn { background: var(--bg-panel); font-size: 12px; padding: 5px 10px; }
+.md-table-stage { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.md-table-zoom {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  max-width: 96vw; max-height: 96vh; overflow: auto;
+  background: var(--bg-panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+}
+.md-table-zoom.rot {
+  /* swap the axes: a portrait phone now has the table's wide side along its long edge */
+  width: 96vh; height: 96vw; max-width: none; max-height: none;
+  transform: translate(-50%, -50%) rotate(90deg); transform-origin: center;
+}
+.md-table-zoom table { display: table; max-width: none; margin: 0; }
 .md th, .md td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .md th { background: var(--bg-raised); font-weight: 600; }
 .md-code {

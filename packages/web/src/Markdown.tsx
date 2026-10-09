@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { copyText } from "./clipboard";
 import { openLocalFile } from "./fileBus";
+import { enhanceTables } from "./tableSort";
 import { rawFileUrl } from "./state";
 import MarkdownIt from "markdown-it";
 import type { MarkdownIt as MarkdownItInstance, RendererRule } from "markdown-it";
@@ -264,6 +265,12 @@ export function renderMarkdown(text: string, base?: string): string {
 export function Markdown({ text, base }: { text: string; base?: string }): JSX.Element {
   const html = useMemo(() => renderMarkdown(text, base), [text, base]);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Tables are enhanced AFTER the paint: the reply is an HTML string, so React never owned the
+  // cells and cannot re-render a sorted one (see tableSort.ts).
+  useEffect(() => {
+    enhanceTables(ref.current);
+  }, [html]);
 
   // One delegated handler per message: copy buttons, and a click on a local file link (a path
   // is not a URL — it must open the workspace panel, not navigate).

@@ -1401,7 +1401,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           )}
           {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
-            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} base={v.info.workspace ?? undefined} />))}
+            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} base={v.info.workspace || v.info.cwd} />))}
           <TurnLine busy={v.busy} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
