@@ -114,6 +114,24 @@ export const CALL_DEFAULT: CallSettings = {
 
 export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button"];
 
+/** How the cockpit treats AGENT PROCESSES — as opposed to what a conversation contains. AionUi
+ *  ships the same knob in 设置 → 系统 as 「Agent 空闲超时（分钟）」 (default 5, 1–60, step 5) with the
+ *  honest description 「空闲超过该时长后自动终止 Agent 进程以释放内存」. Agentus keeps that meaning
+ *  and adds ONE thing AionUi does not have: 0 = 关闭. A cockpit deliberately left holding a
+ *  long-running slot (a build, a tunnel watcher, a call) must be able to say "never reclaim this",
+ *  and "set it to 60 and hope" is not the same statement. */
+export interface AgentSettings {
+  /** minutes of no activity before a live slot's agent process is stopped to reclaim memory;
+   *  0 = never. The row and its transcript always survive — this only stops the process. */
+  idleKillMin: number;
+}
+
+export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5 };
+
+/** What the settings page may offer: the ends of the number field. Server-side enforcement uses
+ *  the same pair, so a hand-written request cannot store a nonsense value. */
+export const AGENT_IDLE_RANGE: [number, number] = [0, 60];
+
 /** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
  *  outside both the range table and the loops that validate numbers. */
 export const CALL_NUMERIC = ["bargeSensitivity", "bargeMs", "silenceMs", "minChars"] as const;
@@ -147,6 +165,7 @@ export interface Settings {
   theme: ThemeSettings;
   call: CallSettings;
   prefs: PrefsSettings;
+  agent: AgentSettings;
   updatedAt: number;
 }
 
@@ -173,7 +192,7 @@ let db: Store | null = null;
 let legacyFile = "";
 let cache: Settings = {
   voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT },
-  prefs: { ...PREFS_DEFAULT }, updatedAt: 0,
+  prefs: { ...PREFS_DEFAULT }, agent: { ...AGENT_DEFAULT }, updatedAt: 0,
 };
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
@@ -237,6 +256,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
     theme: { ...THEME_DEFAULT, ...(stored.theme ?? {}) },
     call: pickCall(stored.call),
     prefs: pickPrefs(stored.prefs),
+    agent: pickAgent(stored.agent),
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -266,6 +286,20 @@ function pickCall(raw: unknown): CallSettings {
   return out;
 }
 
+/** The agent-process knobs. Out-of-range or unparseable values fall back to the shipped default
+ *  rather than throwing: this section decides whether a slot's process is reclaimed, and a settings
+ *  row that cannot be read must never leave the reaper in an undefined state (an undefined `> 0`
+ *  comparison would silently turn reclaiming OFF — the safe failure is the documented default). */
+function pickAgent(raw: unknown): AgentSettings {
+  const out = { ...AGENT_DEFAULT };
+  if (raw && typeof raw === "object") {
+    const v = Number((raw as Record<string, unknown>).idleKillMin);
+    const [lo, hi] = AGENT_IDLE_RANGE;
+    if (Number.isFinite(v) && v >= lo && v <= hi) out.idleKillMin = v;
+  }
+  return out;
+}
+
 function pickPrefs(raw: unknown): PrefsSettings {
   const out = { ...PREFS_DEFAULT };
   if (raw && typeof raw === "object") {
@@ -289,6 +323,7 @@ function persist(): void {
     db.setSetting("theme", cache.theme);
     db.setSetting("call", cache.call);
     db.setSetting("prefs", cache.prefs);
+    db.setSetting("agent", cache.agent);
   } catch (e) {
     console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
   }
@@ -331,6 +366,9 @@ export function publicSettings(): Record<string, unknown> {
     hotwordLimit: v.hotwordLimit,
     prefs: cache.prefs,
     prefsDefaults: PREFS_DEFAULT,
+    agent: cache.agent,
+    agentDefaults: AGENT_DEFAULT,
+    agentIdleRange: AGENT_IDLE_RANGE,
     // the defaults, so the UI can offer "reset to Bailian defaults"
     defaults: { ...DEFAULTS, apiKey: undefined, baseUrl: undefined },
     updatedAt: cache.updatedAt,
@@ -454,6 +492,31 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
   cache = { ...cache, prefs: next, updatedAt: Date.now() };
   persist();
   return cache;
+}
+
+/** Agent-process knobs: its own update, like theme/call, so a bad number here cannot lock the
+ *  operator out of the page that would fix it. Range-checked against AGENT_IDLE_RANGE before it is
+ *  stored — this number decides whether agent processes get killed, so it is not a text field. */
+export function saveAgent(patch: Record<string, unknown>): Settings {
+  const a = { ...cache.agent };
+  if ("idleKillMin" in patch) {
+    const raw = typeof patch.idleKillMin === "number" ? patch.idleKillMin : Number(patch.idleKillMin);
+    const [lo, hi] = AGENT_IDLE_RANGE;
+    if (!Number.isFinite(raw) || raw < lo || raw > hi) {
+      throw new Error(`invalid idleKillMin: ${JSON.stringify(patch.idleKillMin)} (expected ${lo}…${hi} minutes, 0 = off)`);
+    }
+    a.idleKillMin = raw;
+  }
+  cache = { ...cache, agent: a, updatedAt: Date.now() };
+  persist();
+  return cache;
+}
+
+/** The agent-process knobs as the reaper reads them — on every tick, so a settings change applies
+ *  without a restart. Returns the live cache object, not a copy: a caller that wants a snapshot has
+ *  no business holding this one. */
+export function agentSettings(): AgentSettings {
+  return cache.agent;
 }
 
 /** Normalise the two URL shapes operators paste: MaaS root or .../compatible-mode/v1. */

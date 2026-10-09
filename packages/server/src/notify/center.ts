@@ -197,7 +197,18 @@ export class NotifyCenter {
 
   /** True when a notification for this session would interrupt the operator looking at it. */
   private watching(sessionId: string): boolean {
-    if (!this.rules().quietWhenWatching) return false;
+    return this.rules().quietWhenWatching && this.operatorWatching(sessionId);
+  }
+
+  /** Is the operator looking at this session RIGHT NOW? A fresh presence report (the SPA re-reports
+   *  every few seconds) from a visible page or a live call.
+   *
+   *  Public and rule-free on purpose — the ONE question two features share with different gates.
+   *  `watching()` above answers "should notification be quiet?" and therefore consults the operator's
+   *  quietWhenWatching preference; the idle reaper asks "would killing this slot's process pull the
+   *  rug out from under a reply he is reading?", and routing THAT through a notification preference
+   *  would let a checkbox decide whether agent processes get killed. */
+  operatorWatching(sessionId: string): boolean {
     if (this.presence.sessionId !== sessionId) return false;
     if (Date.now() - this.presence.at >= NotifyCenter.WATCH_TTL_MS) return false;
     // A call counts even when nobody has touched the screen for minutes: on a call the hands are free

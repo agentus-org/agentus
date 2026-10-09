@@ -20,7 +20,7 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
-import { initSettings, publicSettings, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
+import { agentSettings, initSettings, publicSettings, saveAgent, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "../../shared/src/index.js";
@@ -169,9 +169,19 @@ const mgr = new SessionManager(store, emit);
 
 /** The session list every client stays current with: the rows PLUS what is already waiting for
  *  an answer. Pending approvals are STATE, not just an event — a page that connects or refreshes
- *  after the request was raised still has to be able to show it. */
+ *  after the request was raised still has to be able to show it.
+ *
+ *  Three buckets, because the rail has three answers to 「这个会话在哪」 and one field cannot carry
+ *  them: `sessions` = live (a process is attached), `cold` = on disk with no process and NOT
+ *  archived (they belong in 工作空间 too — a crashed slot must not look archived), `archived` = the
+ *  operator put it away. Each row also carries `cold`/`archivedAt`, so a client never has to infer
+ *  state from which list a row arrived in (that inference is exactly what merged 已归档 with 死了). */
 const sessionsEvent = (): ServerEvent => ({
-  t: "sessions", sessions: mgr.list(), pending: mgr.pendingPermissions(),
+  t: "sessions",
+  sessions: mgr.list(),
+  cold: mgr.cold(),
+  archived: mgr.archived(),
+  pending: mgr.pendingPermissions(),
 });
 
 // ---- notify channel (docs/android-notify-contract.md) ----------------------------
@@ -233,6 +243,43 @@ initSettings(DATA_DIR, store);
 // Dynamic hotwords are mined from the transcript — the store's business, not voice.ts's,
 // so the lookup is injected rather than imported.
 setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word));
+
+// ---- idle reclaim (AionUi parity: 设置 → 系统 → 「Agent 空闲超时（分钟）」) ---------------------
+// The operator's standing answer to 「一个 ready 了好几个小时的槽位还挂着 agent 进程」. It STOPS the
+// process and nothing else: the row stays in 工作空间 wearing `reaped`, one click brings it back, and
+// its transcript is untouched — reaping is not archiving (that is the operator's own decision now).
+//
+// The threshold is read on every tick, so changing it in 设置 applies immediately (no restart — a
+// restart would kill exactly the slots this feature exists to keep alive cheaply). Two env knobs for
+// QA: AGENTUS_IDLE_KILL_MIN accepts a FRACTION of a minute, which is how the reclaim path is
+// exercised in seconds instead of in five minutes (AionUi made its own timeouts env-configurable for
+// the same reason), and AGENTUS_IDLE_SWEEP_MS moves the tick.
+{
+  // ABSENT must mean "follow 设置", not 0 — `Number("")` is 0, which would silently disable the
+  // reaper on every instance that never sets the env (measured: the startup line said 「0 min」 on an
+  // instance whose setting was 5). Only a real, non-empty value is an override.
+  const envNum = (raw: string | undefined): number | null => {
+    const s = String(raw ?? "").trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const envIdle = envNum(process.env.AGENTUS_IDLE_KILL_MIN);
+  const envIdleMs = envIdle != null ? envIdle * 60_000 : null;
+  const envSweep = envNum(process.env.AGENTUS_IDLE_SWEEP_MS);
+  const sweepMs = envSweep != null && envSweep >= 1000 ? envSweep : 30_000;
+  const source = envIdleMs != null ? "AGENTUS_IDLE_KILL_MIN" : "settings.agent.idleKillMin";
+  console.log(
+    `[agentus] idle reclaim: ${
+      envIdleMs != null ? envIdle : agentSettings().idleKillMin
+    } min (${source}), sweep ${Math.round(sweepMs / 1000)}s, 0 = off`,
+  );
+  mgr.startIdleReaper({
+    idleMs: () => envIdleMs ?? agentSettings().idleKillMin * 60_000,
+    watched: (id) => notify.operatorWatching(id),
+    intervalMs: sweepMs,
+  });
+}
 
 /** The tail of the session being dictated into, for DashScope's context enhancement
  *  ("根据上下文"): user/assistant turns only, capped at 5 by the API. */
@@ -703,7 +750,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     if (url.pathname === "/api/sessions" && req.method === "GET") {
       // `pending` rides along because it is STATE, not an event: a page that loads or refreshes
       // after the request was raised never saw the event, and would otherwise show nothing.
-      return send(res, 200, { live: mgr.list(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
+      return send(res, 200, { live: mgr.list(), cold: mgr.cold(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
     }
     // The session's plan object — what the cockpit's card renders. STATE too, and the one piece of
     // it that cannot be replayed: after the agent process died there are no frames left to read,
@@ -832,7 +879,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (body.theme && typeof body.theme === "object") saveTheme(body.theme as Record<string, unknown>);
         if (body.call && typeof body.call === "object") saveCall(body.call as Record<string, unknown>);
         if (body.prefs && typeof body.prefs === "object") savePrefs(body.prefs as Record<string, unknown>);
-        if (!body.voice && !body.theme && !body.call && !body.prefs) saveSettings(body);
+        if (body.agent && typeof body.agent === "object") saveAgent(body.agent as Record<string, unknown>);
+        if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
         return send(res, 400, { error: String((e as Error)?.message ?? e) });
@@ -947,6 +995,30 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return send(res, 200, { purged: id });
         }
         return send(res, 404, { error: `no such session: ${id}` });
+      }
+      if (req.method === "POST" && sub === "/archive") {
+        // 归档: the operator's own storage decision (and it stops a live process — see
+        // SessionManager.setArchived). Distinct from DELETE, which on a LIVE slot only closes it and
+        // on a COLD one purges the record: 归档 is the middle statement, and before this route the UI
+        // had no way to make it.
+        try {
+          const info = await mgr.setArchived(id, true);
+          emit(sessionsEvent());
+          return send(res, 200, info);
+        } catch (e) {
+          return send(res, 404, { error: String((e as Error)?.message ?? e) });
+        }
+      }
+      if (req.method === "POST" && sub === "/unarchive") {
+        // 取消归档: moves the flag only. Waking the slot is a SEPARATE /resume, so a restore that
+        // cannot load leaves a visible cold slot in 工作空间 instead of an error nobody asked for.
+        try {
+          const info = await mgr.setArchived(id, false);
+          emit(sessionsEvent());
+          return send(res, 200, info);
+        } catch (e) {
+          return send(res, 404, { error: String((e as Error)?.message ?? e) });
+        }
       }
       if (req.method === "POST" && sub === "/resume") {
         // AC5's other half: bring a cold slot back to life (respawn + loadSession)
