@@ -19,17 +19,18 @@
 
 ## 安装
 
-**一条命令**（检查 Node、装 npm 上的包、不用 `sudo`）：
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
-```
-
-```bash
-# Node >= 22.5（存储用 node:sqlite；开发环境是 v25）
+# 对外一条命令 —— 用 npm 上发布的包（Node >= 22.5，存储用 node:sqlite）
 npx agentus                      # 或者 npm i -g agentus 然后直接跑 `agentus`
 # 打开 http://localhost:8787，用 admin / 123456 登录（见下面「登录」），
 # 然后「+ 新建会话」，选一个后端和一个工作目录
+```
+
+从仓里装（仓目前是 private，所以这条要么有权限、要么用上面的 `npx agentus`；`scripts/install.sh`
+和上面是同一件事，多了 Node 版本检查和装到用户目录的回退）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
 ```
 
 完整指南 —— 安装、参数、所有环境变量、登录、TLS、手机桥：

@@ -32,7 +32,20 @@ brew install node                 # or https://nodejs.org/en/download
 
 ## Install
 
-### One command
+### One command — the published package (public)
+
+```bash
+npx agentus                # run once, nothing installed globally
+npm i -g agentus           # …or install it, then run `agentus`
+```
+
+`npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
+children with it.
+
+### One command — from the repository
+
+The repository is **private today**, so the `curl | bash` line below needs repo access; without
+it use `npx agentus` above (same install, minus the Node check and the per-user fallback).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
@@ -58,18 +71,6 @@ Overrides, passed as environment variables:
 AGENTUS_VERSION=0.1.0 AGENTUS_INSTALL_DIR="$HOME/.local" \
   bash scripts/install.sh
 ```
-
-### With a package manager
-
-If you would rather not pipe a script into a shell:
-
-```bash
-npx agentus                # run once, nothing installed globally
-npm i -g agentus           # …or install it, then run `agentus`
-```
-
-`npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
-children with it.
 
 ### From source (a checkout)
 

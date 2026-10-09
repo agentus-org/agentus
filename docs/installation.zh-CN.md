@@ -30,7 +30,18 @@ brew install node                 # 或者 https://nodejs.org/en/download
 
 ## 安装
 
-### 一条命令
+### 一条命令 —— 用 npm 上发布的包（对外）
+
+```bash
+npx agentus                # 跑一次，不往全局装
+npm i -g agentus           # 或者装上，然后直接跑 `agentus`
+```
+
+`npx agentus` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
+
+### 一条命令 —— 从仓里装
+
+仓**目前是 private**，所以下面这条 `curl | bash` 需要有仓权限；没有就用上面的 `npx agentus`（同一件事）。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
@@ -54,15 +65,6 @@ curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/in
 # 固定版本 + 指定前缀
 AGENTUS_VERSION=0.1.0 AGENTUS_INSTALL_DIR="$HOME/.local" \
   bash scripts/install.sh
-```
-
-### 用包管理器
-
-如果你不想把脚本管进 shell：
-
-```bash
-npx agentus                # 直接跑一次，不全局安装
-npm i -g agentus           # ……或者装上，之后运行 `agentus`
 ```
 
 `npx agentus` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。

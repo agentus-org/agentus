@@ -4,6 +4,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
 #
+# The repository is private today, so that URL needs repo access; without it, the equivalent
+# public install is `npx agentus` (or `npm i -g agentus`) — this script is that, plus a Node
+# check and a per-user fallback.
+#
 # What it does — and nothing else:
 #   1. checks Node is >= 22.5 (Agentus stores its state in node:sqlite, which landed in 22.5);
 #   2. installs the published `agentus` package with npm, globally by default;

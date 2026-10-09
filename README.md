@@ -21,17 +21,18 @@ agents: open several sessions in the browser, each one backed by a real
 
 ## Install
 
-**One command** (checks Node, installs the published package, no `sudo`):
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
-```
-
-```bash
-# Node >= 22.5 (the store is node:sqlite; developed on v25)
+# public one-liner — the published package (Node >= 22.5; the store is node:sqlite)
 npx agentus                      # …or: npm i -g agentus, then `agentus`
 # open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
 # then "+ new session", pick a backend + a working directory
+```
+
+From the repository (it is private today, so this needs access — otherwise use `npx agentus`
+above; `scripts/install.sh` is the same install, with a Node check and a per-user fallback):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
 ```
 
 Full guide — install, flags, every environment variable, login, TLS, the phone bridge:
