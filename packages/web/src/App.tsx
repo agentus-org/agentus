@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView } from "./state";
@@ -15,6 +15,7 @@ import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { ToolPanel } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
+import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, splitRecent } from "./rail";
 import { copyText } from "./clipboard";
@@ -23,8 +24,8 @@ import {
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
-  IconArrowDown, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
-  IconFolder, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
+  IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
+  IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
@@ -47,6 +48,25 @@ export function App(): JSX.Element {
   // Settings is a view, not a modal: it replaces the chat area (hermes-studio's shape),
   // so a half-read conversation is still there when the operator comes back.
   const [settings, setSettings] = useState(false);
+
+  // ---- the two side panes, both resizable and both the operator's to size -----------------
+  // The clamps are carved out in order — the rail first, the panel against what the rail left —
+  // so no drag can squeeze the chat column below `MIN_CHAT`. See `paneWidth.tsx`.
+  const rail = usePaneWidth({
+    storage: "agentus.rail-width",
+    fallback: 268,
+    min: 200,
+    max: () => Math.min(460, window.innerWidth - MIN_CHAT - 200),
+    rightEdge: true,
+    label: "resize the session rail",
+  });
+  const panel = usePaneWidth({
+    storage: "agentus.panel-width",
+    fallback: 760,
+    min: 380,
+    max: () => Math.max(380, window.innerWidth - rail.width - MIN_CHAT),
+    label: "resize the workspace panel",
+  });
 
   // Who are we? Asked before anything else: /api/auth/me decides between the login
   // view and the cockpit. Dialling the socket first would be wasted — an
@@ -82,12 +102,16 @@ export function App(): JSX.Element {
         onNewIn={(cwd) => setModal({ cwd })}
         onSettings={() => { setSettings(true); setDrawer(false); }}
         settingsOpen={settings}
+        railWidth={rail.width}
+        railHandle={rail.handle}
       />
       <Main
         onMenu={() => setDrawer(true)}
         settingsOpen={settings}
         onCloseSettings={() => setSettings(false)}
         onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
+        panelWidth={panel.width}
+        panelHandle={panel.handle}
       />
       {modal && <NewSessionModal cwd={modal.cwd} onClose={() => setModal(false)} />}
       {/* Rendered here, not in the rail: the operator may have triggered the resume from the
@@ -442,13 +466,17 @@ function SessionMenu({ x, y, trigger, info, cold, canFork, onDismiss, onRename, 
   );
 }
 
-function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
+function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, railHandle }: {
   open: boolean;
   onNew: () => void;
   /** Create a session in the directory the operator already pointed at (a rail group's 「+」). */
   onNewIn: (cwd: string) => void;
   onSettings: () => void;
   settingsOpen: boolean;
+  /** The rail is resizable by dragging its right edge (`paneWidth.tsx`); the width goes out as a
+   *  CSS variable so the phone drawer's own `width` rule still wins over it. */
+  railWidth: number;
+  railHandle: JSX.Element;
 }): JSX.Element {
   const { sessions, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   // ---- presence: tell the server which session is on screen, so the phone can stay quiet while
@@ -663,7 +691,8 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   };
 
   return (
-    <aside className={`sidebar ${open ? "open" : ""}`}>
+    <aside className={`sidebar ${open ? "open" : ""}`} style={{ "--rail-w": `${railWidth}px` } as CSSProperties}>
+      {railHandle}
       <header>
         <span className="logo"><BrandMark size={24} /> Agentus</span>
         <span className="tagline">keep your agents on the track</span>
@@ -763,8 +792,11 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
                 data-workspace={g.path}
                 onClick={() => setClosed((c) => ({ ...c, [g.path]: !c[g.path] }))}
               >
-                <IconChevronRight size={11} className={`rail-group-chev ${isOpen ? "open" : ""}`} />
-                <IconFolder size={12} />
+                {isOpen ? (
+                  <IconFolderOpen size={13} className="rail-group-folder" />
+                ) : (
+                  <IconFolder size={13} className="rail-group-folder" />
+                )}
                 <span className="rail-group-name">{g.label}</span>
                 <span className="rail-group-count">
                   {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
@@ -939,12 +971,15 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen }: {
   );
 }
 
-function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
+function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, panelHandle }: {
   onMenu: () => void;
   settingsOpen: boolean;
   onCloseSettings: () => void;
   /** Reopen the approval dialog for the request waiting on this session (the ⚿ chip). */
   onPermClick: () => void;
+  /** Resizable workspace panel (`paneWidth.tsx`): width in px, and the handle for its LEFT edge. */
+  panelWidth: number;
+  panelHandle: JSX.Element;
 }): JSX.Element {
   const { active } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
@@ -1007,6 +1042,8 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick }: {
             onClose={() => setPanelOpen(false)}
             onPickWorkspace={() => setPickWorkspace(true)}
             focus={panelFocus}
+            panelWidth={panelWidth}
+            panelHandle={panelHandle}
           />
         )}
       </div>
@@ -2867,6 +2904,8 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     setPick(0);
   }, [v.info.id, text]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  // which queued prompt is open in the inline editor (the ✎ button), and its working copy
+  const [editingQ, setEditingQ] = useState<{ id: string; text: string } | null>(null);
   const [attachErr, setAttachErr] = useState("");
   const [dragging, setDragging] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2921,13 +2960,22 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
 
   const send = () => {
     const t = text.trim();
-    if ((!t && !drafts.length) || v.busy || v.info.status !== "ready") return;
+    if (!t && !drafts.length) return;
     const attachments: PromptAttachment[] = drafts.map((d) => (
       d.kind === "image"
         ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
         : { kind: "text", name: d.name, text: d.payload }
     ));
-    cockpit.send({ t: "prompt", sessionId: v.info.id, text: t, attachments });
+    // A busy agent is not a dead composer any more (Studio's message queue): what he types now is
+    // filed in the queue and goes out by itself when the running turn ends. The send button is still
+    // a stop button while busy, so Enter is the way in — and the queue row is where it can be
+    // retracted, rewritten or forced through immediately.
+    if (v.busy || v.info.status !== "ready") {
+      if (!t && !attachments.length) return;
+      cockpit.enqueuePrompt(v.info.id, t, attachments);
+    } else {
+      cockpit.send({ t: "prompt", sessionId: v.info.id, text: t, attachments });
+    }
     setText("");
     setDrafts([]);
     setAttachErr("");
@@ -3080,6 +3128,76 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
           </div>
         )}
         {attachErr && <div className="composer-note err">{attachErr}</div>}
+        {/* Prompts written while the agent was still working (Studio's message queue). They are the
+            operator's own words, so they are visible with their own buttons instead of vanishing
+            into a disabled input: ↑ takes the floor now, ✎ rewrites it in place, ✕ drops it. */}
+        {v.queue.length > 0 && (
+          <div className="queue-list" aria-label="queued messages">
+            <div className="queue-head">
+              <span className="queue-title">Queued · {v.queue.length}</span>
+              <span className="queue-hint">
+                {v.queue.some((q) => q.inflight) ? "sending…" : "goes out when this turn ends"}
+              </span>
+            </div>
+            {v.queue.map((q, i) => (
+              <div key={q.id} className={`queue-row${q.inflight ? " inflight" : ""}`} data-queue-id={q.id}>
+                <span className="queue-idx" aria-hidden="true">{i + 1}</span>
+                {editingQ?.id === q.id ? (
+                  <textarea
+                    className="queue-edit"
+                    rows={1}
+                    autoFocus
+                    value={editingQ.text}
+                    aria-label="edit the queued message"
+                    onChange={(e) => setEditingQ({ id: q.id, text: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") { e.preventDefault(); setEditingQ(null); return; }
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        cockpit.editQueued(v.info.id, q.id, editingQ.text);
+                        setEditingQ(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Leaving the field keeps the edit (an empty one drops the row) — a stray click
+                      // must not silently throw away what he just typed.
+                      cockpit.editQueued(v.info.id, q.id, editingQ.text);
+                      setEditingQ(null);
+                    }}
+                  />
+                ) : (
+                  <span className="queue-text" title={q.text}>{q.text}</span>
+                )}
+                <span className="queue-actions">
+                  <button
+                    className="queue-btn"
+                    title="send now — stops the running turn and takes the floor"
+                    aria-label="send this one now"
+                    onClick={() => cockpit.sendQueuedNow(v.info.id, q.id)}
+                  >
+                    <IconArrowUp size={13} />
+                  </button>
+                  <button
+                    className="queue-btn"
+                    title="edit this message"
+                    aria-label="edit this queued message"
+                    onClick={() => setEditingQ(editingQ?.id === q.id ? null : { id: q.id, text: q.text })}
+                  >
+                    <IconPencil size={13} />
+                  </button>
+                  <button
+                    className="queue-btn danger"
+                    title="drop it — it will not be sent"
+                    aria-label="drop this queued message"
+                    onClick={() => cockpit.dropQueued(v.info.id, q.id)}
+                  >
+                    <IconClose size={13} />
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {/* The speaker records why it fell back / failed — it was never rendered, so a
             server-voice failure silently switched the operator to the system voice.
             Surfacing it here is the honest half of that fallback. */}

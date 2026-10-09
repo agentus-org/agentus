@@ -114,8 +114,9 @@ button { font: inherit; }
 
 /* ---- sidebar ---- */
 .sidebar {
-  width: 268px; flex: 0 0 268px; background: var(--bg-panel);
+  width: var(--rail-w, 268px); flex: 0 0 var(--rail-w, 268px); background: var(--bg-panel);
   border-right: 1px solid var(--line); display: flex; flex-direction: column;
+  position: relative;   /* the resize handle hangs off its right edge (`.pane-handle`) */
 }
 .sidebar header { padding: 14px 16px 10px; display: flex; align-items: baseline; gap: 8px; }
 .sidebar header .logo { color: var(--accent-text); font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 7px; }
@@ -304,8 +305,21 @@ button { font: inherit; }
 }
 .session-item.cold:hover .cold-resume { border-color: var(--line); color: var(--ok); }
 
-.stream-inner { max-width: 780px; margin: 0 auto; padding: 0 20px; }
-.msg { margin-bottom: 14px; }
+/* The reply column and the composer share ONE width rule, and that width is the column's own inner
+   width — no centred gutter. History: this used to be `max-width: 780px; margin: 0 auto`, and a
+   later round replaced it with a container-relative gutter (`calc(100% - clamp(80px,10cqw,240px))`,
+   the shape AionUi uses) — which centred the text with ~60px on each side while the task-plan and
+   context widgets above it stayed flush left. The operator measured exactly that: 「任务计划和上下文
+   长度都对齐左边，但输入框和聊天对话消息泡都没有自动拉起到最边缘」. One left edge for all of it. */
+.stream-inner { margin: 0; padding: 0 20px; }
+/* A row is as wide as what it HOLDS (AionUi MessageText: the row is a flex column, `items-end` for the
+   operator's own turns). Before this every block was a full-width box, so a two-word tool card or a
+   one-line fold drew a border all the way to the right edge. Prose still fills the column because its
+   own content is long; the `max-width` clamp is what keeps a wide table inside. */
+.msg { margin-bottom: 14px; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.msg > * { max-width: 100%; }
+.msg.user { align-items: flex-end; } /* the operator's turns — and the YOU label above them — hug the right */
+.msg.plan, .msg.meta { align-items: stretch; } /* a plan/error block is a panel, not a bubble: it keeps the column */
 .msg .role { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; letter-spacing: 0.4px; }
 /* WHO is speaking, on the message: the agent's own face + name, instead of the word "AGENT" (which
    names the class, not the agent). Studio does this on every message; the artwork is the rail's, so
@@ -360,11 +374,13 @@ button { font: inherit; }
    each, which calls it touched, how it went — with the detail behind clicks (run → call → its
    I/O). While the run is live the row stays open in a BOUNDED box that scrolls itself, so a
    twenty-step turn cannot push the composer off the screen; when the agent moves on it folds. */
+/* The collapsed row is as wide as the run it describes; when it opens, the detail takes the column. */
 .work-run-head {
-  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 4px 8px;
+  display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; min-height: 30px; padding: 4px 8px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
   color: var(--text-dim); font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
 }
+.work-run.active { align-self: stretch; }
 .work-run-head:hover, .work-run-head:focus-visible {
   outline: none; border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.055);
 }
@@ -587,10 +603,14 @@ code.inline {
 }
 .ns-fixed-dir code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--accent-text); }
 
-.composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 8px 16px calc(10px + env(safe-area-inset-bottom)); }
+/* 20px, matching `.stream-inner`'s inner padding: the plan bar, the usage row, the input box and the
+   reply text all start at the same x (the operator: 「任务计划和上下文长度都对齐左边，但输入框和聊天
+   对话消息泡都没有自动拉起到最边缘」 — one left edge for the whole column, measured by
+   `scripts/qa/layout-sweep.mjs`). */
+.composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 8px 20px calc(10px + env(safe-area-inset-bottom)); }
 .composer.drop-active .composer-box { border-color: var(--accent-text); background: rgba(var(--accent-rgb), 0.06); }
 .composer-inner {
-  max-width: 780px; margin: 0 auto; position: relative;
+  position: relative;
   display: flex; flex-direction: column; gap: 6px;
 }
 .composer-box {
@@ -692,6 +712,43 @@ code.inline {
   font-size: 11px; text-decoration: underline;
 }
 .draft-clear:hover { color: var(--text); }
+/* ---- the message queue (Studio's queue, in the composer) ------------------------------------
+   A prompt written while the agent is still working waits here instead of bouncing off a disabled
+   input. Each row carries its own three buttons — ↑ send now (it takes the floor: the running turn
+   is stopped), ✎ edit in place, ✕ drop — so a queued message is never a blind promise. */
+.queue-list { display: flex; flex-direction: column; gap: 4px; }
+.queue-head { display: flex; align-items: baseline; gap: 8px; font-size: 11px; color: var(--text-dim); }
+.queue-title { font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+.queue-hint { opacity: 0.85; }
+.queue-row {
+  display: flex; align-items: flex-start; gap: 7px; padding: 5px 6px 5px 8px;
+  border: 1px solid var(--line); border-left: 3px solid var(--accent-dim); border-radius: 8px;
+  background: var(--bg-raised); font-size: 12.5px; color: var(--text);
+}
+.queue-row.inflight { border-left-color: var(--accent); opacity: 0.75; }
+.queue-idx {
+  flex: 0 0 auto; min-width: 14px; text-align: right; font-size: 10.5px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums; padding-top: 2px;
+}
+.queue-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5.6em; overflow: hidden; }
+.queue-edit {
+  flex: 1 1 auto; min-width: 0; font: inherit; font-size: 12.5px; color: var(--text);
+  background: var(--bg-panel); border: 1px solid var(--accent-dim); border-radius: 6px;
+  padding: 2px 6px; resize: vertical;
+}
+.queue-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.queue-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg-panel);
+  color: var(--text-dim); cursor: pointer;
+}
+.queue-btn:hover { color: var(--text); border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.08); }
+.queue-btn.danger:hover { color: var(--err); border-color: var(--err); background: rgba(229, 115, 115, 0.08); }
+@media (max-width: 720px) {
+  /* a thumb needs a real target, and the row must not push the box off a phone screen */
+  .queue-btn { width: 28px; height: 28px; }
+  .queue-text { max-height: 3.6em; }
+}
 .composer-note { font-size: 11.5px; color: var(--text-dim); }
 .composer-note.err { color: var(--err); }
 /* ---- dictation chip ---- */
@@ -961,9 +1018,46 @@ code.inline {
   container-type: inline-size;
 }
 .tool-panel {
-  width: min(430px, 42vw); flex: 0 0 auto; display: flex; flex-direction: column;
+  width: var(--panel-w, 430px); flex: 0 0 auto; display: flex; flex-direction: column;
   min-height: 0; border-left: 1px solid var(--line); background: var(--bg-panel);
+  position: relative;   /* the resize handle hangs off its left edge (`.pane-handle`) */
 }
+/* ---- the workspace panel's own split: preview | file tree -------------------------------
+   The operator's complaint was that the preview shared the panel's height with the tree (「只有一半
+   的空间，太小了吧」), and the reference splits the ROW rather than the column (`ProjectPanelHost.tsx`
+   partitions the layout as chat | preview | explorer). `--explorer-w` is the tree's width, set by its
+   own drag handle; the preview takes what is left, and its floor (`PREVIEW_MIN` in ToolPanel.tsx) is
+   clamped on the tree's side so neither can eat the other. */
+.panel-split { flex: 1; display: flex; min-height: 0; position: relative; }
+.preview-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.explorer-col {
+  position: relative; flex: 0 0 auto; width: var(--explorer-w, 300px);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel-split:not(.has-preview) .explorer-col { width: 100%; }
+
+/* ---- the drag handles (rail · workspace panel · file tree) ------------------------------
+   A 12px hit area straddling the boundary with a 2px line inside it: the line is invisible until
+   the pointer is near, so the pane edges stay quiet but the target is still finger-sized. */
+.pane-handle {
+  position: absolute; top: 0; bottom: 0; width: 12px; z-index: 12;
+  display: flex; align-items: center; justify-content: center;
+  cursor: col-resize; touch-action: none;
+}
+.sidebar > .pane-handle { right: -6px; }
+.tool-panel > .pane-handle { left: -6px; }
+.explorer-col > .pane-handle { left: -6px; }
+.pane-handle-line { width: 2px; height: 100%; background: transparent; transition: background 0.15s ease; }
+.pane-handle:hover .pane-handle-line,
+.pane-handle:active .pane-handle-line { background: var(--accent-dim); }
+/* While a drag is live the cursor belongs to the whole page, not just the handle: without this the
+   pointer flickers back to `text` as soon as it leaves the 12px strip, and text gets selected. */
+body.pane-dragging { cursor: col-resize; user-select: none; }
+body.pane-dragging * { cursor: col-resize !important; }
+/* No handles where they cannot be used: a phone shows one pane at a time, and a touch pointer has no
+   hover to reveal the line. */
+@media (max-width: 720px) { .pane-handle { display: none; } }
+@media (hover: none) { .pane-handle { display: none; } }
 .tool-tabs {
   display: flex; align-items: center; gap: 3px; padding: 4px 6px;
   border-bottom: 1px solid var(--line);
@@ -1001,7 +1095,10 @@ code.inline {
 .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { font-size: 10.5px; color: var(--text-dim); font-family: var(--mono); }
 .file-enter { opacity: 0.45; }
-.file-preview { border-top: 1px solid var(--line); flex: 2 1 0; min-height: 150px; display: flex; flex-direction: column; }
+/* The preview is a COLUMN of the panel now, not a strip under the tree (it used to be
+   `border-top` + `flex: 2 1 0` in a vertical split). Full height of the column, no top border —
+   the drag handle between it and the tree is the divider. */
+.file-preview { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .file-preview-head {
   display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11.5px;
   border-bottom: 1px solid var(--line);
@@ -1098,6 +1195,10 @@ code.inline {
     position: fixed; inset: 44px 0 0 0; z-index: 22;
     width: auto; max-width: none; border-left: none;
   }
+  /* …and inside it one pane at a time: a file being read takes the sheet, and the preview's own ×
+     (or Escape) puts the tree back. Two side-by-side columns on a 390px screen is how the preview
+     got "half the space" in the first place. */
+  .panel-split.has-preview .explorer-col { display: none; }
   .file-row { min-height: 42px; }
   .term-out { min-height: 30vh; }
 }
@@ -1364,23 +1465,29 @@ code.inline {
    reads as a child of the 工作空间 section it sits in. */
 .rail-group-row { display: flex; align-items: center; gap: 2px; }
 .rail-group-head {
-  display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; text-align: left;
-  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
-  font-family: inherit; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
-  padding: 5px 6px; border-radius: 6px; margin-left: 11px;
+  display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; text-align: left;
+  background: transparent; border: none; cursor: pointer;
+  /* A directory is NOT a section label: its name reads at the same brightness as a session title
+     (the operator: 「工作空间的目录颜色应该和会话颜色一样比较亮，工作空间这四个字暗一点没关系」), and
+     it keeps the casing the filesystem actually has (`~/Project/AionUi`, not `~/PROJECT/AIONUI` —
+     「目录应该显示原始大小写，不要统一变成大写」), so no `text-transform` and no letter-spacing. */
+  color: var(--text); font-family: inherit; font-size: 12px;
+  padding: 5px 6px; border-radius: 6px; margin-left: 19px;
 }
-.rail-group-head:hover { background: var(--bg-raised); color: var(--text); }
+.rail-group-head:hover { background: var(--bg-raised); }
 .group-add { flex: 0 0 auto; opacity: 0; transition: opacity 0.12s; }
 .rail-group:hover .group-add, .rail-group:focus-within .group-add { opacity: 1; }
 @media (hover: none) { .group-add { opacity: 0.7; } }
-.rail-group-chev { transition: transform 0.12s ease; opacity: 0.7; }
-.rail-group-chev.open { transform: rotate(90deg); }
+/* The icon carries the open/closed state on its own — the chevron that used to sit beside it was a
+   second answer to the same question (「最左边的箭头删掉吧，直接用文件夹的开合状态来指示就行」).
+   Neutral colour on purpose: it is chrome, the name is the content. */
+.rail-group-folder { flex: 0 0 auto; color: var(--text-dim); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-group-count { font-size: 11px; color: var(--text-dim); }
-.rail-group-body { padding-left: 15px; }
+.rail-group-body { padding-left: 22px; }
 /* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
 .rail-more {
-  display: flex; align-items: center; gap: 5px; width: calc(100% - 15px); margin: 1px 0 4px 15px;
+  display: flex; align-items: center; gap: 5px; width: calc(100% - 22px); margin: 1px 0 4px 22px;
   padding: 3px 6px; background: transparent; border: none; border-radius: 6px; cursor: pointer;
   color: var(--text-dim); font-family: inherit; font-size: 11px; text-align: left;
 }
@@ -2077,26 +2184,11 @@ code.inline {
 }
 @media (max-width: 720px) { .be-row { flex-direction: column; } }
 
-/* ---- the reply column and the composer size themselves off the CHAT COLUMN -------------
-   Reported: 「在电脑端，会话页会向左右延展，我们好像没有自动延展」. Both were a hard 780px
-   (`max-width`), so a wide window bought nothing but margin. Referenced behaviour is AionUi's
-   chat surface (`Messages/messages.css`): full width until the container is wide enough, then
-   `calc(100% - clamp(80px, 10cqw, 240px))` — a gutter allotted in proportion to the column.
-
-   Two deliberate choices:
-     · **The threshold is where the two rules MEET, not a round number.** At a column of ~870px
-       the fluid form and the 780px cap are the same width (`870 - clamp(80,87,240) ≈ 783`), so
-       the column grows monotonically through the switch instead of jumping or shrinking.
-     · **It is a container query, not a media query**, so opening the workspace panel (which
-       takes 430px from this column) drops back under the threshold and the transcript fills the
-       narrower column instead of keeping a gutter sized for a column that no longer exists.
-   A phone (column ≤ 720px) never matches it, so the mobile layout is untouched.
-
-   Placed at the END of the file on purpose: `.composer-inner` is defined ~1400 lines above and
-   an equal-specificity rule that comes later wins the cascade. */
-@container (min-width: 870px) {
-  .stream-inner, .composer-inner {
-    max-width: none;
-    width: calc(100% - clamp(80px, 10cqw, 240px));
-  }
-}
+/* ---- reply column + composer: they are the CHAT COLUMN's width, and everything above them
+   (task plan, context window, usage) shares that one left edge. History, because both earlier
+   shapes failed in opposite directions: a hard `max-width: 780px` (「会话页不会向左右延展」) →
+   a container-relative centred gutter `calc(100% - clamp(80px,10cqw,240px))`, the shape
+   `Messages/messages.css` uses, which only applied at container ≥ 870px and left ~60px of
+   margin on each side while the widgets stayed flush left (「任务计划和上下文长度都对齐左边，但
+   输入框和聊天对话消息泡都没有自动拉起到最边缘」). No gutter, no threshold, no container query:
+   the column's own width, minus a plain 20px inner padding. */

@@ -119,6 +119,28 @@ check((await names()) === 'alpha,beta,gamma,kappa,mu,zeta', 'sorting "name" is a
 check(await ev(`(${BUBBLE}).querySelectorAll('.md table th')[1].getAttribute('aria-sort')`) === 'none',
   'the previous column no longer claims to be sorted');
 
+console.log('== the third click turns the sort OFF (the operator: 「三次应该取消排序吧，就是显示原始的顺序吧」) ==');
+// The table is sorted ASCENDING by "name" at this point (the check above). The cycle from here is
+// asc → desc → off, so two more clicks must land back on the order the agent wrote.
+const toDesc = await clickHeader(0);
+await sleep(400);
+check(toDesc === 'descending', 'a second click on the same header reverses it', String(toDesc));
+const toOff = await clickHeader(0);
+await sleep(400);
+check((await names()) === 'zeta,alpha,mu,beta,kappa,gamma',
+  'the third click restores the order the agent wrote', await names());
+check(toOff === 'none', 'aria-sort says nothing is sorted', String(toOff));
+check(await ev(`(${BUBBLE}).querySelectorAll('.md table th')[0].querySelector('.md-table-sort-indicator').textContent`) === '⇕',
+  'the arrow goes back to the neutral glyph');
+const restart = await clickHeader(0);
+await sleep(400);
+check(restart === 'ascending' && (await names()) === 'alpha,beta,gamma,kappa,mu,zeta',
+  'a fourth click starts the cycle over at ascending', `${restart} / ${await names()}`);
+await clickHeader(0);   // → descending
+await clickHeader(0);   // → off: leave the document's own order for the sections below
+await sleep(400);
+check((await names()) === 'zeta,alpha,mu,beta,kappa,gamma', 'and off again puts it back once more', await names());
+
 console.log('== filter ==');
 await ev(`(() => { const f = (${BUBBLE}).querySelector('.md-table-filter'); f.value = 'ka'; f.dispatchEvent(new Event('input', { bubbles: true })); return true })()`);
 await sleep(400);
@@ -155,6 +177,47 @@ check(await ev(`document.querySelectorAll('.md-table-overlay table tbody tr').le
 check(await ev(`document.querySelectorAll('.md-table-overlay table th .md-table-sort').length`) === 3,
   'the reader\'s table is sortable too');
 check(await ev(`!document.querySelector('.md-table-zoom').classList.contains('rot')`), 'no rotation needed on a wide viewport');
+// The reader is appended to document.body, i.e. OUTSIDE the rendered markdown — so every rule written
+// as `.md th, .md td` (cell borders, padding, the header fill) misses it unless the zoom carries the
+// `md` class too. The operator's report was exactly that: 「点击放大时，没有框线显示了」.
+{
+  const grid = JSON.parse(await ev(`(() => {
+    const td = document.querySelector('.md-table-zoom td');
+    const th = document.querySelector('.md-table-zoom th');
+    if (!td || !th) return JSON.stringify({ missing: true });
+    const t = getComputedStyle(td), h = getComputedStyle(th);
+    return JSON.stringify({
+      borderWidth: t.borderTopWidth, borderStyle: t.borderTopStyle, borderColor: t.borderTopColor,
+      padLeft: parseFloat(t.paddingLeft), padTop: parseFloat(t.paddingTop),
+      thFill: h.backgroundColor, mdClass: document.querySelector('.md-table-zoom').classList.contains('md'),
+      // closest() matches the element itself, so "is it inside another markdown subtree" is asked by
+      // comparing the match against the zoom element (not just a truthiness test)
+      insideMd: document.querySelector('.md-table-zoom').closest('.md') !== document.querySelector('.md-table-zoom'),
+    });
+  })()`));
+  check(!grid.missing && parseFloat(grid.borderWidth) > 0 && grid.borderStyle !== 'none',
+    'the enlarged table keeps its grid lines', `${grid.borderWidth} ${grid.borderStyle} ${grid.borderColor}`);
+  check(grid.padLeft > 0 && grid.padTop > 0, 'and the cell padding', `${grid.padLeft}/${grid.padTop}px`);
+  check(grid.thFill !== 'rgba(0, 0, 0, 0)' && grid.thFill !== 'transparent',
+    'and the header fill', grid.thFill);
+  check(grid.mdClass && !grid.insideMd, 'because the overlay table is outside the markdown subtree and carries `md` itself',
+    `md=${grid.mdClass} insideMd=${grid.insideMd}`);
+}
+// Sorting has to work in the reader as well — it re-enhances the cloned table, and the third state
+// has to bring the CLONE's own order back (which is whatever order it was cloned in).
+{
+  const first = await ev(`(() => { const t = document.querySelector('.md-table-overlay table'); return [...t.tBodies[0].rows].map(r => r.cells[0].textContent.trim()).join(',') })()`);
+  const sortReader = async (col) => {
+    await ev(`document.querySelectorAll('.md-table-overlay table th')[${col}].querySelector('.md-table-sort').click()`);
+    await sleep(400);
+    return ev(`(() => { const t = document.querySelector('.md-table-overlay table'); return [...t.tBodies[0].rows].map(r => r.cells[0].textContent.trim()).join(',') })()`);
+  };
+  const asc = await sortReader(1);     // "count": numeric, so a different order than the DOM's
+  const desc = await sortReader(1);
+  const off = await sortReader(1);
+  check(asc !== first && desc !== asc && off === first,
+    'and the reader\'s sort cycles asc → desc → back to its own order', `${first} | ${asc} | ${desc} | ${off}`);
+}
 await ev(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
 await sleep(300);
 check(await ev(`!document.querySelector('.md-table-overlay')`), 'Escape closes it');

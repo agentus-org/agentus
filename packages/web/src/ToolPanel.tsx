@@ -12,11 +12,12 @@
 // is the agent's job"), and the operator overruled that on 2026-10-09 — so the preview pane
 // (FilePreview.tsx) now renders per file type and can save, with the conflict rule that makes
 // an editor safe next to an agent: see writeTextFile in packages/server/src/fs.ts.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { SessionView } from "./state";
 import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
+import { usePaneWidth } from "./paneWidth";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
   IconPlus, IconRefresh, IconSwap, IconTerminal,
@@ -45,6 +46,10 @@ export interface PanelTarget {
   line?: number;
 }
 
+/** The preview column's floor: the tree may not eat below this, or the file being read becomes a
+ *  letterbox (the operator's original complaint about the preview's size). */
+const PREVIEW_MIN = 300;
+
 function humanSize(bytes?: number): string {
   if (bytes == null) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -63,18 +68,34 @@ function stripAnsi(input: string): string {
     .replace(/\r(?!\n)/g, "");                              // bare CR: keep the line, drop the return
 }
 
-export function ToolPanel({ v, onClose, onPickWorkspace, focus }: {
+export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle }: {
   v: SessionView;
   onClose: () => void;
   onPickWorkspace: () => void;
   /** a file pushed in from outside the panel (a link in a reply); the panel opens on it */
   focus?: PanelTarget | null;
+  /** the panel's own (resizable, persisted) width, and its handle — rendered on the LEFT edge,
+   *  where it meets the chat column (`paneWidth.tsx`). */
+  panelWidth: number;
+  panelHandle: JSX.Element;
 }): JSX.Element {
   // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
   useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
   const [tab, setTab] = useState<"files" | "terminal">("files");
   const root = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(root);
+  // The tree keeps its own column next to the preview instead of splitting the panel vertically:
+  // the operator's complaint was 「文件预览只有一半的空间，太小了吧」 — and the reference splits the
+  // row, not the column (AionUi partitions it as chat | preview | explorer, `ProjectPanelHost.tsx`).
+  // Only the explorer's width is stored here; the preview takes whatever is left.
+  const explorer = usePaneWidth({
+    storage: "agentus.explorer-width",
+    fallback: 300,
+    min: 220,
+    max: () => Math.max(220, Math.min(460, panelWidth - PREVIEW_MIN)),
+    rightEdge: false,
+    label: "resize the file tree",
+  });
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
   const [target, setTarget] = useState<PanelTarget | null>(null);
@@ -143,7 +164,12 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus }: {
   const crumbsText = crumbs.map((c) => c.label).join(" / ");
 
   return (
-    <aside className="tool-panel" aria-label="workspace panel">
+    <aside
+      className="tool-panel"
+      aria-label="workspace panel"
+      style={{ "--panel-w": `${panelWidth}px` } as CSSProperties}
+    >
+      {panelHandle}
       <div className="tool-tabs">
         <button
           className={`tool-tab ${tab === "files" ? "active" : ""}`}
@@ -172,60 +198,67 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus }: {
       </div>
 
       {tab === "files" ? (
-        <div className="tool-body files-body">
-          <div className="ws-root" title={root}>
-            <IconFolder size={13} />
-            <span className="ws-root-name">{crumbsText || root}</span>
-          </div>
-          <div className="file-bar">
-            <button
-              className="icon-btn"
-              title="parent directory"
-              aria-label="parent directory"
-              disabled={!listing?.parent}
-              onClick={() => listing?.parent && setPath(listing.parent)}
-            >
-              <IconArrowLeft size={15} />
-            </button>
-            <button
-              className="icon-btn"
-              title={`home (${listing?.home ?? "~"})`}
-              aria-label="home"
-              onClick={() => listing?.home && setPath(listing.home)}
-            >
-              <IconHome size={15} />
-            </button>
-            <span className="file-bar-path" title={listing?.path ?? path}>{listing?.path ?? path}</span>
-            <button className="icon-btn" title="refresh" aria-label="refresh" onClick={() => void load(path)}>
-              <IconRefresh size={14} />
-            </button>
-          </div>
-          {error ? <div className="tool-error">{error}</div> : null}
-          {loading && !listing ? <div className="tool-note">loading…</div> : null}
-          <div className="file-list">
-            {listing?.entries.map((e) => (
-              <button
-                key={e.path}
-                className={`file-row ${target?.path === e.path ? "sel" : ""}`}
-                title={e.path}
-                onClick={() => open(e)}
-              >
-                {e.kind === "dir" ? <IconFolder size={14} /> : <IconFile size={14} />}
-                <span className="file-name">{e.name}</span>
-                {e.kind === "file" ? <span className="file-size">{humanSize(e.size)}</span> : null}
-                {e.kind === "dir" ? <IconChevronRight size={13} className="file-enter" /> : null}
-              </button>
-            ))}
-            {listing && !listing.entries.length ? <div className="tool-note">empty directory</div> : null}
-            {listing?.truncated ? <div className="tool-note">list capped at {listing.entries.length} entries</div> : null}
-          </div>
+        /* The ROW is split, not the column. The operator: 「现在文件预览是直接放在文件浏览器下面的，
+           只有一半的空间，太小了吧…你看下aionui，是单独加个侧栏到中间的吧」 — and the reference does
+           exactly that: `ProjectPanelHost.tsx` partitions the layout as chat | preview | explorer. So
+           the preview gets its own column beside the chat column, the tree keeps its own, and each has
+           a draggable edge whenever both are on screen. On a phone (one pane at a time, see the
+           ≤720px rules) opening a file replaces the tree and its own close button brings it back. */
+        <div className={`panel-split ${target ? "has-preview" : ""}`}>
           {target ? (
-            <FilePreviewPane
-              path={target.path}
-              line={target.line}
-              onClose={() => setTarget(null)}
-            />
+            <div className="preview-col">
+              <FilePreviewPane path={target.path} line={target.line} onClose={() => setTarget(null)} />
+            </div>
           ) : null}
+          <div className="explorer-col" style={{ "--explorer-w": `${explorer.width}px` } as CSSProperties}>
+            {target ? explorer.handle : null}
+            <div className="ws-root" title={root}>
+              <IconFolder size={13} />
+              <span className="ws-root-name">{crumbsText || root}</span>
+            </div>
+            <div className="file-bar">
+              <button
+                className="icon-btn"
+                title="parent directory"
+                aria-label="parent directory"
+                disabled={!listing?.parent}
+                onClick={() => listing?.parent && setPath(listing.parent)}
+              >
+                <IconArrowLeft size={15} />
+              </button>
+              <button
+                className="icon-btn"
+                title={`home (${listing?.home ?? "~"})`}
+                aria-label="home"
+                onClick={() => listing?.home && setPath(listing.home)}
+              >
+                <IconHome size={15} />
+              </button>
+              <span className="file-bar-path" title={listing?.path ?? path}>{listing?.path ?? path}</span>
+              <button className="icon-btn" title="refresh" aria-label="refresh" onClick={() => void load(path)}>
+                <IconRefresh size={14} />
+              </button>
+            </div>
+            {error ? <div className="tool-error">{error}</div> : null}
+            {loading && !listing ? <div className="tool-note">loading…</div> : null}
+            <div className="file-list">
+              {listing?.entries.map((e) => (
+                <button
+                  key={e.path}
+                  className={`file-row ${target?.path === e.path ? "sel" : ""}`}
+                  title={e.path}
+                  onClick={() => open(e)}
+                >
+                  {e.kind === "dir" ? <IconFolder size={14} /> : <IconFile size={14} />}
+                  <span className="file-name">{e.name}</span>
+                  {e.kind === "file" ? <span className="file-size">{humanSize(e.size)}</span> : null}
+                  {e.kind === "dir" ? <IconChevronRight size={13} className="file-enter" /> : null}
+                </button>
+              ))}
+              {listing && !listing.entries.length ? <div className="tool-note">empty directory</div> : null}
+              {listing?.truncated ? <div className="tool-note">list capped at {listing.entries.length} entries</div> : null}
+            </div>
+          </div>
         </div>
       ) : (
         <TerminalTab v={v} root={root} />

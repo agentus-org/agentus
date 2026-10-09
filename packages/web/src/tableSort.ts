@@ -25,8 +25,17 @@ const MIN_ROWS_FOR_FILTER = 4;
 
 interface SortState {
   col: number;
-  dir: "asc" | "desc";
+  dir: SortDir;
 }
+
+/** Three states, and the third one matters: a click cycle of asc → desc → OFF. The off state
+ *  restores the table's own row order (kept in `data-md-row` when the table was enhanced), because
+ *  without it the operator has no way back from a sort — the rows stay in whatever order the second
+ *  click left them, and 「撤销排序」 is not something a data table can express by staying sorted. */
+type SortDir = "asc" | "desc" | "none";
+
+const INDICATOR_IDLE = "⇕";
+const INDICATOR: Record<SortDir, string> = { asc: "▲", desc: "▼", none: INDICATOR_IDLE };
 
 /** The text of a cell without the sort control's own label/indicator inside it. */
 function cellText(cell: HTMLTableCellElement | undefined | null): string {
@@ -36,17 +45,20 @@ function cellText(cell: HTMLTableCellElement | undefined | null): string {
   return (cell.textContent ?? "").trim();
 }
 
-function sortBody(table: HTMLTableElement, col: number, dir: "asc" | "desc"): void {
+function sortBody(table: HTMLTableElement, col: number, dir: SortDir): void {
   const body = table.tBodies[0];
   if (!body) return;
   const rows = Array.from(body.rows).filter((r) => r.parentElement === body);
+  const original = (row: HTMLTableRowElement): number => Number(row.dataset.mdRow ?? 0);
   rows.sort((a, b) => {
+    // OFF: the document's own order, which is what the table asked to be read as
+    if (dir === "none") return original(a) - original(b);
     const cmp = cellText(a.cells[col]).localeCompare(cellText(b.cells[col]), undefined, {
       numeric: true,
       sensitivity: "base",
     });
     if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
-    return Number(a.dataset.mdRow ?? 0) - Number(b.dataset.mdRow ?? 0);
+    return original(a) - original(b);
   });
   for (const row of rows) body.appendChild(row);
 }
@@ -101,7 +113,12 @@ export function openTableOverlay(source: HTMLTableElement): void {
   const stage = document.createElement("div");
   stage.className = "md-table-stage";
   const zoom = document.createElement("div");
-  zoom.className = "md-table-zoom";
+  // `md` too, not just `md-table-zoom`: the overlay is appended to document.body, i.e. OUTSIDE the
+  // rendered markdown's subtree — so every rule written as `.md th, .md td { … }` (the cell borders,
+  // the padding, the header fill) simply does not match here and the enlarged table arrived with no
+  // grid at all. Carrying the class puts the same rules back in scope; `.md-table-zoom table` is the
+  // more specific selector, so the zoom's own `display: table` still wins over `.md table`.
+  zoom.className = "md-table-zoom md";
   const table = cloneForOverlay(source);
   zoom.appendChild(table);
   stage.appendChild(zoom);
@@ -173,16 +190,23 @@ export function enhanceTables(root: HTMLElement | null): void {
       cell.setAttribute("aria-sort", "none");
       button.append(label, indicator);
       button.addEventListener("click", () => {
-        const next = state.col === col && state.dir === "asc" ? "desc" : "asc";
+        // asc → desc → OFF (and OFF is sticky: clicking the same header again starts over at asc)
+        const next: SortDir =
+          state.col !== col ? "asc" : state.dir === "asc" ? "desc" : state.dir === "desc" ? "none" : "asc";
         state.col = col;
         state.dir = next;
         for (const other of Array.from(headerRow.cells)) {
           other.setAttribute("aria-sort", "none");
           const ind = other.querySelector(".md-table-sort-indicator");
-          if (ind) ind.textContent = "⇕";
+          if (ind) ind.textContent = INDICATOR_IDLE;
         }
-        cell.setAttribute("aria-sort", next === "asc" ? "ascending" : "descending");
-        indicator.textContent = next === "asc" ? "▲" : "▼";
+        if (next === "none") {
+          cell.setAttribute("aria-sort", "none");
+          indicator.textContent = INDICATOR_IDLE;
+        } else {
+          cell.setAttribute("aria-sort", next === "asc" ? "ascending" : "descending");
+          indicator.textContent = INDICATOR[next];
+        }
         sortBody(table, col, next);
       });
       cell.appendChild(button);

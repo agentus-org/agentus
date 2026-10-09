@@ -140,13 +140,21 @@ for (const mode of ["dark", "light"]) {
     below.slice(0, 4).map((r) => `${r.contrast}:1 ${r.cls}`).join(", ") || "none");
 
   // the secondary token really is the brighter one, and it carries the labels the operator named
-  const secondary = audit.rows.filter((r) => r.cls.includes("rail-at") || r.cls.includes("meta") || r.cls.includes("rail-group-name") || r.cls.includes("tagline") || r.cls.includes("rail-group-count"));
+  const secondary = audit.rows.filter((r) => r.cls.includes("rail-at") || r.cls.includes("meta") || r.cls.includes("tagline") || r.cls.includes("rail-group-count"));
   check(secondary.length >= 2, "the secondary labels are on screen to audit", `${secondary.length} of them`);
   check(secondary.every((r) => r.contrast >= 6.0), "the secondary labels (time / group / tagline) are readable",
     secondary.map((r) => `${r.contrast}:1`).join(" ") || "none");
   const warmth = rowFor(audit, "title");
   check(!warmth || warmth.contrast >= 7.0, "a session title reads as primary text",
     warmth ? `${warmth.contrast}:1 ${warmth.color}` : "no title row");
+  // The DIRECTORY name is primary on purpose — the operator asked for it in as many words
+  // 「工作空间的目录颜色应该和会话颜色一样比较亮」 — so it is judged with the titles, not as a secondary
+  // label. (Judging it as secondary broke this file's own rule on a correct build: in the light theme
+  // --text is #1c2735, whose HSV saturation is 0.47 only because it is near-black, which left no 0.4
+  // saturation gap to the accent even though nothing had got greyer.)
+  const dirRow = rowFor(audit, "rail-group-name");
+  check(!dirRow || dirRow.contrast >= 7.0, "a directory name reads as primary text, like a session title",
+    dirRow ? `${dirRow.contrast}:1 ${dirRow.color}` : "no group name row");
 
   // ① the accent-as-text is a COLOUR, not a brighter grey
   const accentEls = audit.rows.filter((r) => r.color.toLowerCase().replace(/\s/g, "") === hexToRgbCss(audit.accentText));

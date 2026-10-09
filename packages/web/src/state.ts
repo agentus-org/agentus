@@ -5,6 +5,7 @@ import type {
   ClientCommand,
   PermissionRequestView,
   PlanSnapshot,
+  PromptAttachment,
   ServerEvent,
   SessionInfo,
   StoredMessage,
@@ -149,6 +150,19 @@ export interface BackendInput {
   nativePlanSource?: string;
 }
 
+/** A prompt written while the agent was still working. It waits in the composer — visibly, with its
+ *  own three buttons — and goes out by itself the moment the turn ends (Studio's message queue).
+ *  `inflight` means it has been handed to the server and we are waiting for the `turn-start` that
+ *  proves it landed: until then it is NOT forgotten, so a refused send puts it back in line instead
+ *  of losing the operator's words silently. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  attachments: PromptAttachment[];
+  at: number;
+  inflight?: boolean;
+}
+
 export interface SessionView {
   info: SessionInfo;
   msgs: MsgView[];
@@ -191,6 +205,9 @@ export interface SessionView {
   blocks: Map<string, number>;
   /** latest turn's provenance (model/effort/mode) — shown once per turn */
   trace?: TurnTrace | null;
+  /** prompts written WHILE the agent was working, oldest first: the composer shows them with their
+   *  own buttons (send now / edit / drop) and the queue drains itself on `turn-end`. */
+  queue: QueuedPrompt[];
 }
 
 /** A cold slot the agent can no longer adopt: it was created under a different agent home than
@@ -270,6 +287,14 @@ class Cockpit {
   #retry = 0;
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #outbox: ClientCommand[] = [];
+  /** sessionId → prompts waiting for the current turn to end. Mirrored onto the session view
+   *  (`v.queue`) so the UI can render them, and persisted so a reload mid-queue does not eat them. */
+  #queues = new Map<string, QueuedPrompt[]>();
+  /** Sessions where the operator pressed ↑: that prompt is on its way to taking the floor, so the
+   *  drain must wait for ITS `turn-start` before handing over the next one. The `turn-end` that
+   *  arrives in the meantime belongs to the turn he just interrupted — draining on that one would
+   *  send the next queued prompt on top of the message he explicitly pushed to the front. */
+  #takingFloor = new Set<string>();
   #listeners = new Set<() => void>();
   /** The pending coalesced publish (see bump) — one per frame at most. */
   #frame: number | null = null;
@@ -627,6 +652,9 @@ class Cockpit {
       }
       this.bump();
       void this.refreshArchived();
+      // A page that reloaded with prompts still queued finishes the job it was holding: give the
+      // socket a beat to replay session state, then let those queues go.
+      window.setTimeout(() => this.drainPersistedQueues(), 700);
     };
     ws.onmessage = (ev) => this.apply(JSON.parse(ev.data) as ServerEvent);
     ws.onclose = () => {
@@ -663,6 +691,130 @@ class Cockpit {
       return;
     }
     this.#setNet(false, "连接已断开 — 该操作未能送达");
+  }
+
+  // ---- the message queue ------------------------------------------------------------------------
+  // While a turn is running the composer is not a dead end any more: Enter still files the prompt,
+  // it just waits its turn. The queue is the operator's, so it is rendered with its own buttons and
+  // persisted — a reload (a deploy, a phone waking up) must not eat a message he already wrote.
+
+  #queueKey(id: string): string { return `agentus.queue.${id}`; }
+
+  /** The raw stored rows — no registration, so a read never has a side effect on the map. `inflight`
+   *  is dropped on the way in: a page that just loaded has nothing in flight, and a row stuck in
+   *  "sending…" would block the whole line behind it. */
+  #readStoredQueue(id: string): QueuedPrompt[] {
+    try {
+      const raw = localStorage.getItem(this.#queueKey(id));
+      const rows = raw ? (JSON.parse(raw) as QueuedPrompt[]) : [];
+      if (!Array.isArray(rows)) return [];
+      return rows
+        .filter((r) => r && typeof r.text === "string" && r.text.trim())
+        .map((r) => ({ id: String(r.id ?? `q-${r.at ?? Date.now()}`), text: r.text, attachments: r.attachments ?? [], at: r.at ?? Date.now() }));
+    } catch { return []; }
+  }
+
+  /** A view built for a session that already has a persisted queue adopts it (a reload mid-queue). */
+  #loadQueue(id: string): QueuedPrompt[] {
+    const rows = this.#queues.get(id) ?? this.#readStoredQueue(id);
+    if (rows.length) this.#queues.set(id, rows);
+    return rows;
+  }
+
+  /** After a (re)connect: every session holding queued prompts gets a chance to drain, but only if
+   *  its turn is not running — those wait for the turn-end that is still coming. */
+  drainPersistedQueues(): void {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key?.startsWith("agentus.queue.")) continue;
+        const sid = key.slice("agentus.queue.".length);
+        this.#loadQueue(sid);
+        this.drainQueue(sid);
+      }
+    } catch { /* storage off: nothing persisted to drain */ }
+  }
+
+  /** One place writes `#queues` + localStorage + the session view, so the UI can never disagree
+   *  with what will actually be sent. */
+  #setQueue(id: string, rows: QueuedPrompt[]): void {
+    if (rows.length) this.#queues.set(id, rows); else this.#queues.delete(id);
+    try {
+      if (rows.length) localStorage.setItem(this.#queueKey(id), JSON.stringify(rows));
+      else localStorage.removeItem(this.#queueKey(id));
+    } catch { /* private mode — the queue still works for this page load */ }
+    const v = this.byId.get(id);
+    if (v) v.queue = rows;
+    this.bump();
+  }
+
+  /** File a prompt for later. It goes out on its own when the running turn ends. */
+  enqueuePrompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
+    const rows = this.#queues.get(sessionId) ?? [];
+    this.#setQueue(sessionId, [...rows, {
+      id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, text, attachments, at: Date.now(),
+    }]);
+  }
+
+  /** The ✕: drop it. (Nothing was sent, so there is nothing to undo server-side.) */
+  dropQueued(sessionId: string, id: string): void {
+    const rows = this.#queues.get(sessionId) ?? [];
+    this.#setQueue(sessionId, rows.filter((r) => r.id !== id));
+  }
+
+  /** The ✎: rewrite it in place, keeping its place in line. */
+  editQueued(sessionId: string, id: string, text: string): void {
+    const rows = this.#queues.get(sessionId) ?? [];
+    const next = text.trim();
+    this.#setQueue(sessionId, next
+      ? rows.map((r) => (r.id === id ? { ...r, text: next } : r))
+      : rows.filter((r) => r.id !== id)); // emptied = dropped, not an empty prompt in line
+  }
+
+  /** The ↑: take the floor NOW. `interrupt: true` is the server's own "cancel the running turn and
+   *  wait for it to really stop" hand-over — the same path a spoken call utterance uses. */
+  sendQueuedNow(sessionId: string, id: string): void {
+    const rows = this.#queues.get(sessionId) ?? [];
+    const item = rows.find((r) => r.id === id);
+    if (!item) return;
+    this.#takingFloor.add(sessionId);
+    this.#setQueue(sessionId, rows.map((r) => (r.id === id ? { ...r, inflight: true } : r)));
+    this.send({ t: "prompt", sessionId, text: item.text, attachments: item.attachments, interrupt: true });
+  }
+
+  /** Hand the head of the line to the server. Called when a turn ends and when a session turns idle. */
+  drainQueue(sessionId: string): void {
+    const rows = this.#queues.get(sessionId) ?? this.#loadQueue(sessionId);
+    const head = rows[0];
+    if (!head || head.inflight) return;
+    // Someone is taking the floor by hand: the next item waits for that turn to start (see #takingFloor).
+    if (this.#takingFloor.has(sessionId)) return;
+    const busy = this.byId.get(sessionId)?.busy
+      ?? this.sessions.find((s) => s.id === sessionId)?.status === "running";
+    if (busy) return;
+    // Interrupt is what makes this safe: the server clears its own `busy` flag in the `finally`
+    // right after emitting turn-end, so a plain prompt can still meet "turn already running" — and
+    // with interrupt it simply waits for a turn that is already over. (It only cancels if one is
+    // genuinely still running, which is the case this whole feature exists for.)
+    this.#setQueue(sessionId, rows.map((r) => (r.id === head.id ? { ...r, inflight: true } : r)));
+    this.send({ t: "prompt", sessionId, text: head.text, attachments: head.attachments, interrupt: true });
+  }
+
+  /** `turn-start` proves an inflight prompt landed: it has left the queue (it is a real message now). */
+  #settleQueue(sessionId: string): void {
+    this.#takingFloor.delete(sessionId);
+    const rows = this.#queues.get(sessionId) ?? [];
+    if (!rows.some((r) => r.inflight)) return;
+    this.#setQueue(sessionId, rows.filter((r) => !r.inflight));
+  }
+
+  /** A turn ended in FAILURE with a prompt still inflight: it never landed, so put it back in line
+   *  instead of dropping the operator's words on the floor. */
+  #requeueInflight(sessionId: string): void {
+    this.#takingFloor.delete(sessionId);
+    const rows = this.#queues.get(sessionId) ?? [];
+    if (!rows.some((r) => r.inflight)) return;
+    this.#setQueue(sessionId, rows.map((r) => (r.inflight ? { ...r, inflight: false } : r)));
   }
 
   setActive(id: string): void {
@@ -1143,6 +1295,7 @@ class Cockpit {
         msgs: [], perms: [], busy: false, busySince: null, loaded: false, hasOlder: false, loadingOlder: false,
         minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(), blocks: new Map(),
         plan: null, turn: 0, turnStart: 0,
+        queue: this.#loadQueue(id),
       };
       this.byId.set(id, v);
     }
@@ -1233,6 +1386,9 @@ class Cockpit {
         v.busySince = Date.now(); // the tail line's zero: the operator's send, not the first token
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
+        // A queued prompt that reached `turn-start` HAS landed: it is a real message in the transcript
+        // now, so it leaves the queue. This is the proof the queue waits for.
+        this.#settleQueue(e.sessionId);
         // NOTE: the previous turn's bubbles are closed by the turn-end that preceded this (and by the
         // `.live` fallback in App's foldWork). Do NOT re-run #endOpenBubbles here: a turn that starts
         // while the previous one is still on screen would close a bubble that is about to grow again.
@@ -1266,6 +1422,16 @@ class Cockpit {
         // operator's 「早就结束了还一直在渲染中间过程，强制刷新才到完结态」). */
         this.#endOpenBubbles(v);
         if (e.error) v.msgs.push({ key: `err-${Date.now()}`, kind: "meta", text: e.error });
+        // The queue's turn (Studio's message queue): a prompt written while the agent was working goes
+        // out by itself now. A turn that FAILED is the one case we do not auto-retry — the item goes
+        // back in line (nothing lost) and stays visible with its ↑ button, because re-sending into a
+        // broken turn would loop.
+        if (e.error) this.#requeueInflight(e.sessionId);
+        else this.#settleQueue(e.sessionId);
+        if (!e.error) {
+          const sid = e.sessionId;
+          window.setTimeout(() => this.drainQueue(sid), 250);
+        }
         break;
       }
       case "permission":

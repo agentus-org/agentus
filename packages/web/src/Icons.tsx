@@ -57,6 +57,20 @@ export const IconCheck = (p: IconProps = {}): JSX.Element => svg(<path d="m4 12.
 export const IconFolder = (p: IconProps = {}): JSX.Element =>
   svg(<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />, p);
 
+/** The same folder, opened — a tilted front flap instead of a second indicator glyph. The rail's
+ *  workspace groups used to carry a chevron NEXT TO a folder, which is two answers to one question
+ *  ("这个目录展开了吗"); the operator asked for the icon alone (「最左边的箭头删掉吧，直接用文件夹的
+ *  开合状态来指示就行」), so the state has to be legible from the silhouette: closed = flat front,
+ *  open = the flap swung out. */
+export const IconFolderOpen = (p: IconProps = {}): JSX.Element =>
+  svg(
+    <>
+      <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1.4" />
+      <path d="M3 10.4h17.2a1 1 0 0 1 .97 1.24l-1.6 6.06A2 2 0 0 1 17.65 19.2H5a2 2 0 0 1-2-2z" />
+    </>,
+    p,
+  );
+
 /** team — two people. The rail's 团队 row is a placeholder today (we have no team backend),
  *  so this icon's whole job is to make that one row recognisable at a glance. */
 export const IconUsers = (p: IconProps = {}): JSX.Element =>
