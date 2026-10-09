@@ -19,10 +19,11 @@
 //    because that is the directory the operator pointed this slot at. It is not
 //    a sandbox and does not pretend to be: the person running the cockpit already
 //    owns the machine (same trust model as the agent processes).
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 export interface TermSession {
   id: string;
@@ -30,31 +31,53 @@ export interface TermSession {
   pid: number | null;
   /** bytes of output kept for a late joiner / a reconnect */
   buffer: string;
-  child: ChildProcessWithoutNullStreams;
+  child: ChildProcess;
   subscribers: Set<(chunk: string) => void>;
   exited: { code: number | null; signal: string | null } | null;
+  /** true when the child has a real tty (see shellCommand). The panel says which it got, because
+   *  a pipe shell and a tty look nothing alike and the operator should not have to guess. */
+  tty: boolean;
+  /** Resize the tty (no-op on a pipe shell). The kernel then SIGWINCHes the child's foreground
+   *  process group, which is what makes a full-screen program redraw at the new width. */
+  resize: (cols: number, rows: number) => void;
 }
 
 const MAX_BUFFER = 256 * 1024;
 
-/** How to start the shell. Default: pipes (no native deps). PTY on request. */
-function shellCommand(shell: string): { cmd: string; args: string[] } {
+/** The PTY helper that ships with the server. */
+function ptyHelperPath(): string | null {
+  for (const rel of ["./pty-helper.py", "../src/pty-helper.py"]) {
+    try {
+      const p = fileURLToPath(new URL(rel, import.meta.url));
+      if (fs.existsSync(p)) return p;
+    } catch {
+      /* not this layout */
+    }
+  }
+  return null;
+}
+
+/** How to start the shell.
+ *
+ *  Default is a REAL pty via `pty-helper.py` (python3 stdlib `forkpty`): the shell gets a controlling
+ *  terminal, so prompts, echo, colours, job control and full-screen programs behave. That is the
+ *  whole point of the panel — a terminal emulator in front of a pipe shell is a lie (no prompt lands
+ *  on screen, keystrokes are never echoed, resize means nothing).
+ *
+ *  Escapes: `AGENTUS_TERM_CMD` runs an arbitrary command line instead (pipes), `AGENTUS_TERM_PTY=0`
+ *  forces the old pipe shell, and a machine without python3 degrades to it automatically. Whoever
+ *  gets a pipe shell is told so in the panel rather than being shown a fake terminal. */
+function shellCommand(shell: string): { cmd: string; args: string[]; tty: boolean } {
   const override = (process.env.AGENTUS_TERM_CMD || "").trim();
   if (override) {
     const parts = override.split(/\s+/);
-    return { cmd: parts[0], args: parts.slice(1) };
+    return { cmd: parts[0], args: parts.slice(1), tty: false };
   }
-  if (process.env.AGENTUS_TERM_PTY === "1") {
-    // python3's stdlib pty module is the one pty allocation available without a
-    // native build step. Missing python3 fails loudly in the panel (the child
-    // prints the interpreter error into the terminal), which is better than
-    // silently degrading to a pipe shell that claims to be a tty.
-    return {
-      cmd: "python3",
-      args: ["-u", "-c", `import pty,sys; pty.spawn(${JSON.stringify([shell, "-i"])})`],
-    };
+  if (process.env.AGENTUS_TERM_PTY !== "0") {
+    const helper = ptyHelperPath();
+    if (helper) return { cmd: "python3", args: [helper, shell, "-i"], tty: true };
   }
-  return { cmd: shell, args: ["-i"] };
+  return { cmd: shell, args: ["-i"], tty: false };
 }
 
 function pickShell(): string {
@@ -69,9 +92,11 @@ function pickShell(): string {
 export class TermService {
   #sessions = new Map<string, TermSession>();
 
-  start(cwd: string): TermSession {
+  start(cwd: string, size?: { cols: number; rows: number }): TermSession {
     const shell = pickShell();
-    const { cmd, args } = shellCommand(shell);
+    const { cmd, args, tty } = shellCommand(shell);
+    const cols = Math.max(20, Math.min(size?.cols ?? 80, 1000));
+    const rows = Math.max(5, Math.min(size?.rows ?? 24, 1000));
     const child = spawn(cmd, args, {
       cwd: fs.existsSync(cwd) ? cwd : homedir(),
       env: {
@@ -80,13 +105,19 @@ export class TermService {
         PYTHONUNBUFFERED: "1",
         // Let the shell know a machine is driving, so prompts stay plain.
         AGENTUS_TERMINAL: "1",
+        // The pty is sized at start because the shell reads its size when it draws the first
+        // prompt — resizing afterwards still works, but a 80x24 flash on every open is not free.
+        AGENTUS_PTY_COLS: String(cols),
+        AGENTUS_PTY_ROWS: String(rows),
       },
-      stdio: ["pipe", "pipe", "pipe"],
-      // own process group: `script` wraps the shell, so only a group kill reliably
-      // takes both down (see kill()).
+      // fd 3 is the PTY helper's control channel (resize). A pipe shell has no use for it.
+      stdio: tty ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+      // own process group: the shell (or the pty helper wrapping it) is killed as a group, never
+      // one process at a time (see kill()).
       detached: true,
-    }) as ChildProcessWithoutNullStreams;
+    }) as ChildProcess;
 
+    const ctl = tty ? ((child.stdio[3] ?? null) as NodeJS.WritableStream | null) : null;
     const session: TermSession = {
       id: randomUUID(),
       cwd,
@@ -95,6 +126,15 @@ export class TermService {
       child,
       subscribers: new Set(),
       exited: null,
+      tty,
+      resize: (c: number, r: number): void => {
+        if (!ctl) return;
+        try {
+          ctl.write(`resize ${Math.max(1, Math.min(c, 1000))} ${Math.max(1, Math.min(r, 1000))}\n`);
+        } catch {
+          /* the helper is gone; the exit event says so */
+        }
+      },
     };
     const push = (chunk: string): void => {
       session.buffer = (session.buffer + chunk).slice(-MAX_BUFFER);
@@ -106,17 +146,18 @@ export class TermService {
         }
       }
     };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    // stderr is part of the terminal picture (a missing command prints there)
-    child.stdout.on("data", (d: string) => push(d));
-    child.stderr.on("data", (d: string) => push(d));
-    child.on("exit", (code, signal) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    // stderr is part of the terminal picture (a missing command prints there). With a pty both
+    // streams are already merged into the pty master, so only stdout carries them — harmless.
+    child.stdout?.on("data", (d: string) => push(d));
+    child.stderr?.on("data", (d: string) => push(d));
+    child.on("exit", (code: number | null, signal: string | null) => {
       session.exited = { code, signal };
       push(`\r\n[process exited${code != null ? ` with code ${code}` : ""}${signal ? ` (${signal})` : ""}]\r\n`);
       this.#sessions.delete(session.id);
     });
-    child.on("error", (err) => push(`\r\n[cannot start shell: ${err.message}]\r\n`));
+    child.on("error", (err: Error) => push(`\r\n[cannot start shell: ${err.message}]\r\n`));
     this.#sessions.set(session.id, session);
     return session;
   }

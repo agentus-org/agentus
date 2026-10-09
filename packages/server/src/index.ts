@@ -1299,7 +1299,11 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   }
   let term: ReturnType<typeof terms.start> | null = null;
   try {
-    term = terms.start(root.path);
+    // The client sends its viewport size on the socket URL: the pty must be born at the right size
+    // (the shell reads it when it paints the first prompt). Later changes arrive as term-resize.
+    const cols = Number(url.searchParams.get("cols") || 0);
+    const rows = Number(url.searchParams.get("rows") || 0);
+    term = terms.start(root.path, cols && rows ? { cols, rows } : undefined);
   } catch (e) {
     ws.send(JSON.stringify({ t: "term-error", error: String((e as Error)?.message ?? e) }));
     ws.close();
@@ -1309,12 +1313,15 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   const send = (msg: unknown): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
-  send({ t: "term-ready", id: session.id, cwd: session.cwd, pid: session.pid });
+  // The buffered tail goes out first, so a reconnect (or a second tab) lands on the scrollback the
+  // way ttyd's RESUME does instead of a blank screen.
+  if (session.buffer) send({ t: "term-data", id: session.id, data: session.buffer });
+  send({ t: "term-ready", id: session.id, cwd: session.cwd, pid: session.pid, tty: session.tty });
   const onData = (chunk: string): void => send({ t: "term-data", id: session.id, data: chunk });
   session.subscribers.add(onData);
   session.child.on("exit", () => send({ t: "term-exit", id: session.id }));
   ws.on("message", (data) => {
-    let cmd: { t?: string; data?: string };
+    let cmd: { t?: string; data?: string; cols?: number; rows?: number };
     try {
       cmd = JSON.parse(String(data));
     } catch {
@@ -1322,10 +1329,12 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     }
     if (cmd.t === "term-input" && typeof cmd.data === "string") {
       try {
-        session.child.stdin.write(cmd.data);
+        session.child.stdin?.write(cmd.data);
       } catch (e) {
         send({ t: "term-error", error: `write failed: ${String((e as Error)?.message ?? e)}` });
       }
+    } else if (cmd.t === "term-resize" && typeof cmd.cols === "number" && typeof cmd.rows === "number") {
+      session.resize(cmd.cols, cmd.rows);
     } else if (cmd.t === "term-close") {
       terms.kill(session.id);
       ws.close();

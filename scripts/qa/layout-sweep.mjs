@@ -117,6 +117,13 @@ await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', b
 await sleep(400);
 
 // ---------------------------------------------------------------------------- ③ ④ the rail
+// 工作空间 itself folds (and remembers), so make sure the section is open before measuring: a
+// collapsed section renders no group heads at all, and every colour below would read null.
+await ev(`(() => { const b = document.querySelector('.rail-section[data-section="workspaces"]');
+  if (b && b.getAttribute('aria-expanded') === 'false') b.click(); return true; })()`);
+check(await until(`Boolean(document.querySelector('#rail-workspaces .rail-group-head'))`, 15000),
+  'the workspaces section is open with directories in it');
+
 console.log('== ③ directory names read like session titles, section heads stay secondary ==');
 {
   const styles = JSON.parse(await ev(`(() => {
@@ -125,6 +132,7 @@ console.log('== ③ directory names read like session titles, section heads stay
     const name = document.querySelector('.rail-group-head .rail-group-name');
     const section = [...document.querySelectorAll('.rail-section')].find((s) => /工作空间/.test(s.textContent));
     const title = document.querySelector('.rail-group-body .session-item .title');
+    const warmTitle = document.querySelector('.rail-group-body .session-item:not(.cold) .title');
     // resolve the tokens the way the browser does, so hex-in-CSS and rgb-in-computed compare
     const probe = document.createElement('span');
     probe.style.color = 'var(--text-dim)';
@@ -138,20 +146,29 @@ console.log('== ③ directory names read like session titles, section heads stay
       groupColor: group && cs(group).color,
       sectionColor: section && cs(section).color,
       titleColor: title && cs(title).color,
+      warmTitleColor: warmTitle && cs(warmTitle).color,
       dim: dimRgb,
       text: textRgb,
       transform: name && cs(name).textTransform,
     });
   })()`));
-  check(styles.nameColor === styles.titleColor,
-    'the directory name is the same colour as a session title', `${styles.nameColor} vs title ${styles.titleColor}`);
-  check(styles.sectionColor === styles.dim && styles.nameColor !== styles.dim,
+  // 「目录颜色应该和会话颜色一样比较亮」 — a LIVE row. A cold (archived) row's title is --text-dim on
+  // purpose, so comparing the directory name against one of those measures the wrong thing.
+  check(Boolean(styles.nameColor) && Boolean(styles.warmTitleColor) && styles.nameColor === styles.warmTitleColor,
+    'the directory name is the same colour as a live session title', `${styles.nameColor} vs title ${styles.warmTitleColor}`);
+  check(Boolean(styles.sectionColor) && Boolean(styles.nameColor) && styles.sectionColor === styles.dim && styles.nameColor !== styles.dim,
     'and the section head above it is the dimmer token', `section ${styles.sectionColor} vs --text-dim ${styles.dim}`);
-  check(styles.nameColor === styles.text,
+  check(Boolean(styles.nameColor) && styles.nameColor === styles.text,
     'so the directory uses the primary text token', `${styles.nameColor} vs --text ${styles.text}`);
   check(styles.transform === 'none', 'the directory name is NOT uppercased by CSS', `text-transform: ${styles.transform}`);
 
   console.log('== ④ the folder icon carries the open/closed state, sessions are indented ==');
+  // Start from a KNOWN state: fold flags survive a reload in localStorage now, so a previous run can
+  // hand us an already-folded group (and then "clicking collapses it" would be measuring nothing).
+  if (!(await ev(`Boolean(document.querySelector('.rail-group-head[aria-expanded="true"]'))`))) {
+    await ev(`document.querySelector('.rail-group-head').click()`);
+    await sleep(400);
+  }
   const shapes = JSON.parse(await ev(`(() => {
     const head = document.querySelector('.rail-group-head');
     const svg = head && head.querySelector('.rail-group-folder');
@@ -172,6 +189,15 @@ console.log('== ③ directory names read like session titles, section heads stay
     'and the icon itself changes when the group is collapsed', `open? ${closed.open}`);
   await ev(`document.querySelector('.rail-group-head').click()`);
   await sleep(500);
+  // A fold has to be reversible — reading the flag and the key under different names makes the
+  // second click fold again forever, which is invisible unless a sweep clicks twice.
+  const reopened = JSON.parse(await ev(`(() => { const h = document.querySelector('.rail-group-head');
+    const svg = h && h.querySelector('.rail-group-folder');
+    return JSON.stringify({ path: svg ? [...svg.querySelectorAll('path')].map((p) => p.getAttribute('d')).join('|') : '',
+                            open: h ? h.getAttribute('aria-expanded') : null,
+                            rows: document.querySelectorAll('.rail-group-body .session-item').length }); })()`));
+  check(reopened.open === 'true' && reopened.rows > 0,
+    'and clicking it again opens the group back up', `aria-expanded=${reopened.open} rows=${reopened.rows}`);
 
   const indent = JSON.parse(await ev(`(() => {
     const section = [...document.querySelectorAll('.rail-section')].find((s) => /工作空间/.test(s.textContent));

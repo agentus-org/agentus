@@ -337,6 +337,43 @@ function lastOf(s: SessionInfo): number {
   return s.lastAt ?? s.createdAt;
 }
 
+/** A rail group = one directory and the sessions that ran in it. */
+interface RailGroup {
+  path: string;
+  label: string;
+  items: { s: SessionInfo; cold: boolean }[];
+}
+
+/** Group sessions by the directory they were pointed at — the ONE rule behind both rail sections
+ *  (工作空间 and 已归档), so the archived list reads exactly like the live one instead of being a
+ *  second, subtly different ordering. `activeKey` is the directory the operator is working in; it
+ *  sorts first. */
+function groupSessions(all: { s: SessionInfo; cold: boolean }[], activeKey: string): RailGroup[] {
+  const byPath = new Map<string, RailGroup>();
+  for (const it of all) {
+    const path = it.s.workspace || it.s.cwd;
+    const label = path.split("/").filter(Boolean).pop() ?? path;
+    const g = byPath.get(path) ?? { path, label, items: [] };
+    g.items.push(it);
+    byPath.set(path, g);
+  }
+  // A workspace is as recent as its newest session, so the group order follows the session order:
+  // chat in a directory and that group rises with it.
+  const at = (g: RailGroup): number => g.items.reduce((m, i) => Math.max(m, lastOf(i.s)), 0);
+  return [...byPath.values()]
+    // live before cold inside a group (a session you can talk to now beats one you cannot), then
+    // whichever one the operator last talked to
+    .map((g) => ({
+      ...g,
+      items: [...g.items].sort((a, b) =>
+        (a.cold === b.cold ? 0 : a.cold ? 1 : -1)
+        || (lastOf(b.s) - lastOf(a.s))
+        || (b.s.createdAt - a.s.createdAt)),
+    }))
+    // the group you are working in first, then by last chat, then alphabetically
+    .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : at(b) - at(a) || a.label.localeCompare(b.label)));
+}
+
 /** The statuses a rail row can wear, in the operator's words. The raw wire value is protocol
  *  vocabulary (`running`), and a tooltip that reads "hermes · running" names the class in the
  *  wrong language — the row is a sentence about a session, not a debug dump. */
@@ -546,14 +583,34 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [q, setQ] = useState("");
-  const [closed, setClosed] = useState<Record<string, boolean>>({});
-  // Which workspace groups the operator unrolled past RAIL_RECENT. In-memory like `closed`: a
-  // reload returns to the recent view, which is the point of having one.
-  const [more, setMore] = useState<Record<string, boolean>>({});
-  // ---- section folding: 团队 / 工作空间 ------------------------------------------------
-  // Unlike `closed`/`more` (in-memory, and deliberately reset by a reload), a folded SECTION is a
-  // layout preference: it survives the reload in localStorage, like the palette and the voice
-  // prefs. A search query always opens both — a result you cannot see is not a result.
+  // ---- group folding: which DIRECTORIES are open ----------------------------------------------
+  // A directory fold is a layout preference, not view state: the operator folds the projects he is
+  // not working in and expects them to stay folded — a reload that re-opens twenty of them is the
+  // bug he reported (AionUi persists this too, `useWorkspaceExpansionState`). Keyed by directory
+  // path, namespaced per section so 工作空间 and 已归档 never collide, and PRUNED on load: a
+  // directory that no longer has sessions should not hold a key forever.
+  const RAIL_CLOSED_KEY = "agentus.railClosed";
+  const RAIL_MORE_KEY = "agentus.railMore";
+  const readFoldStore = (key: string): Record<string, boolean> => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(key) ?? "{}") as unknown;
+      return raw && typeof raw === "object" ? (raw as Record<string, boolean>) : {};
+    } catch { return {}; }
+  };
+  const [closed, setClosed] = useState<Record<string, boolean>>(() => readFoldStore(RAIL_CLOSED_KEY));
+  // Which directory groups the operator unrolled past RAIL_RECENT. Persisted too — it is the same
+  // kind of preference, and losing it silently re-hides sessions the operator had chosen to see.
+  const [more, setMore] = useState<Record<string, boolean>>(() => readFoldStore(RAIL_MORE_KEY));
+  useEffect(() => {
+    try { localStorage.setItem(RAIL_CLOSED_KEY, JSON.stringify(closed)); } catch { /* private mode: folding just won't stick */ }
+  }, [closed]);
+  useEffect(() => {
+    try { localStorage.setItem(RAIL_MORE_KEY, JSON.stringify(more)); } catch { /* same */ }
+  }, [more]);
+  // ---- section folding: 团队 / 工作空间 / 已归档 ---------------------------------------
+  // A folded SECTION is a layout preference too: it survives the reload in localStorage, like the
+  // palette and the voice prefs. A search query always opens them — a result you cannot see is not
+  // a result.
   const RAIL_FOLD_KEY = "agentus.railSections";
   const [folded, setFolded] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(RAIL_FOLD_KEY) ?? "{}") as Record<string, boolean>; } catch { return {}; }
@@ -642,41 +699,178 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   const match = (s: { title: string; backend: string; cwd: string; workspace?: string | null }) =>
     !needle || `${s.title} ${s.backend} ${s.workspace || s.cwd}`.toLowerCase().includes(needle);
 
-  const groups = useMemo(() => {
-    const all = [
-      ...sessions.map((s) => ({ s, cold: false })),
-      ...archived.map((s) => ({ s, cold: true })),
-    ].filter(({ s }) => match(s));
-    const byPath = new Map<string, { path: string; label: string; items: { s: SessionInfo; cold: boolean }[] }>();
-    for (const it of all) {
-      const path = it.s.workspace || it.s.cwd;
-      const label = path.split("/").filter(Boolean).pop() ?? path;
-      const g = byPath.get(path) ?? { path, label, items: [] };
-      g.items.push(it);
-      byPath.set(path, g);
-    }
-    const activeKey = activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : "";
-    // When the operator last TALKED to a session (creation time when it has no messages yet).
-    // The rule lives at module scope (`lastOf`): the row renders the same value it sorts by.
-    // A workspace is as recent as its newest session, so the workspace order follows the
-    // session order: chat in a directory and that group rises with it.
-    const at = (g: { items: { s: SessionInfo }[] }): number => g.items.reduce((m, i) => Math.max(m, lastOf(i.s)), 0);
-    return [...byPath.values()]
-      // live before cold inside a group (a session you can talk to now beats one you cannot),
-      // then whichever one the operator last talked to
-      .map((g) => ({
-        ...g,
-        items: [...g.items].sort((a, b) =>
-          (a.cold === b.cold ? 0 : a.cold ? 1 : -1)
-          || (lastOf(b.s) - lastOf(a.s))
-          || (b.s.createdAt - a.s.createdAt)),
-      }))
-      // the group you are working in first, then by last chat, then alphabetically
-      .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : at(b) - at(a) || a.label.localeCompare(b.label)));
-  }, [sessions, archived, activeId, needle]);
+  const groups = useMemo(
+    () =>
+      groupSessions(
+        sessions.map((s) => ({ s, cold: false })).filter(({ s }) => match(s)),
+        activeId ? (sessions.find((s) => s.id === activeId)?.workspace ?? sessions.find((s) => s.id === activeId)?.cwd ?? "") : ""
+      ),
+    [sessions, activeId, needle]
+  );
+
+  // 已归档 is a section of its own (parallel to 工作空间, as the operator asked), but built by the
+  // SAME grouping rule — same directories, same ordering — so the two sections read alike. Archived
+  // rows are exactly what `sessions` no longer holds: a closed session keeps its record and loses
+  // its process, which is what the rail calls `cold`.
+  const archivedGroups = useMemo(
+    () => groupSessions(archived.map((s) => ({ s, cold: true })).filter(({ s }) => match(s)), ""),
+    [archived, needle]
+  );
 
   const teamOpen = Boolean(needle) || !folded.team;
   const workspacesOpen = Boolean(needle) || !folded.workspaces;
+  const archivedOpen = Boolean((needle && archivedGroups.length) || !folded.archived);
+
+  // Prune fold keys for directories that no longer have any sessions — otherwise a deleted project
+  // keeps its flag forever (AionUi prunes its expansion state the same way). Guarded on a NON-EMPTY
+  // list: at first paint the sessions have not arrived yet, and pruning against "nothing" would wipe
+  // the operator's layout on every single reload.
+  const foldPaths = useMemo(() => new Set([...groups, ...archivedGroups].map((g) => g.path)), [groups, archivedGroups]);
+  useEffect(() => {
+    if (!foldPaths.size) return;
+    const keep = (o: Record<string, boolean>): Record<string, boolean> => {
+      const entries = Object.entries(o).filter(([k]) => foldPaths.has(k.replace(/^(ws|arch):/, "")));
+      return entries.length === Object.keys(o).length ? o : Object.fromEntries(entries);
+    };
+    setClosed(keep);
+    setMore(keep);
+  }, [foldPaths]);
+
+  /** Render one section's directory list. `ns` namespaces the fold keys, so the SAME directory path
+   *  can be open in 工作空间 and folded in 已归档 without the two fighting over one flag. */
+  const renderGroups = (list: RailGroup[], ns: string): JSX.Element[] =>
+    list.map((g) => {
+      const key = ns + g.path;
+        const isOpen = Boolean(needle) || !closed[key];
+        const liveCount = g.items.filter((i) => !i.cold).length;
+        // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
+        // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
+        // group you are working in folds like every other one, and the row you are IN is pinned
+        // inside that limit instead — the conversation never disappears, the list still stops at N.
+        const { shown, hidden } = splitRecent(g.items, {
+          searching: Boolean(needle),
+          isActive: (i) => i.s.id === activeId,
+          expanded: Boolean(more[key]),
+        });
+        return (
+          <div className="rail-group" key={g.path}>
+            <div className="rail-group-row">
+            <button
+              type="button"
+              className={`rail-group-head ${isOpen ? "open" : ""}`}
+              title={g.path}
+              aria-expanded={isOpen}
+              data-workspace={g.path}
+              onClick={() => setClosed((c) => ({ ...c, [key]: !c[key] }))}
+            >
+              {isOpen ? (
+                <IconFolderOpen size={13} className="rail-group-folder" />
+              ) : (
+                <IconFolder size={13} className="rail-group-folder" />
+              )}
+              <span className="rail-group-name">{g.label}</span>
+              <span className="rail-group-count">
+                {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
+              </span>
+            </button>
+            {/* "start a session HERE" — the directory this group is, without re-picking it
+                (AionUi's per-project 「+」 in `GroupedHistory`: the header carries the
+                affordance, and the new-session screen opens pre-pointed at that folder).
+                Hover-revealed on desktop like the row menu, always on a touch screen. */}
+            <button
+              type="button"
+              className="item-btn group-add"
+              title={`在 ${g.path} 新建会话`}
+              aria-label={`在 ${g.path} 新建会话`}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setClosed((c) => ({ ...c, [key]: false }));
+                onNewIn(g.path);
+              }}
+            >
+              <IconPlus size={12} />
+            </button>
+          </div>
+            {isOpen ? (
+              <div className="rail-group-body">
+                {shown.map(({ s, cold }) => (
+                  <div
+                    key={s.id}
+                    ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
+                    className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
+                    data-session={s.id}
+                    title={cold ? `${s.title} — 已归档，点一下取消归档并恢复` : s.title}
+                    onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
+                    onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
+                    onTouchEnd={pressClear}
+                    onTouchMove={pressClear}
+                    onTouchCancel={pressClear}
+                    onClick={(e) => {
+                      if (pressFired.current) { pressFired.current = false; e.preventDefault(); return; }
+                      if (editing === s.id) return;
+                      if (cold) void cockpit.resume(s.id); else cockpit.setActive(s.id);
+                    }}
+                  >
+                    <BackendAvatar backend={s.backend} cold={cold} status={s.status} />
+                    {editing === s.id ? (
+                      <input
+                        className="title-input"
+                        value={draft}
+                        autoFocus
+                        aria-label={`重命名 ${s.title}`}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onBlur={() => void commitRename(s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); void commitRename(s.id); }
+                          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(""); }
+                        }}
+                      />
+                    ) : (
+                      <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>{s.title}</span>
+                    )}
+                    {cockpit.byId.get(s.id)?.perms.length ? (
+                      <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
+                    ) : null}
+                    {/* When I last talked to this session — sorted by it, so it has to be visible.
+                        Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
+                        the tooltip; the operator asked for exactly this and for it to age. */}
+                    <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
+                    <button
+                      type="button"
+                      className="item-btn row-menu"
+                      title="会话设置：重命名 / fork / 工作目录 / 导出 / 归档"
+                      aria-label={`${s.title} 的会话设置`}
+                      aria-haspopup="menu"
+                      aria-expanded={menu?.id === s.id}
+                      onClick={(e) => { e.stopPropagation(); e.preventDefault(); openFrom(s.id, e, e.currentTarget); }}
+                    >
+                      <IconDotsV size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {/* 「展开其余 N 条」 — the tail of this workspace, one click away. Rendered only when
+                something is actually hidden (and never while a search is filtering: that view
+                claims to show every match). */}
+            {isOpen && !needle && g.items.length > RAIL_RECENT && (
+              <button
+                type="button"
+                className={`rail-more ${more[key] ? "open" : ""}`}
+                onClick={() => setMore((mm) => ({ ...mm, [key]: !mm[g.path] }))}
+                aria-expanded={Boolean(more[key])}
+                title={more[key] ? "只显示最近几个" : `展开这个工作空间里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
+              >
+                <IconChevronRight size={10} className={`rail-more-chev ${more[key] ? "open" : ""}`} />
+                {more[key] ? "收起" : `展开其余 ${g.items.length - RAIL_RECENT} 条`}
+              </button>
+            )}
+          </div>
+        );
+    });
 
   const onFork = async (id: string): Promise<void> => {
     setBusyId(id);
@@ -769,140 +963,30 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
           <span>工作空间</span>
         </button>
         <div id="rail-workspaces">
-        {workspacesOpen ? groups.map((g) => {
-          const isOpen = Boolean(needle) || !closed[g.path];
-          const liveCount = g.items.filter((i) => !i.cold).length;
-          // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
-          // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
-          // group you are working in folds like every other one, and the row you are IN is pinned
-          // inside that limit instead — the conversation never disappears, the list still stops at N.
-          const { shown, hidden } = splitRecent(g.items, {
-            searching: Boolean(needle),
-            isActive: (i) => i.s.id === activeId,
-            expanded: Boolean(more[g.path]),
-          });
-          return (
-            <div className="rail-group" key={g.path}>
-              <div className="rail-group-row">
-              <button
-                type="button"
-                className={`rail-group-head ${isOpen ? "open" : ""}`}
-                title={g.path}
-                aria-expanded={isOpen}
-                data-workspace={g.path}
-                onClick={() => setClosed((c) => ({ ...c, [g.path]: !c[g.path] }))}
-              >
-                {isOpen ? (
-                  <IconFolderOpen size={13} className="rail-group-folder" />
-                ) : (
-                  <IconFolder size={13} className="rail-group-folder" />
-                )}
-                <span className="rail-group-name">{g.label}</span>
-                <span className="rail-group-count">
-                  {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
-                </span>
-              </button>
-              {/* "start a session HERE" — the directory this group is, without re-picking it
-                  (AionUi's per-project 「+」 in `GroupedHistory`: the header carries the
-                  affordance, and the new-session screen opens pre-pointed at that folder).
-                  Hover-revealed on desktop like the row menu, always on a touch screen. */}
-              <button
-                type="button"
-                className="item-btn group-add"
-                title={`在 ${g.path} 新建会话`}
-                aria-label={`在 ${g.path} 新建会话`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  setClosed((c) => ({ ...c, [g.path]: false }));
-                  onNewIn(g.path);
-                }}
-              >
-                <IconPlus size={12} />
-              </button>
-            </div>
-              {isOpen ? (
-                <div className="rail-group-body">
-                  {shown.map(({ s, cold }) => (
-                    <div
-                      key={s.id}
-                      ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
-                      className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
-                      data-session={s.id}
-                      title={cold ? `${s.title} — 已归档，点一下取消归档并恢复` : s.title}
-                      onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
-                      onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
-                      onTouchEnd={pressClear}
-                      onTouchMove={pressClear}
-                      onTouchCancel={pressClear}
-                      onClick={(e) => {
-                        if (pressFired.current) { pressFired.current = false; e.preventDefault(); return; }
-                        if (editing === s.id) return;
-                        if (cold) void cockpit.resume(s.id); else cockpit.setActive(s.id);
-                      }}
-                    >
-                      <BackendAvatar backend={s.backend} cold={cold} status={s.status} />
-                      {editing === s.id ? (
-                        <input
-                          className="title-input"
-                          value={draft}
-                          autoFocus
-                          aria-label={`重命名 ${s.title}`}
-                          onChange={(e) => setDraft(e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onBlur={() => void commitRename(s.id)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") { e.preventDefault(); void commitRename(s.id); }
-                            else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(""); }
-                          }}
-                        />
-                      ) : (
-                        <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>{s.title}</span>
-                      )}
-                      {cockpit.byId.get(s.id)?.perms.length ? (
-                        <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
-                      ) : null}
-                      {/* When I last talked to this session — sorted by it, so it has to be visible.
-                          Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
-                          the tooltip; the operator asked for exactly this and for it to age. */}
-                      <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
-                      <button
-                        type="button"
-                        className="item-btn row-menu"
-                        title="会话设置：重命名 / fork / 工作目录 / 导出 / 归档"
-                        aria-label={`${s.title} 的会话设置`}
-                        aria-haspopup="menu"
-                        aria-expanded={menu?.id === s.id}
-                        onClick={(e) => { e.stopPropagation(); e.preventDefault(); openFrom(s.id, e, e.currentTarget); }}
-                      >
-                        <IconDotsV size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {/* 「展开其余 N 条」 — the tail of this workspace, one click away. Rendered only when
-                  something is actually hidden (and never while a search is filtering: that view
-                  claims to show every match). */}
-              {isOpen && !needle && g.items.length > RAIL_RECENT && (
-                <button
-                  type="button"
-                  className={`rail-more ${more[g.path] ? "open" : ""}`}
-                  onClick={() => setMore((mm) => ({ ...mm, [g.path]: !mm[g.path] }))}
-                  aria-expanded={Boolean(more[g.path])}
-                  title={more[g.path] ? "只显示最近几个" : `展开这个工作空间里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
-                >
-                  <IconChevronRight size={10} className={`rail-more-chev ${more[g.path] ? "open" : ""}`} />
-                  {more[g.path] ? "收起" : `展开其余 ${g.items.length - RAIL_RECENT} 条`}
-                </button>
-              )}
-            </div>
-          );
-        }) : null}
+        {workspacesOpen ? renderGroups(groups, "ws:") : null}
         {workspacesOpen && !groups.length && (
           <div className="rail-empty">
             {needle ? "no session matches that search." : "No sessions yet — create one."}
+          </div>
+        )}
+        </div>
+        {/* 已归档 — a section of its own, parallel to 工作空间 and built the same way (directories,
+            each holding its sessions), because the operator asked for exactly that: an archived
+            session should read in the same shape as a live one, just under its own heading. It
+            carries its own fold flag (`folded.archived`) and its own directory-fold namespace. */}
+        <button type="button" className={`rail-section ${archivedOpen ? "open" : ""}`} data-section="archived"
+                aria-expanded={archivedOpen} aria-controls="rail-archived"
+                title={archivedOpen ? "折叠已归档" : "展开已归档"}
+                onClick={() => setFolded((f) => ({ ...f, archived: !f.archived }))}>
+          <IconChevronRight size={11} className={`rail-section-chev ${archivedOpen ? "open" : ""}`} />
+          <span>已归档</span>
+          {archived.length ? <span className="rail-section-count">{archived.length}</span> : null}
+        </button>
+        <div id="rail-archived" data-archived="1">
+        {archivedOpen ? renderGroups(archivedGroups, "arch:") : null}
+        {archivedOpen && !archivedGroups.length && (
+          <div className="rail-empty">
+            {needle ? "no archived session matches that search." : "Nothing archived yet."}
           </div>
         )}
         </div>

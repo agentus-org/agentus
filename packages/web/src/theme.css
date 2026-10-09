@@ -1147,18 +1147,17 @@ body.pane-dragging * { cursor: col-resize !important; }
 .term-dot.error { background: var(--err); }
 .term-dot.closed { background: var(--accent); }
 .term-cwd { font-family: var(--mono); color: var(--text); }
-.term-out {
-  flex: 1; margin: 0; padding: 6px 9px; overflow: auto; white-space: pre-wrap;
-  word-break: break-word; background: rgba(0, 0, 0, 0.18);
-  font-family: var(--mono); font-size: 11.5px; line-height: 1.45; color: var(--text);
+/* The xterm host: it is the terminal, so it takes the room the old <pre> + input row used and the
+   emulator paints into it. `.xterm`/`.xterm-viewport` are sized by FitAddon; all we own is the box
+   and the padding, and `min-height: 0` is what lets a flex child actually shrink (without it the
+   terminal grows forever and the panel scrolls instead of the scrollback). */
+.term-body { display: flex; flex-direction: column; min-height: 0; padding: 0; }
+.term-host {
+  flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 4px 0 0 6px;
+  background: var(--bg-1);
 }
-.term-input { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--line); }
-.term-prompt { color: var(--accent-text); font-family: var(--mono); font-size: 12px; }
-.term-input input {
-  flex: 1; min-width: 0; background: transparent; border: none; color: var(--text);
-  font-family: var(--mono); font-size: 12px; padding: 3px 0;
-}
-.term-input input:focus { outline: none; }
+.term-host .xterm { height: 100%; }
+.term-host .xterm-viewport { background: transparent !important; }
 .term-note { padding: 4px 9px 7px; font-size: 10.5px; color: var(--text-dim); }
 
 /* ---- phone rules for the new surfaces -------------------------------------
@@ -1200,7 +1199,7 @@ body.pane-dragging * { cursor: col-resize !important; }
      got "half the space" in the first place. */
   .panel-split.has-preview .explorer-col { display: none; }
   .file-row { min-height: 42px; }
-  .term-out { min-height: 30vh; }
+  .term-host { min-height: 30vh; }
 }
 
 /* ---- markdown (replies) -----------------------------------------------------
@@ -1445,6 +1444,9 @@ body.pane-dragging * { cursor: col-resize !important; }
 .rail-section:hover { color: var(--text); }
 .rail-section-chev { flex: 0 0 auto; transition: transform 0.12s ease; }
 .rail-section-chev.open { transform: rotate(90deg); }
+/* The archived section says how much is in it: a section you cannot see the size of is one you
+   fold and forget. Pushed to the right edge, in the section's own (dim) weight. */
+.rail-section-count { margin-left: auto; letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .rail-section:first-child { margin-top: 3px; }
 /* 团队 is a placeholder with no backend behind it, so its row is inert by construction: a div
    (nothing to tab into, nothing to click) with a dashed edge, and it says what it is. A row that

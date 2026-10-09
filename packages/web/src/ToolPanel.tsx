@@ -13,6 +13,10 @@
 // (FilePreview.tsx) now renders per file type and can save, with the conflict rule that makes
 // an editor safe next to an agent: see writeTextFile in packages/server/src/fs.ts.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import type { ITheme } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import type { SessionView } from "./state";
 import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
@@ -55,17 +59,6 @@ function humanSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-/** Terminal output arrives with \r\n, ANSI colour and cursor moves. We are not
- *  xterm and do not pretend to be (no colour, no full-screen apps), so strip the
- *  escape sequences instead of printing them as garbage. */
-function stripAnsi(input: string): string {
-  return input
-    .replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, "")   // OSC … BEL/ST
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")            // CSI (colours, cursor)
-    .replace(/\u001b[@-Z\\-_]/g, "")                        // other 2-char escapes
-    .replace(/\r(?!\n)/g, "");                              // bare CR: keep the line, drop the return
 }
 
 export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle }: {
@@ -269,27 +262,77 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 
 type TermStatus = "connecting" | "ready" | "closed" | "error";
 
+/** The terminal is xterm.js over a real pty (see packages/server/src/term.ts): keystrokes go out
+ *  raw, the server's pty stream comes back raw, and xterm — not a <pre> — interprets the escape
+ *  sequences. That is what makes colours, the prompt, cursor movement and full-screen programs work;
+ *  stripping ANSI (what the old line-input panel did) is only sensible if you have no terminal
+ *  emulator, and at that point it is not a terminal.
+ *
+ *  The wire protocol is three messages: term-input (raw bytes up), term-data (raw bytes down),
+ *  term-resize (cols/rows). Resizing matters as much as input: without it `vim` draws at 80x24
+ *  forever. */
+const ANSI_16 = {
+  black: "#2e3436", red: "#cc0000", green: "#4e9a06", yellow: "#c4a000",
+  blue: "#3465a4", magenta: "#75507b", cyan: "#06989a", white: "#d3d7cf",
+  brightBlack: "#555753", brightRed: "#ef2929", brightGreen: "#8ae234", brightYellow: "#fce94f",
+  brightBlue: "#729fcf", brightMagenta: "#ad7fa8", brightCyan: "#34e2e2", brightWhite: "#eeeeec",
+};
+
+/** The palette follows the cockpit's own theme tokens, so the terminal is not a foreign body in
+ *  either palette. Read at construction time: the panel remounts when the terminal tab is opened. */
+function terminalTheme(dark: boolean): ITheme {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string): string => cs.getPropertyValue(name).trim() || fallback;
+  return dark
+    ? { background: v("--bg-1", "#0e1518"), foreground: v("--text", "#e3ecf3"),
+        cursor: v("--accent", "#4aacdf"), selectionBackground: "rgba(74,172,223,0.30)", ...ANSI_16 }
+    : { background: v("--bg-1", "#ffffff"), foreground: v("--text", "#1c2735"),
+        cursor: v("--accent", "#2679a5"), selectionBackground: "rgba(38,121,165,0.25)", ...ANSI_16 };
+}
+
 function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element {
   const [status, setStatus] = useState<TermStatus>("connecting");
   const [error, setError] = useState("");
-  const [text, setText] = useState("");
-  const [line, setLine] = useState("");
-  const outRef = useRef<HTMLPreElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const stick = useRef(true);
-  // `nonce` re-runs the connect effect: a shell is a socket, and "restart" is a
-  // new socket — not a state machine we should hand-roll.
+  // A shell is a socket, and "restart" is a new socket — not a state machine we should hand-roll.
   const [nonce, setNonce] = useState(0);
+  const [tty, setTty] = useState<boolean | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const sendRef = useRef<(data: string) => void>(() => {});
 
   useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
     let closed = false;
     setStatus("connecting");
     setError("");
-    setText("");
-    // The socket is authenticated the same way the event bus is: a cookie for the
-    // browser, ?token= for scripts (the WS handshake cannot carry headers).
+    setTty(null);
+
+    const dark = document.documentElement.getAttribute("data-theme") !== "light";
+    const term = new Terminal({
+      theme: terminalTheme(dark),
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+      fontSize: 12.5,
+      lineHeight: 1.25,
+      cursorBlink: true,
+      scrollback: 5000,
+      // xterm measures by rendering into the host; the panel sets the size, so no width guessing.
+      allowProposedApi: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    termRef.current = term;
+    try { fit.fit(); } catch { /* the host is not laid out yet; the observer below will fit */ }
+
+    const cols = term.cols || 80;
+    const rows = term.rows || 24;
+    // The socket is authenticated the same way the event bus is: a cookie for the browser, ?token=
+    // for scripts (the WS handshake cannot carry headers). The viewport size rides along so the pty
+    // is BORN at the right size instead of flashing 80x24.
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${location.host}/ws/term?sessionId=${encodeURIComponent(v.info.id)}`;
+    const url = `${proto}://${location.host}/ws/term?sessionId=${encodeURIComponent(v.info.id)}&cols=${cols}&rows=${rows}`;
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
@@ -301,19 +344,20 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
     wsRef.current = ws;
     ws.onopen = () => setStatus("ready");
     ws.onmessage = (ev) => {
-      let msg: { t?: string; data?: string; error?: string; cwd?: string };
+      let msg: { t?: string; data?: string; error?: string; cwd?: string; tty?: boolean };
       try {
         msg = JSON.parse(String(ev.data));
       } catch {
         return;
       }
       if (msg.t === "term-data" && typeof msg.data === "string") {
-        const chunk = msg.data;
-        setText((cur) => (cur + stripAnsi(chunk)).slice(-200_000));
+        // Raw, straight into the emulator: colours, cursor moves, alternate screen — all of it.
+        term.write(msg.data);
         return;
       }
       if (msg.t === "term-ready") {
         setStatus("ready");
+        if (typeof msg.tty === "boolean") setTty(msg.tty);
         return;
       }
       if (msg.t === "term-exit") {
@@ -333,46 +377,56 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       // The browser gives no detail; the close handler reports the state.
       setError((cur) => cur || "terminal socket failed");
     };
+
+    const send = (data: string): void => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ t: "term-input", data }));
+    };
+    sendRef.current = send;
+    const onData = term.onData(send);
+    // Fit on every layout change (the panel is resizable, the window is resizable, the phone
+    // rotates) and tell the pty, so the shell's idea of the size keeps up with the pixels.
+    const pushSize = (): void => {
+      try { fit.fit(); } catch { return; }
+      // Publish the emulator's own idea of its size on the host element. QA asserts against it:
+      // "the pty reports what the client thinks" is the whole contract of a web terminal, and
+      // without this the only way to see it is to read pixels.
+      host.dataset.termCols = String(term.cols);
+      host.dataset.termRows = String(term.rows);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ t: "term-resize", cols: term.cols, rows: term.rows }));
+      }
+    };
+    const ro = new ResizeObserver(() => pushSize());
+    ro.observe(host);
+    const onWinResize = (): void => pushSize();
+    window.addEventListener("resize", onWinResize);
+    term.focus();
+
     return () => {
       closed = true;
-      try {
-        ws.send(JSON.stringify({ t: "term-close" }));
-      } catch {
-        /* already closing */
-      }
+      ro.disconnect();
+      window.removeEventListener("resize", onWinResize);
+      onData.dispose();
+      try { ws.send(JSON.stringify({ t: "term-close" })); } catch { /* already closing */ }
       ws.close();
       wsRef.current = null;
+      term.dispose();
+      termRef.current = null;
     };
-    // `root` is a dependency on purpose: re-pointing the session's workspace must move
-    // the shell too (the server starts it in sessionRoot(sessionId)), and a shell cannot
-    // be re-cd'd from outside — it has to be a new one.
+    // `root` is a dependency on purpose: re-pointing the session's workspace must move the shell too
+    // (the server starts it in sessionRoot(sessionId)), and a shell cannot be re-cd'd from outside.
   }, [v.info.id, root, nonce]);
 
-  // Follow the output unless the operator scrolled up (same rule as the chat stream).
-  useEffect(() => {
-    const el = outRef.current;
-    if (!el || !stick.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [text]);
-
-  const send = (data: string): void => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ t: "term-input", data }));
-    stick.current = true;
-  };
-
-  const runLine = (): void => {
-    send(`${line}\n`);
-    setLine("");
-  };
+  const statusWord = status === "ready" ? (tty === false ? "shell (no tty)" : "shell")
+    : status === "connecting" ? "starting…" : status;
 
   return (
     <div className="tool-body term-body">
       <div className="term-bar">
         <span className={`term-dot ${status}`} />
-        <span className="term-status">
-          {status === "ready" ? "shell" : status === "connecting" ? "starting…" : status}
+        <span className="term-status" title={tty === false ? "this shell runs on pipes, not a tty: no prompt, no colours, no full-screen apps" : undefined}>
+          {statusWord}
           {status === "ready" ? <span className="term-cwd" title={root}> {root.split("/").filter(Boolean).pop()}</span> : null}
         </span>
         <span className="head-spacer" />
@@ -380,7 +434,7 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
           className="icon-btn"
           title="send Ctrl-C"
           aria-label="send interrupt"
-          onClick={() => send("\u0003")}
+          onClick={() => sendRef.current("\u0003")}
         >
           <IconClose size={13} />
         </button>
@@ -394,45 +448,12 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
         </button>
       </div>
       {error ? <div className="tool-error">{error}</div> : null}
-      <pre
-        className="term-out"
-        ref={outRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
-        }}
-      >
-        {text || (status === "connecting" ? "starting shell…\n" : "")}
-      </pre>
-      <div className="term-input">
-        <span className="term-prompt">$</span>
-        <input
-          value={line}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={status === "ready" ? "run a command…" : "waiting for the shell"}
-          aria-label="terminal command"
-          onChange={(e) => setLine(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              runLine();
-            }
-          }}
-        />
-        <button
-          className="icon-btn"
-          title="run"
-          aria-label="run command"
-          disabled={status !== "ready"}
-          onClick={runLine}
-        >
-          <IconPlus size={15} />
-        </button>
-      </div>
-      <div className="term-note">
-        runs in {root} · line-based shell (no full-screen apps — set AGENTUS_TERM_PTY=1 for a pty)
-      </div>
+      <div className="term-host" ref={hostRef} data-term-host="1" onClick={() => termRef.current?.focus()} />
+      {tty === false ? (
+        <div className="term-note">
+          no tty on this machine (python3 missing) — pipe shell: no prompt, no colours, no full-screen apps
+        </div>
+      ) : null}
     </div>
   );
 }

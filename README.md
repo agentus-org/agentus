@@ -1,5 +1,7 @@
 # Agentus
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 **Keep your agents on the track.** A multi-session web cockpit for ACP-speaking coding
 agents: open several sessions in the browser, each one backed by a real
 `hermes acp` / `qodercli --acp` subprocess, and drive them from any device.
@@ -19,12 +21,21 @@ agents: open several sessions in the browser, each one backed by a real
 
 ## Install
 
+**One command** (checks Node, installs the published package, no `sudo`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+```
+
 ```bash
 # Node >= 22.5 (the store is node:sqlite; developed on v25)
 npx agentus                      # …or: npm i -g agentus, then `agentus`
 # open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
 # then "+ new session", pick a backend + a working directory
 ```
+
+Full guide — install, flags, every environment variable, login, TLS, the phone bridge:
+[`docs/installation.md`](docs/installation.md) · [中文](docs/installation.zh-CN.md).
 
 `npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
 children with it. Flags: `--port 9000`, `--data <dir>`, `--open` (open the browser once it
@@ -48,6 +59,11 @@ npm start                     # installs if needed, builds, serves (scripts/star
 npm run dev -w @agentus/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
 npm run agentus               # the same CLI as `npx agentus`, straight from the checkout
 ```
+
+**Working on Agentus itself?** The bootstrapping manual is in
+[`docs/dev/`](docs/dev/README.md): run a dev instance beside live, prove a change with the
+browser sweeps, promote it to live, and what to do when live breaks. Written for a human
+*and* for a coding agent you point at this repo.
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
