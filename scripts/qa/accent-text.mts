@@ -27,7 +27,7 @@ const SAT_FLOOR = 0.72;
 /** How far the accent must sit from the neutral secondary text, in saturation. */
 const SEPARATION = 0.4;
 /** A secondary text token must clear this on the surface it is drawn on. */
-const DIM_FLOOR = 7.0;
+const DIM_FLOOR = 8.0;
 
 let pass = 0;
 let fail = 0;

@@ -4,13 +4,15 @@
   --bg-panel: #121a22;
   --bg-raised: #182430;
   --line: #223140;
-  --text: #d7e2ea;
-  /* Secondary text. Was #7b8fa0 = 5.25:1 on the panel (4.71:1 on the hover row — under AA) and a
-     blue-grey like the body text, so the operator's own report 「看不太清」 outranked the fact that
-     every checker passed. Now 7.40:1 on the panel / 6.64:1 on a hovered row, and less blue, so a
-     chromatic accent separates from it by CHROMA instead of by brightness. References: AionUi's
-     dark secondary is #ced3da (all the way to ~11:1), hermes-studio's is #a0a0a0. */
-  --text-dim: #9eaab3;
+  --text: #e3ecf3;
+  /* Secondary text — the group names, timestamps, counts and placeholders in the rail, 10–11px.
+     Two rounds of the same report（「看不太清」）landed here: first `#7b8fa0` at 5.25:1 on the panel
+     and 4.71:1 on a hovered row (under AA), then `#9eaab3` at 7.40/6.64 — still too quiet for text
+     this small on a dark surface. Now 9.31:1 / 8.35:1 and nearly hue-free, so the accent separates
+     from it by CHROMA rather than by brightness. The references sit even higher (AionUi's dark
+     secondary is #ced3da ≈ 11.6:1, its comment says "~11:1"; hermes-studio's is #a0a0a0 ≈ 6.7:1);
+     this is the step that keeps a readable hierarchy under #e3ecf3 primary text. */
+  --text-dim: #b6bec3;
   --accent: #ffb454;
   --accent-rgb: 255, 180, 84;
   --accent-dim: #8a6230;
@@ -46,9 +48,9 @@
   --bg-raised: #eaeef4;
   --line: #d7dde6;
   --text: #1c2735;
-  /* 8.74:1 on white, 7.50:1 on the hover surface (was #566475 = 6.10 / 5.19). See the dark block
-     for why: legibility first, and less blue so the accent separates by chroma. */
-  --text-dim: #424c57;
+  /* 9.42:1 on white, 8.09:1 on the hover surface — see the dark block for why the second step
+     was needed (was #566475 = 6.10/5.19, then #424c57 = 8.74/7.50). */
+  --text-dim: #3f4750;
   --accent: #d98116;
   --accent-rgb: 217, 129, 22;
   --accent-dim: #e0b070;
@@ -78,7 +80,7 @@
     --bg-raised: #eaeef4;
     --line: #d7dde6;
     --text: #1c2735;
-    --text-dim: #424c57;
+    --text-dim: #3f4750;
     --accent: #d98116;
     --accent-rgb: 217, 129, 22;
     --accent-dim: #e0b070;
@@ -134,6 +136,10 @@ button { font: inherit; }
   font-size: 12.5px; font-family: var(--mono);
 }
 .rail-search:focus { outline: none; border-color: var(--accent-dim); }
+/* Without this the browser paints the placeholder itself — a reduced-opacity version of the input's
+   own colour — which put the rail's search hint below the token we just fixed (and made it look
+   different in every browser). Pin it to the secondary token, opacity 1, so there is one answer. */
+.rail-search::placeholder { color: var(--text-dim); opacity: 1; }
 .load-earlier { display: flex; justify-content: center; margin-bottom: 10px; }
 /* cold-slot purge: quiet until you hover the row, then a clear ✕ */
 .cold-purge {
@@ -1332,7 +1338,7 @@ code.inline {
 .rail-section {
   display: flex; align-items: center; gap: 4px; width: calc(100% - 10px); margin: 9px 10px 3px 0;
   background: transparent; border: none; font-family: inherit; text-align: left;
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
   padding: 3px 2px; border-radius: 6px; cursor: pointer;
 }
 .rail-section:hover { color: var(--text); }
@@ -1347,7 +1353,7 @@ code.inline {
   border: 1px dashed var(--line); color: var(--text-dim); font-size: 11px; cursor: default;
 }
 .rail-placeholder-name { color: var(--text); opacity: 0.75; }
-.rail-placeholder-note { margin-left: auto; font-size: 10px; }
+.rail-placeholder-note { margin-left: auto; font-size: 11px; }
 
 /* ---- rail: sessions grouped by the directory they work in ------------------- */
 .rail-group { margin-bottom: 2px; }
@@ -1370,7 +1376,7 @@ code.inline {
 .rail-group-chev { transition: transform 0.12s ease; opacity: 0.7; }
 .rail-group-chev.open { transform: rotate(90deg); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-group-count { font-size: 10px; color: var(--text-dim); }
+.rail-group-count { font-size: 11px; color: var(--text-dim); }
 .rail-group-body { padding-left: 15px; }
 /* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
 .rail-more {

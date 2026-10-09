@@ -123,9 +123,12 @@ const setTheme = async (mode, accent) => {
 const rowFor = (audit, frag) => audit.rows.find((r) => r.cls.includes(frag));
 
 console.log(`== rail readability @ :${PORT} — operator accent ${OPERATOR_BLUE} ==`);
+let darkBlueDim = "";
+let darkBlueText = "";
 for (const mode of ["dark", "light"]) {
   console.log(`-- ${mode}, operator blue --`);
   const audit = await setTheme(mode, OPERATOR_BLUE);
+  if (mode === "dark") { darkBlueDim = audit.textDim; darkBlueText = audit.text; }
   check(audit.mode === mode, `${mode} palette is on screen`, `data-theme=${audit.mode}`);
 
   // ② every piece of text in the rail is readable against what is actually behind it
@@ -164,8 +167,11 @@ console.log("-- dark, built-in amber (the default must not regress) --");
   const dimmest = [...audit.rows].sort((a, b) => a.contrast - b.contrast)[0];
   check(dimmest.contrast >= 4.5, "amber palette: dimmest rail text clears AA",
     `${dimmest.contrast}:1 ${dimmest.cls} ${dimmest.color} on ${dimmest.bg}`);
-  check(audit.textDim === "#9eaab3" || audit.textDim.toLowerCase() === "#9eaab3", "the palette's own --text-dim is unchanged by the accent",
-    `${audit.textDim}`);
+  // the NEUTRAL tokens are the palette's, not the accent's: swapping the accent must not move them
+  // (compare against the blue run rather than a hardcoded hex — the hex is theme.css's to change)
+  check(Boolean(darkBlueDim) && audit.textDim === darkBlueDim,
+    "the palette's own --text-dim is unchanged by the accent", `${darkBlueDim || "?"} -> ${audit.textDim}`);
+  check(Boolean(darkBlueText) && audit.text === darkBlueText, "…and so is --text", `${darkBlueText} -> ${audit.text}`);
 }
 
 // leave the operator's own theme exactly as it was found
