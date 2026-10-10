@@ -182,6 +182,11 @@ export interface SessionView {
    *  restart, so this stamp is client-side by design. */
   busySince: number | null;
   loaded: boolean; // history fetched
+  /** The operator opened a cold slot and the agent process is still coming up (spawn + session/load
+   *  takes seconds). The transcript is ALREADY on screen — it is our own rows — so this flag only
+   *  tells the composer not to offer a send that has nothing to send into yet, and tells the rail
+   *  that the row is being woken rather than dead. */
+  resuming?: boolean;
   /** The LIVE plan: it is not in `msgs` at all — the composer pins it above the input. The
    *  transcript only ever shows ARCHIVED plans (previous turns), placed at the end of the turn
    *  they belonged to. `turn` is the user-turn it was born in: a plan frame arriving in a LATER
@@ -338,6 +343,10 @@ class Cockpit {
   /** 「点进去看了，但还没决策」 — the operator said so themselves (the row menu's toggle). PERSISTED:
    *  the whole point is that the reminder outlives looking at the session, and usually a reload too. */
   #manualUnread = new Set<string>(readStoredUnread());
+  /** Sessions whose agent process is being woken right now. A click on a cold row starts a spawn
+   *  that takes seconds; without this a second click (or Enter, or the send button) would start a
+   *  SECOND spawn for the same slot — two agent processes, one rail row. */
+  #resuming = new Set<string>();
   #listeners = new Set<() => void>();
   /** The pending coalesced publish (see bump) — one per frame at most. */
   #frame: number | null = null;
@@ -1213,7 +1222,25 @@ class Cockpit {
     return res;
   }
 
+  /** Wake a cold slot's agent process — WITHOUT making the conversation wait for it.
+   *
+   *  The order is the point (2026-10-10: 「点击会话时要等好一会，是在阻塞等待 acp 启动吗，可以做成异步的吧，
+   *  先渲染出来」). Reading a transcript needs OUR rows, not a live agent, so the view switches and
+   *  pages its history in the moment the operator clicks; the spawn (seconds: fork + `session/load`)
+   *  runs behind it and only updates the status when it lands. `setActive` used to sit AFTER the
+   *  await, which is why a cold row kept him staring at the previous session until the handshake
+   *  finished. */
   async resume(id: string): Promise<void> {
+    // ① The view first. `#view()` creates the row's view if the rail has not built one yet, so
+    //    `setActive` finds it and fires the history fetch below in the same tick.
+    this.#view(id);
+    this.setActive(id);
+    // ② One spawn per slot, however many ways he asks (the row, Enter, the send button and the
+    //    slash palette all funnel here, and all of them can be hit again while it is coming up).
+    if (this.#resuming.has(id)) return;
+    this.#resuming.add(id);
+    this.#view(id).resuming = true;
+    this.bump();
     try {
       const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
       this.#view(id).info = info;
@@ -1221,7 +1248,8 @@ class Cockpit {
       this.cold = this.cold.filter((s) => s.id !== id);
       // NOT removed from `archived` unconditionally: a resume does not clear the flag, so a row the
       // operator archived and then restored stays in 已归档 (as a live row) until they un-archive it.
-      this.setActive(id);
+      // The agent replays its own transcript into the store during `session/load`, so re-read ours:
+      // the rows that arrived while we were spawning are what the operator is about to look at.
       await this.loadHistory(id);
     } catch (e) {
       const status = (e as { httpStatus?: number }).httpStatus;
@@ -1244,6 +1272,10 @@ class Cockpit {
         return;
       }
       this.#setNet(false, `恢复失败：${String((e as Error).message ?? e)}`);
+    } finally {
+      this.#resuming.delete(id);
+      this.#view(id).resuming = false;
+      this.bump();
     }
   }
 

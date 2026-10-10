@@ -196,6 +196,10 @@ const notify = new NotifyCenter({
   operator: (req, url) => Boolean(auth.authenticate(req.headers, url)),
   // The companion artifact, so the phone panel in 设置 can show its size without a second request.
   apkPath: APK_FILE,
+  // The page reporting which session it is showing is also the idle reaper's clock: opening a slot
+  // (and staying in it) counts as USED, so switching away gives it a full threshold instead of
+  // reaping it on the next tick because its last MESSAGE was days ago.
+  onFocus: (sessionId: string) => mgr.touch(sessionId),
   // Username+password pairing: the phone types the same login the browser uses. The check and
   // its rate limit stay here, in auth.ts, so a phone cannot have a laxer door than the UI.
   credentials: (username, password, ip) => {

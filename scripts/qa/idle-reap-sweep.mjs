@@ -11,7 +11,11 @@
 //      changelog's "protect active ACP tasks from idle cleanup", learned the hard way there);
 //   5. reaping is NOT archiving: the row lands in `cold` (工作空间), never in 已归档, keeps its
 //      transcript, and wears status `reaped`;
-//   6. one resume brings it back with a real process.
+//   6. one resume brings it back with a real process;
+//   7. USING a slot moves the clock even with nothing written in it: the click that wakes a cold slot
+//      (a fresh process) and the page reporting it as the one on screen both count as activity, while
+//      an untouched slot of the same age IS reclaimed — the positive control that keeps 7. honest
+//      (operator report 2026-10-10: 「刚点进去的会话…换个会话过一分钟 acp 就被回收掉了」).
 //
 // It drives the setting over the API instead of an env override, which is also the proof that the
 // threshold is read from settings on every tick. Run it against an instance whose sweep tick is short
@@ -123,6 +127,59 @@ const watched = await mk("sweep · 正在看的（不回收）");
   const back = await row(watched);
   check(back.inLive && Number(back.live?.pid) > 0, "…with a real process again", `pid=${back.live?.pid}`);
   check(back.archivedCount === before, "…and it is still not archived", `archived=${back.archivedCount}`);
+}
+
+// ---- 3b. USING a slot moves the clock (a slot is not idle just because nobody WROTE in it) ------
+// The operator's report (2026-10-10): 「刚点进去的会话，虽然我没操作啥，也没发消息，但换个会话，过一分钟刚才
+// 点进去的会话 acp 就被回收掉了」. The clock used to be the store's last-MESSAGE time alone, so a slot he
+// had just opened — fresh process, days-old transcript — was over the threshold the moment it appeared
+// and the next tick killed the process he had just asked for. Two ways of USING a slot have to move
+// that clock, and both are asserted here against a positive control (§3c) which proves the reaper is
+// genuinely running at this threshold: without it, "still live" would be a free pass.
+const USE_MIN = 0.25; // 15 s: outlives a 2 s-tick observation, short enough to age a clock in a sweep
+const useSet = await setThreshold(USE_MIN);
+check(useSet.value === USE_MIN, `idleKillMin: ${USE_MIN} accepted for the use-clock case`, String(useSet.value));
+const WARM_MS = 9_000;   // still under the threshold: nothing can be reaped yet, so no race
+const WATCH_MS = 11_000; // past it: only a MOVED clock can keep a slot alive here
+const opened = await mk("sweep · 刚点开的（不回收）");       // (a) a click that wakes a cold slot
+const looked = await mk("sweep · 刚点进去看的（不回收）");   // (b) the page reporting it as the one on screen
+const ignored = await mk("sweep · 一直没人搭理的（必须回收）"); // the control: created with them, never used
+const away = await mk("sweep · 换过去的那个会话");           // where the operator switches TO
+await sleep(WARM_MS);
+{
+  // (b) he looks at it, then switches to another session — presence follows him away, exactly as the
+  // browser reports it (one sessionId at a time).
+  await presence(looked, true);
+  await presence(away, true);
+  // (a) a cold slot woken by a click: it has to be CLOSED first, so the resumed process inherits the
+  // old message clock the way the reported case did (a fresh create would carry a fresh stamp and
+  // prove nothing).
+  await api(`/api/sessions/${opened}`, { method: "DELETE" }); // DELETE on a live slot = close it
+  const coldBefore = await row(opened);
+  const re = await api(`/api/sessions/${opened}/resume`, { method: "POST" });
+  check(coldBefore.inCold && re.ok,
+    "the clicked slot was cold and came back (the reported case: a click wakes a cold slot)",
+    `cold=${coldBefore.inCold} resume=HTTP ${re.status}`);
+  await sleep(WATCH_MS); // crosses the threshold in here — for all four
+  const a = await row(opened), b = await row(looked);
+  check(a.inLive && a.live?.status !== "reaped",
+    "opening a slot is activity: a just-woken slot is NOT reclaimed while its last MESSAGE is older than the threshold",
+    `message clock ${Math.round((WARM_MS + WATCH_MS) / 1000)}s old, status=${a.live?.status ?? a.cold?.status}`);
+  check(b.inLive && b.live?.status !== "reaped",
+    "…and so is looking at it: switching away still leaves the slot a full threshold",
+    `status=${b.live?.status ?? b.cold?.status}`);
+  // 3c. the control — same age, never opened, never on screen: nothing but the message clock can save
+  //     it, and that clock says "reap". If this one survives too, the two above proved nothing.
+  const reapedControl = await until(async () => !(await row(ignored)).inLive, 15000);
+  const c = await row(ignored);
+  check(reapedControl && c.cold?.status === "reaped",
+    "the control (never opened, never on screen) IS reclaimed at this threshold — so the two above are not a free pass",
+    `status=${c.cold?.status ?? c.live?.status}`);
+  await presence(null, false);
+  for (const id of [opened, looked, ignored, away]) {
+    await api(`/api/sessions/${id}`, { method: "DELETE" }); // live slot: closes it
+    await api(`/api/sessions/${id}`, { method: "DELETE" }); // cold slot: purges the record
+  }
 }
 
 // ---- 4. a request waiting on a human is not "idle" ----------------------------------------------

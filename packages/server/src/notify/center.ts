@@ -41,6 +41,10 @@ export interface NotifyCenterOptions {
   sessionTitle?: (sessionId: string) => string | null;
   /** The companion APK, so the web panel can report its size (optional). */
   apkPath?: string;
+  /** Called when the cockpit reports WHICH session it is showing (the presence route) — the one
+   *  signal that says "the operator is using this slot right now". The idle reaper needs it: a
+   *  message clock alone reaped slots nobody had written to (see SessionManager.touch). */
+  onFocus?: (sessionId: string) => void;
   log?: (line: string) => void;
 }
 
@@ -137,6 +141,8 @@ export class NotifyCenter {
   private readonly sessionTitle: ((sessionId: string) => string | null) | null;
   /** The APK the phone installs (optional): the web panel reports its size from here. */
   private readonly apkPath: string | null = null;
+  /** "The operator is on this session right now" — the idle reaper's use-activity clock. */
+  private readonly onFocus: ((sessionId: string) => void) | null = null;
 
   private state: NotifyState;
   private events: ActivityRecord[] = [];
@@ -176,6 +182,14 @@ export class NotifyCenter {
       call: Boolean(call),
       at: Date.now(),
     };
+    // The idle reaper's "he was just here" half. Only while the page says it is VISIBLE (or on a
+    // call): a tab left open on a session in the background must not keep an agent process alive
+    // forever, and `visible` is the page's own answer to "is anyone looking". A call counts for the
+    // same reason it counts as watching — the hands are free, the screen is not touched, and the
+    // session IS the conversation.
+    if (this.presence.sessionId && (this.presence.visible || this.presence.call)) {
+      this.onFocus?.(this.presence.sessionId);
+    }
     return this.presence;
   }
 
@@ -228,6 +242,7 @@ export class NotifyCenter {
     this.credentials = opts.credentials ?? null;
     this.sessionTitle = opts.sessionTitle ?? null;
     this.apkPath = opts.apkPath ?? null;
+    this.onFocus = opts.onFocus ?? null;
     this.state = this.loadState();
     this.events = this.loadEvents();
   }

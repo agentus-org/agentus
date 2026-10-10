@@ -930,7 +930,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
               <button
                 type="button"
                 className={`rail-more ${more[key] ? "open" : ""}`}
-                onClick={() => setMore((mm) => ({ ...mm, [key]: !mm[g.path] }))}
+                onClick={() => setMore((mm) => ({ ...mm, [key]: !mm[key] }))}
                 aria-expanded={Boolean(more[key])}
                 title={more[key] ? "只显示最近几个" : `展开这个工作空间里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
               >
@@ -3406,7 +3406,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             rows={1}
             value={text}
             onFocus={() => setPaletteHidden(false)}
-            placeholder={v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.info.status === "ready" ? placeholder : v.info.status}
+            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
               setPaletteHidden(false);
@@ -3631,8 +3631,8 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               <button
                 className="send-btn"
                 onClick={send}
-                disabled={(!text.trim() && !drafts.length) || (!v.info.cold && v.info.status !== "ready")}
-                title={v.info.cold ? "唤醒会话 (Enter)" : "send (Enter)"}
+                disabled={(!text.trim() && !drafts.length) || v.resuming || (!v.info.cold && v.info.status !== "ready")}
+                title={v.resuming ? "正在唤醒 agent 进程…" : v.info.cold ? "唤醒会话 (Enter)" : "send (Enter)"}
                 aria-label="send"
               >
                 <IconSend size={16} />

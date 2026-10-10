@@ -159,6 +159,12 @@ interface LiveSession {
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
   turnSeq: number;
+  /** When the operator last USED this slot — he opened it, or his page reported it as the one on
+   *  screen. In memory on purpose: this is the half of the idle rule that says "he was just here",
+   *  and the store's message clock (which survives restarts) is the other half. Reading only the
+   *  message clock reaped a slot he had clicked into a minute earlier (see `touch()` and the clock
+   *  in `startIdleReaper`). */
+  touchedAt: number;
   /** Text sinks for sessions that live on this connection but are NOT the one in the rail —
    *  today only the throwaway fork used to summarise the conversation for a title. Anything
    *  whose sessionId is not `info.acpSessionId` is routed here and never persisted. */
@@ -367,6 +373,10 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      // A brand-new process is, by definition, freshly used: the click that spawned it is the
+      // activity. Without this the slot inherits the store's message clock — yesterday's — and the
+      // reaper's first tick after the spawn kills the process the operator just asked for.
+      touchedAt: Date.now(),
       // Until this slot's first PROMPT, anything the agent says is its own history being replayed,
       // not an answer (see #onSessionUpdate). A resumed agent re-sends its whole transcript on
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
@@ -515,6 +525,10 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      // A brand-new process is, by definition, freshly used: the click that spawned it is the
+      // activity. Without this the slot inherits the store's message clock — yesterday's — and the
+      // reaper's first tick after the spawn kills the process the operator just asked for.
+      touchedAt: Date.now(),
       // Until this slot's first PROMPT, anything the agent says is its own history being replayed,
       // not an answer (see #onSessionUpdate). A resumed agent re-sends its whole transcript on
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
@@ -1246,6 +1260,22 @@ export class SessionManager {
     this.#sessions.delete(live.info.id);
   }
 
+  /** The operator just USED this slot: he opened it, or his page reported it as the one on screen.
+   *
+   *  Idempotent and cheap — the cockpit reports presence every few seconds, so while a slot is on
+   *  screen this is called continuously and the idle clock never runs out under a conversation he
+   *  is reading; the moment he switches away it stops, and the slot gets the full threshold from
+   *  the last report instead of from its last MESSAGE.
+   *
+   *  Only the in-memory clock moves. `info.lastAt` stays the store's message time on purpose: it is
+   *  what the rail's relative stamps and the "last activity" hint mean, and making it say 刚刚 for a
+   *  session nobody has written to would be the UI lying. */
+  touch(id: string): void {
+    const live = this.#sessions.get(id);
+    if (!live || live.info.status === "closed" || live.info.status === "reaped") return;
+    live.touchedAt = Date.now();
+  }
+
   /** Reclaim idle slots: stop the agent process of a session nobody has touched for the operator's
    *  threshold. Deliberately NOT an archive — the row stays in 工作空间 wearing `reaped` and a click
    *  brings it back. AionUi ships exactly this switch (设置 → 系统 → 「Agent 空闲超时（分钟）」,
@@ -1266,7 +1296,13 @@ export class SessionManager {
         if (s.busy || s.pendingPermissions.size) continue;
         if (s.info.status === "starting" || s.info.status === "running") continue;
         if (opts.watched?.(s.info.id)) continue;
-        const lastAt = s.info.lastAt ?? s.info.createdAt;
+        // The clock is the LATER of two things: the last MESSAGE this session has (store time, which
+        // survives restarts) and the last time the operator actually USED the slot (`touchedAt` — the
+        // click that respawned it, or the page reporting it as the one on screen). Reading only the
+        // message clock is how a slot he had just opened got reaped a minute later (2026-10-10:
+        // 「刚点进去、没发消息、换个会话过一分钟 acp 就被回收」) — the fresh process inherited a
+        // days-old stamp, so the very next tick found it over the threshold.
+        const lastAt = Math.max(s.touchedAt, s.info.lastAt ?? 0, s.info.createdAt);
         if (now - lastAt < idleMs) continue;
         console.log(
           `[agentus] idle reap: ${s.info.id} (${Math.round((now - lastAt) / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
