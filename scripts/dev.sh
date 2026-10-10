@@ -32,8 +32,12 @@ DEV_LOG="${DEV_LOG:-/tmp/agentus-dev.log}"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # the worktree this script lives in (the DEV tree)
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"   # the tree the operator's cockpit runs
+LIVE_PORT="${LIVE_PORT:-$(sed -n 's/^AGENTUS_PORT=\([0-9]*\).*/\1/p' "$HOME/.hermes/cache/agentus/ports.env" 2>/dev/null | head -1)}"
 LIVE_PORT="${LIVE_PORT:-8787}"
 LIVE_LAUNCHER="${AGENTUS_LAUNCHER:-$HOME/.hermes/cache/agentus/launch.py}"
+# Live runs as a launchd job now, so "restart live" has to go through launchd (see relaunch.sh).
+# Empty = the job is not installed here, and relaunch.sh falls back to kill+launch.
+LIVE_LAUNCHD_LABEL="${LIVE_LAUNCHD_LABEL:-ai.hermes.agentus}"
 
 pid_on_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
@@ -205,6 +209,7 @@ case "${1:-}" in
       echo "[promote] restart needed ($why)"
       echo "[promote] restarting :$LIVE_PORT (explicit, verified — live slots end here, by design)"
       bash "$HERE/scripts/relaunch.sh" --port "$LIVE_PORT" --tree "$LIVE" --launcher "$LIVE_LAUNCHER" \
+        --launchd "$LIVE_LAUNCHD_LABEL" \
         || { echo "[promote] FAILED: :$LIVE_PORT did not come back on new code (see above)" >&2; exit 1; }
     else
       echo "[promote] no server-side change — the running server keeps its process (no session interrupted)"
