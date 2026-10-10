@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Agentus 改名落地（LIVE :8787）—— 只有操作者明确下令才跑。
+# Agentus 改名落地（LIVE :8788）—— 只有操作者明确下令才跑。
 #
 # 为什么需要单独一步（而不是直接 promote）：这次改名同时动了三样 live 正在用的东西，
 # 任何一样漏掉都会静默出事：
@@ -8,7 +8,7 @@
 #      agentslot.sqlite —— 直接重启 = 开一个空库 = 操作者的会话列表凭空消失。
 #   2. 启动器目录。live 的启动器在 ~/.hermes/cache/agentslot/launch.py，它 set 的
 #      AGENTSLOT_* 变量改名后不再被代码读取（代码只认 AGENTUS_*）；不换 = 端口/数据目录
-#      全部回落到默认值（8787/.data 恰好同值躲过一劫，TLS 与 HERMES_CMD 不会）。
+#      全部回落到默认值（8788/.data 恰好同值躲过一劫，TLS 与 HERMES_CMD 不会）。
 #   3. 启动形态。dev 树里 scripts/start.sh、package.json、npm workspace 名字都变了，
 #      需要 npm install 重连 @agentus/* 链接 + 重新 build。
 #
@@ -17,7 +17,7 @@
 # 停机窗口只有几秒。
 #
 #   bash scripts/apply-agentus-rename-live.sh --dry-run     # 只看要做什么
-#   bash scripts/apply-agentus-rename-live.sh               # 真做（会重启 :8787）
+#   bash scripts/apply-agentus-rename-live.sh               # 真做（会重启 :8788）
 #
 # 前置：dev 树已 commit + push；dev 全套 sweep 已绿。
 set -euo pipefail
@@ -29,7 +29,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"                       # dev 树
 # live 树：2026-10-08 起两棵 worktree 已改名为 agentus / agentus-dev（本脚本自己那轮只改了
 # 启动器目录与库文件名，故意没动 worktree 目录名；这次由人工序列补上）。
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"             # live 树
-LIVE_PORT="${LIVE_PORT:-8787}"
+LIVE_PORT="${LIVE_PORT:-8788}"
 LIVE_TLS_PORT="${LIVE_TLS_PORT:-8443}"
 LOLD="$HOME/.hermes/cache/agentslot"                            # 旧启动器目录
 LNEW="$HOME/.hermes/cache/agentus"                              # 新启动器目录

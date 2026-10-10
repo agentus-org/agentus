@@ -23,7 +23,7 @@ g.localStorage = {
   setItem: (k: string, v: string) => void stored.set(k, v),
   removeItem: (k: string) => void stored.delete(k),
 };
-g.location = { href: "https://host:38787/?session=bbb&x=1", search: "?session=bbb&x=1" };
+g.location = { href: "https://host:38788/?session=bbb&x=1", search: "?session=bbb&x=1" };
 g.history = { replaceState: (_s: unknown, _t: unknown, url: string) => { replacedWith = url; } };
 
 const { cockpit } = await import("../../packages/web/src/state.ts");
@@ -46,7 +46,7 @@ check("no `openTarget` is consumed twice: the URL no longer has it",
 
 // and with no parameter, the operator's own last slot still wins — the old behaviour is intact
 stored.set("agentus.active", "aaa");
-g.location = { href: "https://host:38787/", search: "" };
+g.location = { href: "https://host:38788/", search: "" };
 const { cockpit: fresh } = await import("../../packages/web/src/state.ts?fresh=1");
 fresh.apply({ t: "sessions", sessions } as never);
 check("without ?session= the remembered slot is restored (no regression)",

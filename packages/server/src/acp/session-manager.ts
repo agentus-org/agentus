@@ -1021,7 +1021,7 @@ export class SessionManager {
         command: process.execPath,
         args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "../../mcp/plan-server.mjs")],
         env: [
-          { name: "AGENTUS_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8787}` },
+          { name: "AGENTUS_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}` },
           { name: "AGENTUS_PLAN_TOKEN", value: live.planToken },
           { name: "AGENTUS_PLAN_SESSION", value: live.info.id },
         ],

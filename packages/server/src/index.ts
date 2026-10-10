@@ -25,7 +25,7 @@ import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "../../shared/src/index.js";
 
-const PORT = Number(process.env.AGENTUS_PORT ?? 8787);
+const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
 // launches from the repo root while the dev server runs from packages/server, and a
 // cwd-relative path would silently open a second database (the operator's slots would

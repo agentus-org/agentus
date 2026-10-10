@@ -21,9 +21,9 @@ export default defineConfig({
     port: 5173,
     allowedHosts: true,
     proxy: {
-      "/healthz": "http://127.0.0.1:8787",
-      "/api": "http://127.0.0.1:8787",
-      "/ws": { target: "ws://127.0.0.1:8787", ws: true },
+      "/healthz": "http://127.0.0.1:8788",
+      "/api": "http://127.0.0.1:8788",
+      "/ws": { target: "ws://127.0.0.1:8788", ws: true },
     },
   },
 });

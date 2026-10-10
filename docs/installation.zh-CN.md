@@ -88,7 +88,7 @@ npm run agentus                     # 与 `npx agentus` 同一个 CLI，直接�
 ```
 agentus [options]
 
-  -p, --port <n>     监听端口                        (AGENTUS_PORT，默认 8787)
+  -p, --port <n>     监听端口                        (AGENTUS_PORT，默认 8788)
   -d, --data <dir>   状态目录（sqlite、登录、TLS 材料、设置）
                                                        (AGENTUS_DATA，默认 ~/.agentus)
   -o, --open         就绪后自动在浏览器打开驾驶舱
@@ -103,7 +103,7 @@ agentus [options]
 ## 首次运行
 
 1. 启动：`agentus`（或 `npx agentus`，或 checkout 里的 `npm start`）。
-2. 打开 **http://localhost:8787** 登录。默认凭据：
+2. 打开 **http://localhost:8788** 登录。默认凭据：
 
    ```
    username: admin
@@ -125,7 +125,7 @@ agentus [options]
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `AGENTUS_PORT` | `8787` | 服务端口（从不读裸 `PORT`） |
+| `AGENTUS_PORT` | `8788` | 服务端口（从不读裸 `PORT`） |
 | `AGENTUS_DATA` | `~/.agentus` | 状态目录；见[数据目录](#数据目录) |
 | `AGENTUS_HERMES_CMD` | `hermes` | hermes 后端要拉起的可执行文件 |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | qoder 后端同理 |
@@ -181,7 +181,7 @@ agentus [options]
 
 | 端口 | 协议 | 用途 |
 |---|---|---|
-| `AGENTUS_PORT`（8787） | 纯 HTTP | 局域网、本机回环、`curl`、脚本 —— 无证书警告，CI 不变 |
+| `AGENTUS_PORT`（8788） | 纯 HTTP | 局域网、本机回环、`curl`、脚本 —— 无证书警告，CI 不变 |
 | `AGENTUS_TLS_PORT`（8443） | HTTPS（自签） | **隧道** —— 加密公网那一跳 |
 | 5173 | Vite 开发服务器 | 前端热更新，仅在 `npm run dev` 期间 |
 
@@ -257,7 +257,7 @@ Agentus 默认在前台跑；一个服务单元能让它跨登录、跨重启常
   <key>Label</key>          <string>org.agentus.cockpit</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8787</string>
+    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8788</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>AGENTUS_DATA</key><string>/Users/YOU/.agentus</string></dict>
@@ -282,7 +282,7 @@ Description=Agentus cockpit
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env agentus --port 8787
+ExecStart=/usr/bin/env agentus --port 8788
 Environment=AGENTUS_DATA=%h/.agentus
 Restart=on-failure
 
@@ -323,7 +323,7 @@ rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、TLS 密�
 ## 排错
 
 **端口被占用。** 用 `agentus --port 9000`，或找出并停掉占用者：
-`lsof -nP -iTCP:8787 -sTCP:LISTEN`。Agentus 从不读裸 `PORT`，原因正在于此。
+`lsof -nP -iTCP:8788 -sTCP:LISTEN`。Agentus 从不读裸 `PORT`，原因正在于此。
 
 **「没有后端」/ 会话起不来。** 缺少 agent CLI，或它没登录。跑 `hermes acp --check`，或
 `qodercli login`（`newSession` 报 `-32000` 就是 qoder 没登录）。在设置里检查后端行的命令；启动
@@ -347,4 +347,4 @@ rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、TLS 密�
 `/ws`；请换成能透传 WebSocket 的隧道（SakuraFrp 的 TCP+auto-HTTPS 隧道已验证可用）。
 
 **局域网里出现证书警告。** 那是 TLS 监听的自签证书（裸局域网 IP 无法承载可信证书）。要么在
-局域网里用纯 HTTP 的 `:8787` 端口，要么从 `/cert.crt` 装一次签发证书（见 [TLS](#tls)）。
+局域网里用纯 HTTP 的 `:8788` 端口，要么从 `/cert.crt` 装一次签发证书（见 [TLS](#tls)）。

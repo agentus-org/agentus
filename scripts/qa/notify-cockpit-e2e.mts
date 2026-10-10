@@ -2,7 +2,7 @@
 // sends a prompt that should need approval, and watches the notify channel all the way to
 // "the operator pressed allow and the agent continued".
 //
-//   npx tsx scripts/qa/notify-cockpit-e2e.mts [--base http://127.0.0.1:8787] [--token <machine token>]
+//   npx tsx scripts/qa/notify-cockpit-e2e.mts [--base http://127.0.0.1:8788] [--token <machine token>]
 //
 // It creates its own session in a scratch dir and deletes it at the end. Needs the cockpit to
 // be running with the notify routes (i.e. a server started after the notify centre landed).
@@ -19,7 +19,7 @@ const arg = (name: string, fallback: string): string => {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 };
 
-const BASE = arg("base", "http://127.0.0.1:8787").replace(/\/+$/, "");
+const BASE = arg("base", "http://127.0.0.1:8788").replace(/\/+$/, "");
 const TOKEN = arg("token", fs.existsSync(path.join(REPO, "packages/server/.data/auth.token"))
   ? fs.readFileSync(path.join(REPO, "packages/server/.data/auth.token"), "utf8").trim()
   : "");

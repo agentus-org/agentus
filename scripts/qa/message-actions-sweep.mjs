@@ -95,7 +95,7 @@ check("every action shows an icon and no text label",
 // LAN-style) navigator.clipboard is undefined, so the textarea fallback is what runs. Hook
 // execCommand to capture exactly what the page handed to the clipboard.
 // Force the FALLBACK path: 127.0.0.1 counts as a secure context, but the cockpit's LAN
-// entry (http://192.168.x.x:8787) does not — so the textarea+execCommand branch is the one
+// entry (http://192.168.x.x:8788) does not — so the textarea+execCommand branch is the one
 // that runs out there. Two steps, because a synthetic .click() carries no user activation
 // and Chromium then refuses the clipboard write: stage everything in one evaluate, press
 // with a TRUSTED input event, then read the result back.

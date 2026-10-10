@@ -24,7 +24,7 @@ agents: open several sessions in the browser, each one backed by a real
 ```bash
 # public one-liner — the published package (Node >= 22.5; the store is node:sqlite)
 npx agentus                      # …or: npm i -g agentus, then `agentus`
-# open http://localhost:8787 and log in (admin / 123456 — see "Login" below),
+# open http://localhost:8788 and log in (admin / 123456 — see "Login" below),
 # then "+ new session", pick a backend + a working directory
 ```
 
@@ -102,7 +102,7 @@ layer never changes.
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_PORT` | `8787` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
+| `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
@@ -196,7 +196,7 @@ Auth environment:
 ### Exposing it publicly (tunnel / reverse proxy)
 
 Put `AGENTUS_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
-`<lan-ip>:8787`. That gives you two independent locks — Basic at the edge of the app, the
+`<lan-ip>:8788`. That gives you two independent locks — Basic at the edge of the app, the
 operator login inside it — and scripts can still get in (`curl -u :pass` plus the machine
 token).
 
@@ -231,7 +231,7 @@ Two things to know about a tunnel in front of this app:
 #### TLS: a second listener, on purpose
 
 A plain TCP tunnel (SakuraFrp, safe-nat, `ssh -L`, most frp setups) forwards bytes — it
-does **not** terminate TLS for you. Point one at `:8787` and the operator's password and
+does **not** terminate TLS for you. Point one at `:8788` and the operator's password and
 session cookie cross the internet in clear text. So the server can speak TLS itself:
 
 ```bash
@@ -242,7 +242,7 @@ scripts/make-cert.sh                    # self-signed, SAN = the name you actual
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8787) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
+| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
 | `AGENTUS_TLS_PORT` (8443) | HTTPS (self-signed) | **the tunnel** — encrypts the public hop |
 
 Same handler, same routes, same auth; only the socket differs. Two listeners beat both

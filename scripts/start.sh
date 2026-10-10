@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT="${AGENTUS_PORT:-8787}"
+PORT="${AGENTUS_PORT:-8788}"
 
 # node:sqlite (the zero-dependency store) landed in Node 22.5 — check before anything else.
 node -e '

@@ -131,7 +131,7 @@ And against real data — the one-off used when this landed, on the operator's o
 ```bash
 # rows → the CLIENT's fold, over the operator API
 curl -s -H "Authorization: Bearer $(cat "${AGENTUS_DATA:-$HOME/.agentus}/auth.token")" \
-  'http://127.0.0.1:8787/api/sessions/<id>/messages?tail=1'
+  'http://127.0.0.1:8788/api/sessions/<id>/messages?tail=1'
 ```
 
 Result for `hello`: **3804 rows → 70** (10 agent messages, 15 thought blocks, 37 tool cards, 8 prompts),

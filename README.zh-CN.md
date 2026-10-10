@@ -22,7 +22,7 @@
 ```bash
 # 对外一条命令 —— 用 npm 上发布的包（Node >= 22.5，存储用 node:sqlite）
 npx agentus                      # 或者 npm i -g agentus 然后直接跑 `agentus`
-# 打开 http://localhost:8787，用 admin / 123456 登录（见下面「登录」），
+# 打开 http://localhost:8788，用 admin / 123456 登录（见下面「登录」），
 # 然后「+ 新建会话」，选一个后端和一个工作目录
 ```
 
@@ -93,7 +93,7 @@ npm run agentus               # the same CLI as `npx agentus`, straight from the
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `AGENTUS_PORT` | `8787` | 服务端口（从不读取裸 `PORT` —— 这个名字在共享主机上被污染） |
+| `AGENTUS_PORT` | `8788` | 服务端口（从不读取裸 `PORT` —— 这个名字在共享主机上被污染） |
 | `AGENTUS_DATA` | `~/.agentus` | 状态所在；完整顺序见「状态放在哪」（已有数据的老 checkout 上是 `<repo>/packages/server/.data`） |
 | `AGENTUS_HERMES_CMD` | `hermes` | hermes 后端要拉起的二进制 |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | qoder 同上 |
@@ -177,7 +177,7 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 
 ### 公网暴露（隧道 / 反向代理）
 
-把 `AGENTUS_BASIC_AUTH=:pass` 放进服务端环境，然后把隧道指向 `<lan-ip>:8787`。这样你就有了两把独立
+把 `AGENTUS_BASIC_AUTH=:pass` 放进服务端环境，然后把隧道指向 `<lan-ip>:8788`。这样你就有了两把独立
 的锁 —— 边缘的 Basic，里面的运维者登录 —— 脚本依然能进（`curl -u :pass` 加上机器 token）。
 
 这里推荐只用密码的形式（`:pass`，或裸 `pass`）：HTTP Basic 总是会让浏览器问用户名（RFC 7617 传
@@ -205,7 +205,7 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 #### TLS：刻意做成第二个监听器
 
 纯 TCP 隧道（SakuraFrp、safe-nat、`ssh -L`、大多数 frp 配置）只转发字节 —— 它**不会**替你终结 TLS。
-把它指向 `:8787`，运维者的密码和 session cookie 就会以明文穿过互联网。所以服务端可以自己讲 TLS：
+把它指向 `:8788`，运维者的密码和 session cookie 就会以明文穿过互联网。所以服务端可以自己讲 TLS：
 
 ```bash
 scripts/make-cert.sh                    # self-signed, SAN = the name you actually type
@@ -215,7 +215,7 @@ scripts/make-cert.sh                    # self-signed, SAN = the name you actual
 
 | 端口 | 讲什么 | 给谁 |
 |---|---|---|
-| `AGENTUS_PORT` (8787) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变 |
+| `AGENTUS_PORT` (8788) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变 |
 | `AGENTUS_TLS_PORT` (8443) | HTTPS（自签名） | **隧道** —— 加密公网那一跳 |
 
 同一套 handler，同一套路由，同一套认证；只有 socket 不同。两个监听器胜过另外两种做法：把单端口变成

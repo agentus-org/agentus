@@ -59,7 +59,7 @@ Environment
   AGENTUS_VERSION, AGENTUS_INSTALL_DIR, AGENTUS_REGISTRY, AGENTUS_ALLOW_ROOT, AGENTUS_NODE_MIN
 
 After install:
-  agentus            # start the cockpit on http://localhost:8787
+  agentus            # start the cockpit on http://localhost:8788
   agentus --where    # print the paths the server resolved (data dir, web bundle) and exit
 EOF
 }
@@ -154,6 +154,6 @@ else
   echo "      agentus"
 fi
 echo
-echo "  Then open  http://localhost:8787  and log in (admin / 123456 — change it in Settings → 账号)."
+echo "  Then open  http://localhost:8788  and log in (admin / 123456 — change it in Settings → 账号)."
 echo "  The one thing npm cannot install is an agent CLI: put 'hermes acp' or 'qodercli --acp' on"
 echo "  PATH, then add a backend and start a session. Full guide: docs/installation.md"

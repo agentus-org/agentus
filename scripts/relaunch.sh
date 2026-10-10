@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Restart an Agentus instance and PROVE it came back on a new process.
 #
-#   scripts/relaunch.sh --port 8787 --launcher ~/.hermes/cache/agentus/launch.py
+#   scripts/relaunch.sh --port 8788 --launcher ~/.hermes/cache/agentus/launch.py
 #
 # Why this exists: the live instance no longer runs under `tsx watch` (a reload SIGTERMs
 # every live `hermes acp` slot), so nothing restarts the server by itself any more. A
@@ -38,7 +38,7 @@ done
 if [ -z "$PORT" ]; then
   PORT="$(sed -n 's/^AGENTUS_PORT=\([0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
 fi
-PORT="${PORT:-8787}"
+PORT="${PORT:-8788}"
 
 
 [ -n "$LAUNCHER" ] || { echo "[relaunch] --launcher is required" >&2; exit 2; }

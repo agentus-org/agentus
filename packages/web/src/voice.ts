@@ -757,7 +757,7 @@ export function nativeMicAvailable(): boolean {
 
 /** Can this page capture audio at all — the app's native microphone, or the browser's own
  *  `getUserMedia`? An INSECURE ORIGIN (plain `http://` on a LAN IP) hides `navigator.mediaDevices`
- *  entirely; that is the browser's rule, not ours (measured 2026-10-08: on `http://<lan-ip>:8787`
+ *  entirely; that is the browser's rule, not ours (measured 2026-10-08: on `http://<lan-ip>:8788`
  *  it is `undefined`, while `localhost` and the https entry have it). */
 export function micCaptureAvailable(): boolean {
   return nativeMicAvailable() || typeof navigator.mediaDevices?.getUserMedia === "function";

@@ -33,7 +33,7 @@ DEV_LOG="${DEV_LOG:-/tmp/agentus-dev.log}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # the worktree this script lives in (the DEV tree)
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"   # the tree the operator's cockpit runs
 LIVE_PORT="${LIVE_PORT:-$(sed -n 's/^AGENTUS_PORT=\([0-9]*\).*/\1/p' "$HOME/.hermes/cache/agentus/ports.env" 2>/dev/null | head -1)}"
-LIVE_PORT="${LIVE_PORT:-8787}"
+LIVE_PORT="${LIVE_PORT:-8788}"
 LIVE_LAUNCHER="${AGENTUS_LAUNCHER:-$HOME/.hermes/cache/agentus/launch.py}"
 # Live runs as a launchd job now, so "restart live" has to go through launchd (see relaunch.sh).
 # Empty = the job is not installed here, and relaunch.sh falls back to kill+launch.

@@ -538,7 +538,7 @@ public final class MainActivity extends Activity {
         root.addView(formTitle);
 
         fName = field("名称（可留空）", false);
-        fUrl = field("服务器地址，例如 https://i207f47592.wicp.vip:38787", false);
+        fUrl = field("服务器地址，例如 https://i207f47592.wicp.vip:38788", false);
         fUser = field("用户名", false);
         fPass = field("密码", true);
         fRemember = new CheckBox(this);

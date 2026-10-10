@@ -4,7 +4,7 @@
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "./lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8788";
 const backend = process.argv[2] || "mock";
 const promptText = process.argv[3] || "hello agentus";
 

@@ -2,7 +2,7 @@
 /**
  * `agentus` — the command an npm install gives you.
  *
- *   npx agentus                 # start the cockpit on :8787
+ *   npx agentus                 # start the cockpit on :8788
  *   npx agentus --port 9000     # …somewhere else
  *   npx agentus --data ~/work   # …with its state in a directory you chose
  *   npx agentus --where         # print the resolved paths and exit (nothing starts)
@@ -36,7 +36,7 @@ Usage
   agentus [options]
 
 Options
-  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8787)
+  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
   -d, --data <dir>   where state lives — sqlite, login, TLS material, settings
                                                        (AGENTUS_DATA, default ~/.agentus)
   -o, --open         open the cockpit in your browser once it is up
@@ -115,7 +115,7 @@ if (opts.port !== undefined) env.AGENTUS_PORT = String(opts.port);
 if (opts.data !== undefined) env.AGENTUS_DATA = opts.data;
 if (opts.where) env.AGENTUS_PRINT_PATHS = "1";
 
-const port = env.AGENTUS_PORT ?? "8787";
+const port = env.AGENTUS_PORT ?? "8788";
 if (!opts.where) {
   console.log(`[agentus] starting — open http://localhost:${port} when it is up (Ctrl-C stops it)`);
 }

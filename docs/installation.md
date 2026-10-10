@@ -91,7 +91,7 @@ serves once (no watcher). `AGENTUS_PORT=9000 npm start` moves the port.
 ```
 agentus [options]
 
-  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8787)
+  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
   -d, --data <dir>   where state lives (sqlite, login, TLS material, settings)
                                                        (AGENTUS_DATA, default ~/.agentus)
   -o, --open         open the cockpit in your browser once it is up
@@ -107,7 +107,7 @@ answer to "where did my data go" (see below).
 ## First run
 
 1. Start it: `agentus` (or `npx agentus`, or `npm start` from a checkout).
-2. Open **http://localhost:8787** and log in. Default credentials:
+2. Open **http://localhost:8788** and log in. Default credentials:
 
    ```
    username: admin
@@ -130,7 +130,7 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_PORT` | `8787` | server port (never reads bare `PORT`) |
+| `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT`) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see [Data directory](#data-directory) |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
@@ -189,7 +189,7 @@ with it.
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8787) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
+| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
 | `AGENTUS_TLS_PORT` (8443) | HTTPS (self-signed) | the tunnel — encrypts the public hop |
 | 5173 | Vite dev server | front-end hot reload, only during `npm run dev` |
 
@@ -268,7 +268,7 @@ a different session list.
   <key>Label</key>          <string>org.agentus.cockpit</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8787</string>
+    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8788</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>AGENTUS_DATA</key><string>/Users/YOU/.agentus</string></dict>
@@ -293,7 +293,7 @@ Description=Agentus cockpit
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env agentus --port 8787
+ExecStart=/usr/bin/env agentus --port 8788
 Environment=AGENTUS_DATA=%h/.agentus
 Restart=on-failure
 
@@ -335,7 +335,7 @@ touches `~/.hermes` (your agents' own data) or any working directory.
 ## Troubleshooting
 
 **Port already in use.** `agentus --port 9000`, or find and stop the holder:
-`lsof -nP -iTCP:8787 -sTCP:LISTEN`. Agentus never reads bare `PORT` for exactly this reason.
+`lsof -nP -iTCP:8788 -sTCP:LISTEN`. Agentus never reads bare `PORT` for exactly this reason.
 
 **"No backend" / a session won't start.** The agent CLI is missing or not logged in. Run
 `hermes acp --check`, or `qodercli login` (a `-32000` on `newSession` means qoder is not logged
@@ -362,5 +362,5 @@ requests. The live stream rides on `/ws`; use a tunnel that passes WebSockets th
 TCP+auto-HTTPS tunnels are verified working).
 
 **Certificate warning on the LAN.** That is the TLS listener's self-signed cert (a bare LAN IP
-cannot carry a trusted cert). Either use the plain-HTTP `:8787` port on the LAN, or install the
+cannot carry a trusted cert). Either use the plain-HTTP `:8788` port on the LAN, or install the
 issuer once from `/cert.crt` (see [TLS](#tls)).

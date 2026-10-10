@@ -3,7 +3,8 @@
 const CDP = 'http://127.0.0.1:9222';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const list = await (await fetch(`${CDP}/json/list`)).json();
-const tab = list.find((t) => t.type === 'page' && t.url.includes('8787'));
+// the cockpit's ports: live 8788, dev 8901, the tunnel entry 38788, vite's own 5173.
+const tab = list.find((t) => t.type === 'page' && /:(8788|8901|38788|5173)\b/.test(t.url));
 const ws = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
 let id = 0; const waiting = new Map();

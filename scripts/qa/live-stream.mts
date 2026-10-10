@@ -6,7 +6,7 @@
 // into ONE row, that row KEEPS ITS SEQ, so the client's "have I seen this seq?" guard swallowed every
 // chunk after the first and a reply rendered as "不是" with an empty bubble after it.
 //
-// Run: npm run live-stream      (needs the cockpit on 127.0.0.1:8787, mock backend)
+// Run: npm run live-stream      (needs the cockpit on 127.0.0.1:8788, mock backend)
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
@@ -18,7 +18,7 @@ const auth = (): Record<string, string> => ({ ...authHeaders() }) as Record<stri
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 const { cockpit } = await import("../../packages/web/src/state.ts");
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8788";
 const PROMPT = process.argv[2] || "你好，介绍一下你自己";
 const DEADLINE = 45_000;
 

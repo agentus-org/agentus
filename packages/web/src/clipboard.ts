@@ -1,7 +1,7 @@
 // Copy text to the clipboard, from a page that may be served over plain http.
 //
 // `navigator.clipboard` only exists in a SECURE CONTEXT, and the cockpit's LAN entry is
-// plain `http://<lan-ip>:8787` — so the execCommand path is load-bearing here, not a
+// plain `http://<lan-ip>:8788` — so the execCommand path is load-bearing here, not a
 // legacy courtesy (measured 2026-10-08: on that origin `navigator.clipboard` is `undefined`
 // while the https entry has it). Without the fallback every copy button silently throws
 // (`undefined.writeText(...)` — the optional chain yields undefined, and `.then` on it is a
