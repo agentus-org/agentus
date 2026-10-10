@@ -23,13 +23,13 @@ empty. Triage the identity, not the liveness (see "Is it serving the wrong store
 
 | port | who |
 |---|---|
-| `8787` | live HTTP |
+| `8788` | live HTTP |
 | `8443` | live TLS (public tunnel points here) |
 | `8901` | dev / QA instance |
 | `8648` | **Hermes Studio** — not Agentus, do not touch |
 
 ```bash
-lsof -nP -iTCP:8787 -sTCP:LISTEN        # who owns the port (returns the CHILD, not the supervisor)
+lsof -nP -iTCP:8788 -sTCP:LISTEN        # who owns the port (returns the CHILD, not the supervisor)
 ps -o pid,ppid,pgid,command -p <pid>    # its process group and command line
 ```
 
@@ -82,7 +82,7 @@ file at that same path, and its server was the only way into the machine. Rules:
    `spawn(..., { detached: true })` and kill the process group — rather than cleaning up by
    name afterwards.
 5. **Re-check the neighbours afterwards:** one `curl` per resident service
-   (`:8648` Studio, `:8787`/`:8443` live, `:8901` dev). A cleanup that leaves the box worse
+   (`:8648` Studio, `:8788`/`:8443` live, `:8901` dev). A cleanup that leaves the box worse
    than it found it is the whole failure mode.
 
 ## The SQLite store, WAL, and the `*.bak` files
@@ -127,7 +127,7 @@ running slot was reaped — yet the port answers 200 and `/api/version` looks fi
 `AGENTUS_DATA`/`AGENTUS_PORT` and pops the QA/DEV keys, but verify identity directly:
 
 ```bash
-PID=$(lsof -nP -iTCP:8787 -sTCP:LISTEN -t)
+PID=$(lsof -nP -iTCP:8788 -sTCP:LISTEN -t)
 ps eww -p "$PID" | tr ' ' '\n' | grep AGENTUS          # the process's own identity vars
 lsof -p "$PID" | grep sqlite                           # which store it actually opened
 ```
@@ -137,10 +137,16 @@ Recovery:
 ```bash
 cd worktrees/agentus
 env -u AGENTUS_DATA -u AGENTUS_BASE -u DEV_LOG_PATH -u DEV_PROMOTE_DETACHED -u DEV_PROMOTE_SELF \
-  bash scripts/relaunch.sh --port 8787 --launcher ~/.hermes/cache/agentus/launch.py
+  bash scripts/relaunch.sh --port 8788 --launcher ~/.hermes/cache/agentus/launch.py \
+    --launchd ai.hermes.agentus
 TOK=$(cat packages/server/.data/auth.token)
-curl -s -X POST -H "Authorization: Bearer $TOK" http://127.0.0.1:8787/api/sessions/<id>/resume
+curl -s -X POST -H "Authorization: Bearer $TOK" http://127.0.0.1:8788/api/sessions/<id>/resume
 ```
+
+`--launchd <label>` makes relaunch.sh hand the restart to launchd (`kickstart -k`) rather than
+killing the process by hand — once the job is installed, a hand-kill is not a restart, it is a
+respawn race (launchd brings the old process back while our own launcher starts a second one). Pass
+it whenever the label is loaded; relaunch.sh ignores it when it is not.
 
 After any restart, put the operator back on the air: `POST /api/sessions/<id>/resume` with the
 machine token → `status: ready` and a fresh pid. **Capture the slot ids to resume before the
@@ -155,8 +161,8 @@ one-click problem. Endpoints behind the login:
 
 ```bash
 TOK=$(cat <DATA_DIR>/auth.token)
-curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:8787/api/auth/locked-ips
-curl -s -X DELETE -H "Authorization: Bearer $TOK" http://127.0.0.1:8787/api/auth/locked-ips
+curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:8788/api/auth/locked-ips
+curl -s -X DELETE -H "Authorization: Bearer $TOK" http://127.0.0.1:8788/api/auth/locked-ips
 ```
 
 In the UI it is Settings → 登录失败锁定 (which IPs are locked, for how long, unlock / unlock

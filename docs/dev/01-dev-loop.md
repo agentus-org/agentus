@@ -11,7 +11,7 @@ instances:
 | | live | dev |
 |---|---|---|
 | path | `worktrees/agentus` | `worktrees/agentus-dev` |
-| HTTP port | `8787` | `8901` |
+| HTTP port | `8788` | `8901` |
 | TLS port | `8443` | disabled (`AGENTUS_TLS_PORT=0`) |
 | data dir | `<tree>/packages/server/.data` | `/tmp/agentus-qa-account` |
 | started by | `~/.hermes/cache/agentus/launch.py` | `bash scripts/dev.sh start` |
@@ -85,7 +85,7 @@ which one won and why** — a directory change is the thing that would otherwise
 For the worktrees, the outcome is fixed by the launchers rather than by the rules:
 
 - **live** — `~/.hermes/cache/agentus/launch.py` pins `AGENTUS_DATA=<live>/packages/server/.data`
-  and `AGENTUS_PORT=8787`, and pops the inherited QA/DEV keys. The launcher owns its
+  and `AGENTUS_PORT=8788`, and pops the inherited QA/DEV keys. The launcher owns its
   identity; it never trusts `os.environ`.
 - **dev** — `scripts/dev.sh` exports `AGENTUS_DATA=/tmp/agentus-qa-account` and
   `AGENTUS_PORT=8901`.

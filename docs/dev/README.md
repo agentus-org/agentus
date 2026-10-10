@@ -20,11 +20,34 @@ variables, and they must never touch each other's code or data:
 |---|---|---|
 | tree | `worktrees/agentus` | `worktrees/agentus-dev` |
 | role | the instance the operator actually uses | where changes are made and tested |
-| HTTP port | `8787` | `8901` |
+| HTTP port | `8788` | `8901` |
 | TLS port | `8443` | off (`AGENTUS_TLS_PORT=0`) |
 | data dir | `<tree>/packages/server/.data` (pinned by the launcher) | `/tmp/agentus-qa-account` |
 | launcher | `~/.hermes/cache/agentus/launch.py` | `scripts/dev.sh start\|stop\|status\|logs` |
+| supervision | launchd job `ai.hermes.agentus` (`KeepAlive`) | none — a plain detached process |
 | hot reload | **no** — restart is explicit | yes (`tsx watch`) |
+
+**Ports are configuration, not literals.** Both of live's ports live in
+`~/.hermes/cache/agentus/ports.env`; `launch.py` pins them into the server's environment, and
+`scripts/dev.sh` / `scripts/relaunch.sh` read the same file instead of hardcoding a number. Move
+live by editing that one line and restarting it — never by hunting a literal through the launchers,
+the scripts and the docs (that is how the port and the TLS port both drifted before).
+
+**Live is supervised by launchd.** It used to be a detached child of whatever shell happened to
+start it: nothing brought it back after a crash, and it inherited that shell's entire environment
+(usually an agent session's, handing `HERMES_SESSION_ID` and `WEIXIN_TOKEN` down to every ACP child
+it spawned). Now:
+
+```bash
+launchctl print gui/$(id -u)/ai.hermes.agentus         # state, pid, the job's environment
+launchctl kickstart -k gui/$(id -u)/ai.hermes.agentus  # the supported restart (stop then start)
+tail -f /tmp/agentus-server.log                        # the job's stdout/stderr
+```
+
+`scripts/relaunch.sh --launchd ai.hermes.agentus` is the same thing wrapped with a health check and
+a pid-moved assertion, and that is what `promote` uses. Launchd's `KeepAlive` restarts it on any
+exit, so a crash self-heals; a **manual** `kill` therefore no longer restarts live, it just makes
+launchd respawn it.
 
 **Why two trees.** `tsx watch` reloads the whole server on any server-source edit, and a
 reload SIGTERMs every child process — every live `hermes acp` session, including the one

@@ -75,7 +75,7 @@ If `<slug>` is omitted, the branch name is used with `/` → `-`. What it does:
 | start shape | `scripts/start.sh`, `package.json` |
 | stale launcher | the live process is still running under `tsx watch` |
 
-5. If a restart is needed, calls `scripts/relaunch.sh --port 8787 --tree <live>
+5. If a restart is needed, calls `scripts/relaunch.sh --port 8788 --tree <live>
    --launcher <live launcher>`, which TERMs the process group, waits for the port to free,
    starts the launcher, polls `/healthz`, and **asserts the pid changed** (a failure exits
    non-zero, so "built fine, still serving old code" cannot pass).
@@ -92,7 +92,7 @@ are all required:
 - `no server-side change` printed,
 - the **asset hash moved** (`web asset: <before> -> <after>`; `promote` warns if web sources
   changed but the hash did not),
-- the **pid did NOT move** (`lsof -ti:8787` unchanged — a moved pid means it took the
+- the **pid did NOT move** (`lsof -ti:8788` unchanged — a moved pid means it took the
   restart branch and the release was not the kind it claimed to be).
 
 `package.json` is a restart trigger, so **any** edit to it — even one new npm alias for a QA
@@ -145,15 +145,15 @@ curl -s --noproxy '*' -H "Authorization: Bearer $TOK" http://127.0.0.1:8901/api/
 hash. `promote` echoes it; you can also read it directly:
 
 ```bash
-curl -s --noproxy '*' http://127.0.0.1:8787/api/version
+curl -s --noproxy '*' http://127.0.0.1:8788/api/version
 ```
 
 **3. Grep the served bundle for the new markers.** Fetch the real vite-named file
 (`assets/index-<hash>.js`) and look for a string only the new code has:
 
 ```bash
-HASH=$(curl -s --noproxy '*' http://127.0.0.1:8787/api/version | ...)
-curl -s --noproxy '*' "http://127.0.0.1:8787/assets/$HASH.js" | grep -c '<new-marker>'
+HASH=$(curl -s --noproxy '*' http://127.0.0.1:8788/api/version | ...)
+curl -s --noproxy '*' "http://127.0.0.1:8788/assets/$HASH.js" | grep -c '<new-marker>'
 ```
 
 Two traps: the file is `index-<hash>.js`, so a check that fetches `/assets/<hash>.js`
