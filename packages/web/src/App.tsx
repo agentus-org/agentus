@@ -388,10 +388,15 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
   const mark = markOf(backend);
   const [broken, setBroken] = useState(false);
   const useIcon = mark.icon && !broken;
-  // "which of these is working RIGHT NOW" is the one thing the operator scans the rail FOR, and a
-  // 7px static pixel does not answer it at this size. The running state gets MOTION (`.live`:
-  // a breathing halo on the mark, studio's streaming ring in our tokens, plus the pulsing dot);
-  // every other state stays still, which is what makes the moving row findable.
+  // Two different questions, two different carriers, on purpose.
+  //   · "is anything working RIGHT NOW" — the one thing the operator scans the rail FOR — is
+  //     answered by MOTION: the running state gets `.live`, a breathing halo on the mark (studio's
+  //     streaming ring in our tokens). Every other state stays still, which is what makes the one
+  //     moving row findable.
+  //   · "is there a process behind this row at all" is answered STATICALLY, by the corner badge:
+  //     green = a live ACP process, absent = the session is on disk only. `cold` is the server's
+  //     own word for "no process", so the badge follows `cold` and nothing else — the status word
+  //     (待命/运行中/出错) stays in the tooltip and in the row, never in a 7px pixel.
   const live = !cold && status === "running";
   return (
     <span
@@ -406,7 +411,7 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
       {useIcon
         ? <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
         : mark.letter}
-      {!cold ? <span className={`be-dot ${status}`} /> : null}
+      {!cold ? <span className="be-dot proc" /> : null}
     </span>
   );
 }

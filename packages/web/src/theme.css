@@ -169,13 +169,12 @@ button { font: inherit; }
   text-transform: uppercase; color: var(--text-dim); border-top: 1px solid var(--line);
   margin: 8px 4px 0;
 }
-/* Cold sessions (no live process) are de-emphasised by COLOUR, not by opacity: dimming the
-   whole row also dimmed its labels and badge below AA (3.26:1 in light mode). The title
-   carries the hint, the dashed border carries the state, every label stays readable. */
-.session-item.cold { border: 1px dashed var(--line); }
-.session-item.cold .title { color: var(--text-dim); }
-.session-item.cold:hover { border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.06); }
-.session-item.cold:hover .title { color: var(--text); }
+/* A cold session (on disk, no process) is NOT a lesser row. It reads exactly like a live one and
+   the whole difference is the avatar's badge: no process, no green corner dot. Dimming the row was
+   the wrong carrier — a dimmed title made a plain readable list read as a disabled one, and the
+   state is already stated in the row's tooltip and in its menu. `.cold` stays on the element
+   because it is the hook the sweeps and the row menu read (the class is behaviour, not paint). */
+.session-item.cold:hover { background: rgba(var(--accent-rgb), 0.06); }
 .dot.cold { background: transparent; border: 1px solid var(--text-dim); }
 .hint { color: var(--text-dim); }
 @keyframes pulse { 50% { opacity: 0.35; } }
@@ -1472,9 +1471,14 @@ body.pane-dragging * { cursor: col-resize !important; }
   /* A directory is NOT a section label: its name reads at the same brightness as a session title
      (the operator: 「工作空间的目录颜色应该和会话颜色一样比较亮，工作空间这四个字暗一点没关系」), and
      it keeps the casing the filesystem actually has (`~/Project/AionUi`, not `~/PROJECT/AIONUI` —
-     「目录应该显示原始大小写，不要统一变成大写」), so no `text-transform` and no letter-spacing. */
+     「目录应该显示原始大小写，不要统一变成大写」), so no `text-transform` and no letter-spacing.
+     The ladder is: section head at the rail's own edge, the DIRECTORY one step in (its folder icon
+     beside the section's chevron), and the sessions a full step past the directory name — the
+     operator: 「工作空间下面的目录不需要那么大的缩进，需要缩进的是会话跟目录之间的」. It used to be
+     the other way round (directory inset 19px, sessions only 3px past it), which read as one
+     indented block with no parent/child step at all. */
   color: var(--text); font-family: inherit; font-size: 12px;
-  padding: 5px 6px; border-radius: 6px; margin-left: 19px;
+  padding: 5px 6px; border-radius: 6px; margin-left: 0;
 }
 .rail-group-head:hover { background: var(--bg-raised); }
 .group-add { flex: 0 0 auto; opacity: 0; transition: opacity 0.12s; }
@@ -1486,10 +1490,10 @@ body.pane-dragging * { cursor: col-resize !important; }
 .rail-group-folder { flex: 0 0 auto; color: var(--text-dim); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-group-count { font-size: 11px; color: var(--text-dim); }
-.rail-group-body { padding-left: 22px; }
+.rail-group-body { padding-left: 28px; }
 /* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
 .rail-more {
-  display: flex; align-items: center; gap: 5px; width: calc(100% - 22px); margin: 1px 0 4px 22px;
+  display: flex; align-items: center; gap: 5px; width: calc(100% - 28px); margin: 1px 0 4px 28px;
   padding: 3px 6px; background: transparent; border: none; border-radius: 6px; cursor: pointer;
   color: var(--text-dim); font-family: inherit; font-size: 11px; text-align: left;
 }
@@ -1750,29 +1754,25 @@ body.pane-dragging * { cursor: col-resize !important; }
 .be-avatar img {
   width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block;
 }
-.be-avatar.cold { opacity: 0.55; }
 .be-avatar .be-dot {
   position: absolute; right: -2px; bottom: -2px;
   width: 7px; height: 7px; border-radius: 50%;
-  border: 1px solid var(--bg); background: var(--text-dim);
+  border: 1px solid var(--bg); background: var(--ok);
 }
-.be-avatar .be-dot.running { background: var(--ok); animation: pulse 1.2s infinite; }
-.be-avatar .be-dot.starting { background: var(--accent); }
-.be-avatar .be-dot.error { background: var(--err); }
-.be-avatar .be-dot.closed { background: var(--text-dim); }
-/* One row working means the operator can leave it and come back — so the running row has to be
-   findable without reading it, and at 20px a 7px dot does not do that. Motion is the carrier:
-   a halo breathes around the agent mark (studio's `streaming` glow on its rail row, drawn in our
-   tokens rather than as a rainbow) beside the pulsing dot. Only `running` moves — a still rail is
-   what makes the one moving row obvious, and every other state is honestly motionless. */
+/* The badge answers ONE question and it is about the PROCESS, not the turn: green = this session
+   has a live ACP process behind it, absent = it is on disk only. It is deliberately not a status
+   light — 待命, 运行中 and 出错 all have a process and all wear it, and 出错 is named in words in
+   the tooltip rather than smuggled into a 7px pixel.
+   The RUNNING row is a different question, and it is answered by MOTION: a halo breathes around
+   the mark (`.live` — studio's streaming glow, drawn in our tokens) while the badge stays still.
+   Only `running` moves, which is what makes the one working row findable in a still rail. */
 .be-avatar.live { animation: rail-live 1.8s ease-in-out infinite; }
 @keyframes rail-live {
   0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ok) 55%, transparent); }
   50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 10%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .be-avatar.live, .be-avatar .be-dot.running { animation: none; }
-  .be-avatar.live { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 55%, transparent); }
+  .be-avatar.live { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 55%, transparent); }
 }
 
 /* rename happens in place: the row becomes an input, the input keeps the row's height */
@@ -2189,7 +2189,7 @@ body.pane-dragging * { cursor: col-resize !important; }
 /* ---- reply column + composer: they are the CHAT COLUMN's width, and everything above them
    (task plan, context window, usage) shares that one left edge. History, because both earlier
    shapes failed in opposite directions: a hard `max-width: 780px` (「会话页不会向左右延展」) →
-   a container-relative centred gutter `calc(100% - clamp(80px,10cqw,240px))`, the shape
+   a container-relative centred gutter `calc(100% - clamp(80px,10cqw,240px))`, the shape AionUi's
    `Messages/messages.css` uses, which only applied at container ≥ 870px and left ~60px of
    margin on each side while the widgets stayed flush left (「任务计划和上下文长度都对齐左边，但
    输入框和聊天对话消息泡都没有自动拉起到最边缘」). No gutter, no threshold, no container query:
