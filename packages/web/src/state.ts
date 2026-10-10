@@ -250,6 +250,10 @@ export interface StoreSnapshot {
   authBusy: boolean;
   /** a resume the agent refused — rendered as a dialog, not a banner */
   blocked: BlockedSlot | null;
+  /** Session ids whose row wears the 「还没看」 dot: a turn that ENDED while the operator was in
+   *  another session (transient), plus the ones they marked by hand (persisted). The union, because
+   *  the rail draws one dot and the operator only has one question — 「这条我看过了吗」. */
+  unread: ReadonlySet<string>;
   version: number;
 }
 
@@ -274,6 +278,28 @@ class AuthRequired extends Error {
     super("unauthorized");
     this.name = "AuthRequired";
   }
+}
+
+/** The operator's hand-set unread marks, kept across sessions of the page (AionUi keeps its manual
+ *  set in localStorage for the same reason). One key, a list of ids — a Set is not JSON. */
+const UNREAD_KEY = "agentus.unread";
+
+function readStoredUnread(): string[] {
+  try {
+    const raw = localStorage.getItem(UNREAD_KEY);
+    const arr = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return []; // private mode / corrupt value — the dot is a nicety, not worth failing over
+  }
+}
+
+function persistUnread(ids: Iterable<string>): void {
+  try {
+    const list = [...ids];
+    if (list.length) localStorage.setItem(UNREAD_KEY, JSON.stringify(list));
+    else localStorage.removeItem(UNREAD_KEY);
+  } catch { /* see readStoredUnread */ }
 }
 
 class Cockpit {
@@ -304,6 +330,14 @@ class Cockpit {
    *  arrives in the meantime belongs to the turn he just interrupted — draining on that one would
    *  send the next queued prompt on top of the message he explicitly pushed to the front. */
   #takingFloor = new Set<string>();
+  /** 「跑完了，还没看」 — set by `turn-end` for a session the operator was NOT in (AionUi's completion
+   *  dot, and its rule: only a turn that finished somewhere else is news). TRANSIENT on purpose: the
+   *  acknowledgement is opening the session, and a page that reloads has no business re-dotting rows
+   *  the operator never returned to. `#manualUnread` below is the part worth keeping. */
+  #unread = new Set<string>();
+  /** 「点进去看了，但还没决策」 — the operator said so themselves (the row menu's toggle). PERSISTED:
+   *  the whole point is that the reminder outlives looking at the session, and usually a reload too. */
+  #manualUnread = new Set<string>(readStoredUnread());
   #listeners = new Set<() => void>();
   /** The pending coalesced publish (see bump) — one per frame at most. */
   #frame: number | null = null;
@@ -569,6 +603,9 @@ class Cockpit {
       authError: this.authError,
       authBusy: this.authBusy,
       blocked: this.blocked,
+      // The rail draws ONE dot, so it asks one question: the union of 「a turn finished elsewhere」 and
+      // 「I said I still have to decide」. Both sets are tiny, so the union is built per snapshot.
+      unread: new Set([...this.#unread, ...this.#manualUnread]),
       version: this.#version,
     };
   }
@@ -831,10 +868,54 @@ class Cockpit {
   setActive(id: string): void {
     this.activeId = id;
     this.#rememberActive(id);
+    // Looking at a session IS the acknowledgement of its completion dot (AionUi clears the same set on
+    // open). Only the transient half: a mark the operator made BY HAND is their own statement and goes
+    // away through the menu that made it, not because they glanced at the row.
+    this.clearUnread(id);
     this.#snapshot = this.#build();
     this.bump();
     const v = this.byId.get(id);
     if (v && !v.loaded) void this.loadHistory(id);
+  }
+
+  /** 「跑完了，还没看」: a turn ended in a session the operator was not in. The whole point of the dot
+   *  — with several slots going at once, the rail is the only place that can say WHICH one needs them. */
+  markUnread(id: string): void {
+    if (this.#unread.has(id)) return;
+    this.#unread = new Set(this.#unread).add(id);
+    this.bump();
+  }
+
+  /** The acknowledgement (opening the row). Hand-set marks are untouched — see `setActive`. */
+  clearUnread(id: string): void {
+    if (!this.#unread.has(id)) return;
+    const next = new Set(this.#unread);
+    next.delete(id);
+    this.#unread = next;
+    this.bump();
+  }
+
+  /** Does this row wear the dot? What the rail renders, and what the menu's label answers to. */
+  isUnread(id: string): boolean {
+    return this.#unread.has(id) || this.#manualUnread.has(id);
+  }
+
+  /** The row menu: 「设为未读」 / 「设为已读」. Marking is PERSISTED — 「点进去看了，但还没决策」 has to
+   *  outlive the glance that made it necessary (and usually a reload too). Clearing drops BOTH halves,
+   *  because the operator asking for 已读 is answering the question the dot asks, whichever raised it. */
+  toggleUnread(id: string): void {
+    if (this.isUnread(id)) {
+      const t = new Set(this.#unread);
+      t.delete(id);
+      this.#unread = t;
+      const m = new Set(this.#manualUnread);
+      m.delete(id);
+      this.#manualUnread = m;
+    } else {
+      this.#manualUnread = new Set(this.#manualUnread).add(id);
+    }
+    persistUnread(this.#manualUnread);
+    this.bump();
   }
 
   async loadHistory(id: string): Promise<void> {
@@ -1491,6 +1572,11 @@ class Cockpit {
       case "turn-end": {
         const v = this.#view(e.sessionId);
         v.busy = false;
+        // A turn that ended in ANOTHER session is news the operator has not seen: dot its row. The
+        // session they are looking at needs no dot (they are watching it finish), and a page that
+        // reloads starts with an empty completion set — the dot is about 「刚刚发生了什么」, and the
+        // rail's timestamp still says what happened while they were away.
+        if (e.sessionId !== this.activeId) this.markUnread(e.sessionId);
         v.busySince = null; // a finished turn has no elapsed time; a later frame must not inherit it
         // Close the block that was still arriving — a data change, so the transcript re-renders THAT
         // row and drops its `.live` marking. Relying on "the last row of the fold, while busy" used to

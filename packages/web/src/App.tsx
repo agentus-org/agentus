@@ -24,7 +24,7 @@ import {
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
-  IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDotsV, IconDownload, IconFile,
+  IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
@@ -440,13 +440,18 @@ function AgentMark({ backend }: { backend: string }): JSX.Element | null {
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, archived, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onToggleUnread, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; /** the operator put it away — independent of `cold` */
-  archived: boolean; canFork: boolean;
+  archived: boolean;
+  /** 这一行现在带不带「还没看」的点 —— 菜单的标签就照它说（一个开关，不是一个新状态） */
+  unread: boolean;
+  canFork: boolean;
   onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
   onFork: () => void; onWorkspace: () => void;
   onExport: () => void;
+  /** 设为未读 / 设为已读： 「点进去看了，但还没决策」的唯一入口（AionUi 的 手动未读） */
+  onToggleUnread: () => void;
   /** Live slots only: swap the agent process under this slot — same session and picks, new pid. */
   onRestart: () => void;
   onResume: () => void;
@@ -500,6 +505,10 @@ function SessionMenu({ x, y, trigger, info, cold, archived, canFork, onDismiss, 
         <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
       </div>
       {item("重命名", <IconPencil size={14} />, onRename)}
+      {/* A switch, not a state: the label says what the click will DO. 「设为未读」 is the operator's
+          way back — they opened the row, so the completion dot went away, but they were not ready to
+          decide and want the reminder to survive the reload. */}
+      {item(unread ? "设为已读" : "设为未读", unread ? <IconEye size={14} /> : <IconDot size={14} />, onToggleUnread)}
       {item(
         retitling ? "正在重新生成…" : "重新生成会话名",
         retitling ? <IconRefresh size={14} className="spin" /> : <IconRefresh size={14} />,
@@ -884,6 +893,21 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                         Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
                         the tooltip; the operator asked for exactly this and for it to age. */}
                     <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
+                    {/* 「跑完了，还没看」 — AionUi's completion dot, at the row's right end (a flex item,
+                        not an overlay: the ⋯ button keeps its slot, so nothing jumps on hover). Shown
+                        only when this row is NOT already the thing to look at — a running turn has the
+                        live mark, a pending approval has the ⚿ badge, and a second dot there would
+                        answer a question nobody asked. */}
+                    {cockpit.isUnread(s.id)
+                      && !cockpit.byId.get(s.id)?.busy
+                      && !cockpit.byId.get(s.id)?.perms.length ? (
+                        <span
+                          className="unread-dot"
+                          data-unread
+                          title="这轮已经结束了，你还没看"
+                          aria-label="未读"
+                        />
+                      ) : null}
                     <button
                       type="button"
                       className="item-btn row-menu"
@@ -1040,6 +1064,13 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
       {menu && menuInfo ? createPortal(<SessionMenu
           x={menu.x} y={menu.y} trigger={menu.trigger}
           info={menuInfo} cold={menuCold} archived={menuArchived}
+          unread={cockpit.isUnread(menuInfo.id)}
+          onToggleUnread={() => {
+            // Close first: the row's dot changes state underneath the menu, and the menu is anchored to
+            // a trigger that just moved.
+            setMenu(null);
+            cockpit.toggleUnread(menuInfo.id);
+          }}
           canFork={Boolean(menuInfo.acpSessionId) || menuCold}
           onDismiss={() => setMenu(null)}
           onRename={() => startRename(menuInfo)}

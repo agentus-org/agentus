@@ -1735,6 +1735,17 @@ body.pane-dragging * { cursor: col-resize !important; }
 }
 .session-item.active .rail-at { color: var(--text-dim); }
 
+/* 「跑完了，还没看」 — the completion dot (AionUi's shape: a small filled circle at the row's right
+   end, with a soft ring so it reads on both themes). A FLEX item rather than an overlay: the ⋯ button
+   keeps its slot (it fades in with opacity, see `.row-menu`), so the dot never jumps when the pointer
+   arrives and the pointer never hides the one thing this row is trying to say. */
+.unread-dot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.18);
+}
+
 /* The agent's monogram. Studio ships logos; we have none for these CLIs, so the mark is a
    letter on a per-backend tone — the thing the eye actually uses when scanning a list. */
 .be-avatar {
