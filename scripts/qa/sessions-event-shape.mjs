@@ -10,11 +10,11 @@
 // Trigger: DELETE a live session. That route closes it THROUGH the manager, so the frame it emits is
 // the manager's own shape — the one that was wrong.
 //
-// Usage: AGENTUS_BASE=http://127.0.0.1:8787 AGENTUS_DATA=<live data dir> node scripts/qa/sessions-event-shape.mjs
+// Usage: AGENTUS_BASE=http://127.0.0.1:8788 AGENTUS_DATA=<live data dir> node scripts/qa/sessions-event-shape.mjs
 //        exit 0 = every frame after a manager-emitted change carried all three buckets.
 import { authHeaders } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8787";
+const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8788";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const api = (p, init = {}) =>
   fetch(`${BASE}${p}`, { ...init, headers: { "content-type": "application/json", ...authHeaders(), ...(init.headers || {}) } });

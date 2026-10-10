@@ -11,7 +11,7 @@
 //        W=1440 H=900 node scripts/qa/popover-sweep.mjs    # desktop
 //
 const CDP = 'http://127.0.0.1:9222';
-const PORT = Number(process.env.PORT || 8787);
+const PORT = Number(process.env.PORT || 8901);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Open our OWN tab (like transcript-sweep does): reusing whatever tab happens to be open means

@@ -8,7 +8,7 @@
 //        W=390 H=844 node scripts/qa/dismiss-sweep.mjs     # phone
 //        W=1440 H=900 node scripts/qa/dismiss-sweep.mjs    # desktop
 const CDP = 'http://127.0.0.1:9222';
-const PORT = Number(process.env.PORT || 8787);
+const PORT = Number(process.env.PORT || 8901);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Open our OWN tab (like transcript-sweep): adopting whatever tab is open measures a page in an
