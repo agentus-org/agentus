@@ -1287,7 +1287,19 @@ export class SessionManager {
   /** The list every client needs to be current: the rows PLUS what is already waiting for an
    *  answer. Sent on connect too, which is what makes a refreshed page show a live approval. */
   #emitSessions(): void {
-    this.#emit({ t: "sessions", sessions: this.list(), pending: this.pendingPermissions() });
+    // ALL THREE buckets, every time. This is the SAME event the HTTP path builds (`sessionsEvent()`
+    // in index.ts), and the client replaces its lists wholesale from whatever arrives — so emitting
+    // only `sessions` here meant every call site below (a resume, a close, an archive, and the idle
+    // reaper) WIPED the operator's cold and archived rows off the rail until the next full event or
+    // a reload: 「刷新之后只看得见活着的会话」. `cold()`/`archived()` are this class's own lists —
+    // sending them costs nothing and is the only shape the client can safely consume.
+    this.#emit({
+      t: "sessions",
+      sessions: this.list(),
+      cold: this.cold(),
+      archived: this.archived(),
+      pending: this.pendingPermissions(),
+    });
   }
 
   /** Every request currently waiting for an answer, across live sessions. Exists so a page

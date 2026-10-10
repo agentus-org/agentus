@@ -280,9 +280,52 @@ if (await typeIdle("15")) {
 check(saved === 15, "typing 15 and leaving the field really saves it (the page drives the setting)", `before=${before2} → ${saved}`);
 check(saved !== null && back === Number(before2), "…and it is restored to what the sweep found", `${back}`);
 
+// ---- regression: a `sessions` event must never wipe the rail (2026-10-10) ------------
+// The manager emits its OWN `t:"sessions"` (a resume, a close, an archive, and the idle reaper all go
+// through `#emitSessions()`), and it used to carry only the live rows — while the client took a missing
+// bucket as "empty". So closing ONE slot emptied the whole rail (measured: 16 rows → 0, with the API
+// still reporting 25 cold+archived): 「刷新之后只看得见活着的会话，其他的都没显示出来」. Both halves are
+// asserted here — the event keeps all three buckets, and the rail survives it.
+const keepCold = await mk("sweep · 事件之后仍在的（无进程）");
+await api(`/api/sessions/${keepCold}`, { method: "DELETE" });
+const keepArch = await mk("sweep · 事件之后仍在的（已归档）");
+await api(`/api/sessions/${keepArch}/archive`, { method: "POST" });
+const trigger = await mk("sweep · 被关掉以触发事件");
+const rowsBefore = await ev(`document.querySelectorAll('.session-item').length`);
+const closedHere = await api(`/api/sessions/${trigger}`, { method: "DELETE" });
+check(closedHere.ok, "closed a third slot so the manager emits its OWN sessions event", `HTTP ${closedHere.status}`);
+await sleep(1600);
+const railAfter = JSON.parse(await ev(`(() => {
+  const has = (sid) => Boolean(document.querySelector('.session-item[data-session=' + JSON.stringify(sid) + ']'));
+  return JSON.stringify({ rows: document.querySelectorAll('.session-item').length,
+    keepCold: has(${JSON.stringify(keepCold)}), keepArch: has(${JSON.stringify(keepArch)}) });
+})()`));
+check(railAfter.keepCold, "a COLD row is still on the rail after the manager's own sessions event", JSON.stringify(railAfter));
+check(railAfter.keepArch, "…and so is an ARCHIVED row");
+check(railAfter.rows >= rowsBefore, "…and the rail lost no rows to it (closing a slot keeps its row)", `${rowsBefore} → ${railAfter.rows}`);
+
+// ---- regression: a slot with no process WAKES on send, it does not queue --------------
+// `status !== "ready"` used to send the prompt to the queue, and a queue only drains on a turn-end that
+// a process-less slot never produces — the message hung, and the queue row's force-send came back as the
+// server's answer `no such session`. 「不是点进来的会话，刷新后直接发消息会挂起，再点发送就报错」.
+await send("Page.navigate", { url: `${BASE}/?session=${keepCold}` });
+check(await until(`Boolean(document.querySelector('.composer textarea'))`, 20000), "the cold session opened in the composer");
+check(await until(`(document.querySelector('.composer textarea')?.getAttribute('placeholder') || '').includes('无 ACP 进程')`, 10000),
+  "…its placeholder says 无 ACP 进程 instead of the raw status word",
+  String(await ev(`document.querySelector('.composer textarea')?.getAttribute('placeholder')`)));
+await ev(`document.querySelector('.composer textarea')?.focus()`);
+await send("Input.insertText", { text: "sweep: 发给一个没有进程的会话" });
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: "\r" });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+await sleep(2500);
+const woke = { queued: await ev(`localStorage.getItem('agentus.queue.${keepCold}')`), b: await buckets() };
+check(woke.queued === null, "Enter on a cold session filed NOTHING in the dead queue", String(woke.queued));
+check(woke.b.live.includes(keepCold), "…it woke the slot instead (a real resume)", JSON.stringify({ cold: woke.b.cold.includes(keepCold), live: woke.b.live.includes(keepCold) }));
+check(Number(woke.b.byId.get(keepCold)?.pid) > 0, "…with a real agent process", `pid=${woke.b.byId.get(keepCold)?.pid}`);
+
 // ---- cleanup: purge all three -------------------------------------------------------
 const b2 = await buckets();
-for (const sid of [coldId, archId, liveId]) {
+for (const sid of [coldId, archId, liveId, keepCold, keepArch, trigger]) {
   const inLive = b2.live.includes(sid);
   if (inLive) await api(`/api/sessions/${sid}`, { method: "DELETE" }); // close first (live → closed)
   const del = await api(`/api/sessions/${sid}`, { method: "DELETE" });

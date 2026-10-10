@@ -1367,8 +1367,12 @@ class Cockpit {
         // read it after putting it away), and pruning by the live list alone would throw away a
         // transcript that is still perfectly readable.
         this.sessions = e.sessions;
-        this.cold = e.cold ?? [];
-        this.archived = e.archived ?? [];
+        // A missing bucket means "no news", never "empty": `?? []` deleted the operator's rows when
+        // a producer omitted them, and the rail then showed only what is live (the 「刷新后只剩活跃
+        // 会话」 report — the manager's own emit omitted cold/archived). The server sends all three
+        // always; `[]` is a real, explicit "none", which still lands below.
+        if (e.cold) this.cold = e.cold;
+        if (e.archived) this.archived = e.archived;
         const live = new Set([
           ...e.sessions.map((s) => s.id),
           ...this.cold.map((s) => s.id),

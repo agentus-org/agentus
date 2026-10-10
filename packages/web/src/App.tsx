@@ -2644,6 +2644,9 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
 
   /** Send one of the agent's OWN commands (they arrive over ACP as available commands). */
   const runCommand = (name: string): void => {
+    // Same rule as the composer: a session with no process cannot run a command, and a prompt sent
+    // into it is answered with `no such session`. Wake it instead of erroring at the operator.
+    if (v.info.cold) { setOpen(false); void cockpit.resume(v.info.id); return; }
     cockpit.send({ t: "prompt", sessionId: v.info.id, text: `/${name}` });
     setOpen(false);
   };
@@ -3103,6 +3106,15 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     // filed in the queue and goes out by itself when the running turn ends. The send button is still
     // a stop button while busy, so Enter is the way in — and the queue row is where it can be
     // retracted, rewritten or forced through immediately.
+    // A session with no process cannot run a turn, and the queue only drains on a turn-end that
+    // will never come — so filing the prompt there was a message that went nowhere: 「发消息挂起
+    // 了，再点发送又报错」 (the queue row's force-send reached the server, which answered
+    // `no such session`). Wake the slot instead. The draft stays in the box, so nothing is lost
+    // while the resume runs, and a refused resume reports itself through the existing 409 surface.
+    if (v.info.cold) {
+      void cockpit.resume(v.info.id);
+      return;
+    }
     if (v.busy || v.info.status !== "ready") {
       if (!t && !attachments.length) return;
       cockpit.enqueuePrompt(v.info.id, t, attachments);
@@ -3363,7 +3375,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             rows={1}
             value={text}
             onFocus={() => setPaletteHidden(false)}
-            placeholder={v.info.status === "ready" ? placeholder : v.info.status}
+            placeholder={v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
               setPaletteHidden(false);
@@ -3588,8 +3600,8 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               <button
                 className="send-btn"
                 onClick={send}
-                disabled={(!text.trim() && !drafts.length) || v.info.status !== "ready"}
-                title="send (Enter)"
+                disabled={(!text.trim() && !drafts.length) || (!v.info.cold && v.info.status !== "ready")}
+                title={v.info.cold ? "唤醒会话 (Enter)" : "send (Enter)"}
                 aria-label="send"
               >
                 <IconSend size={16} />
