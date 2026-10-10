@@ -7,6 +7,10 @@
 //   MOCK_TOOL=1        -> prompt triggers a tool_call + requestPermission
 //   MOCK_THINK=1       -> emits agent_thought_chunk before the answer
 //   MOCK_SLOW_MS=n     -> delay between chunks (default 60)
+//   MOCK_SPAWN_MS=n    -> boot latency before the handshake answers (default 0). A real agent takes
+//                         seconds to come up (node + initialize + session/load) and that window is
+//                         where the cockpit's 「正在唤醒 agent 进程…」 state lives — a browser sweep
+//                         cannot observe a state that lasts 80 ms.
 //   MOCK_SINK=1        -> exit the process mid-turn (crash path for AC5/QA)
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -14,6 +18,10 @@ import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientpro
 import { Readable, Transform, Writable } from "node:stream";
 
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
+/** Boot latency — deliberately BEFORE the stream is wired, so the slot sits in `starting` for as
+ *  long as QA asks. Defaults to 0: the mock is instant unless a sweep needs the wake window. */
+const SPAWN_MS = Number(process.env.MOCK_SPAWN_MS || 0);
+if (SPAWN_MS > 0) await new Promise((r) => setTimeout(r, SPAWN_MS));
 
 // The file a `[tool-diff]` turn pretends to edit: hermes hands the cockpit the whole file
 // before and after, so the approval surface has a path and a real change to show.

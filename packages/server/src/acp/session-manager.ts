@@ -1276,7 +1276,34 @@ export class SessionManager {
     live.touchedAt = Date.now();
   }
 
-  /** Reclaim idle slots: stop the agent process of a session nobody has touched for the operator's
+  /** The `n` most recently USED sessions that are not archived — 「热备」, the slots whose process is
+   *  kept no matter how quiet they go. Explicitly a FLOOR, not a cap: it names which slots may not be
+   *  reclaimed for being idle; it never bounds how many may run.
+   *
+   *  Ranked over live AND COLD rows by the same clock the sweep uses (`max(touchedAt, lastActivity,
+   *  createdAt)`). Ranking only the live ones would leak the meaning: after a reap the seat would fall
+   *  to whatever still happens to hold a process, so a session nobody has opened in days could inherit
+   *  it and be shielded by the very rule that just fired on his own recent session.
+   *
+   *  Archived rows never take a seat — 归档 is 「收起来」, its process is meant to go — so the seat
+   *  passes to the next most recent one instead of being held by a row he put away. */
+  #warmSet(n: number): Set<string> {
+    const lastAt = this.#store.lastActivityAt();
+    return new Set(
+      this.#store
+        .listSessions(true)
+        .filter((r) => r.archivedAt == null)
+        .map((r) => ({
+          id: r.id,
+          at: Math.max(this.#sessions.get(r.id)?.touchedAt ?? 0, lastAt.get(r.id) ?? 0, r.createdAt),
+        }))
+        .sort((a, b) => b.at - a.at)
+        .slice(0, n)
+        .map((r) => r.id),
+    );
+  }
+
+  /** Reclaim slots: stop the agent process of a session nobody has touched for the operator's
    *  threshold. Deliberately NOT an archive — the row stays in 工作空间 wearing `reaped` and a click
    *  brings it back. AionUi ships exactly this switch (设置 → 系统 → 「Agent 空闲超时（分钟）」,
    *  default 5, 1–60) and the guards below are what its changelog had to add after the first version
@@ -1284,12 +1311,39 @@ export class SessionManager {
    *  one the operator is WATCHING right now (a reply that lands while he reads it must not be killed
    *  under him).
    *
-   *  `idleMs()` is read on every tick, so a settings change applies with no restart; 0 = off. */
-  startIdleReaper(opts: { idleMs: () => number; watched?: (id: string) => boolean; intervalMs?: number }): () => void {
+   *  TWO deadlines, and the difference is the whole point (2026-10-10): `idleMs` is the operator's
+   *  answer to 「空闲多久收掉」 for the sessions he is NOT working in, while the 热备 set (`warmSlots`,
+   *  the most recently used ones) is exempt from it — 「即使空闲也保留在那里」 — and only obeys its own
+   *  much longer `warmTtlMs`. A single time rule was what made 「我只是离开浏览器」 cost him the agent
+   *  of the session he had been in a minute earlier.
+   *
+   *  Every callback is read on EVERY tick, so a settings change applies with no restart (a restart
+   *  would kill exactly the slots this feature exists to keep alive cheaply); 0 = off for `idleMs`,
+   *  0 = 不过期 for `warmTtlMs`. */
+  startIdleReaper(opts: {
+    idleMs: () => number;
+    /** How many of the most recent sessions are 热备 — exempt from `idleMs`. Read per tick, like the
+     *  threshold itself: changing it in 设置 must apply without a restart (a restart would kill
+     *  exactly the slots this feature exists to keep alive cheaply). */
+    warmSlots: () => number;
+    /** How long a warm slot may stay untouched before even its exemption expires; 0 = 不过期.
+     *  Read per tick too, and it is a SEPARATE deadline from `idleMs` (hours, not minutes). */
+    warmTtlMs: () => number;
+    watched?: (id: string) => boolean;
+    intervalMs?: number;
+  }): () => void {
     const interval = opts.intervalMs ?? 30_000;
+    /** Two decimals where it matters: a QA run drives these thresholds in SECONDS, and 「0 min」 on
+     *  both sides of the message is a log line that cannot be read. */
+    const fmt = (ms: number): string =>
+      ms < 3_600_000 ? `${(ms / 60_000).toFixed(1)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
     const tick = (): void => {
       const idleMs = opts.idleMs();
-      if (!(idleMs > 0)) return;
+      const warmTtlMs = opts.warmTtlMs();
+      // Either rule alone is a reason to sweep (idle off + a warm TTL still expires warm slots).
+      if (!(idleMs > 0) && !(warmTtlMs > 0)) return;
+      const warmN = opts.warmSlots();
+      const warm = warmN > 0 ? this.#warmSet(warmN) : null;
       const now = Date.now();
       let reaped = 0;
       for (const s of [...this.#sessions.values()]) {
@@ -1303,10 +1357,20 @@ export class SessionManager {
         // 「刚点进去、没发消息、换个会话过一分钟 acp 就被回收」) — the fresh process inherited a
         // days-old stamp, so the very next tick found it over the threshold.
         const lastAt = Math.max(s.touchedAt, s.info.lastAt ?? 0, s.info.createdAt);
-        if (now - lastAt < idleMs) continue;
-        console.log(
-          `[agentus] idle reap: ${s.info.id} (${Math.round((now - lastAt) / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
-        );
+        const age = now - lastAt;
+        if (warm?.has(s.info.id)) {
+          // 热备 = 「即使空闲也保留在这里」. The idle rule does not apply; only its own, much longer
+          // deadline does — otherwise five quiet slots are a permanent ~700 MB floor.
+          if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
+          console.log(
+            `[agentus] warm slot expired: ${s.info.id} (${fmt(age)} untouched, warm ttl ${fmt(warmTtlMs)})`,
+          );
+        } else {
+          if (!(idleMs > 0) || age < idleMs) continue;
+          console.log(
+            `[agentus] idle reap: ${s.info.id} (${Math.round(age / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
+          );
+        }
         this.#stop(s, "reaped");
         reaped += 1;
       }

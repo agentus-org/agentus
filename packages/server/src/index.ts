@@ -270,6 +270,11 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   };
   const envIdle = envNum(process.env.AGENTUS_IDLE_KILL_MIN);
   const envIdleMs = envIdle != null ? envIdle * 60_000 : null;
+  // 热备 (warm slots): same ABSENT≠0 discipline as above. The TTL takes a FRACTION of a minute so the
+  // warm-EXPIRY path can be exercised in seconds rather than by waiting out a day.
+  const envWarm = envNum(process.env.AGENTUS_WARM_SLOTS);
+  const envWarmTtlMin = envNum(process.env.AGENTUS_WARM_TTL_MIN);
+  const envWarmTtlMs = envWarmTtlMin != null ? envWarmTtlMin * 60_000 : null;
   const envSweep = envNum(process.env.AGENTUS_IDLE_SWEEP_MS);
   const sweepMs = envSweep != null && envSweep >= 1000 ? envSweep : 30_000;
   const source = envIdleMs != null ? "AGENTUS_IDLE_KILL_MIN" : "settings.agent.idleKillMin";
@@ -278,8 +283,18 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
       envIdleMs != null ? envIdle : agentSettings().idleKillMin
     } min (${source}), sweep ${Math.round(sweepMs / 1000)}s, 0 = off`,
   );
+  // The warm set is the other half of the same decision (which slots survive being quiet) and it is
+  // NEVER inferred from the idle value: 「最近 N 个即使空闲也保留」 and 「其余空闲多久收」 are two
+  // answers. Printing both with their sources is what turns 「为什么它被收了」 into one glance.
+  console.log(
+    `[agentus] warm slots: ${envWarm ?? agentSettings().warmSlots} kept up to ${
+      envWarmTtlMs != null ? envWarmTtlMs / 3_600_000 : agentSettings().warmTtlHours
+    } h untouched (${envWarm != null || envWarmTtlMs != null ? "AGENTUS_WARM_*" : "settings.agent"}), 0 = off / never`,
+  );
   mgr.startIdleReaper({
     idleMs: () => envIdleMs ?? agentSettings().idleKillMin * 60_000,
+    warmSlots: () => envWarm ?? agentSettings().warmSlots,
+    warmTtlMs: () => envWarmTtlMs ?? agentSettings().warmTtlHours * 3_600_000,
     watched: (id) => notify.operatorWatching(id),
     intervalMs: sweepMs,
   });

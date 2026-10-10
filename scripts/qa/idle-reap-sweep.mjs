@@ -30,6 +30,12 @@
 // NOTE: the fractional threshold (0.05 min = 3s) is deliberate and used only here — the settings page
 // offers whole minutes; the API accepts a real number in 0…60, which is what makes the reclaim path
 // testable without waiting five minutes.
+//
+// NOTE 2: this sweep pins settings.agent.warmSlots = 0 and restores it afterwards. Since 2026-10-10
+// the reaper has TWO deadlines and the shipped floor (warmSlots = 5, the most recent sessions kept
+// regardless of quiet time) shelters exactly the slots every assertion below is about — with the floor
+// on, 「没有被回收」 here means the feature works, not that the rule broke. The floor is asserted in
+// scripts/qa/warm-slots-sweep.mjs.
 import { authHeaders } from "../lib/auth.mjs";
 
 const PORT = Number(process.env.PORT || 8905);
@@ -56,10 +62,15 @@ const row = async (id) => {
     archivedCount: (d.archived || []).length,
   };
 };
-const setThreshold = async (min) => {
-  const r = await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { idleKillMin: min } }) });
+const setThreshold = async (min, warmSlots = 0) => {
+  // 热备 (settings.agent.warmSlots) is pinned OFF here on purpose: the subject of this sweep is the
+  // IDLE rule, and with the shipped floor on (5) the most recent sessions are sheltered from exactly
+  // the rule being asserted — the sweep would read 「回收坏了」 when the feature is working. The floor
+  // has its own sweep (scripts/qa/warm-slots-sweep.mjs); every assertion below is about a slot that a
+  // floor would cover, so 0 seats is the honest precondition.
+  const r = await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { idleKillMin: min, warmSlots } }) });
   const d = await r.json();
-  return { ok: r.ok, value: d?.agent?.idleKillMin, error: d?.error };
+  return { ok: r.ok, value: d?.agent?.idleKillMin, warm: d?.agent?.warmSlots, error: d?.error };
 };
 const mk = async (title) => {
   const r = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "mock", cwd: process.cwd(), title }) });
@@ -82,6 +93,7 @@ const presence = (sessionId, visible = true) =>
 const setting0 = await setThreshold(5); // documented default, whatever the instance was left at
 check(setting0.ok, "the instance answers the agent settings section", JSON.stringify(setting0));
 check(setting0.value === 5, "…and the shipped default is 5 minutes (AionUi's own default)", String(setting0.value));
+check(setting0.warm === 0, "…with the 热备 floor pinned off for this sweep (its own sweep covers the floor)", String(setting0.warm));
 await presence(null, false); // nobody is watching anything: this sweep sets its own preconditions
 const before = (await row("nope")).archivedCount;
 
@@ -218,7 +230,9 @@ for (const s of mine) {
   await api(`/api/sessions/${s.id}`, { method: "DELETE" });
 }
 check(mine.length > 0, `cleaned up ${mine.length} sweep row(s)`);
-check((await setThreshold(5)).value === 5, "and the threshold is back at the shipped default (5)");
+check((await setThreshold(5, 5)).value === 5, "and the threshold is back at the shipped default (5)");
+check((await api("/api/settings").then((r) => r.json()))?.agent?.warmSlots === 5,
+  "…and the 热备 floor is back at ITS shipped default (5)");
 const after = await (await api("/api/sessions")).json();
 check((after.archived || []).length === before, "the archive list is exactly as we found it", `${before} -> ${(after.archived || []).length}`);
 

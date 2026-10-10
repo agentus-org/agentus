@@ -41,7 +41,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
     id: "agent", label: "智能体", hint: "槽位跑哪个后端",
     items: [
       { anchor: "set-backends", label: "后端" },
-      { anchor: "set-lifecycle", label: "槽位空闲回收" },
+      { anchor: "set-lifecycle", label: "回收与热备" },
     ],
   },
   {
@@ -81,10 +81,12 @@ interface SettingsView {
   theme: ThemeConfig;
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
-  /** agent-process knobs (settings.agent): the idle-reclaim threshold, 0 = off */
-  agent?: { idleKillMin: number };
-  agentDefaults?: { idleKillMin: number };
+  /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number };
   agentIdleRange?: [number, number];
+  agentWarmRange?: [number, number];
+  agentWarmTtlRange?: [number, number];
   updatedAt: number;
 }
 
@@ -157,11 +159,14 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [acc, setAcc] = useState<AccountInfo | null>(null);
   const [prefs, setPrefs] = useVoicePrefs();
   const dict = useDictation();
-  // 槽位空闲回收 (settings.agent). Its own immediate-save control like the prefs toggles: it is one
+  // 槽位回收与热备 (settings.agent). Its own immediate-save control like the prefs toggles: it is one
   // number that decides whether agent processes get killed, and making it ride the general 保存
   // button would leave the operator wondering whether it took effect.
   const [idleKill, setIdleKill] = useState<number | null>(null);
   const [idleMsg, setIdleMsg] = useState("");
+  const [warmSlots, setWarmSlots] = useState<number | null>(null);
+  const [warmTtl, setWarmTtl] = useState<number | null>(null);
+  const [warmMsg, setWarmMsg] = useState("");
 
   const load = useCallback(async (): Promise<void> => {
     setErr("");
@@ -180,6 +185,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       setView(data);
       setDraft((cur) => cur ?? draftOf(data));
       if (typeof data.agent?.idleKillMin === "number") setIdleKill(data.agent.idleKillMin);
+      if (typeof data.agent?.warmSlots === "number") setWarmSlots(data.agent.warmSlots);
+      if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
       await loadVoiceCaps(true);
       setCaps(voiceCaps());
       const [m, h] = await Promise.all([
@@ -203,7 +210,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
   const dirty = Boolean(view && draft && !sameDraft(draft, draftOf(view)));
 
-  /** 槽位空闲回收 saves on its own (a number field, on blur): it is not part of the voice draft, and a
+  /** 槽位回收与热备 saves on its own (a number field, on blur): it is not part of the voice draft, and a
    *  half-typed number must never be stored — the server clamps the range again on its side. */
   const saveIdle = async (): Promise<void> => {
     if (idleKill == null) return;
@@ -224,6 +231,40 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       setIdleMsg(v === 0 ? "已保存：空闲槽位不再被回收。" : `已保存：空闲 ${v} 分钟后停掉 agent 进程。`);
     } catch (e) {
       setIdleMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 热备 saves as ONE update: the count and its TTL are a single decision (a count without a TTL is
+   *  a permanent ~700 MB floor), so a half-typed pair must never be stored. Same shape as `saveIdle`
+   *  — on blur, outside the voice draft, server clamps the ranges again. */
+  const saveWarm = async (): Promise<void> => {
+    if (warmSlots == null && warmTtl == null) return;
+    const [slo, shi] = view?.agentWarmRange ?? [0, 20];
+    const [tlo, thi] = view?.agentWarmTtlRange ?? [0, 168];
+    const n = Math.max(slo, Math.min(shi, Math.round(warmSlots ?? view?.agentDefaults?.warmSlots ?? 5)));
+    const h = Math.max(tlo, Math.min(thi, Math.round(warmTtl ?? view?.agentDefaults?.warmTtlHours ?? 24)));
+    setWarmSlots(n);
+    setWarmTtl(h);
+    setWarmMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { warmSlots: n, warmTtlHours: h } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setWarmMsg(
+        n === 0
+          ? "已保存：热备已关闭，只按上面的空闲时长回收。"
+          : h === 0
+            ? `已保存：最近 ${n} 个会话保底保活，不过期。`
+            : `已保存：最近 ${n} 个会话保活，闲置超过 ${h} 小时才回收。`,
+      );
+    } catch (e) {
+      setWarmMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -491,13 +532,18 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
         <h4 className="set-group" id="grp-voice" data-setgroup="voice">语音</h4>
         {/* ---------- 语音识别 ---------- */}
-        {/* ---------- 槽位空闲回收（智能体） ---------- */}
+        {/* ---------- 槽位回收与热备（智能体） ---------- */}
         <section className="set-card" id="set-lifecycle" data-setgroup="agent">
-          <h3>槽位空闲回收</h3>
+          <h3>槽位回收与热备</h3>
           <p className="set-hint">
             空闲超过这个时长后，自动停掉槽位的 <b>agent 进程</b> 以释放内存 —— 对话记录、模型、思考深度全都
             保留，点一下该槽位就会重新起来（状态显示「已回收（空闲）」）。这是「回收进程」，不是「归档会话」：
             归档只在你手动点击时发生，两者互不影响。数值对齐 AionUi 的「Agent 空闲超时」，<b>0 = 关闭</b>。
+          </p>
+          <p className="set-hint">
+            下面的 <b>热备</b> 是保底，不是上限：最近 N 个会话即使空闲也留着进程 —— 「我只是离开浏览器」
+            不该丢掉刚才那个会话的 agent。名额自己也有寿命（小时），超时照样回收：5 个热备 × 约 137 MB
+            ≈ 700 MB，这就是它默认 24 小时过期的原因。正在跑回合、等你审批、你正看着的会话从不被回收。
           </p>
           <div className="set-row">
             <label>Agent 空闲超时（分钟）</label>
@@ -519,7 +565,48 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
               </span>
             </div>
           </div>
+          <div className="set-row">
+            <label>热备槽位（最近 N 个）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.agentWarmRange?.[0] ?? 0}
+                max={view?.agentWarmRange?.[1] ?? 20}
+                step={1}
+                value={warmSlots ?? view?.agentDefaults?.warmSlots ?? 5}
+                onChange={(e) => setWarmSlots(Number(e.target.value))}
+                onBlur={() => void saveWarm()}
+              />
+              <span className="set-hint">
+                {warmSlots === 0
+                  ? "已关闭：没有保底名额，只按上面的空闲时长回收"
+                  : `最近 ${warmSlots ?? view?.agentDefaults?.warmSlots ?? 5} 个会话即使空闲也不回收`}
+              </span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>热备最长闲置（小时）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.agentWarmTtlRange?.[0] ?? 0}
+                max={view?.agentWarmTtlRange?.[1] ?? 168}
+                step={1}
+                value={warmTtl ?? view?.agentDefaults?.warmTtlHours ?? 24}
+                onChange={(e) => setWarmTtl(Number(e.target.value))}
+                onBlur={() => void saveWarm()}
+              />
+              <span className="set-hint">
+                {warmTtl === 0
+                  ? "不过期：一直留着（内存也就一直占着）"
+                  : `闲置超过 ${warmTtl ?? view?.agentDefaults?.warmTtlHours ?? 24} 小时，连热备名额也停掉`}
+              </span>
+            </div>
+          </div>
           {idleMsg ? <p className="set-hint">{idleMsg}</p> : null}
+          {warmMsg ? <p className="set-hint">{warmMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-asr" data-setgroup="voice">

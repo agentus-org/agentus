@@ -124,13 +124,28 @@ export interface AgentSettings {
   /** minutes of no activity before a live slot's agent process is stopped to reclaim memory;
    *  0 = never. The row and its transcript always survive — this only stops the process. */
   idleKillMin: number;
+  /** 「热备」= how many of the most recently USED sessions keep their agent process no matter how
+   *  quiet they go. A FLOOR, not a ceiling: it names the slots that may not be reclaimed for being
+   *  idle, it does not bound how many may run. Ranked over live AND cold rows by the same clock the
+   *  sweep uses — a slot already reaped must not hand its seat to a session nobody has touched in
+   *  days. Archived rows never occupy a seat. 0 = off (every slot obeys idleKillMin). */
+  warmSlots: number;
+  /** Hours a warm slot may go untouched before even its exemption expires. Without this the warm set
+   *  is a permanent memory floor (5 × ~137 MB RSS measured); with it, a cockpit left alone for a day
+   *  comes back to nothing running. 0 = 不过期. */
+  warmTtlHours: number;
 }
 
-export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5 };
+export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5, warmSlots: 5, warmTtlHours: 24 };
 
 /** What the settings page may offer: the ends of the number field. Server-side enforcement uses
  *  the same pair, so a hand-written request cannot store a nonsense value. */
 export const AGENT_IDLE_RANGE: [number, number] = [0, 60];
+/** 0 = off. The upper end is a memory decision (one live agent ≈ 137 MB RSS measured), not a limit
+ *  the server has to defend. */
+export const AGENT_WARM_RANGE: [number, number] = [0, 20];
+/** 0 = 不过期; a week is the longest span worth offering on the page. */
+export const AGENT_WARM_TTL_RANGE: [number, number] = [0, 168];
 
 /** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
  *  outside both the range table and the loops that validate numbers. */
@@ -293,9 +308,15 @@ function pickCall(raw: unknown): CallSettings {
 function pickAgent(raw: unknown): AgentSettings {
   const out = { ...AGENT_DEFAULT };
   if (raw && typeof raw === "object") {
-    const v = Number((raw as Record<string, unknown>).idleKillMin);
-    const [lo, hi] = AGENT_IDLE_RANGE;
-    if (Number.isFinite(v) && v >= lo && v <= hi) out.idleKillMin = v;
+    const r = raw as Record<string, unknown>;
+    const take = (key: keyof AgentSettings, range: [number, number]): void => {
+      const v = Number(r[key]);
+      const [lo, hi] = range;
+      if (Number.isFinite(v) && v >= lo && v <= hi) out[key] = v;
+    };
+    take("idleKillMin", AGENT_IDLE_RANGE);
+    take("warmSlots", AGENT_WARM_RANGE);
+    take("warmTtlHours", AGENT_WARM_TTL_RANGE);
   }
   return out;
 }
@@ -369,6 +390,8 @@ export function publicSettings(): Record<string, unknown> {
     agent: cache.agent,
     agentDefaults: AGENT_DEFAULT,
     agentIdleRange: AGENT_IDLE_RANGE,
+    agentWarmRange: AGENT_WARM_RANGE,
+    agentWarmTtlRange: AGENT_WARM_TTL_RANGE,
     // the defaults, so the UI can offer "reset to Bailian defaults"
     defaults: { ...DEFAULTS, apiKey: undefined, baseUrl: undefined },
     updatedAt: cache.updatedAt,
@@ -495,18 +518,23 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
 }
 
 /** Agent-process knobs: its own update, like theme/call, so a bad number here cannot lock the
- *  operator out of the page that would fix it. Range-checked against AGENT_IDLE_RANGE before it is
- *  stored — this number decides whether agent processes get killed, so it is not a text field. */
+ *  operator out of the page that would fix it. Range-checked against the section's range table
+ *  before it is stored — these numbers decide whether agent processes get killed, so they are not
+ *  text fields. */
 export function saveAgent(patch: Record<string, unknown>): Settings {
   const a = { ...cache.agent };
-  if ("idleKillMin" in patch) {
-    const raw = typeof patch.idleKillMin === "number" ? patch.idleKillMin : Number(patch.idleKillMin);
-    const [lo, hi] = AGENT_IDLE_RANGE;
+  const set = (key: keyof AgentSettings, range: [number, number], unit: string, off: string): void => {
+    if (!(key in patch)) return;
+    const raw = typeof patch[key] === "number" ? (patch[key] as number) : Number(patch[key]);
+    const [lo, hi] = range;
     if (!Number.isFinite(raw) || raw < lo || raw > hi) {
-      throw new Error(`invalid idleKillMin: ${JSON.stringify(patch.idleKillMin)} (expected ${lo}…${hi} minutes, 0 = off)`);
+      throw new Error(`invalid ${key}: ${JSON.stringify(patch[key])} (expected ${lo}…${hi} ${unit}, ${off})`);
     }
-    a.idleKillMin = raw;
-  }
+    a[key] = raw;
+  };
+  set("idleKillMin", AGENT_IDLE_RANGE, "minutes", "0 = off");
+  set("warmSlots", AGENT_WARM_RANGE, "slots", "0 = off");
+  set("warmTtlHours", AGENT_WARM_TTL_RANGE, "hours", "0 = never expires");
   cache = { ...cache, agent: a, updatedAt: Date.now() };
   persist();
   return cache;

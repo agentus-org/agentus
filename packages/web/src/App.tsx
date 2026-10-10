@@ -3137,13 +3137,22 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     // filed in the queue and goes out by itself when the running turn ends. The send button is still
     // a stop button while busy, so Enter is the way in — and the queue row is where it can be
     // retracted, rewritten or forced through immediately.
-    // A session with no process cannot run a turn, and the queue only drains on a turn-end that
-    // will never come — so filing the prompt there was a message that went nowhere: 「发消息挂起
-    // 了，再点发送又报错」 (the queue row's force-send reached the server, which answered
-    // `no such session`). Wake the slot instead. The draft stays in the box, so nothing is lost
-    // while the resume runs, and a refused resume reports itself through the existing 409 surface.
+    // A session with no process cannot run a turn, so the message has to WAIT for the wake — and the
+    // wake used to be the whole answer here: the prompt was never filed (the draft merely stayed in
+    // the box) and nothing ever sent it, so the operator pressed Enter a second time once the agent
+    // was finally up (2026-10-10). Filing it alone is not enough either — the queue only drained on a
+    // turn-end, and a slot that was just woken never produces one (`no such session` for a cold
+    // force-send, 「发消息挂起了」). Both halves are fixed: `sendToCold` files it (idempotently, so a
+    // retry press cannot double-send) and the store drains a slot's queue when it turns ready, so ONE
+    // Enter both wakes the session and delivers the message. The box is cleared because those words
+    // are now a visible queue row — ✕ / ✎ / ↑ included — not because they went anywhere.
     if (v.info.cold) {
-      void cockpit.resume(v.info.id);
+      cockpit.sendToCold(v.info.id, t, attachments);
+      setText("");
+      setDrafts([]);
+      setAttachErr("");
+      setPick(0);
+      streamReattach.current();
       return;
     }
     if (v.busy || v.info.status !== "ready") {
@@ -3312,7 +3321,15 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             <div className="queue-head">
               <span className="queue-title">Queued · {v.queue.length}</span>
               <span className="queue-hint">
-                {v.queue.some((q) => q.inflight) ? "sending…" : "goes out when this turn ends"}
+                {v.queue.some((q) => q.inflight)
+                  ? "sending…"
+                  : v.resuming
+                    ? "waking the agent — sends once it is up"
+                    : v.info.cold
+                      ? "sends when you wake this session"
+                      : v.info.status !== "ready"
+                        ? "process starting — sends once ready"
+                        : "goes out when this turn ends"}
               </span>
             </div>
             {v.queue.map((q, i) => (

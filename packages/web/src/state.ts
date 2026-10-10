@@ -813,6 +813,26 @@ class Cockpit {
     }]);
   }
 
+  /** Enter on a COLD slot: the message ends up in line exactly ONCE and the wake starts now.
+   *
+   *  Why a dedicated verb rather than enqueue + resume at the call site: pressing Enter again while
+   *  the spawn is still coming up is the operator RETRYING A CLICK, not writing a second message
+   *  (2026-10-10: 「第一次去回车的时候，它还没反应，要过一会还要再去点一次回车，它才会把消息发送出去」)
+   *  — appending would send his words twice. The dedupe is deliberately narrow: same text, filed
+   *  within a few seconds, and the slot is not up yet. A genuinely repeated 「继续」 into a session
+   *  that IS running still files normally, because there the repeat is a real second message.
+   *
+   *  `resume()` runs on every call, so `#resuming` still guarantees one spawn per slot. */
+  sendToCold(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
+    const rows = this.#queues.get(sessionId) ?? this.#loadQueue(sessionId);
+    const last = rows[rows.length - 1];
+    const up = this.sessions.some((s) => s.id === sessionId && s.status === "ready");
+    const retry = Boolean(last && last.text === text && !up && Date.now() - last.at < 5_000);
+    const empty = !text.trim() && !attachments.length;
+    if (!retry && !empty) this.enqueuePrompt(sessionId, text, attachments);
+    void this.resume(sessionId);
+  }
+
   /** The ✕: drop it. (Nothing was sent, so there is nothing to undo server-side.) */
   dropQueued(sessionId: string, id: string): void {
     const rows = this.#queues.get(sessionId) ?? [];
@@ -1528,6 +1548,15 @@ class Cockpit {
             this.activeId = pick;
             void this.loadHistory(pick);
           }
+        }
+        // A slot that just CAME UP may be holding a prompt filed while it was cold: the operator's
+        // Enter files it and the wake follows, but `drainQueue` was only ever reached from a
+        // turn-END — and a slot that was just woken runs no turn, so nothing ever drained it. That
+        // missing trigger IS the 「要按两次回车」 behaviour (2026-10-10). Same guards as every other
+        // drain: not busy, head not inflight, nobody taking the floor by hand.
+        for (const s of this.sessions) {
+          if (s.status !== "ready") continue;
+          if (this.#queues.get(s.id)?.length) this.drainQueue(s.id);
         }
         break;
       }
