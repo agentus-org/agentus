@@ -204,16 +204,26 @@ console.log('== ③ directory names read like session titles, section heads stay
     const head = document.querySelector('.rail-group-head');
     const name = document.querySelector('.rail-group-head .rail-group-name');
     const folder = document.querySelector('.rail-group-head .rail-group-folder');
+    const avatar = document.querySelector('.rail-group-body .session-item .be-avatar');
     const title = document.querySelector('.rail-group-body .session-item .title');
     const x = (e) => (e ? Math.round(e.getBoundingClientRect().x) : null);
-    return JSON.stringify({ section: x(section), folder: x(folder), name: x(name), title: x(title),
+    return JSON.stringify({ section: x(section), folder: x(folder), name: x(name), avatar: x(avatar), title: x(title),
       label: x(section && section.querySelector('span:not(.rail-section-chev)')) });
   })()`));
   check(indent.folder < indent.name, 'the folder icon comes before the name', `${indent.folder} < ${indent.name}`);
   check(indent.name < indent.title, 'a session title is indented past the directory name',
     `name ${indent.name} < title ${indent.title}`);
-  check(indent.folder > indent.label, 'and the directory sits inside the section head',
-    `folder ${indent.folder} > section label ${indent.label}`);
+  // The ladder is 工作空间 → directory → session, one step each, and the DIRECTORY is the parent row:
+  // it starts at the rail's own left edge (its folder icon level with the section head above it), not
+  // inset by its own margin — the operator: 「工作空间下面的目录不需要那么大的缩进，需要缩进的是会话
+  // 跟目录之间的」. Measured before the fix: directory name at +52px with the sessions only 3px past
+  // it, i.e. two levels drawn at one indent.
+  check(indent.folder > indent.section, 'the directory sits inside the rail, past the section edge',
+    `folder ${indent.folder} > section ${indent.section}`);
+  check(indent.folder <= indent.label, 'and it is NOT indented past the section label above it',
+    `folder ${indent.folder} <= section label ${indent.label}`);
+  check(indent.title - indent.name >= 20, 'the sessions are indented a real step past the directory',
+    `step ${indent.title - indent.name}px`);
 }
 
 // ------------------------------------------------------------------- ⑥ one left edge for the column

@@ -75,6 +75,23 @@ check(await until(`document.querySelectorAll('.sidebar .session-item').length > 
 await until(`Boolean(document.querySelector('#rail-workspaces .rail-group-head'))`, 20000);
 await sleep(600);
 
+// Establish the precondition the fold test depends on: it CLICKS a directory head expecting to FOLD
+// it, so no directory may start folded. A leftover `agentus.railClosed` from an earlier run made the
+// click UNFOLD an already-folded group and turned two checks red for no reason — 02-verify.md's
+// "set what you depend on first". Cleared through the app's own reload so React reads it back.
+{
+  const cleared = await ev(`(() => { try { const o = JSON.parse(localStorage.getItem('agentus.railClosed') || '{}');
+    const n = Object.keys(o).length;
+    localStorage.setItem('agentus.railClosed', JSON.stringify({}));
+    return n; } catch (e) { return 'ERR ' + e; } })()`);
+  await ev(`location.reload()`);
+  await until(`document.querySelectorAll('.sidebar .session-item').length > 0`, 30000);
+  await until(`Boolean(document.querySelector('#rail-workspaces .rail-group-head'))`, 20000);
+  await sleep(800);
+  const openNow = await ev(`[...document.querySelectorAll('#rail-workspaces .rail-group-head')].every((h) => h.getAttribute('aria-expanded') === 'true')`);
+  check(openNow === true, "every directory starts OPEN after clearing the stored fold flags", `cleared ${cleared} key(s)`);
+}
+
 console.log("== 已归档 is a section of its own, built like 工作空间 ==");
 check(await until(`Boolean(document.querySelector('#rail-archived'))`, 20000), "there is an archived section container");
 const shape = await ev(`(() => {

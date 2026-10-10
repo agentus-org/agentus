@@ -113,8 +113,12 @@ const sections = await ev(`(() => {
     inside: r ? r.left >= 0 && r.right <= window.innerWidth : false,
   };
 })()`);
-check("the rail names two sections, 团队 above 工作空间",
-  sections.labels.length === 2 && sections.labels[0].text === "团队" && sections.labels[1].text === "工作空间" && sections.labels[0].y < sections.labels[1].y,
+// 团队 over 工作空间 is the shape; 已归档 is a THIRD section below them (its own round and its own
+// suite, `archive-state-sweep.mjs`). This check used to demand exactly two `.rail-section` elements,
+// which went stale the moment 已归档 landed and has been red on main ever since.
+check("the rail names 团队 above 工作空间 (已归档 is a section of its own below)",
+  sections.labels.length >= 2 && sections.labels[0].text === "团队" && sections.labels[1].text === "工作空间"
+    && sections.labels[0].y < sections.labels[1].y,
   JSON.stringify(sections.labels));
 check("团队 sits above the first workspace",
   sections.teamY !== null && (sections.groupsTop === null || sections.teamY < sections.groupsTop),

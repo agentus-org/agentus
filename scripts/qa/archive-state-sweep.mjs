@@ -73,6 +73,10 @@ const archId = await mk("sweep · 归档的");
 const archived = await api(`/api/sessions/${archId}/archive`, { method: "POST" });
 check(archived.ok, "archived a slot (POST /archive)", `HTTP ${archived.status}`);
 
+// A row that KEEPS its process, as the contrast for the badge check below: same row, same paint,
+// and the one mark that differs is the avatar's corner badge.
+const liveId = await mk("sweep · 活的（有进程）");
+
 const b0 = await buckets();
 check(!b0.live.includes(coldId) && b0.cold.includes(coldId), "a closed slot is COLD (工作空间), not archived", `cold=${b0.cold.length}`);
 check(!b0.archived.includes(coldId), "…and it is NOT in the 已归档 bucket");
@@ -138,6 +142,40 @@ const coldRow = await rowOf(coldId);
 check(Boolean(coldRow && coldRow.inWs && !coldRow.inArch), "the closed slot renders under 工作空间", JSON.stringify(coldRow));
 check(Boolean(coldRow?.cold), "…wearing the cold class (no process, and the rail says so)");
 check(Boolean(coldRow && !/已归档/.test(coldRow.title)), "…and its tooltip does NOT claim it is archived", coldRow?.title ?? "");
+
+// ---- a cold row is a FULL-WEIGHT row: the mark that changes is the badge, not the paint ---------
+// 「为什么没有进程的会话是暗的，不要搞暗的了，就搞角标吧」. The row used to be de-emphasised three ways
+// (avatar opacity, a dashed edge, a dim title), which made a plain list read as a disabled one. Now
+// the row paints exactly like a live one and the ONLY difference is the green corner badge on the
+// avatar: process present = green, no process = no badge. The `cold` class stays (behaviour hook).
+{
+  const paint = JSON.parse(await ev(`(() => {
+    const cs = (el) => (el ? getComputedStyle(el) : null);
+    const sel = (id) => '.session-item[data-session=' + JSON.stringify(id) + ']';
+    const cold = document.querySelector(sel(${JSON.stringify(coldId)}));
+    const live = document.querySelector(sel(${JSON.stringify(liveId)}));
+    const badge = (el) => { const d = el && el.querySelector('.be-avatar .be-dot'); if (!d) return null;
+      const b = d.getBoundingClientRect(); return { bg: getComputedStyle(d).backgroundColor, w: Math.round(b.width) }; };
+    const probe = document.createElement('span'); probe.style.color = 'var(--ok)';
+    document.body.appendChild(probe); const ok = getComputedStyle(probe).color; probe.remove();
+    return JSON.stringify({
+      have: Boolean(cold && live),
+      coldTitle: cs(cold && cold.querySelector('.title')).color,
+      liveTitle: cs(live && live.querySelector('.title')).color,
+      rowOpacity: Number(cs(cold).opacity), avatarOpacity: Number(cs(cold.querySelector('.be-avatar')).opacity),
+      border: cs(cold).borderStyle,
+      coldBadge: badge(cold), liveBadge: badge(live), ok,
+    });
+  })()`));
+  check(paint.have, "both a cold row and a live row are on screen to compare", JSON.stringify({ have: paint.have }));
+  check(paint.coldTitle === paint.liveTitle && paint.rowOpacity === 1 && paint.avatarOpacity === 1,
+    "a cold row is NOT dimmed — same title colour as a live row, nothing faded",
+    JSON.stringify({ cold: paint.coldTitle, live: paint.liveTitle, row: paint.rowOpacity, avatar: paint.avatarOpacity }));
+  check(paint.border === "solid", "…and its edge is not a dashed second signal", String(paint.border));
+  check(paint.coldBadge === null, "…its avatar wears NO badge (there is no process)", JSON.stringify(paint.coldBadge));
+  check(Boolean(paint.liveBadge) && paint.liveBadge.bg === paint.ok && paint.liveBadge.w >= 6,
+    "a row WITH a process wears the green corner badge", JSON.stringify({ got: paint.liveBadge, ok: paint.ok }));
+}
 
 const archRow = await rowOf(archId);
 check(Boolean(archRow && archRow.inArch && !archRow.inWs), "the archived slot renders under 已归档", JSON.stringify(archRow));
@@ -242,9 +280,9 @@ if (await typeIdle("15")) {
 check(saved === 15, "typing 15 and leaving the field really saves it (the page drives the setting)", `before=${before2} → ${saved}`);
 check(saved !== null && back === Number(before2), "…and it is restored to what the sweep found", `${back}`);
 
-// ---- cleanup: purge both ------------------------------------------------------------
+// ---- cleanup: purge all three -------------------------------------------------------
 const b2 = await buckets();
-for (const sid of [coldId, archId]) {
+for (const sid of [coldId, archId, liveId]) {
   const inLive = b2.live.includes(sid);
   if (inLive) await api(`/api/sessions/${sid}`, { method: "DELETE" }); // close first (live → closed)
   const del = await api(`/api/sessions/${sid}`, { method: "DELETE" });
@@ -253,6 +291,8 @@ for (const sid of [coldId, archId]) {
 const b3 = await buckets();
 check(!b3.live.includes(coldId) && !b3.live.includes(archId) && !b3.cold.includes(coldId) && !b3.cold.includes(archId)
   && !b3.archived.includes(coldId) && !b3.archived.includes(archId), "both rows are gone from disk");
+check(!b3.live.includes(liveId) && !b3.cold.includes(liveId) && !b3.archived.includes(liveId),
+  "…and the live fixture is gone too", JSON.stringify({ liveId: liveId.slice(0, 8) }));
 
 closeTab();
 ws.close();
