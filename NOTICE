@@ -1,9 +1,14 @@
 Agentus
 Copyright 2026 Agentus contributors
 
+Licensed under the Apache License, Version 2.0 — see LICENSE. Third-party components
+keep their own licences.
+
 AionUi (https://github.com/iOfficeAI/AionUi) is credited as an INSPIRATION. Its
 published design notes and the behaviour of its interfaces were studied while Agentus
 was designed, and some of our choices follow them. No AionUi source code was copied:
+every implementation in this repository is Agentus's own, and no file carries an
+AionUi licence header because none needs one.
 
 The Hermes and Qoder brand marks under packages/web/public/coding-agents/ are the
 respective property of their owners (EKKOLearnAI / Alibaba). They are included
