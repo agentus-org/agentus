@@ -290,6 +290,21 @@ function terminalTheme(dark: boolean): ITheme {
         cursor: v("--accent", "#2679a5"), selectionBackground: "rgba(38,121,165,0.25)", ...ANSI_16 };
 }
 
+/** Flow-control watermarks, in BYTES of output handed to xterm but not yet parsed.
+ *
+ *  A pty has no upper bound on how fast it can produce, and xterm buffers whatever we give it:
+ *  a program that keeps repainting (a full-screen TUI mid-resize, `yes`, `cat` of a huge file)
+ *  queues write callbacks faster than the emulator drains them until keystrokes stop being
+ *  answered at all. xterm's own flow-control guide puts the practical ceiling near 500 KB and
+ *  says in as many words that past it the emulator "might not respond to keystrokes anymore".
+ *
+ *  So the panel counts what it has handed over and tells the server where to stop: above HIGH
+ *  the server stops draining the pty, below LOW it starts again. The brake walks back the whole
+ *  chain (node stops reading the child's stdout -> the pty helper blocks in write(1) -> the shell
+ *  blocks in write(2)), which is the only honest way to slow the producer down. */
+const HIGH_WATER = 384 * 1024;
+const LOW_WATER = 96 * 1024;
+
 function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element {
   const [status, setStatus] = useState<TermStatus>("connecting");
   const [error, setError] = useState("");
@@ -305,6 +320,13 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
     const host = hostRef.current;
     if (!host) return;
     let closed = false;
+    // flow control state (see the watermarks above): bytes handed to xterm, and whether we have
+    // already told the server to stop draining the pty.
+    let pendingBytes = 0;
+    let paused = false;
+    // last size the pty was told about, so an unchanged fit() does not become a message
+    let lastCols = 0;
+    let lastRows = 0;
     setStatus("connecting");
     setError("");
     setTty(null);
@@ -328,6 +350,9 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
 
     const cols = term.cols || 80;
     const rows = term.rows || 24;
+    // The pty is born at this size (it rides the socket URL below), so it starts out in sync.
+    lastCols = cols;
+    lastRows = rows;
     // The socket is authenticated the same way the event bus is: a cookie for the browser, ?token=
     // for scripts (the WS handshake cannot carry headers). The viewport size rides along so the pty
     // is BORN at the right size instead of flashing 80x24.
@@ -358,7 +383,20 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       }
       if (msg.t === "term-data" && typeof msg.data === "string") {
         // Raw, straight into the emulator: colours, cursor moves, alternate screen — all of it.
-        term.write(msg.data);
+        // The write callback is the commit point, so it is what drains the watermark.
+        const size = msg.data.length;
+        pendingBytes += size;
+        term.write(msg.data, () => {
+          pendingBytes -= size;
+          if (paused && pendingBytes <= LOW_WATER && live() && ws.readyState === WebSocket.OPEN) {
+            paused = false;
+            ws.send(JSON.stringify({ t: "term-resume" }));
+          }
+        });
+        if (!paused && pendingBytes >= HIGH_WATER && ws.readyState === WebSocket.OPEN) {
+          paused = true;
+          ws.send(JSON.stringify({ t: "term-pause" }));
+        }
         return;
       }
       if (msg.t === "term-ready") {
@@ -401,12 +439,22 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
       // without this the only way to see it is to read pixels.
       host.dataset.termCols = String(term.cols);
       host.dataset.termRows = String(term.rows);
+      // A size the pty already knows is not news. Every term-resize makes a full-screen program
+      // repaint the entire screen, so echoing an unchanged size on every observer tick turns a
+      // layout twitch into a redraw storm — and the pty was born at this size anyway.
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols;
+      lastRows = term.rows;
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: "term-resize", cols: term.cols, rows: term.rows }));
       }
     };
+    // Observe the CONTAINER, not the element xterm paints into: `fit()` sizes the terminal to its
+    // box, and observing that same box is how a fit -> resize -> fit feedback loop starts (the
+    // documented FitAddon pitfall). The container's height comes from the panel, which is the
+    // signal we actually want.
     const ro = new ResizeObserver(() => pushSize());
-    ro.observe(host);
+    ro.observe(host.parentElement ?? host);
     const onWinResize = (): void => pushSize();
     window.addEventListener("resize", onWinResize);
     term.focus();

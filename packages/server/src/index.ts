@@ -1389,9 +1389,42 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     return;
   }
   const session = term;
-  const send = (msg: unknown): void => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  // ---- backpressure, half two: OUR OWN socket queue ---------------------------
+  // The page's watermarks (see ToolPanel's TerminalTab) can only count bytes that REACH it;
+  // everything still queued in this process is invisible from there. A slow page plus a fast
+  // producer therefore grows node's send queue without bound — measured on a `yes` flood: ~340 MB
+  // queued in seconds while the page only ever received ~106 frames/s. So the socket's own backlog
+  // is an independent brake, OR-ed with the client's request into one pause state, and the chain it
+  // walks back is the same one: stop reading the child -> the pty helper blocks in write(1) -> the
+  // shell blocks in write(2).
+  const NET_HIGH = 1 << 20; // 1 MiB queued -> stop draining the pty
+  const NET_LOW = 256 * 1024;
+  let clientPaused = false;
+  let socketPaused = false;
+  let paused = false;
+  const applyPause = (): void => {
+    const want = clientPaused || socketPaused;
+    if (want === paused) return;
+    paused = want;
+    if (want) session.pause();
+    else session.resume();
   };
+  const send = (msg: unknown): void => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(msg));
+    if (!socketPaused && ws.bufferedAmount >= NET_HIGH) {
+      socketPaused = true;
+      applyPause();
+    }
+  };
+  // `ws` emits no drain event for its send queue, so the way back up is a cheap poll that only
+  // runs while we are actually holding the pty back.
+  const backlogTimer = setInterval(() => {
+    if (socketPaused && ws.bufferedAmount <= NET_LOW) {
+      socketPaused = false;
+      applyPause();
+    }
+  }, 100);
   // The buffered tail goes out first, so a reconnect (or a second tab) lands on the scrollback the
   // way ttyd's RESUME does instead of a blank screen.
   if (session.buffer) send({ t: "term-data", id: session.id, data: session.buffer });
@@ -1414,12 +1447,20 @@ termWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
       }
     } else if (cmd.t === "term-resize" && typeof cmd.cols === "number" && typeof cmd.rows === "number") {
       session.resize(cmd.cols, cmd.rows);
+    } else if (cmd.t === "term-pause") {
+      // The page's emulator fell behind: hold the pty so the backlog cannot grow there instead.
+      clientPaused = true;
+      applyPause();
+    } else if (cmd.t === "term-resume") {
+      clientPaused = false;
+      applyPause();
     } else if (cmd.t === "term-close") {
       terms.kill(session.id);
       ws.close();
     }
   });
   const cleanup = (): void => {
+    clearInterval(backlogTimer);
     session.subscribers.delete(onData);
     terms.kill(session.id);
   };

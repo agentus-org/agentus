@@ -40,9 +40,19 @@ export interface TermSession {
   /** Resize the tty (no-op on a pipe shell). The kernel then SIGWINCHes the child's foreground
    *  process group, which is what makes a full-screen program redraw at the new width. */
   resize: (cols: number, rows: number) => void;
+  /** Stop draining the child's output. The backpressure chain is: this pause -> we stop reading
+   *  the child's stdout -> the pty helper blocks in its own write(1) -> it stops reading the pty
+   *  master -> the shell/program blocks in write(2). That is the ONLY honest way to slow a fast
+   *  producer (xterm's own guidance: without it the emulator grows a write buffer until it is
+   *  unresponsive — see the flow-control note in ToolPanel's TerminalTab). */
+  pause: () => void;
+  resume: () => void;
 }
 
 const MAX_BUFFER = 256 * 1024;
+/** How long output is held to be coalesced, and the size that makes holding it pointless. */
+const FLUSH_MS = 8;
+const FLUSH_BYTES = 64 * 1024;
 
 /** The PTY helper that ships with the server. */
 function ptyHelperPath(): string | null {
@@ -135,9 +145,34 @@ export class TermService {
           /* the helper is gone; the exit event says so */
         }
       },
+      pause: (): void => {
+        child.stdout?.pause();
+        child.stderr?.pause();
+      },
+      resume: (): void => {
+        child.stdout?.resume();
+        child.stderr?.resume();
+      },
     };
-    const push = (chunk: string): void => {
-      session.buffer = (session.buffer + chunk).slice(-MAX_BUFFER);
+    // ---- output framing --------------------------------------------------------
+    // One `data` event per write(2) is what a pty hands us, and a full-screen program repainting
+    // (or `yes`) emits hundreds of them per second. Every one used to become its own WebSocket
+    // frame, and the browser then spends more time in message callbacks than in the emulator
+    // (upstream measured ~70% of the main thread: ttyd#247). Subscribers therefore get COALESCED
+    // frames — whatever lands inside one ~FLUSH_MS window ships as a single message.
+    //
+    // The scrollback buffer is deliberately NOT batched: a late joiner or a reconnect has to see
+    // every byte, and appending to a string costs nothing per frame.
+    let pending = "";
+    let flushTimer: NodeJS.Timeout | null = null;
+    const flush = (): void => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!pending) return;
+      const chunk = pending;
+      pending = "";
       for (const fn of session.subscribers) {
         try {
           fn(chunk);
@@ -145,6 +180,13 @@ export class TermService {
           /* a dead socket must not break the other listeners */
         }
       }
+    };
+    const push = (chunk: string): void => {
+      session.buffer = (session.buffer + chunk).slice(-MAX_BUFFER);
+      pending += chunk;
+      // Past this size, holding it any longer only delays a redraw.
+      if (pending.length >= FLUSH_BYTES) flush();
+      else if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_MS);
     };
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -155,6 +197,8 @@ export class TermService {
     child.on("exit", (code: number | null, signal: string | null) => {
       session.exited = { code, signal };
       push(`\r\n[process exited${code != null ? ` with code ${code}` : ""}${signal ? ` (${signal})` : ""}]\r\n`);
+      // The exit line must not wait out the coalescing window — nothing follows it.
+      flush();
       this.#sessions.delete(session.id);
     });
     child.on("error", (err: Error) => push(`\r\n[cannot start shell: ${err.message}]\r\n`));

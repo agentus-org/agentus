@@ -18,6 +18,15 @@ Wire format, all raw bytes:
                       stripping: a terminal emulator consumes the escape sequences, a <pre> cannot)
     fd 3           <- control channel, one command per line: "resize <cols> <rows>"
 
+**Never block on stdout.** stdout is a pipe into the server, and the server stops reading it on
+purpose when a consumer falls behind (see the flow-control notes in term.ts / index.ts: the brake is
+applied by pausing this process's stdout). A blocking `write(1)` would stop this loop dead — and this
+loop is also what forwards the keyboard, so a slow page would take Ctrl-C down with it and the
+operator would have nothing left to abort the flood with. So stdout is NON-BLOCKING, output
+accumulates in a local buffer, and reading the PTY is suspended while that buffer is at its cap: the
+backpressure travels back to the producing program instead of parking in here. The input path is
+never gated by output.
+
 Sizing: the initial size comes from AGENTUS_PTY_COLS / AGENTUS_PTY_ROWS, and `resize` applies
 TIOCSWINSZ to the master — the kernel then signals the child's foreground process group (SIGWINCH),
 which is what makes vim redraw at the new width.
@@ -36,6 +45,10 @@ import sys
 import termios
 
 CTL_FD = 3
+READ_CHUNK = 65536
+# Stop reading the PTY once this much output is waiting to go out: the producing program then blocks
+# in its own write(2), which is the backpressure we want and what keeps this buffer bounded.
+OUT_CAP = 1 << 20
 
 
 def set_winsize(fd: int, cols: int, rows: int) -> None:
@@ -70,35 +83,72 @@ def main() -> int:
         ctl = None  # no control channel: a fixed-size terminal is still a terminal
 
     stdin_fd = 0
-    running = True
-    while running:
-        watch = [master, stdin_fd] + ([CTL_FD] if ctl else [])
+    # Non-blocking stdout: the server stops reading it on purpose (flow control), and blocking here
+    # would freeze the input path with it.
+    try:
+        os.set_blocking(1, False)
+    except (OSError, AttributeError):
+        pass  # no os.set_blocking: the writes below fall back to blocking behaviour
+    pending = bytearray()
+    stdin_open = True
+    while True:
+        # While we are behind on output we stop reading the PTY — that IS the backpressure. stdin and
+        # the control channel stay watched, so a keystroke (Ctrl-C above all) is never stuck behind
+        # a flood.
+        readable = [stdin_fd] if stdin_open else []
+        if ctl is not None:
+            readable.append(CTL_FD)
+        if len(pending) < OUT_CAP:
+            readable.append(master)
+        writable = [1] if pending else []
         try:
-            ready, _, _ = select.select(watch, [], [])
+            ready_r, ready_w, _ = select.select(readable, writable, [])
         except OSError as exc:
             if exc.errno == errno.EINTR:
                 continue
             break
 
-        if master in ready:
+        if ready_w and pending:
             try:
-                data = os.read(master, 65536)
+                written = os.write(1, pending)
+                del pending[:written]
+            except (BlockingIOError, InterruptedError):
+                pass
+            except OSError:
+                break  # stdout is gone: the server died, so are we
+
+        if master in ready_r:
+            try:
+                data = os.read(master, READ_CHUNK)
+            except (BlockingIOError, InterruptedError):
+                data = None
             except OSError:
                 data = b""
-            if not data:
+            if data == b"":
                 break  # the child closed the pty: it is gone
-            os.write(1, data)
+            if data:
+                pending += data
 
-        if stdin_fd in ready:
+        if stdin_open and stdin_fd in ready_r:
             try:
-                data = os.read(stdin_fd, 65536)
+                data = os.read(stdin_fd, READ_CHUNK)
+            except (BlockingIOError, InterruptedError):
+                data = None
             except OSError:
                 data = b""
-            if not data:
-                break  # EOF: the browser went away, take the shell with us
-            os.write(master, data)
+            if data == b"":
+                # EOF: the browser went away. Let the child finish its exit path rather than
+                # dropping output we still owe the scrollback.
+                stdin_open = False
+                if ctl is None:
+                    break
+            elif data:
+                try:
+                    os.write(master, data)
+                except OSError:
+                    break
 
-        if ctl and CTL_FD in ready:
+        if ctl is not None and CTL_FD in ready_r:
             line = ctl.readline()
             if line == "":
                 ctl.close()
@@ -107,6 +157,14 @@ def main() -> int:
             parts = line.split()
             if parts and parts[0] == "resize" and len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 set_winsize(master, int(parts[1]), int(parts[2]))
+
+    # Best effort: hand over whatever is left, but never hang on it.
+    try:
+        while pending:
+            written = os.write(1, pending)
+            del pending[:written]
+    except OSError:
+        pass
 
     # Reap the child, then leave with its status so the server can report a real exit code.
     status = 0
