@@ -14,8 +14,8 @@
  * package alike, so `npm i -g agentus` never needs a compiler on the user's machine.
  *
  * WHY `--where` RUNS THE SERVER instead of computing paths here: where the data lives is
- * decided in exactly one place (`packages/server/src/index.ts`, mirrored by
- * scripts/make-cert.sh). A second implementation here would be a second answer to "where
+ * decided in exactly one place (`packages/server/src/index.ts`). A second
+ * implementation here would be a second answer to "where
  * did my sessions go" — the one question in this project that must never have two
  * answers. With AGENTUS_PRINT_PATHS=1 the server prints its own resolution (data dir,
  * web bundle, companion APK, node version) and exits before it opens anything.
@@ -37,14 +37,14 @@ Usage
 
 Options
   -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
-  -d, --data <dir>   where state lives — sqlite, login, TLS material, settings
+  -d, --data <dir>   where state lives — sqlite, login, settings
                                                        (AGENTUS_DATA, default ~/.agentus)
   -o, --open         open the cockpit in your browser once it is up
       --where        print the resolved paths and exit (starts nothing)
   -h, --help         this text
   -v, --version      print the version
 
-The server reads more environment variables than these (agent backends, auth, TLS,
+The server reads more environment variables than these (agent backends, auth,
 speech). They are listed in the README, and the boot log prints the ones in play.
 
 Requirements

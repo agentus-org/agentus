@@ -38,7 +38,7 @@ agent four things and it can work without guessing.
 | auth | `packages/server/src/auth.ts` |
 | web app | `packages/web/src/App.tsx`, `state.ts`, `transcript.ts` |
 | mock agent (dev/QA) | `packages/server/mock/agent.mjs` |
-| dev launcher | `scripts/dev.sh` · release: `scripts/relaunch.sh` · `scripts/make-cert.sh` |
+| dev launcher | `scripts/dev.sh` · release: `scripts/relaunch.sh` |
 
 **2. The reference implementation to compare against.** Almost every UI question has a
 sibling project that already answered it, and the operator expects behaviour parity, not

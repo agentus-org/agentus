@@ -1,7 +1,6 @@
 // Agentus server entry: HTTP (REST + static web build) + WebSocket relay.
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
 import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -31,7 +30,7 @@ const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
 // cwd-relative path would silently open a second database (the operator's slots would
 // "disappear"). Both entry points must land on the same store.
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
-// WHERE STATE LIVES — sqlite, credentials.json, auth.token, tls/, settings.json.
+// WHERE STATE LIVES — sqlite, credentials.json, auth.token, settings.json.
 //   1. `AGENTUS_DATA` when it is set. Every launcher and dev/QA instance pins it, so the
 //      rules below can never move a running install's data out from under it.
 //   2. `~/.agentus` once it holds something, or when there is no repo-side data yet.
@@ -41,7 +40,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/serve
 //      directory won and how to move).
 // NOTHING may write inside node_modules: for an installed package
 // `<pkg>/packages/server/.data` is deleted by the next `npm i -g agentus`, taking the
-// transcript, the login and the TLS key with it.
+// transcript and the login with it.
 const DEFAULT_DATA_DIR = path.join(homedir(), ".agentus");
 const REPO_DATA_DIR = path.resolve(HERE, "../.data");
 const hasData = (dir: string): boolean => {
@@ -69,19 +68,6 @@ const APK_FILE = process.env.AGENTUS_APK
     path.join(DATA_DIR, "agentus-companion.apk"),
   ].find((p) => fs.existsSync(p))
   ?? path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk");
-// Optional second listener, TLS (see the block right before listen). Declared up here
-// because the request handler also serves the public cert — a phone that has to trust a
-// self-signed issuer needs to fetch the cert from somewhere, and that somewhere should
-// not require already trusting it.
-//   AGENTUS_TLS_PORT=0  -> off;  no cert on disk -> off (the LAN listener is unaffected).
-const TLS_PORT = Number(process.env.AGENTUS_TLS_PORT ?? 8443);
-const TLS_CERT = process.env.AGENTUS_TLS_CERT ?? path.join(DATA_DIR, "tls", "cert.pem");
-const TLS_KEY = process.env.AGENTUS_TLS_KEY ?? path.join(DATA_DIR, "tls", "key.pem");
-// The issuer a device installs once (make-cert.sh: long-lived root + short-lived leaf).
-// Falls back to the leaf itself for a single self-signed cert from an older setup.
-const TLS_CA = process.env.AGENTUS_TLS_CA ?? path.join(DATA_DIR, "tls", "ca.pem");
-const TLS_READY = TLS_PORT > 0 && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY);
-
 // `agentus --where` (bin/agentus.mjs) asks the ONE place that decides these paths to say
 // what it decided, then exits — before any listener, store or subprocess exists. Print and
 // exit here rather than re-deriving the same rules in the CLI: "where is my data" must not
@@ -92,12 +78,11 @@ if (process.env.AGENTUS_PRINT_PATHS) {
   console.log(`[agentus] data dir      ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
   console.log(`[agentus] web bundle    ${WEB_DIST}  (${has(path.join(WEB_DIST, "index.html"))})`);
   console.log(`[agentus] companion apk ${APK_FILE}  (${has(APK_FILE)})`);
-  console.log(`[agentus] tls listener  ${TLS_READY ? `on :${TLS_PORT} (${TLS_CERT})` : `off (AGENTUS_TLS_PORT=${TLS_PORT}, cert ${has(TLS_CERT)})`}`);
   console.log(`[agentus] http port     ${PORT}`);
   process.exit(0);
 }
 
-fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); // 0700: credentials + TLS key live here
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); // 0700: credentials live here
 const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 // M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
 // the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
@@ -417,9 +402,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   fs.createReadStream(file).pipe(res);
 }
 
-// One request handler, two listeners: plain HTTP on PORT (LAN, loopback, curl/scripts)
-// and TLS on TLS_PORT (the port a public tunnel points at). Shared on purpose — auth,
-// routes and static serving must not drift between the two.
+// One request handler, plain HTTP on PORT (LAN, loopback, curl/scripts).
+// TLS is NOT terminated in-process: put a TLS-terminating reverse proxy (or a tunnel that
+// does its own `public_tls`) in FRONT of this port. That keeps the LAN path warning-free
+// and `curl`/scripts byte-identical, and keeps cert lifecycle out of the app.
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? "/", "http://x");
   try {
@@ -459,24 +445,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (!auth.verifyBasic(req.headers.authorization)) {
       res.writeHead(401, auth.basicChallenge());
       return res.end("Agentus: authentication required\n");
-    }
-
-    // GET /cert.crt — the ISSUER to install into a phone's trust store (the "proceed
-    // anyway" click, once per device, is the whole cost of TOFU; this makes it a download).
-    // With make-cert.sh's root+leaf setup this is the root, so the leaf can be rotated
-    // yearly without every device having to re-install.
-    // PUBLIC material only: the key never leaves <DATA>/tls/.
-    if (url.pathname === "/cert.crt") {
-      if (!TLS_READY) return send(res, 404, { error: "tls is off on this server" });
-      const der = fs.readFileSync(fs.existsSync(TLS_CA) ? TLS_CA : TLS_CERT);
-      res.writeHead(200, {
-        // Apple's installer claims this type and opens the profile flow directly;
-        // Android/Chrome just downloads the file.
-        "content-type": "application/x-x509-ca-cert",
-        "content-disposition": 'attachment; filename="agentus.crt"',
-        "content-length": String(der.length),
-      });
-      return res.end(der);
     }
 
     // ---- the phone's onboarding page + the APK, both behind the operator login ----------
@@ -1278,8 +1246,7 @@ const httpServer = createServer(handleRequest);
 // it becomes a socket. A browser cannot set headers on a WS handshake, so auth
 // rides on the cookie (sent automatically, same-origin) — or ?token= for scripts.
 const wss = new WebSocketServer({ noServer: true });
-// Bound to BOTH listeners (see the TLS block before listen): a browser on the TLS port
-// needs its wss sockets too, and this handler reads the cookie / ?token=, never the scheme.
+// Bound to the single HTTP listener; this handler reads the cookie / ?token=, never the scheme.
 const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   const url = new URL(req.url ?? "/", "http://x");
   // The companion's socket carries its own device token in the query — a phone cannot set
@@ -1605,25 +1572,6 @@ httpServer.listen(PORT, "0.0.0.0", () => {
     );
   }
 });
-// ---- optional TLS listener (self-signed) ----
-// A tunnel that terminates on the public internet must NOT be plain HTTP: the login
-// password and the session cookie would cross it in the clear. SEPARATE from PORT on
-// purpose, so the LAN path stays plain HTTP — no cert warning in the house, curl
-// unchanged. (Config constants live at the top, next to the other paths.)
-if (TLS_READY) {
-  const httpsServer = createHttpsServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handleRequest);
-  httpsServer.on("upgrade", handleUpgrade);
-  httpsServer.listen(TLS_PORT, "0.0.0.0", () => {
-    console.log(`[agentus-server] https://0.0.0.0:${TLS_PORT} (self-signed, SAN ${TLS_CERT} — point a public tunnel at THIS port; ${PORT} stays for the LAN)`);
-  });
-  // A busy TLS port must not take the LAN listener down with it: log, keep serving.
-  httpsServer.on("error", (err) => {
-    console.error(`[agentus-server] tls listener failed on ${TLS_PORT}: ${(err as Error).message}`);
-  });
-} else if (TLS_PORT > 0) {
-  console.log(`[agentus-server] tls off: no cert at ${TLS_CERT} (create it with scripts/make-cert.sh, or set AGENTUS_TLS_PORT=0)`);
-}
-
 httpServer.on("error", (err) => {
   console.error(`[agentus] cannot listen on ${PORT}: ${(err as Error).message}`);
   process.exit(1); // fail fast: never linger as a listener-less zombie

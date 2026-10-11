@@ -21,17 +21,16 @@ variables, and they must never touch each other's code or data:
 | tree | `worktrees/agentus` | `worktrees/agentus-dev` |
 | role | the instance the operator actually uses | where changes are made and tested |
 | HTTP port | `8788` | `8901` |
-| TLS port | `8443` | off (`AGENTUS_TLS_PORT=0`) |
 | data dir | `<tree>/packages/server/.data` (pinned by the launcher) | `/tmp/agentus-qa-account` |
 | launcher | `~/.hermes/cache/agentus/launch.py` | `scripts/dev.sh start\|stop\|status\|logs` |
 | supervision | launchd job `ai.hermes.agentus` (`KeepAlive`) | none — a plain detached process |
 | hot reload | **no** — restart is explicit | yes (`tsx watch`) |
 
-**Ports are configuration, not literals.** Both of live's ports live in
-`~/.hermes/cache/agentus/ports.env`; `launch.py` pins them into the server's environment, and
+**Ports are configuration, not literals.** Live's port lives in
+`~/.hermes/cache/agentus/ports.env`; `launch.py` pins it into the server's environment, and
 `scripts/dev.sh` / `scripts/relaunch.sh` read the same file instead of hardcoding a number. Move
 live by editing that one line and restarting it — never by hunting a literal through the launchers,
-the scripts and the docs (that is how the port and the TLS port both drifted before).
+the scripts and the docs (that is how the port drifted before).
 
 **Live is supervised by launchd.** It used to be a detached child of whatever shell happened to
 start it: nothing brought it back after a crash, and it inherited that shell's entire environment
@@ -84,5 +83,5 @@ the one exception is a strictly web-only change, and even that is bounded by wha
   notification contract.
 - [`docs/refs/`](../refs/) — notes on the reference UIs and ACP rules this project borrows
   behaviour from.
-- [`README.md`](../../README.md) — install, environment variables, login, TLS and the
+- [`README.md`](../../README.md) — install, environment variables, login and the
   public tunnel.

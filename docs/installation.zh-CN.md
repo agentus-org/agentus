@@ -89,7 +89,7 @@ npm run agentus                     # 与 `npx agentus` 同一个 CLI，直接�
 agentus [options]
 
   -p, --port <n>     监听端口                        (AGENTUS_PORT，默认 8788)
-  -d, --data <dir>   状态目录（sqlite、登录、TLS 材料、设置）
+  -d, --data <dir>   状态目录（sqlite、登录、设置）
                                                        (AGENTUS_DATA，默认 ~/.agentus)
   -o, --open         就绪后自动在浏览器打开驾驶舱
       --where        打印解析出的路径后退出（不启动任何东西）
@@ -97,8 +97,8 @@ agentus [options]
   -v, --version      打印版本
 ```
 
-`--where` 值得记住：它会打印服务端**实际**解析出的路径 —— 数据目录、前端产物、随附 APK、TLS
-监听、Node 版本 —— 然后退出，什么都不启动。它是「我的数据去哪了」的唯一权威答案（见下文）。
+`--where` 值得记住：它会打印服务端**实际**解析出的路径 —— 数据目录、前端产物、随附 APK、
+Node 版本 —— 然后退出，什么都不启动。它是「我的数据去哪了」的唯一权威答案（见下文）。
 
 ## 首次运行
 
@@ -132,9 +132,6 @@ agentus [options]
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | 未在行里指定 home 时的默认 `HERMES_HOME` |
 | `AGENTUS_PERM_TIMEOUT_MS` | `300000`（5 分钟） | 权限提示自动取消前的等待时间 |
 | `AGENTUS_HISTORY_PAGE` | `500` | 对话记录分页大小 |
-| `AGENTUS_TLS_PORT` | 有证书时 `8443`，否则关闭 | TLS 监听端口（`0` = 关闭） |
-| `AGENTUS_TLS_CERT` / `AGENTUS_TLS_KEY` | `<DATA_DIR>/tls/{cert,key}.pem` | 该监听用的证书材料 |
-| `AGENTUS_TLS_CA` | `<DATA_DIR>/tls/ca.pem` | 设备只需装一次的根证书 |
 | `AGENTUS_TTS_BASE_URL` | 未设置 | 服务端语音合成的 OpenAI 兼容 base（`…/v1`）；不设 = 只用浏览器语音 |
 | `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | 同上 |
 | `AGENTUS_STT_BASE_URL` | 未设置 | 服务端语音识别的 OpenAI 兼容 base；不设 = 只用浏览器识别 |
@@ -161,7 +158,7 @@ agentus [options]
 ### 数据目录
 
 默认 `~/.agentus`。里面有 `agentus.sqlite`（会话 + 记录）、`credentials.json`、`auth.token`、
-`auth.secret`、`tls/`、`settings.json`。首次启动时以 `0700` 创建，启动日志会打印它**以及为什么是
+`auth.secret`、`settings.json`。首次启动时以 `0700` 创建，启动日志会打印它**以及为什么是
 这个目录胜出**：
 
 | 顺序 | 规则 |
@@ -175,14 +172,13 @@ agentus [options]
 会打印服务端解析的结果，不用靠猜。
 
 任何东西都不会写进 `node_modules`：对已安装的包来说，`<pkg>/packages/server/.data` 会被下一次
-`npm i -g agentus` 删掉，连带记录、登录和 TLS 密钥一起没了。
+`npm i -g agentus` 删掉，连带记录和登录一起没了。
 
 ### 端口
 
 | 端口 | 协议 | 用途 |
 |---|---|---|
-| `AGENTUS_PORT`（8788） | 纯 HTTP | 局域网、本机回环、`curl`、脚本 —— 无证书警告，CI 不变 |
-| `AGENTUS_TLS_PORT`（8443） | HTTPS（自签） | **隧道** —— 加密公网那一跳 |
+| `AGENTUS_PORT`（8788） | 纯 HTTP | 局域网、本机回环、`curl`、脚本 —— 无证书警告，CI 不变；**唯一的监听** |
 | 5173 | Vite 开发服务器 | 前端热更新，仅在 `npm run dev` 期间 |
 
 两个监听的 handler、路由、鉴权完全相同，只有 socket 不同。
@@ -202,24 +198,15 @@ agentus [options]
 
 ### TLS
 
-纯 TCP 隧道（SakuraFrp、`ssh -L`、多数 frp 配置）只是转发字节 —— 它**不会**替你终结 TLS。所以
-服务端自己会讲 TLS，落在**第二个**监听上：
+纯 TCP 隧道（SakuraFrp、`ssh -L`、多数 frp 配置）只是转发字节 —— 它**不会**替你终结 TLS。所以要
+在服务端**前面**终结 TLS：放一层反代（Caddy / nginx），或者用自带 `public_tls` 的隧道。
 
-```bash
-scripts/make-cert.sh                    # 自签根证书 + 短期叶证书，SAN = 你实际输入的名字
-# -> $AGENTUS_DATA/tls/{ca.pem,cert.pem,key.pem}   （key 0600，已被 git 忽略）
-# 启动日志会写：https://0.0.0.0:8443 (self-signed …) ; 把隧道指向这个端口
-```
+本进程自己只讲纯 HTTP，刻意如此：LAN 这条路不需要证书，`curl`/脚本保持不变；证书的生命周期（签发、
+轮换、SAN）留在前置层里，而不是塞进应用。
 
-该监听还会在 `/cert.crt` 上提供自己的签发证书，设备只需装一次根证书：
-`https://<你的名字>:<tls-port>/cert.crt`。iOS 会直接打开描述文件安装器；Android 会下载它
-（设置 → 安全 → CA 证书）；iOS 还需要再到 *关于本机 → 证书信任设置 → 启用*。这是公开材料 ——
-私钥永远不会离开 `<DATA_DIR>/tls/`。
-
-`make-cert.sh` 有意签**两**张证书：一张 10 年的根（`ca.pem`，设备装它）和一张 390 天的叶
-（`cert.pem`，监听提供它）。Apple 把服务器证书有效期卡在 398 天，所以一张 10 年的叶证书正是
-iOS 在用户走完安装流程**之后**才拒绝的东西。叶证书可以随意轮换（`--leaf-only`），已装根证书的
-设备不受影响。
+走 TLS 到达的请求，session cookie 照样是 `Secure`：handler 读 `X-Forwarded-Proto`
+（`packages/server/src/auth.ts`），凡设置了这个头的前置层（Caddy 和 nginx 默认都设）都会拿到
+`Secure` cookie，本地无需任何配置。
 
 ### 后端
 
@@ -314,7 +301,7 @@ npm i -g agentus@latest            # 或者：npx agentus@latest … 跑一次
 
 ```bash
 npm rm -g agentus                  # 删程序（状态保留）
-rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、TLS 密钥、设置
+rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、设置
 ```
 
 装到用户级前缀的话用 `npm rm -g --prefix ~/.local agentus`。卸载**不会**碰 `~/.hermes`（你 agent
@@ -346,5 +333,6 @@ rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、TLS 密�
 **页面能打开但一直显示「reconnecting」。** 某条隧道丢掉了 WebSocket 的 `Upgrade`。实时流走
 `/ws`；请换成能透传 WebSocket 的隧道（SakuraFrp 的 TCP+auto-HTTPS 隧道已验证可用）。
 
-**局域网里出现证书警告。** 那是 TLS 监听的自签证书（裸局域网 IP 无法承载可信证书）。要么在
-局域网里用纯 HTTP 的 `:8788` 端口，要么从 `/cert.crt` 装一次签发证书（见 [TLS](#tls)）。
+**局域网里出现证书警告。** 服务端自己只讲纯 HTTP（`:8788`），所以出现警告说明你是用 IP 直接
+访问了终结 TLS 的那层前置（它的证书签的是域名，不是 IP）。要么用纯 HTTP 的 `:8788`，要么用证书
+签发的那个名字去访问前置层。

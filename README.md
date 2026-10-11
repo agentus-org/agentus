@@ -73,7 +73,7 @@ stale, then serves. Use `AGENTUS_PORT=9000 npm start` to move the port.
 ### Where your state lives
 
 `~/.agentus` by default — `agentus.sqlite` (sessions and transcript), `credentials.json`,
-`auth.token` (the machine credential), `auth.secret`, `tls/`, `settings.json`. It is
+`auth.token` (the machine credential), `auth.secret`, `settings.json`. It is
 created 0700 on first boot, and the boot log prints it **and why that directory won**:
 
 | order | rule |
@@ -111,8 +111,6 @@ layer never changes.
 | `AGENTUS_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
 | `AGENTUS_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
 | `AGENTUS_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
-| `AGENTUS_TLS_PORT` | `8443` when a cert exists, else off | **second listener, TLS** — the one a public tunnel points at (`0` disables it) |
-| `AGENTUS_TLS_CERT` / `AGENTUS_TLS_KEY` | `<AGENTUS_DATA>/tls/{cert,key}.pem` | cert material for that listener (see `scripts/make-cert.sh`) |
 | `AGENTUS_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
 | `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
 | `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
@@ -228,57 +226,23 @@ Two things to know about a tunnel in front of this app:
   the session cookie is issued `Secure` automatically (verified through that same tunnel),
   so no config needed. The last hop inside your LAN stays plain HTTP.
 
-#### TLS: a second listener, on purpose
+#### TLS: terminated in front, not in-process
 
-A plain TCP tunnel (SakuraFrp, safe-nat, `ssh -L`, most frp setups) forwards bytes — it
-does **not** terminate TLS for you. Point one at `:8788` and the operator's password and
-session cookie cross the internet in clear text. So the server can speak TLS itself:
-
-```bash
-scripts/make-cert.sh                    # self-signed, SAN = the name you actually type
-# -> $AGENTUS_DATA/tls/{cert.pem,key.pem} (0600, git-ignored) — ~/.agentus/tls by default
-# boot log then says: https://0.0.0.0:8443 (self-signed …) ; point a tunnel at THIS port
-```
+A plain TCP tunnel (SakuraFrp, safe-nat, `ssh -L`, most frp setups) forwards bytes — it does
+**not** terminate TLS for you. Point one at `:8788` and the operator's password and session
+cookie would cross the internet in clear text. So terminate TLS **in front of Agentus** — a
+reverse proxy (Caddy/nginx) or a tunnel that does its own `public_tls` — and let this process
+speak plain HTTP:
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
-| `AGENTUS_TLS_PORT` (8443) | HTTPS (self-signed) | **the tunnel** — encrypts the public hop |
+| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
 
-Same handler, same routes, same auth; only the socket differs. Two listeners beat both
-alternatives: turning the single port into HTTPS would put a cert warning in front of your
-own LAN usage (and break `curl` scripts), while sniffing the first byte on one port to
-serve both hides whether a given visit was really encrypted.
-
-**Retiring the warning on your devices.** With TLS on, the listener serves its own
-certificate at `/cert.crt`:
-
-```bash
-https://<your-name>:<tls-port>/cert.crt     # iOS: opens the profile installer directly
-                                            # Android: downloads it → Settings → Security → CA certificate
-curl --cacert <AGENTUS_DATA>/tls/cert.pem https://<your-name>:<tls-port>/healthz   # scripts, no -k
-```
-
-Installed as a trusted root (iOS also needs *About → Certificate Trust Settings → enable*),
-the browser stops asking and the address bar is clean. It is public material — the private
-key never leaves `<AGENTUS_DATA>/tls/`.
-
-The cert is **self-signed on purpose** — no CA issues for an unregistered domain or a bare
-IP, so the browser shows "not private → proceed" once per device, and installing the issuer
-(`/cert.crt`, above) retires even that. Keep the SAN to the name you type (**the DDNS name**,
-not the public IP: a dynamic IP would need re-issuing, and a mismatch adds a second warning).
-
-`make-cert.sh` issues **two** certs on purpose: a 10-year root (`ca.pem`, what devices
-install) and a 390-day leaf (`cert.pem`, what the listener serves). Apple caps *server
-certificate* validity at 398 days — a 10-year self-signed leaf is precisely what iOS refuses
-*after* the user has been through the install dance. A root is not a server cert, so it can
-live long; rotating the leaf (`--leaf-only`) never touches an installed device.
-
-`npm run tls-smoke` (in CI, real sockets) guards all of it: a verifying client must be
-*rejected* (that is what proves the port is actually TLS), the leaf must chain to the root
-`/cert.crt` hands out and stay under the 398-day cap, the API login and `wss://…/ws` handshake
-must work over TLS (the upgrade handler is bound to both listeners — the easy thing to
-forget), and the LAN port must stay plain.
+Certificate lifecycle (issuing, rotation, SAN) stays in that front layer and never touches the
+app, and the LAN path stays warning-free. Nothing is lost on the cookie side either: the handler
+reads `X-Forwarded-Proto` (`packages/server/src/auth.ts`), so a request that arrived over TLS at
+the front layer still gets a `Secure` session cookie — Caddy and nginx both set that header by
+default.
 
 Logout revokes the session id server-side, so "sign out" ends the session instead of
 just hiding the UI — the cookie stops working immediately.
@@ -449,7 +413,6 @@ npm run auth-smoke                        # 48 assertions: the lock, both creden
 npm run backend-smoke                     # 42: the backend registry, spawn env, health evidence
 npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
-npm run tls-smoke                         # the second listener, real sockets + real certs
 npm run package-smoke                     # packs, installs into a throwaway prefix + HOME, boots
                                           # that install, drives a mock turn, checks ~/.agentus
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent

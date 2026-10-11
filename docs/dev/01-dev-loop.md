@@ -12,7 +12,6 @@ instances:
 |---|---|---|
 | path | `worktrees/agentus` | `worktrees/agentus-dev` |
 | HTTP port | `8788` | `8901` |
-| TLS port | `8443` | disabled (`AGENTUS_TLS_PORT=0`) |
 | data dir | `<tree>/packages/server/.data` | `/tmp/agentus-qa-account` |
 | started by | `~/.hermes/cache/agentus/launch.py` | `bash scripts/dev.sh start` |
 | watcher | no (one process, no reload) | yes (`tsx watch`) |
@@ -101,7 +100,7 @@ live. Two independent knobs if you need more:
 - **The store** — override `AGENTUS_DATA` (as `dev.sh` does). A throwaway instance is one
   line:
   ```bash
-  AGENTUS_PORT=8907 AGENTUS_TLS_PORT=0 AGENTUS_DATA=/tmp/<name> npx tsx packages/server/src/index.ts
+  AGENTUS_PORT=8907 AGENTUS_DATA=/tmp/<name> npx tsx packages/server/src/index.ts
   ```
   Note the server reads `AGENTUS_PORT`, not bare `PORT` — and this box exports an ambient
   `PORT=8648` (Hermes Studio), so a script that reads the ambient value starts a retry loop

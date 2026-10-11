@@ -92,7 +92,7 @@ serves once (no watcher). `AGENTUS_PORT=9000 npm start` moves the port.
 agentus [options]
 
   -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
-  -d, --data <dir>   where state lives (sqlite, login, TLS material, settings)
+  -d, --data <dir>   where state lives (sqlite, login, settings)
                                                        (AGENTUS_DATA, default ~/.agentus)
   -o, --open         open the cockpit in your browser once it is up
       --where        print the resolved paths and exit (starts nothing)
@@ -101,7 +101,7 @@ agentus [options]
 ```
 
 `--where` is worth knowing: it prints what the server actually resolved — data dir, web bundle,
-companion APK, TLS listener, Node version — and exits before anything starts. It is the one
+companion APK, Node version — and exits before anything starts. It is the one
 answer to "where did my data go" (see below).
 
 ## First run
@@ -137,9 +137,6 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one |
 | `AGENTUS_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
 | `AGENTUS_HISTORY_PAGE` | `500` | transcript page size |
-| `AGENTUS_TLS_PORT` | `8443` when a cert exists, else off | the TLS listener (`0` disables it) |
-| `AGENTUS_TLS_CERT` / `AGENTUS_TLS_KEY` | `<DATA_DIR>/tls/{cert,key}.pem` | cert material for that listener |
-| `AGENTUS_TLS_CA` | `<DATA_DIR>/tls/ca.pem` | the root a device installs once |
 | `AGENTUS_TTS_BASE_URL` | unset | OpenAI-compatible base for server speech synthesis (`…/v1`); unset = browser voices only |
 | `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
 | `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for server transcription; unset = browser recognition only |
@@ -167,7 +164,7 @@ wins; the env is what makes a fresh install work before anyone opens it.
 ### Data directory
 
 `~/.agentus` by default. It holds `agentus.sqlite` (sessions + transcript), `credentials.json`,
-`auth.token`, `auth.secret`, `tls/`, `settings.json`. It is created `0700` on first boot, and the
+`auth.token`, `auth.secret`, `settings.json`. It is created `0700` on first boot, and the
 boot log prints it **and why that directory won**:
 
 | order | rule |
@@ -182,18 +179,17 @@ boot it once with `AGENTUS_DATA=~/.agentus`. `agentus --where` prints what the s
 instead of making you guess.
 
 Nothing ever writes inside `node_modules`: for an installed package, `<pkg>/packages/server/.data`
-would be deleted by the next `npm i -g agentus`, taking the transcript, the login and the TLS key
-with it.
+would be deleted by the next `npm i -g agentus`, taking the transcript and the login with it.
 
 ### Ports
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged |
-| `AGENTUS_TLS_PORT` (8443) | HTTPS (self-signed) | the tunnel — encrypts the public hop |
+| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
 | 5173 | Vite dev server | front-end hot reload, only during `npm run dev` |
 
-Same handler, same routes, same auth on both listeners; only the socket differs.
+TLS is terminated **in front of** this process (a reverse proxy, or a tunnel that does its own
+`public_tls`) — see [TLS](#tls).
 
 ### Login
 
@@ -212,23 +208,16 @@ file wins. Delete `credentials.json` to fall back to the environment.
 ### TLS
 
 A plain TCP tunnel (SakuraFrp, `ssh -L`, most frp setups) forwards bytes — it does not terminate
-TLS for you. So the server can speak TLS itself, on a **second** listener:
+TLS for you. So terminate TLS **in front of** the server: a reverse proxy (Caddy, nginx), or a
+tunnel that does its own `public_tls`.
 
-```bash
-scripts/make-cert.sh                    # self-signed root + short-lived leaf, SAN = the name you type
-# -> $AGENTUS_DATA/tls/{ca.pem,cert.pem,key.pem}   (key 0600, git-ignored)
-# boot log then says: https://0.0.0.0:8443 (self-signed …) ; point a tunnel at THIS port
-```
+This process listens on plain HTTP only, on purpose: the LAN path then needs no certificate and
+`curl`/scripts stay unchanged, and certificate lifecycle (issuing, rotation, SAN) lives in that
+front layer instead of inside the app.
 
-The listener also serves its own issuer at `/cert.crt`, so a device can install the root once:
-`https://<your-name>:<tls-port>/cert.crt`. iOS opens the profile installer directly; Android
-downloads it (Settings → Security → CA certificate); iOS also needs *About → Certificate Trust
-Settings → enable*. It is public material — the private key never leaves `<DATA_DIR>/tls/`.
-
-`make-cert.sh` issues two certs on purpose: a 10-year root (`ca.pem`, what devices install) and a
-390-day leaf (`cert.pem`, what the listener serves). Apple caps server-certificate validity at 398
-days, so a 10-year leaf is exactly what iOS refuses *after* the install dance. Rotate the leaf
-(`--leaf-only`) freely; the installed root is untouched.
+The session cookie still comes out `Secure` when the request arrived over TLS: the handler reads
+`X-Forwarded-Proto` (`packages/server/src/auth.ts`), so any front layer that sets it — Caddy and
+nginx both do by default — gets a `Secure` cookie with no configuration here.
 
 ### Backends
 
@@ -326,7 +315,7 @@ session cookies once instead of logging every device out.
 
 ```bash
 npm rm -g agentus                  # remove the program (state stays)
-rm -rf ~/.agentus                  # remove state — SQLite, login, TLS key, settings
+rm -rf ~/.agentus                  # remove state — SQLite, login, settings
 ```
 
 If you installed into a per-user prefix, `npm rm -g --prefix ~/.local agentus`. Uninstalling never
@@ -361,6 +350,7 @@ them, e.g. `AGENTUS_DATA=~/.agentus agentus` or `AGENTUS_DATA=<repo>/packages/se
 requests. The live stream rides on `/ws`; use a tunnel that passes WebSockets through (SakuraFrp
 TCP+auto-HTTPS tunnels are verified working).
 
-**Certificate warning on the LAN.** That is the TLS listener's self-signed cert (a bare LAN IP
-cannot carry a trusted cert). Either use the plain-HTTP `:8788` port on the LAN, or install the
-issuer once from `/cert.crt` (see [TLS](#tls)).
+**Certificate warning on the LAN.** The server itself speaks plain HTTP on `:8788`, so a warning
+means you are reaching a TLS-terminating front layer directly by IP — its certificate names a
+domain, not an IP. Either use the plain-HTTP `:8788` port on the LAN, or reach the front layer by
+the name its certificate was issued for.
