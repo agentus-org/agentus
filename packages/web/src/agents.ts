@@ -35,3 +35,23 @@ export const BACKEND_MARK: Record<string, AgentMarkSpec> = {
 export function markOf(backend: string): AgentMarkSpec {
   return BACKEND_MARK[backend] ?? { letter: backend.slice(0, 1).toUpperCase(), label: backend };
 }
+
+/**
+ * Which backends the NEW-SESSION form may offer.
+ *
+ * The scripted mock agent is a QA backend: it answers with canned text and spends nothing, so on an
+ * instance the operator actually works in it is a row that LOOKS like a working agent and is not
+ * one. The server says whether this instance is a dev one (`/api/version.dev`, set from
+ * `scripts/dev.sh`'s own `DEV_TREE`), and only there does it appear (operator, 2026-10-11:
+ * 「默认不要放 mock agent 吧，这个不应该只在 dev 中使用吗」). Nothing else about the row changes: it
+ * stays in 设置 → 后端, and the QA suites create mock sessions over the API.
+ *
+ * Lives here, with the other agent-facing tables, so the rule can be asserted without a browser
+ * (`scripts/qa/backend-choice.mts`) — "mock is not offered on a live instance" is a data claim, not
+ * a rendering one. If filtering would leave nothing to choose, the filter yields: an empty form is
+ * worse than a dev backend on a machine that has nothing else.
+ */
+export function backendChoices<T extends { kind?: string }>(rows: T[], dev: boolean): T[] {
+  const usable = rows.filter((row) => row.kind !== "mock" || dev);
+  return usable.length ? usable : rows;
+}

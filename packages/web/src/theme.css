@@ -829,10 +829,16 @@ code.inline {
      today the "this session cannot be used" dialog — was painted UNDER the drawer, so on a phone
      the tap looked like it did nothing. Below the call screen and the row editor (both 60). */
   display: flex; align-items: center; justify-content: center; z-index: 35; padding: 16px;
+  /* A dialog taller than the window used to be CLIPPED — centered in a flex box with no scroller,
+     so its own buttons sat below the fold and above the top edge at the same time (the new-session
+     form did not fit 390×844). It scrolls now, and it starts at the top on a phone so the first
+     field is reachable rather than the middle of the form. */
+  overflow-y: auto; overscroll-behavior: contain;
 }
 .modal {
   background: var(--bg-panel); border: 1px solid var(--line); border-radius: 14px;
   padding: 20px; width: 100%; max-width: 420px;
+  max-height: calc(100dvh - 32px); overflow-y: auto;
 }
 .modal h3 { margin: 0 0 14px; font-size: 16px; }
 .modal label { display: block; font-size: 12.5px; color: var(--text-dim); margin: 10px 0 4px; }
@@ -847,19 +853,61 @@ code.inline {
 /* a destructive confirm: it must not look like the safe button next to it */
 .modal .row .go.danger { background: var(--err); color: #fff; }
 .modal .err { color: var(--err); font-size: 12.5px; margin-top: 10px; }
+/* A phone gets the short version of the same form: the dialog starts at the top (so the first field
+   is reachable and the launch button is at the end of a scroll, not off both ends of the screen) and
+   every gap comes down by a couple of pixels. */
+@media (max-width: 520px) {
+  .modal-bg { align-items: flex-start; padding: 10px; }
+  .modal { padding: 14px; border-radius: 12px; }
+  .modal h3 { margin: 0 0 8px; font-size: 15px; }
+  .modal label { margin: 8px 0 3px; }
+  .modal input, .modal select { padding: 8px 9px; }
+  .modal .row { margin-top: 12px; }
+  .backend-pick .be-card { width: 68px; min-height: 58px; }
+}
 /* The two agent homes a refused resume failed between: paths are read character by character, so
    they get their own monospace lines instead of being buried mid-sentence. */
 .blocked-homes { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
 .blocked-homes div { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
 .blocked-homes span { color: var(--text-dim); min-width: 104px; flex: none; }
 .blocked-homes code { font-family: var(--mono); word-break: break-all; }
-.backend-pick { display: flex; gap: 8px; }
-.backend-pick button {
-  flex: 1; padding: 10px; border-radius: 8px; cursor: pointer;
-  background: var(--bg-raised); border: 1px solid var(--line); color: var(--text);
+/* ---- the backend strip in the new-session form ----
+   VENDOR MARK ON TOP, NAME UNDERNEATH (operator, 2026-10-11: 「上面放头像，下面写文案」): the same two
+   carriers the rail uses — artwork when we have it, the monogram otherwise — so one agent looks the
+   same in the rail, on its messages and here. The strip scrolls sideways when it outgrows the screen:
+   a phone has no room to grow vertically, so width is the dimension we spend on more backends. */
+.backend-pick { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 2px; }
+.backend-pick .be-card {
+  flex: 0 0 auto; width: 74px; min-height: 62px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+  padding: 8px 6px; border-radius: 10px; cursor: pointer;
+  background: var(--bg-raised); border: 1px solid var(--line); color: var(--text-dim);
+  font: inherit;
 }
-.backend-pick button.sel { border-color: var(--accent-text); color: var(--accent-text); }
-.backend-pick button.retry { flex: 0 0 42px; font-size: 15px; }
+.backend-pick .be-card.sel { border-color: var(--accent-text); color: var(--accent-text); background: rgba(var(--accent-rgb), 0.10); }
+.be-card-mark {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700;
+  color: var(--be-tone, var(--text-dim));
+  background: color-mix(in srgb, var(--be-tone, var(--text-dim)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--be-tone, var(--text-dim)) 40%, transparent);
+}
+.be-card-mark img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+.be-card-label { max-width: 100%; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backend-pick .be-card.reload { width: 42px; font-size: 15px; }
+
+/* 后端详情: the row's own mechanics (cmd / home / cwd / env) folded into one line. They used to stand
+   between the operator and the launch button as four monospace lines on every open of the form. */
+.be-detail { margin-top: 6px; }
+.be-detail-head {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: none; padding: 2px 0; cursor: pointer;
+  color: var(--text-dim); font-size: 11.5px;
+}
+.be-detail-head:hover { color: var(--accent-text); }
+.be-detail-arrow { transition: transform 0.12s; }
+.be-detail.open .be-detail-arrow { transform: rotate(90deg); }
 .dim { color: var(--text-dim); font-size: 12.5px; align-self: center; }
 .hint { color: var(--text-dim); font-size: 11.5px; margin-top: 8px; font-family: ui-monospace, monospace; word-break: break-all; }
 
@@ -954,7 +1002,9 @@ code.inline {
   .sidebar footer .logout-btn { min-height: 44px; padding: 2px 12px; }
 }
 
-/* ---- workspace picker (new slot) ---- */
+/* ---- workspace picker (new slot) ----
+   The chosen path is displayed in ONE place — the field at the top — so there is no breadcrumb strip
+   between the field and the list and no "selected" line under the list any more. */
 .wp { display: flex; flex-direction: column; gap: 5px; }
 .wp-bar { display: flex; align-items: center; gap: 6px; }
 .wp-bar > svg { color: var(--text-dim); flex: 0 0 auto; }
@@ -964,14 +1014,6 @@ code.inline {
   font-family: var(--mono);
 }
 .wp-path:focus { outline: none; border-color: var(--accent-dim); }
-.wp-now { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
-.wp-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; font-size: 11px; }
-.wp-crumbs > span { display: inline-flex; align-items: center; color: var(--text-dim); }
-.wp-crumb {
-  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
-  padding: 2px 4px; border-radius: 5px; font-size: 11.5px;
-}
-.wp-crumb:hover { color: var(--accent-text); background: var(--bg-raised); }
 .wp-list {
   max-height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px;
   background: rgba(0, 0, 0, 0.18); padding: 3px;
@@ -991,16 +1033,22 @@ code.inline {
 .wp-enter:hover { color: var(--accent-text); border-color: var(--line); }
 .wp-note { padding: 10px; font-size: 12px; color: var(--text-dim); text-align: center; }
 .wp-note.err { color: var(--err); }
-.wp-recent { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.wp-recent {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 4px;
+  /* Six shortcuts, one line: wrapping them onto a second row costs a phone screen height it does
+     not have, and a scroll that only appears when they do not fit costs nothing when they do. */
+  overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 1px;
+}
 .wp-recent-label { font-size: 11px; color: var(--text-dim); }
 .wp-chip {
+  flex: 0 0 auto;
   border: 1px solid var(--line); background: var(--bg-raised); color: var(--text-dim);
-  border-radius: 999px; padding: 3px 9px; font-size: 11.5px; cursor: pointer;
+  border-radius: 999px; padding: 1px 8px; font-size: 10.5px; line-height: 1.5; cursor: pointer;
   font-family: var(--mono);
+  max-width: 116px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wp-chip:hover { color: var(--text); border-color: var(--text-dim); }
 .wp-chip.sel { color: var(--accent-text); border-color: var(--accent-dim); }
-.wp-picked { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-dim); }
 .wp-use {
   display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
   border: 1px solid var(--line); background: transparent; color: var(--text-dim);
@@ -1008,16 +1056,12 @@ code.inline {
 }
 .wp-use:hover:not(:disabled) { color: var(--accent-text); border-color: var(--accent-dim); }
 .wp-use:disabled { opacity: 0.5; cursor: default; }
-.wp-picked-path {
-  font-size: 11px;
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-family: var(--mono); font-size: 11.5px; color: var(--accent-text);
-}
 @media (max-width: 480px) {
   .wp-row { min-height: 40px; }
-  .wp-chip { min-height: 30px; }
+  .wp-chip { min-height: 26px; }
   /* 16px stops iOS Safari zooming the page when the path field takes focus */
   .wp-path { font-size: 16px; }
+  .wp-list { max-height: 150px; }
 }
 
 /* ---- workspace panel (▤): files + terminal, one column next to the chat ----
@@ -1777,9 +1821,9 @@ body.pane-dragging * { cursor: col-resize !important; }
   background: color-mix(in srgb, var(--be-tone, var(--text-dim)) 16%, transparent);
   border: 1px solid color-mix(in srgb, var(--be-tone, var(--text-dim)) 40%, transparent);
 }
-.be-avatar.be-hermes { --be-tone: #a98bff; }
-.be-avatar.be-qoder  { --be-tone: #4f9bf5; }
-.be-avatar.be-mock   { --be-tone: #94a3b8; }
+.be-avatar.be-hermes, .be-card-mark[data-backend="hermes"] { --be-tone: #a98bff; }
+.be-avatar.be-qoder,  .be-card-mark[data-backend="qoder"]  { --be-tone: #4f9bf5; }
+.be-avatar.be-mock,   .be-card-mark[data-backend="mock"]   { --be-tone: #94a3b8; }
 /* brand artwork (hermes.png / qoder.svg) fills the same square the monogram occupies;
    the border-radius clips the squircle sources into the rail's round token */
 .be-avatar img {
@@ -1788,15 +1832,16 @@ body.pane-dragging * { cursor: col-resize !important; }
 .be-avatar .be-dot {
   position: absolute; right: -2px; bottom: -2px;
   width: 7px; height: 7px; border-radius: 50%;
-  border: 1px solid var(--bg); background: var(--ok);
+  border: 1px solid var(--bg); background: var(--text-dim);
 }
-/* The badge answers ONE question and it is about the PROCESS, not the turn: green = this session
-   has a live ACP process behind it, absent = it is on disk only. It is deliberately not a status
-   light — 待命, 运行中 and 出错 all have a process and all wear it, and 出错 is named in words in
-   the tooltip rather than smuggled into a 7px pixel.
-   The RUNNING row is a different question, and it is answered by MOTION: a halo breathes around
-   the mark (`.live` — studio's streaming glow, drawn in our tokens) while the badge stays still.
-   Only `running` moves, which is what makes the one working row findable in a still rail. */
+/* The badge is one question — does this session have a live ACP process behind it — and it is
+   deliberately not a status light: 待命, 运行中 and 出错 all have a process and all wear it, and 出错
+   is named in words in the tooltip rather than smuggled into a 7px pixel.
+   What the badge does say is WHICH of the two it is, by colour: GREY = a process exists and is not
+   doing anything, GREEN = this row is working right now (`.running`, the same row the halo breathes
+   around). It used to be green on every row with a process, i.e. green whenever the rail was warm,
+   which is exactly the fact the operator was scanning for and could not see (2026-10-11). */
+.be-avatar .be-dot.running { background: var(--ok); }
 .be-avatar.live { animation: rail-live 1.8s ease-in-out infinite; }
 @keyframes rail-live {
   0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ok) 55%, transparent); }

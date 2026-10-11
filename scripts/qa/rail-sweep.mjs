@@ -489,6 +489,97 @@ check("inside a workspace, the session you last talked to sits above an idle sib
   Boolean(gA) && gA.items.indexOf(seeded.older) >= 0 && gA.items.indexOf(seeded.older) < gA.items.indexOf(seeded.sibling),
   `items=${JSON.stringify(gA?.items ?? null)} older=${seeded.older} sibling=${seeded.sibling}`);
 
+// --- the rail must NOT reorder because the operator LOOKED at something (2026-10-11) -------------
+// Operator: 「我切换一个老的会话，不需要把该会话立即前移吧…我频繁在两个空间中的会话间点击，会话列表跳来跳去」.
+// Two rules used to reorder on a CLICK — the group holding the ACTIVE session sorted first, and a
+// live row sorted above a cold one (so clicking a cold row, which WAKES it, lifted it) — and both are
+// gone: the only key left is when the session was last TALKED to. The two checks below tell the two
+// designs apart, and both are RED on the previous build by construction (the second click moved group
+// B to the top; waking the cold row lifted it out of last place).
+const orderOf = () => ev(`(() => [...document.querySelectorAll('.rail-group')].map((g) => ({
+  path: g.querySelector('.rail-group-head')?.dataset.workspace ?? '',
+  items: [...g.querySelectorAll('.session-item')].map((r) => r.dataset.session ?? ''),
+})))()`);
+const openGroups = (paths) => ev(`(() => { for (const p of ${JSON.stringify(paths)}) {
+  const h = document.querySelector('.rail-group-head[data-workspace="' + p + '"]');
+  if (h && !h.classList.contains('open')) h.click();
+} return true; })()`);
+const activeRow = () => ev(`document.querySelector('.session-item.active')?.dataset.session ?? ''`);
+const clickRow = (sid) => ev(`document.querySelector('[data-session="' + ${JSON.stringify(sid)} + '"]')?.click()`);
+
+await setViewport(1440, 900);
+await sleep(400);
+await openGroups(['/tmp/as-order-A', '/tmp/as-order-B', '/tmp/as-order-C']);
+await sleep(500);
+// start from a state where the ACTIVE row is in the group at the top (A): the click below is then a
+// cross-workspace click, which is the shape the operator reported
+await clickRow(seeded.older);
+await sleep(900);
+const orderBeforeClick = await orderOf();
+await clickRow(seeded.newer);
+await sleep(1200);
+const orderAfterClick = await orderOf();
+const clickedActive = await activeRow();
+check("clicking a session in another workspace does not reorder the rail",
+  JSON.stringify(orderBeforeClick) === JSON.stringify(orderAfterClick),
+  `before=${JSON.stringify(orderBeforeClick.map((g) => g.path))} after=${JSON.stringify(orderAfterClick.map((g) => g.path))}`);
+check("…and that click did its job (the row the operator clicked is the active one)",
+  clickedActive === seeded.newer, `active=${clickedActive} want=${seeded.newer}`);
+
+// The second key that must not exist: a process. A COLD row that was chatted more recently than its
+// live sibling leads it, and waking the cold row (a plain click resumes it) moves nothing either.
+fs.mkdirSync("/tmp/as-order-C", { recursive: true });
+const seeded3 = await ev(`(async () => {
+  const j = (r) => r.json();
+  const post = (u, b) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(j);
+  const coldNew = await post('/api/sessions', { backend: 'mock', cwd: '/tmp/as-order-C' });
+  const liveOld = await post('/api/sessions', { backend: 'mock', cwd: '/tmp/as-order-C' });
+  return { coldNew: coldNew.id, liveOld: liveOld.id };
+})()`);
+await sleep(2000);   // the two creations stay clearly apart on the clock
+const sentC = await ev(`fetch(${JSON.stringify(`/api/sessions/${seeded3.coldNew}/prompt`)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '排序测试：这条刚聊过，但它的进程马上会被关掉' }) }).then((r) => r.status)`);
+check("the cold-row ordering probe could send its prompt", sentC === 202, `HTTP ${sentC}`);
+for (let i = 0; i < 40; i++) {
+  await sleep(500);
+  const at = await ev(`fetch('/api/sessions').then((r) => r.json()).then((d) => { const s = [...(d.live || []), ...(d.cold || [])].find((x) => x.id === ${JSON.stringify(seeded3.coldNew)}); return s ? { lastAt: s.lastAt ?? 0, createdAt: s.createdAt } : null; })`);
+  if (at && at.lastAt > at.createdAt + 400) break;
+}
+// closing the PROCESS, not the session: DELETE on a live slot closes it — the row and its clock stay
+const closed = await ev(`fetch(${JSON.stringify(`/api/sessions/${seeded3.coldNew}`)}, { method: 'DELETE' }).then((r) => r.json()).then((j) => (j.closed === ${JSON.stringify(seeded3.coldNew)} ? 'closed' : JSON.stringify(j)))`);
+check("the probe's process could be closed (the row survives, its clock is untouched)", closed === "closed", `delete=${closed}`);
+let sawCold = null;
+for (let i = 0; i < 30; i++) {
+  await sleep(400);
+  sawCold = await ev(`(() => { const r = document.querySelector('[data-session="' + ${JSON.stringify(seeded3.coldNew)} + '"]'); return r ? r.classList.contains('cold') : null; })()`);
+  if (sawCold === true) break;
+}
+const groupC = () => ev(`(() => {
+  const g = [...document.querySelectorAll('.rail-group')].find((x) => x.querySelector('.rail-group-head')?.dataset.workspace === '/tmp/as-order-C');
+  return g ? [...g.querySelectorAll('.session-item')].map((r) => (r.dataset.session ?? '') + (r.classList.contains('cold') ? ':cold' : '')) : null;
+})()`);
+const cBefore = await groupC();
+check("the cold-row probe really is cold while its sibling still has a process (fixture precondition)",
+  sawCold === true && Array.isArray(cBefore) && cBefore.includes(seeded3.coldNew + ':cold') && cBefore.includes(seeded3.liveOld),
+  `groupC=${JSON.stringify(cBefore)}`);
+check("a COLD row with the newer chat sorts above a live sibling (a process is not a sort key)",
+  Array.isArray(cBefore) && cBefore.indexOf(seeded3.coldNew + ':cold') < cBefore.indexOf(seeded3.liveOld),
+  `groupC=${JSON.stringify(cBefore)}`);
+const cOrderBefore = (await orderOf()).find((g) => g.path === '/tmp/as-order-C')?.items ?? [];
+await clickRow(seeded3.coldNew);
+await sleep(2500);
+const cOrderAfter = (await orderOf()).find((g) => g.path === '/tmp/as-order-C')?.items ?? [];
+const woke = await ev(`fetch('/api/sessions').then((r) => r.json()).then((d) => { const s = (d.live || []).find((x) => x.id === ${JSON.stringify(seeded3.coldNew)}); return s ? s.status : 'cold'; })`);
+check("clicking a cold row wakes it (fixture precondition for the check below)", woke !== "cold", `status=${woke}`);
+check("…and waking it does not move it either (the click changed its highlight, not its place)",
+  JSON.stringify(cOrderBefore) === JSON.stringify(cOrderAfter),
+  `before=${JSON.stringify(cOrderBefore)} after=${JSON.stringify(cOrderAfter)}`);
+// clean up this section's own fixtures: DELETE closes a live row and PURGES a cold one, so a live row
+// needs the second call (leftovers in a group make the NEXT run's reading harder to read)
+for (const sid of [seeded3.coldNew, seeded3.liveOld]) {
+  await ev(`fetch(${JSON.stringify(`/api/sessions/${sid}`)}, { method: 'DELETE' }).then((r) => r.status)`).catch(() => {});
+  await ev(`fetch(${JSON.stringify(`/api/sessions/${sid}`)}, { method: 'DELETE' }).then((r) => r.status)`).catch(() => {});
+}
+
 // the receipt for this fix: a real rail screenshot, in the order the operator asked for
 await setViewport(1440, 900);
 await sleep(500);

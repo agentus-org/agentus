@@ -6,7 +6,7 @@ import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
 import { durationWords, turnPulseState } from "./turn-state";
-import { markOf } from "./agents";
+import { backendChoices, markOf } from "./agents";
 import { CallMode } from "./CallMode";
 import { loadServerTheme } from "./theme";
 import { BrandMark } from "./Brand";
@@ -347,9 +347,20 @@ interface RailGroup {
 
 /** Group sessions by the directory they were pointed at — the ONE rule behind both rail sections
  *  (工作空间 and 已归档), so the archived list reads exactly like the live one instead of being a
- *  second, subtly different ordering. `activeKey` is the directory the operator is working in; it
- *  sorts first. */
-function groupSessions(all: { s: SessionInfo; cold: boolean }[], activeKey: string): RailGroup[] {
+ *  second, subtly different ordering.
+ *
+ *  ONE key orders everything here: when the session was last TALKED to (`lastOf`). Nothing about what
+ *  is merely SELECTED moves a row any more, and neither does which row happens to have a process:
+ *  two rules used to do exactly that — the group holding the active session sorted first, and a
+ *  live row sorted above a cold one — so the rail moved because the operator LOOKED at something.
+ *  Clicking between two workspaces swapped those two groups on every click, and waking a cold
+ *  session lifted it above its live siblings: the list jumped under the hand that was reading it
+ *  (operator, 2026-10-11: 「我频繁在两个空间中的会话间点击，会话列表跳来跳去」). The cost of dropping
+ *  both is accepted deliberately: opening a workspace you have not talked in for a while does not
+ *  lift it to the top — the row is still highlighted, still expanded, and still pinned into its
+ *  group's visible window by `splitRecent`, so it is reachable; the list simply stays put until
+ *  somebody actually says something. */
+function groupSessions(all: { s: SessionInfo; cold: boolean }[]): RailGroup[] {
   const byPath = new Map<string, RailGroup>();
   for (const it of all) {
     const path = it.s.workspace || it.s.cwd;
@@ -362,17 +373,14 @@ function groupSessions(all: { s: SessionInfo; cold: boolean }[], activeKey: stri
   // chat in a directory and that group rises with it.
   const at = (g: RailGroup): number => g.items.reduce((m, i) => Math.max(m, lastOf(i.s)), 0);
   return [...byPath.values()]
-    // live before cold inside a group (a session you can talk to now beats one you cannot), then
-    // whichever one the operator last talked to
+    // whichever one the operator last TALKED to (showing a group's own newest row first), then
+    // creation time for rows that have never been talked to
     .map((g) => ({
       ...g,
-      items: [...g.items].sort((a, b) =>
-        (a.cold === b.cold ? 0 : a.cold ? 1 : -1)
-        || (lastOf(b.s) - lastOf(a.s))
-        || (b.s.createdAt - a.s.createdAt)),
+      items: [...g.items].sort((a, b) => lastOf(b.s) - lastOf(a.s) || (b.s.createdAt - a.s.createdAt)),
     }))
-    // the group you are working in first, then by last chat, then alphabetically
-    .sort((a, b) => (a.path === activeKey ? -1 : b.path === activeKey ? 1 : at(b) - at(a) || a.label.localeCompare(b.label)));
+    // the group you last talked in first, then by last chat, then alphabetically
+    .sort((a, b) => at(b) - at(a) || a.label.localeCompare(b.label));
 }
 
 /** The statuses a rail row can wear, in the operator's words. The raw wire value is protocol
@@ -389,15 +397,19 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
   const mark = markOf(backend);
   const [broken, setBroken] = useState(false);
   const useIcon = mark.icon && !broken;
-  // Two different questions, two different carriers, on purpose.
-  //   · "is anything working RIGHT NOW" — the one thing the operator scans the rail FOR — is
-  //     answered by MOTION: the running state gets `.live`, a breathing halo on the mark (studio's
-  //     streaming ring in our tokens). Every other state stays still, which is what makes the one
-  //     moving row findable.
+  // Three questions, three carriers, on purpose.
   //   · "is there a process behind this row at all" is answered STATICALLY, by the corner badge:
-  //     green = a live ACP process, absent = the session is on disk only. `cold` is the server's
-  //     own word for "no process", so the badge follows `cold` and nothing else — the status word
-  //     (待命/运行中/出错) stays in the tooltip and in the row, never in a 7px pixel.
+  //     a badge means "a live ACP process", absent means the session is on disk only. `cold` is the
+  //     server's own word for "no process", so the badge follows `cold` and nothing else.
+  //   · "is anything working RIGHT NOW" is answered by MOTION: only the running row moves — a
+  //     breathing halo on the mark (studio's streaming ring in our tokens). Every other state stays
+  //     still, which is what makes the one moving row findable.
+  //   · …and the badge itself says WHICH of the two it is, by COLOUR: 待命/出错/已回收 wear a neutral
+  //     grey dot (a process exists, it is not doing anything), a session that is RUNNING wears the
+  //     same dot in green. The dot used to be green for every row with a process, which made the one
+  //     fact worth scanning for disappear into a rail of green pixels (operator, 2026-10-11:
+  //     「绿点点是 acp 进程运行中…能不能改成灰色的，然后进行中的不仅显示光流也显示当前这个绿色」).
+  //     The status WORD (待命/运行中/出错) stays in the tooltip and in the row, never in a 7px pixel.
   const live = !cold && status === "running";
   return (
     <span
@@ -412,7 +424,7 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
       {useIcon
         ? <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
         : mark.letter}
-      {!cold ? <span className="be-dot proc" /> : null}
+      {!cold ? <span className={`be-dot proc ${live ? "running" : ""}`} /> : null}
     </span>
   );
 }
@@ -751,10 +763,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
         ...sessions.map((s) => ({ s, cold: Boolean(s.cold) })),
         ...cold.map((s) => ({ s, cold: true })),
       ].filter(({ s }) => match(s));
-      const activeRow = [...sessions, ...cold].find((s) => s.id === activeId);
-      return groupSessions(rows, activeRow?.workspace ?? activeRow?.cwd ?? "");
+      return groupSessions(rows);
     },
-    [sessions, cold, activeId, needle]
+    [sessions, cold, needle]
   );
 
   // 已归档 is a section of its own (parallel to 工作空间, as the operator asked), built by the SAME
@@ -763,7 +774,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   // whatever its process is doing, and a session that merely lost its process stays in 工作空间.
   // `cold` comes from the server with each row (an archived row that has been resumed is live).
   const archivedGroups = useMemo(
-    () => groupSessions(archived.map((s) => ({ s, cold: Boolean(s.cold) })).filter(({ s }) => match(s)), ""),
+    () => groupSessions(archived.map((s) => ({ s, cold: Boolean(s.cold) })).filter(({ s }) => match(s))),
     [archived, needle]
   );
 
@@ -3722,6 +3733,22 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
  *  The dialog only reads it; editing happens on the settings page. */
 type BackendRow = BackendView;
 
+/** The mark inside a backend CARD (the new-session form): the same two carriers the rail row uses —
+ *  the vendor's artwork when we have it, our monogram otherwise — at the card's own size. */
+function CardMark({ backend }: { backend: string }): JSX.Element {
+  const mark = markOf(backend);
+  const [broken, setBroken] = useState(false);
+  return (
+    <span className="be-card-mark" data-backend={backend} data-letter={mark.letter}>
+      {mark.icon && !broken
+        ? <img src={mark.icon} alt="" draggable={false} onError={() => setBroken(true)} />
+        : mark.letter}
+    </span>
+  );
+}
+
+/** Which backends the new-session form may offer — the rule (mock is a dev-instance backend only)
+ *  lives in `agents.ts`, where it can be asserted without a browser. */
 function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
@@ -3734,21 +3761,37 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
-  const [backends, setBackends] = useState<BackendRow[]>([]);
+  const [rows, setRows] = useState<BackendRow[]>([]);
+  // The instance's own answer to "am I a dev instance", read next to the bundle hash: /api/version
+  // is where the server describes itself, and it is the only place that knows about DEV_TREE.
+  const [dev, setDev] = useState(false);
+  // 后端详情 is folded away by default: `runs:` + home + env + 上次检查 were four monospace lines
+  // standing between the operator and the phone screen's only button (measured: the dialog did not
+  // fit 390×844 at all). The facts still exist — one tap away — because the home is the single place
+  // where "this row writes into my LIVE home" is visible, and deleting it outright would delete the
+  // warning that matters.
+  const [detail, setDetail] = useState(false);
 
   const load = () => {
     setLoading(true); setErr("");
-    cockpit
-      .loadBackends()
-      .then((rows) => {
-        setBackends(rows);
-        const first = rows[0];
-        setBackend((cur) => cur || first?.id || "");
+    Promise.all([
+      cockpit.loadBackends(),
+      fetch("/api/version", { cache: "no-store" })
+        .then((r) => r.json() as Promise<{ dev?: boolean }>)
+        .catch(() => ({ dev: false }) as { dev?: boolean }),
+    ])
+      .then(([list, ver]) => {
+        setRows(list);
+        setDev(Boolean(ver?.dev));
+        setBackend((cur) => cur || backendChoices(list, Boolean(ver?.dev))[0]?.id || "");
       })
       .catch((e) => setErr(`后端列表拉取失败：${String((e as Error).message ?? e)}`))
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  const choices = backendChoices(rows, dev);
+  const sel = rows.find((b) => b.id === backend) ?? null;
 
   const create = async () => {
     setBusy(true); setErr("");
@@ -3768,50 +3811,62 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>New session</h3>
         <label>backend</label>
-        <div className="backend-pick">
-          {loading && <span className="dim">loading…</span>}
-          {!loading && !backends.length && <span className="dim">no backends</span>}
-          {backends.map((b) => (
+        {/* Cards, not a row of stretched pills: the mark on top and the name under it is the shape
+            the operator asked for (「上面放头像，下面写文案」), and it is what the rail already shows
+            in miniature. The strip scrolls sideways when it outgrows the screen — that is the one
+            dimension a phone does not have, so it is the one we spend on more backends. */}
+        <div className="backend-pick" role="radiogroup" aria-label="backend">
+          {loading && !rows.length && <span className="dim">loading…</span>}
+          {!loading && !choices.length && <span className="dim">no backends</span>}
+          {choices.map((b) => (
             <button
               key={b.id}
-              title={b.home ? `home: ${b.home}` : undefined}
-              className={backend === b.id ? "sel" : ""}
+              type="button"
+              role="radio"
+              aria-checked={backend === b.id}
+              data-backend={b.id}
+              title={b.home ? `${b.label} · home: ${b.home}` : b.label}
+              className={`be-card ${backend === b.id ? "sel" : ""}`}
               onClick={() => setBackend(b.id)}
             >
-              {b.label}
+              <CardMark backend={b.kind || b.id} />
+              <span className="be-card-label">{b.label}</span>
             </button>
           ))}
-          <button className="retry" title="reload backend list" onClick={load}>⟳</button>
+          <button type="button" className="be-card reload" title="重新拉取后端列表" aria-label="重新拉取后端列表" onClick={load}>⟳</button>
         </div>
-        {(() => {
-          // What this row will actually be: which code (cmd + env), which home, which profile.
-          // It is the operator's one chance to notice "oh, this one writes into my LIVE home".
-          const sel = backends.find((b) => b.id === backend);
-          if (!sel) return null;
-          return (
-            <div className="hint be-hint">
-              <div>
-                runs: <code>{sel.cmd} {(sel.args ?? []).join(" ")}</code>
-                {sel.profile ? <> · profile <code>{sel.profile}</code></> : null}
-              </div>
-              {sel.home ? (
+        {/* The warnings stay ON the form even folded: they are the actionable half (a row that
+            cannot start, a login that is missing), and they are rare. */}
+        {(sel?.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
+        {sel ? (
+          <div className={`be-detail ${detail ? "open" : ""}`}>
+            <button
+              type="button"
+              className="be-detail-head"
+              aria-expanded={detail}
+              onClick={() => setDetail((v) => !v)}
+            >
+              <IconChevronRight size={12} className="be-detail-arrow" /> 后端详情
+            </button>
+            {detail ? (
+              // What this row will actually be: which code (cmd + env), which home, which profile.
+              // It is the operator's one chance to notice "oh, this one writes into my LIVE home".
+              <div className="hint be-hint">
                 <div>
-                  home: <code>{sel.home}</code>
+                  runs: <code>{sel.cmd} {(sel.args ?? []).join(" ")}</code>
+                  {sel.profile ? <> · profile <code>{sel.profile}</code></> : null}
                 </div>
-              ) : null}
-              {(sel.env ?? []).length ? <div>env: <code>{(sel.env ?? []).join(", ")}</code></div> : null}
-              {sel.health?.at ? (
-                <div className={sel.health.status === "online" ? "be-dim" : "err"}>
-                  上次检查：{sel.health.status}
-                  {sel.health.kind ? ` · ${sel.health.kind}` : ""}
-                  {sel.health.errorCode ? ` · ${sel.health.errorCode}` : ""}
-                  {sel.health.status !== "online" && sel.health.guidance ? <div className="be-guidance">{sel.health.guidance}</div> : null}
-                </div>
-              ) : null}
-              {(sel.warnings ?? []).map((w, i) => <div key={i} className="hint-warn">{w}</div>)}
-            </div>
-          );
-        })()}
+                {sel.home ? (
+                  <div>
+                    home: <code>{sel.home}</code>
+                  </div>
+                ) : null}
+                {sel.cwd ? <div>cwd: <code>{sel.cwd}</code></div> : null}
+                {(sel.env ?? []).length ? <div>env: <code>{(sel.env ?? []).join(", ")}</code></div> : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <label>working directory</label>
         {fixedDir ? (
           <div className="ns-fixed-dir" title={fixedDir}>
