@@ -195,6 +195,19 @@ git branch --set-upstream-to=origin/main main
 Judge the outcome by identity, not by "the push succeeded": `git ls-remote origin
 refs/heads/main` must equal the commit live is actually serving.
 
+> **Do not merge into the live tree before promoting.** `promote` decides whether to restart by
+> diffing **the live tree's old tip** against the commit it is promoting. If the live tree already
+> sits on that commit (e.g. someone ran `git merge --ff-only <dev-branch>` inside
+> `worktrees/agentus`), the diff is empty: promote prints `no server-side change`, ships the new web
+> bundle, and **leaves the old server process running** — a half release that looks green. Restart
+> detection is only as good as the tree it reads, so move `main` through the ref (`git push
+> origin <dev-branch>:main`), never by checking it out in the live worktree.
+>
+> If it already happened: the release is not done. Re-run the restart explicitly
+> (`scripts/relaunch.sh --port <live> --tree <live tree> --launcher <launcher> --launchd <label>`)
+> and then resume the slots promote captured, exactly as promote's step 6 would have. Prove it by
+> the startup log line for the new feature, not by the pid alone.
+
 ## Rollback
 
 The release path has no separate rollback mechanism — you revert the change and promote
