@@ -1259,7 +1259,14 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const html = fs.readFileSync(path.join(WEB_DIST, "index.html"), "utf8");
         asset = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/)?.[1] ?? null;
       } catch { /* no build on disk (dev server without dist) */ }
-      return send(res, 200, { asset });
+      // …and `dev`: WHICH INSTANCE this is. Only two things in the UI care, and both are about
+      // keeping a QA backend out of the operator's way — the mock agent shows up in the new-session
+      // form on a dev instance only. The marker is the dev runner's own environment (`DEV_TREE`,
+      // written by scripts/dev.sh; also AGENTUS_DEV=1 for a launcher of one's own); the live
+      // launcher sets neither, so live answers false. An instance-level fact, so it rides the
+      // endpoint that already describes the instance rather than every backend row.
+      const dev = Boolean(process.env.DEV_TREE) || process.env.AGENTUS_DEV === "1";
+      return send(res, 200, { asset, dev });
     }
     if (url.pathname.startsWith("/api/")) return send(res, 404, { error: "not_found" });
     return serveStatic(req, res);
