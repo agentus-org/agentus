@@ -1,6 +1,6 @@
 {
  "name": "agentus",
- "version": "0.3.2",
+ "version": "0.3.3",
  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
  "license": "Apache-2.0",
  "repository": {
@@ -64,12 +64,12 @@
   "store-fold": "tsx scripts/qa/store-fold.mts",
   "live-stream": "tsx scripts/qa/live-stream.mts",
   "open-target": "tsx scripts/qa/open-target.mts",
- "rail-recent": "tsx scripts/qa/rail-recent.mts",
- "turn-pulse": "tsx scripts/qa/turn-pulse.mts",
- "resume-tail": "tsx scripts/qa/resume-tail.mts",
- "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
- "replay-window": "node scripts/qa/replay-window.mjs",
- "think-cadence": "node scripts/qa/think-cadence.mjs"
+  "rail-recent": "tsx scripts/qa/rail-recent.mts",
+  "turn-pulse": "tsx scripts/qa/turn-pulse.mts",
+  "resume-tail": "tsx scripts/qa/resume-tail.mts",
+  "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
+  "replay-window": "node scripts/qa/replay-window.mjs",
+  "think-cadence": "node scripts/qa/think-cadence.mjs"
  },
  "engines": {
   "node": ">=22.5"
