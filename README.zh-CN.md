@@ -66,7 +66,7 @@ npm run agentus               # the same CLI as `npx agentus`, straight from the
 ### 状态放在哪
 
 默认 `~/.agentus` —— 里面有 `agentus.sqlite`（会话与 transcript）、`credentials.json`、`auth.token`
-（机器凭证）、`auth.secret`、`tls/`、`settings.json`。首次启动时以 0700 创建，启动日志会打印它**以及
+（机器凭证）、`auth.secret`、`settings.json`。首次启动时以 0700 创建，启动日志会打印它**以及
 这个目录获胜的原因**：
 
 | 顺序 | 规则 |
@@ -102,8 +102,6 @@ npm run agentus               # the same CLI as `npx agentus`, straight from the
 | `AGENTUS_HISTORY_PAGE` | `500` | transcript 分页大小（测试里也会调小以覆盖分页路径） |
 | `AGENTUS_TERM_PTY` | 未设置 | `1` = 工作区终端走 Python 标准库 `pty`（真 tty；需要 `python3`）而不是管道 |
 | `AGENTUS_TERM_CMD` | 未设置 | 完全覆盖终端命令行（例如 `socat …`），空格分隔 |
-| `AGENTUS_TLS_PORT` | 存在证书时 `8443`，否则关闭 | **第二个监听器，TLS** —— 公网隧道指向的那个（`0` 关闭它） |
-| `AGENTUS_TLS_CERT` / `AGENTUS_TLS_KEY` | `<AGENTUS_DATA>/tls/{cert,key}.pem` | 该监听器的证书材料（见 `scripts/make-cert.sh`） |
 | `AGENTUS_TTS_BASE_URL` | 未设置 | **服务端**语音合成的 OpenAI 兼容 base（`…/v1`）。未设置 = 只用浏览器语音 |
 | `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | 同上 |
 | `AGENTUS_STT_BASE_URL` | 未设置 | **服务端**转写的 OpenAI 兼容 base。未设置 = 只用浏览器识别 |
@@ -202,50 +200,19 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 - **在边缘终结 TLS。** 当请求带着 `X-Forwarded-Proto: https` 到达时，session cookie 会自动以 `Secure`
   下发（在同一隧道上实测过），所以无需配置。你 LAN 内的最后一跳仍然是纯 HTTP。
 
-#### TLS：刻意做成第二个监听器
+#### TLS：在前置层终结，而不是在进程内
 
 纯 TCP 隧道（SakuraFrp、safe-nat、`ssh -L`、大多数 frp 配置）只转发字节 —— 它**不会**替你终结 TLS。
-把它指向 `:8788`，运维者的密码和 session cookie 就会以明文穿过互联网。所以服务端可以自己讲 TLS：
-
-```bash
-scripts/make-cert.sh                    # self-signed, SAN = the name you actually type
-# -> $AGENTUS_DATA/tls/{cert.pem,key.pem} (0600, git-ignored) — ~/.agentus/tls by default
-# boot log then says: https://0.0.0.0:8443 (self-signed …) ; point a tunnel at THIS port
-```
+把它指向 `:8788`，运维者的密码和 session cookie 就会以明文穿过互联网。所以要在 Agentus **前面**终结
+TLS：放一层反代（Caddy / nginx），或者用自带 `public_tls` 的隧道；本进程自己只讲纯 HTTP：
 
 | 端口 | 讲什么 | 给谁 |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变 |
-| `AGENTUS_TLS_PORT` (8443) | HTTPS（自签名） | **隧道** —— 加密公网那一跳 |
+| `AGENTUS_PORT` (8788) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变；**唯一的监听** |
 
-同一套 handler，同一套路由，同一套认证；只有 socket 不同。两个监听器胜过另外两种做法：把单端口变成
-HTTPS 会把证书警告挡在你自己 LAN 的使用前面（并弄坏 `curl` 脚本），而在一个端口上嗅探首字节来同时服
-务两者会掩盖一次访问到底有没有被加密。
-
-**在你的设备上退掉那个警告。** 开着 TLS 时，监听器在 `/cert.crt` 提供自己的证书：
-
-```bash
-https://<your-name>:<tls-port>/cert.crt     # iOS: opens the profile installer directly
-                                            # Android: downloads it → Settings → Security → CA certificate
-curl --cacert <AGENTUS_DATA>/tls/cert.pem https://<your-name>:<tls-port>/healthz   # scripts, no -k
-```
-
-装成受信任的根证书后（iOS 还需要 *关于 → 证书信任设置 → 启用*），浏览器就不再追问，地址栏也就干净了。
-它是公开材料 —— 私钥永远不离开 `<AGENTUS_DATA>/tls/`。
-
-证书是**刻意自签名**的 —— 对一个未注册的域名或裸 IP，没有 CA 会签发，所以浏览器每台设备显示一次「不
-是私密连接 → 继续」，而装上签发者（`/cert.crt`，见上）连这个都能退掉。把 SAN 保持为你实际输入的名字
-（**DDNS 名**，而不是公网 IP：动态 IP 会需要重签，而名字不匹配会多一个警告）。
-
-`make-cert.sh` 刻意签发**两张**证书：一张 10 年根证书（`ca.pem`，设备装的就是它）和一张 390 天的叶子
-证书（`cert.pem`，监听器提供的就是它）。Apple 把*服务器证书*有效期上限定在 398 天 —— 一张 10 年的自
-签名叶子证书恰恰是 iOS 在用户走完那套安装流程*之后*会拒绝的东西。根证书不是服务器证书，所以可以活得
-久；轮换叶子证书（`--leaf-only`）永远不碰已经装好的设备。
-
-`npm run tls-smoke`（在 CI 里，真 socket）守着这一切：一个做校验的客户端必须被*拒绝*（这才证明该端口
-真的是 TLS），叶子证书必须能链到根证书、且 `/cert.crt` 发出的就是它、并保持在 398 天上限内，API 登录
-和 `wss://…/ws` 握手必须能在 TLS 上工作（升级 handler 绑定在两个监听器上 —— 这是最容易忘的地方），而
-LAN 端口必须保持明文。
+证书的生命周期（签发、轮换、SAN）留在前置层里，永远不碰应用；LAN 这条路也就没有证书警告。cookie 这边
+也没有损失：handler 读 `X-Forwarded-Proto`（`packages/server/src/auth.ts`），所以凡是在前置层走了 TLS
+的请求，照样下发 `Secure` 的 session cookie —— Caddy 和 nginx 默认都会带上这个头。
 
 登出会在服务端撤销 session id，所以「登出」是结束会话，而不只是藏起 UI —— cookie 立刻失效。
 
@@ -373,7 +340,6 @@ npm run auth-smoke                        # 48 assertions: the lock, both creden
 npm run backend-smoke                     # 42: the backend registry, spawn env, health evidence
 npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
-npm run tls-smoke                         # the second listener, real sockets + real certs
 npm run package-smoke                     # packs, installs into a throwaway prefix + HOME, boots
                                           # that install, drives a mock turn, checks ~/.agentus
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent

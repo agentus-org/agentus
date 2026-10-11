@@ -768,9 +768,7 @@ export function micCaptureAvailable(): boolean {
  *  operator's report was exactly that error on a LAN page whose browser was fine. */
 export function micUnavailableMessage(): string {
   if (typeof window !== "undefined" && !window.isSecureContext) {
-    const host = typeof location !== "undefined" ? location.hostname : "";
-    const https = host ? `https://${host}:8443` : "https://<主机>:8443";
-    return `当前页面是明文 http，浏览器不允许网页录音。改用 https 入口（${https}）或本机 localhost；手机上也可以用 Agentus app。`;
+    return "当前页面是明文 http，浏览器不允许网页录音。请改用 https 入口访问（在服务前放一层终结 TLS 的反代或隧道），或走本机 localhost；手机上也可以用 Agentus app。";
   }
   return "this browser cannot record audio";
 }

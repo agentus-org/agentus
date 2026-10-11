@@ -30,7 +30,7 @@
 //
 //   cd worktrees/agentus-dev
 //   env AGENTUS_PORT=8907 AGENTUS_DATA=/tmp/agentus-qa-warm AGENTUS_USERNAME=scratch \
-//       AGENTUS_PASSWORD=scratch-pass-1 AGENTUS_TLS_PORT=0 AGENTUS_IDLE_SWEEP_MS=2000 \
+//       AGENTUS_PASSWORD=scratch-pass-1 AGENTUS_IDLE_SWEEP_MS=2000 \
 //       NODE_ENV=development node_modules/.bin/tsx packages/server/src/index.ts &
 //   PORT=8907 node scripts/qa/warm-slots-sweep.mjs
 import { authHeaders } from "../lib/auth.mjs";

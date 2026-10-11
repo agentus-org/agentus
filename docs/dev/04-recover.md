@@ -6,13 +6,12 @@ I fix it without making the box worse?
 ## Read the boot log first
 
 The boot log is the authoritative account of what the server resolved. It prints **which
-data directory won and why**, the auth state, and the TLS listener:
+data directory won and why** and the auth state:
 
 ```
 data dir: /Users/…/packages/server/.data  (AGENTUS_DATA was set)      ← the dir + the reason
 auth on: user "admin"
-https://0.0.0.0:8443 (self-signed …)                                  ← present = TLS listener up
-tls off: no cert at <DATA_DIR>/tls/cert.pem                           ← absent/off = no TLS
+http port: 8788                                                       ← the only listener
 ```
 
 If the directory it names is not the one you expected, stop here — a server serving the
@@ -24,7 +23,6 @@ empty. Triage the identity, not the liveness (see "Is it serving the wrong store
 | port | who |
 |---|---|
 | `8788` | live HTTP |
-| `8443` | live TLS (public tunnel points here) |
 | `8901` | dev / QA instance |
 | `8648` | **Hermes Studio** — not Agentus, do not touch |
 
@@ -82,14 +80,14 @@ file at that same path, and its server was the only way into the machine. Rules:
    `spawn(..., { detached: true })` and kill the process group — rather than cleaning up by
    name afterwards.
 5. **Re-check the neighbours afterwards:** one `curl` per resident service
-   (`:8648` Studio, `:8788`/`:8443` live, `:8901` dev). A cleanup that leaves the box worse
+   (`:8648` Studio, `:8788` live, `:8901` dev). A cleanup that leaves the box worse
    than it found it is the whole failure mode.
 
 ## The SQLite store, WAL, and the `*.bak` files
 
 State lives in `<DATA_DIR>/agentus.sqlite` (the transcript and every other row), accessed
 through Node's built-in `node:sqlite` (hence Node `>= 22.5`). Files beside it: `credentials.json`,
-`auth.token`, `auth.secret`, `sessions.json`, `settings.json`, `tls/` — several of them
+`auth.token`, `auth.secret`, `sessions.json`, `settings.json` — several of them
 `0600`. The server creates the directory `0700` on first boot.
 
 **Back up before you touch the store.** A single write against the operator's real data gets
@@ -121,8 +119,8 @@ Two cautions that come from real incidents:
 ## Is it serving the wrong store?
 
 Symptoms that look like separate bugs but share one cause: the operator's session list came
-back empty, TLS silently turned off (`tls off: no cert at <QA_DIR>/tls/cert.pem`), and a
-running slot was reaped — yet the port answers 200 and `/api/version` looks fine. Cause:
+back empty and a running slot was reaped — yet the port answers 200 and `/api/version` looks
+fine. Cause:
 `relaunch → launch.py` inherited the QA environment. The launcher now pins its own
 `AGENTUS_DATA`/`AGENTUS_PORT` and pops the QA/DEV keys, but verify identity directly:
 
@@ -171,24 +169,6 @@ all). Tunables: `AGENTUS_LOGIN_MAX_FAILS` (default 5) / `AGENTUS_LOGIN_LOCK_MS` 
 (0600) — advisory for display, authoritative for existence. A password change invalidates
 every other session; `AGENTUS_AUTH=off` disables the login entirely and the boot log scolds
 you (do not leave it off — the listener is `0.0.0.0` and this cockpit is tunnelled).
-
-## TLS certificate regeneration
-
-The TLS listener runs on a **second port** (8443 live), pointed at by a plain-TCP tunnel.
-Cert material lives at `<DATA_DIR>/tls/`. Regenerate with:
-
-```bash
-scripts/make-cert.sh [name]        # default name: the DDNS name; SAN = that name + localhost + 127.0.0.1
-scripts/make-cert.sh --leaf-only   # rotate the leaf only; installed devices are untouched
-```
-
-`make-cert.sh` issues **two** certs on purpose: a 10-year root (`ca.pem`, what devices install
-once, served at `/cert.crt`) and a 390-day leaf (`cert.pem`/`key.pem`, what the listener
-serves, under Apple's 398-day cap). Keep the SAN to the DDNS name you actually type, not the
-dynamic public IP. It writes into the same directory the server reads from (mirroring the
-server's own resolution in `packages/server/src/index.ts`), and if that resolution and the
-server's ever diverge the listener stays silently off with a cert sitting next to it — after
-regenerating, confirm the boot log still prints `https://…:8443`.
 
 ## The process-exit safety net for children
 

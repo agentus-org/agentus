@@ -36,7 +36,6 @@ node scripts/auth-smoke.mjs                              # the lock, both creden
 node scripts/backend-registry-smoke.mjs                  # backend registry, spawn env, health (~42)
 node scripts/workspace-smoke.mjs                         # workspace, file API, shell, attachments (~85)
 node scripts/voice-smoke.mjs                             # settings/theme guards, voice router (~47)
-npm run tls-smoke                                        # the TLS listener, real sockets + real certs
 npm run package-smoke                                    # pack + install into a throwaway HOME + boot
 node scripts/smoke.mjs mock "hello"                      # end-to-end against the mock agent
 ```
