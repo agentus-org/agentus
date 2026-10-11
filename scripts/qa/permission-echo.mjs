@@ -202,6 +202,76 @@ const answered = (s.text.match(/chosen option: allow/g) || []).length;
 check("the agent received BOTH answers (its own tool output says so twice)", answered >= 2, `${answered} in the transcript`);
 check("no answer was dropped by the server", !wire.includes("permission-expired"), JSON.stringify(wire.slice(-6)));
 
+// ═══ A4. the answer is WRITTEN and never arrives (a socket that died without a FIN) ════════════
+// Measured on live 2026-10-11: with the network cut, CDP leaves the JS socket OPEN, so `send()`
+// neither queues the command nor retries it — the frame is written and vanishes. On live that left
+// the request showing 「已提交」 forever with no button to press: unanswerable. So: swallow the frame
+// page-side (keeping the socket perfectly alive) and the surface must admit it and offer the click
+// again — and the server must still hold the request, i.e. nothing was answered by the swallow.
+console.log("\n=== A4. the answer is written and lost (half-open socket) ===");
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: `(() => {
+    const socks = (window.__socks = []);
+    const Real = WebSocket;
+    window.WebSocket = function (url, protocols) {
+      const s = protocols === undefined ? new Real(url) : new Real(url, protocols);
+      socks.push(s);
+      const real = s.send.bind(s);
+      s.send = (data) => {
+        if (window.__dropPermSend && String(data).includes('respond-permission')) {
+          window.__droppedPerm = (window.__droppedPerm || 0) + 1;
+          return;   // written into a socket nobody will deliver from
+        }
+        return real(data);
+      };
+      return s;
+    };
+    window.WebSocket.prototype = Real.prototype;
+    for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) window.WebSocket[k] = Real[k];
+  })()`,
+});
+const lost = await newSession("QA echo — lost frame");
+const sidL = lost.id;
+check("the lost-frame session was created", Boolean(sidL), JSON.stringify(lost).slice(0, 160));
+await idle(sidL);
+await prompt(sidL, "[tool] QA: one approval, and then the answer is lost");
+await sleep(2500);
+await goTo(sidL);
+await sleep(1200);
+check("the request is up on its own session", (await pendingFor(sidL)).length === 1);
+const hooked = await ev(`(() => { window.__dropPermSend = true; return window.__socks.length; })()`);
+check("the page's socket was hooked (so 「written into a live socket」 is what we simulate)", hooked > 0, `sockets=${hooked}`);
+console.log("  click, with the frame swallowed:", await clickAllow());
+await sleep(900);
+s = await ev(READ);
+check("the click is still answered IMMEDIATELY (the fix for 「点了没反应」)",
+  Boolean(s.answered) && /已提交/.test(s.answered), JSON.stringify(s.answered));
+check("…and the frame really was written into a live socket (the swallow counted it)",
+  (await ev("window.__droppedPerm")) === 1, `dropped=${await ev("window.__droppedPerm")}`);
+let lapse = null;
+for (let i = 0; i < 30; i++) {
+  await sleep(500);
+  lapse = await ev(`(() => {
+    const d = document.querySelector('.perm-dialog');
+    return {
+      unconfirmed: d ? (d.querySelector('.perm-unconfirmed')?.innerText.replace(/\\n/g, ' ') ?? null) : null,
+      allow: d ? Boolean([...d.querySelectorAll('button')].find((x) => /allow|允许/i.test(x.innerText))) : false,
+      stillClaiming: Boolean(d && d.querySelector('.perm-answered')),
+    };
+  })()`);
+  if (lapse.unconfirmed && lapse.allow) break;
+}
+check("an unacknowledged answer stops being claimed as delivered", Boolean(lapse?.unconfirmed), JSON.stringify(lapse));
+check("…and says why, in the operator's words", /没送出去|没送达/.test(lapse?.unconfirmed ?? ""), lapse?.unconfirmed);
+check("…and the click is offered again, so the request is not a dead end", lapse?.allow === true, JSON.stringify(lapse));
+check("…while the server still holds it (the swallow answered nothing)", (await pendingFor(sidL)).length === 1);
+await ev("window.__dropPermSend = false");
+console.log("  retry click:", await clickAllow());
+for (let i = 0; i < 30; i++) { await sleep(400); if (!(await pendingFor(sidL)).length) break; }
+check("the operator's retry lands", (await pendingFor(sidL)).length === 0);
+for (let i = 0; i < 20; i++) { s = await ev(READ); if (!s.hasDialog && !s.cards.length) break; await sleep(300); }
+check("…and the surface clears on the server's word", !s.hasDialog && s.cards.length === 0, JSON.stringify(s.dialogReq));
+
 // ═══ B. the agent process dies with a request pending ═══════════════════════════════════════════
 console.log("\n=== B. the agent dies with a request pending ===");
 const b = await newSession("QA echo — agent dies");
@@ -268,7 +338,7 @@ check("…and the row holding a request is on screen anyway, badged", Boolean(ro
 check("…while that group still shows only its newest five rows", fold.rows === 5, JSON.stringify(fold));
 
 // ═══ cleanup ════════════════════════════════════════════════════════════════════════════════════
-const del = [sidA, sidB, sidC, ...filler].filter(Boolean);
+const del = [sidA, sidL, sidB, sidC, ...filler].filter(Boolean);
 await ev(`Promise.all(${JSON.stringify(del)}.map((s) => fetch('/api/sessions/' + s, { method: 'DELETE' }).then((r) => r.status).catch(() => 0)))`);
 console.log("  sessions left behind:", JSON.stringify(await liveAll()));
 await fetch(`${CDP}/json/close/${tab.id}`).catch(() => {});

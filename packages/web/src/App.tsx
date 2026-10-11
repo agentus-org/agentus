@@ -2195,34 +2195,53 @@ function PermOptions({ sid, req, onAnswered }: {
   sid: string; req: PermissionRequestView; onAnswered?: (label: string) => void;
 }): JSX.Element {
   const answer = (decision: PermissionDecision, label: string, option?: { optionId: string; kind: string }): void => {
-    // One answer per request. Read the store, not this render's copy: two clicks in the same frame
-    // both see `undefined` if we trust a captured value, and the second one is exactly what the
-    // server logs as 「permission answer dropped」.
-    if (cockpit.permAnswer(req.requestId)) return;
-    cockpit.markPermAnswered(req.requestId, label);
-    onAnswered?.(label);
-    cockpit.send({
+    // One answer per request — but only while the first one is still plausibly in flight. Past
+    // `PERM_ACK_MS` the surface has already told the operator it was not confirmed, so his next
+    // click is the retry, not a double answer (a frame written into a half-open socket is delivered
+    // by nothing, and refusing the retry would leave the request unanswerable).
+    const cur = cockpit.permAnswer(req.requestId);
+    if (cur && !cur.lapsed) return;
+    const delivered = cockpit.send({
       t: "respond-permission", sessionId: sid, requestId: req.requestId, decision,
       // `allow_always` is remembered per live session server-side; the signature is what
       // makes the next identical request in this session pass without asking again.
       ...(option ? { optionKind: option.kind, signature: `${req.kind}:${req.toolCallTitle}` } : {}),
     });
+    // `delivered` = it went onto the wire, so an acknowledgement is due and the 「已提交」 claim has
+    // to expire if none comes. A queued answer (`false`) is not armed — the queue notice says so.
+    cockpit.markPermAnswered(req.requestId, label, delivered);
+    onAnswered?.(label);
   };
   // The operator's click has to be visible BEFORE the server's event comes back: the answer travels
   // out and returns as `permission-resolved`, and on a slow link (a phone on the tunnel) a popup
   // that does not move reads as 「点了没反应」. AionUi draws the same state (`hasResponded`), and it
   // is also what keeps a second click off a request that is already answered.
   const answered = cockpit.permAnswer(req.requestId);
-  if (answered) {
+  // …and the claim has to expire, because the confirmation can fail to arrive at all: a socket that
+  // died without a FIN still looks OPEN, so the answer is written out and lost. Tick while waiting so
+  // the state flips on its own instead of waiting for an unrelated re-render.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!answered || answered.lapsed) return;
+    const t = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [answered?.lapsed, req.requestId]);
+  if (answered && !answered.lapsed) {
     return (
       <div className="perm-answered" role="status" aria-live="polite">
         <span className="perm-answered-tick" aria-hidden="true">✓</span>
-        <span>已提交「{answered}」—— 正在等 agent 那边回应</span>
+        <span>已提交「{answered.label}」—— 正在等 agent 那边回应</span>
       </div>
     );
   }
   return (
     <>
+      {answered?.lapsed && (
+        <div className="perm-unconfirmed" role="status" aria-live="polite">
+          还没收到 agent 那边的确认（等了 {Math.max(1, Math.round((Date.now() - answered.at) / 1000))} 秒）
+          —— 可能是这一次答复没送出去，可以再点一次。
+        </div>
+      )}
       {req.options.map((o) => (
         <button
           key={o.optionId}

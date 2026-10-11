@@ -609,6 +609,13 @@ code.inline {
 /* How many requests are queued behind the one on screen — the count the rail's ⚿ chip already
    shows, spelled out where the operator is actually looking. */
 .perm-queue { margin-top: 10px; font-size: 12px; color: var(--accent-text); line-height: 1.5; }
+/* The answer was submitted but the server never confirmed it — the socket can die without a FIN
+   and stay OPEN in JS, so the frame is written and lost (measured on live 2026-10-11: nothing queued
+   it, nothing retried it). Saying this is what keeps the request answerable instead of a dead end. */
+.perm-unconfirmed {
+  margin-top: 10px; font-size: 12.5px; color: var(--warn, #d08a2a);
+  border: 1px solid var(--warn, #d08a2a); border-radius: 7px; padding: 6px 10px; line-height: 1.5;
+}
 .ns-fixed-dir {
   display: flex; align-items: center; gap: 6px; padding: 9px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--bg-raised); color: var(--text-dim);

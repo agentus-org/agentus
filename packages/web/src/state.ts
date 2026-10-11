@@ -288,6 +288,9 @@ class AuthRequired extends Error {
 /** The operator's hand-set unread marks, kept across sessions of the page (AionUi keeps its manual
  *  set in localStorage for the same reason). One key, a list of ids — a Set is not JSON. */
 const UNREAD_KEY = "agentus.unread";
+/** How long a submitted approval answer may wait for the server's word before the surface stops
+ *  claiming it was delivered and offers the click again (see `permAnswer`). */
+export const PERM_ACK_MS = 8000;
 
 function readStoredUnread(): string[] {
   try {
@@ -353,7 +356,7 @@ class Cockpit {
    *  a popup that does not move reads as 「点了没反应」 — the operator clicks again, and on a request
    *  that is already answered that second click is the one the server logs as dropped. Cleared the
    *  moment the request leaves `perms`, whatever the server decided. */
-  #permAnswers = new Map<string, string>();
+  #permAnswers = new Map<string, { label: string; at: number; armed: boolean }>();
   #listeners = new Set<() => void>();
   /** The pending coalesced publish (see bump) — one per frame at most. */
   #frame: number | null = null;
@@ -604,17 +607,29 @@ class Cockpit {
   };
   getSnapshot = () => this.#snapshot;
 
-  /** The operator answered `requestId` (label = the option he pressed). Recorded so the surface can
-   *  show his click landing while the answer travels; the server's `permission-resolved` is what
-   *  actually takes the request away. */
-  markPermAnswered(requestId: string, label: string): void {
-    this.#permAnswers.set(requestId, label);
+  /** The operator answered `requestId` (label = the option he pressed, at = when). Recorded so the
+   *  surface can show his click landing while the answer travels; the server's
+   *  `permission-resolved` is what actually takes the request away. */
+  markPermAnswered(requestId: string, label: string, armed = true): void {
+    this.#permAnswers.set(requestId, { label, at: Date.now(), armed });
     this.bump();
   }
 
-  /** What the operator picked for a request still awaiting the server's word, or undefined. */
-  permAnswer(requestId: string): string | undefined {
-    return this.#permAnswers.get(requestId);
+  /** The operator's pick for a request still awaiting the server's word, or undefined.
+   *
+   *  `lapsed` = it has been waiting longer than `PERM_ACK_MS`, and that flag exists because the
+   *  confirmation does NOT always come: a socket that dies without a FIN stays `OPEN` in JS, so
+   *  `send()` neither queues the command nor retries it — the frame is written and vanishes
+   *  (measured on live 2026-10-11 with the network cut: the answer never arrived, nothing queued it).
+   *  A surface that keeps saying 「已提交」 for a request nobody will ever answer is worse than no
+   *  feedback at all: it hides the one action that can still save the turn. So past this window the
+   *  answer is treated as unconfirmed and the click is offered again. */
+  permAnswer(requestId: string): { label: string; at: number; lapsed: boolean } | undefined {
+    const hit = this.#permAnswers.get(requestId);
+    if (!hit) return undefined;
+    // `armed` = the answer really went out, so an acknowledgement is due. A queued answer is not
+    // armed: the surface already told the operator it is queued and will go on reconnect.
+    return { label: hit.label, at: hit.at, lapsed: hit.armed && Date.now() - hit.at > PERM_ACK_MS };
   }
 
   /** Forget answers for requests that are no longer pending — a request can leave `perms` through
@@ -758,15 +773,18 @@ class Cockpit {
     ws.onerror = () => ws.close();
   }
 
-  send(cmd: ClientCommand): void {
+  /** Send a command. Returns false when it could not go out and was queued for the next
+   *  connection — a caller that promises the operator "delivered" must not do so for a queued
+   *  command, and one that watches for an acknowledgement must not expect one. */
+  send(cmd: ClientCommand): boolean {
     if (this.auth === "out") {
       // Queueing here would promise a delivery that can never happen.
       this.#setNet(false, "未登录 — 请先登录再发送指令");
-      return;
+      return false;
     }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(cmd));
-      return;
+      return true;
     }
     // Phone reality: iOS/Android suspend sockets when the app backgrounds, so a
     // tap can land while we're offline. Dropping it silently would look like the
@@ -775,9 +793,10 @@ class Cockpit {
       this.#outbox.push(cmd);
       if (this.#outbox.length > 20) this.#outbox.shift();
       this.#setNet(false, "连接已断开 — 指令已排队，重连后自动发送");
-      return;
+      return false;
     }
     this.#setNet(false, "连接已断开 — 该操作未能送达");
+    return false;
   }
 
   // ---- the message queue ------------------------------------------------------------------------
