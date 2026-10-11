@@ -73,6 +73,23 @@ final class Profiles {
         return out;
     }
 
+    /**
+     * The servers in the order the operator added them — a STABLE order.
+     *
+     * {@link #all()} sorts by last-used, which is right for a list you scan and wrong for a row of
+     * buttons you aim at: switching would reshuffle the toolbar under the finger that just tapped it
+     * (the cockpit's own server rail had exactly this bug). The toolbar keeps this order, always.
+     */
+    synchronized List<P> ordered() {
+        return new ArrayList<>(list);
+    }
+
+    /** 1-based position in {@link #ordered()}, for showing the operator a number per server. */
+    synchronized int indexOf(String id) {
+        for (int i = 0; i < list.size(); i++) if (list.get(i).id.equals(id)) return i + 1;
+        return 0;
+    }
+
     synchronized P active() {
         if (activeId == null) return list.isEmpty() ? null : list.get(0);
         for (P p : list) if (p.id.equals(activeId)) return p;
