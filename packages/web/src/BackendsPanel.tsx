@@ -480,7 +480,7 @@ export function BackendsPanel(): JSX.Element {
                     <label>额外环境</label>
                     <textarea
                       className="set-textarea" value={typeof draft.env === "string" ? draft.env : ""} spellCheck={false}
-                      placeholder={"每行 KEY=VALUE，例如\nPYTHONPATH=/Users/liang/Project/hermes-agent"}
+                      placeholder={"每行 KEY=VALUE，例如\nPYTHONPATH=/srv/app/lib"}
                       onChange={(e) => field("env", e.target.value)}
                     />
                   </div>

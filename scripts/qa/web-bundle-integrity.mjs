@@ -63,6 +63,29 @@ function requestModeBodies(source) {
   return out;
 }
 
+// The second build-time defect this gate exists for: a DEVELOPMENT build.
+//
+// This box exports NODE_ENV=development, and `vite build` honours it — @vitejs/plugin-react then
+// picks the dev JSX runtime, so the emitted bundle carries `jsxDEV(…)` with
+// `{fileName:"/abs/path/App.tsx",lineNumber:2121}` on EVERY element. Both consequences are silent:
+//
+//   · the asset is ~40% bigger and slower (React's dev runtime, no minification of that layer), and
+//   · those absolute paths make the content hash depend on WHERE the tree was checked out — so the
+//     same sources build to a different filename in every worktree (live's bundle and dev's bundle
+//     disagreed by exactly the length difference of their two paths), and a packed tarball ships
+//     the builder's home directory to strangers.
+//
+// Fix: the build script must pin `NODE_ENV=production vite build` (packages/web/package.json). This
+// asserts on the emitted bytes so a dev build can neither reach live nor leave in an npm package.
+function devBuildSignatures(source) {
+  const out = [];
+  if (source.includes("jsxDEV(")) out.push("jsxDEV( — React's development JSX runtime is in here");
+  const m = source.match(/fileName:"[^"]*\.(tsx|ts)"/);
+  if (m) out.push(`fileName:"…" — the dev transform left source paths in the bundle (${m[0].slice(0, 70)}…)`);
+  if (source.includes("createHotContext") || source.includes("import.meta.hot")) out.push("HMR client code — this is a dev server build");
+  return out;
+}
+
 let failed = false;
 let checked = 0;
 
@@ -89,6 +112,15 @@ for (const file of bundles) {
           `    Fix: packages/web/vite.config.ts → build.target must be "es2021" or newer.`,
       );
     }
+  }
+
+  for (const sig of devBuildSignatures(source)) {
+    failed = true;
+    console.error(
+      `[bundle-integrity] FAIL: ${file} looks like a DEVELOPMENT build — ${sig}\n` +
+        `    Fix: packages/web/package.json → the build script must pin \`NODE_ENV=production vite build\`.\n` +
+        `    (This box exports NODE_ENV=development, so a bare \`vite build\` silently ships the dev runtime.)`,
+    );
   }
 
   if (!failed) console.log(`[bundle-integrity] ok: ${file} (${bodies.length} requestMode definition(s), enum local intact)`);
