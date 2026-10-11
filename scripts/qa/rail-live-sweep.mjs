@@ -5,8 +5,10 @@
 // 7px static dot on the agent mark's corner, which nobody reads at that size.
 //
 // What it asserts (all off the RENDERED page, not the server's word):
-//   1. a session mid-turn wears `.be-avatar.live` and its status dot runs the `pulse` animation;
-//   2. a session that is NOT mid-turn wears neither — stillness is what makes the moving row findable;
+//   1. a session mid-turn wears `.be-avatar.live` (the breathing halo) AND its corner badge turns
+//      GREEN (`.be-dot.running`) — motion for "working now", colour for which of the two it is;
+//   2. a session that is NOT mid-turn wears neither, and its badge stays the neutral grey — the
+//      badge means "there is a process", never "it is doing something";
 //   3. the turn ending TAKES the marking off the row (no stale "still working" row);
 //   4. the halo does not resize the row (the avatar box stays 20x20 and the row stays inside the rail);
 //   5. the row is actually ON SCREEN (a marking scrolled out of view has not arrived).
@@ -79,6 +81,18 @@ try {
   check("the probe turn was accepted (a prompt during another turn is refused: 409)", sent === 202, `HTTP ${sent}`);
 
   // ---- the reading, taken while the turn is in flight ------------------------------------------
+  // The badge's colour is read against the THEME TOKEN, not against a hardcoded rgb: run the check
+  // in either theme and it still means "the same green the theme uses for OK".
+  const tokenColor = async (name) => ev(`(() => {
+    const d = document.createElement('div');
+    d.style.background = 'var(${name})';
+    document.body.appendChild(d);
+    const c = getComputedStyle(d).backgroundColor;
+    d.remove();
+    return c;
+  })()`);
+  const okColor = await tokenColor("--ok");
+  const dimColor = await tokenColor("--text-dim");
   const running = await ev(`(() => {
     const row = document.querySelector('[data-session="' + ${JSON.stringify(busy)} + '"]');
     if (!row) return { found: false };
@@ -92,6 +106,7 @@ try {
       avatarAnim: getComputedStyle(av).animationName,
       avatarShadow: getComputedStyle(av).boxShadow,
       dotAnim: dot ? getComputedStyle(dot).animationName : "",
+      dotBg: dot ? getComputedStyle(dot).backgroundColor : "",
       box: [Math.round(ar.width), Math.round(ar.height)],
       onScreen: rr.top >= 0 && rr.bottom <= innerHeight,
       title: av.getAttribute('title'),
@@ -100,7 +115,11 @@ try {
   check("the running row is rendered", running.found === true);
   check("its agent mark wears the live class", /\blive\b/.test(running.avatarClass ?? ""), running.avatarClass);
   check("with a halo animation attached", (running.avatarAnim ?? "").includes("rail-live"), `animation=${running.avatarAnim} / shadow=${running.avatarShadow}`);
-  check("its status dot is the running one, and it pulses", /running/.test(running.dotClass ?? "") && (running.dotAnim ?? "").includes("pulse"), `${running.dotClass} anim=${running.dotAnim}`);
+  check("its status badge is the RUNNING one", /running/.test(running.dotClass ?? ""), `${running.dotClass}`);
+  check("…and that badge is GREEN (the theme's own ok colour)",
+    running.dotBg === okColor && Boolean(okColor), `dot=${running.dotBg} ok=${okColor}`);
+  check("the motion is on the MARK, not the 7px pixel (the badge does not pulse)",
+    running.dotAnim === "none", `dotAnim=${running.dotAnim}`);
   check("the halo does not resize the mark (still 20x20)", running.box?.[0] === 20 && running.box?.[1] === 20, `box=${running.box}`);
   check("the running row is on screen", running.onScreen === true);
   check("the row's tooltip says 运行中, not the protocol word", /运行中/.test(running.title ?? ""), running.title);
@@ -110,11 +129,23 @@ try {
     const row = document.querySelector('[data-session="' + ${JSON.stringify(idle)} + '"]');
     if (!row) return { found: false };
     const av = row.querySelector('.be-avatar');
+    const dot = row.querySelector('.be-dot');
     return { found: true, avatarClass: av.className, anim: getComputedStyle(av).animationName,
-             dot: (row.querySelector('.be-dot') || {className:''}).className,
-             dotAnim: getComputedStyle(row.querySelector('.be-dot') || av).animationName };
+             cold: row.classList.contains('cold'),
+             dot: dot ? dot.className : "(none)",
+             dotBg: dot ? getComputedStyle(dot).backgroundColor : "",
+             dotAnim: getComputedStyle(dot || av).animationName };
   })()`);
-  check("an idle session keeps a still mark (no halo, no pulse)", still.found && !/\blive\b/.test(still.avatarClass) && still.anim === "none" && !still.dotAnim.includes("pulse"), `${still.avatarClass} anim=${still.anim} dot=${still.dot}`);
+  check("an idle session keeps a still mark (no halo, no pulse)",
+    still.found && !/\blive\b/.test(still.avatarClass) && still.anim === "none" && still.dotAnim === "none",
+    `${still.avatarClass} anim=${still.anim} dot=${still.dot}`);
+  // the badge's own meaning, which is the other half of the operator's ask (2026-10-11): it answers
+  // "is there a process", and only COLOUR says whether that process is working. An idle row with a
+  // process must therefore be grey, not green — the previous build was green on every live row, so
+  // this check is red there.
+  check("an idle row WITH a process wears a GREY badge (not the running green)",
+    still.found && still.cold === false && !/running/.test(still.dot) && still.dotBg === dimColor && dimColor !== okColor,
+    `cold=${still.cold} dot=${still.dot} dotBg=${still.dotBg} dim=${dimColor}`);
 
   try {
     const shot = await send("Page.captureScreenshot", { format: "png" });
