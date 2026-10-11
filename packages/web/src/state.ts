@@ -347,6 +347,13 @@ class Cockpit {
    *  that takes seconds; without this a second click (or Enter, or the send button) would start a
    *  SECOND spawn for the same slot — two agent processes, one rail row. */
   #resuming = new Set<string>();
+  /** requestId → the option the operator just picked, between his click and the server's
+   *  `permission-resolved`. It exists because the click has to be VISIBLE on its own: the answer
+   *  travels to the server and comes back as an event, and on a slow link (a phone on the tunnel)
+   *  a popup that does not move reads as 「点了没反应」 — the operator clicks again, and on a request
+   *  that is already answered that second click is the one the server logs as dropped. Cleared the
+   *  moment the request leaves `perms`, whatever the server decided. */
+  #permAnswers = new Map<string, string>();
   #listeners = new Set<() => void>();
   /** The pending coalesced publish (see bump) — one per frame at most. */
   #frame: number | null = null;
@@ -596,6 +603,29 @@ class Cockpit {
     return () => this.#listeners.delete(fn);
   };
   getSnapshot = () => this.#snapshot;
+
+  /** The operator answered `requestId` (label = the option he pressed). Recorded so the surface can
+   *  show his click landing while the answer travels; the server's `permission-resolved` is what
+   *  actually takes the request away. */
+  markPermAnswered(requestId: string, label: string): void {
+    this.#permAnswers.set(requestId, label);
+    this.bump();
+  }
+
+  /** What the operator picked for a request still awaiting the server's word, or undefined. */
+  permAnswer(requestId: string): string | undefined {
+    return this.#permAnswers.get(requestId);
+  }
+
+  /** Forget answers for requests that are no longer pending — a request can leave `perms` through
+   *  `permission-resolved`, `permission-expired`, or a session snapshot (the server restarting, the
+   *  slot dying), and every one of those ends the answered state's usefulness. */
+  #syncPermAnswers(): void {
+    if (!this.#permAnswers.size) return;
+    const live = new Set<string>();
+    for (const v of this.byId.values()) for (const p of v.perms) live.add(p.requestId);
+    for (const id of [...this.#permAnswers.keys()]) if (!live.has(id)) this.#permAnswers.delete(id);
+  }
 
   #build(): StoreSnapshot {
     return {
@@ -1529,6 +1559,7 @@ class Cockpit {
           }
           for (const [sid, list] of bySession) this.#view(sid).perms = list;
           for (const v of this.byId.values()) if (!bySession.has(v.info.id)) v.perms = [];
+          this.#syncPermAnswers();
         }
         // prune views whose session vanished server-side (restart / close elsewhere)
         for (const id of [...this.byId.keys()]) if (!live.has(id)) this.byId.delete(id);
@@ -1665,12 +1696,14 @@ class Cockpit {
         break;
       case "permission-resolved":
         for (const v of this.byId.values()) v.perms = v.perms.filter((p) => p.requestId !== e.requestId);
+        this.#syncPermAnswers();
         break;
       case "permission-expired":
         // The answer landed nowhere (the server's request was already gone — our own timeout, or
         // the agent gave up first). Say so: a click that silently does nothing is the failure
         // shape the operator cannot tell from a broken button.
         for (const v of this.byId.values()) v.perms = v.perms.filter((p) => p.requestId !== e.requestId);
+        this.#syncPermAnswers();
         this.#view(e.sessionId).msgs.push({
           key: `perm-exp-${e.requestId}`,
           kind: "meta",

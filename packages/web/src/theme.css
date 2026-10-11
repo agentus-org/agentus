@@ -596,6 +596,19 @@ code.inline {
 .stale-banner:hover { filter: brightness(1.06); }
 .perm-opts { margin-top: 14px; }
 .perm-note { font-size: 11.5px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+/* 「我点了允许，它还在那儿」: the answer goes to the server and comes back as an event (a few ms
+   locally, seconds over a tunnel) — until it lands the request is still in `perms`, so the click
+   has to move something HERE. Measured 2026-10-11: with two requests pending, the first answer
+   swapped the dialog for the second, drawn identically, and the operator read it as a stuck card. */
+.perm-answered {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ok);
+  border: 1px solid var(--ok); border-radius: 7px; padding: 6px 11px;
+  background: rgba(78, 201, 160, .08);
+}
+.perm-answered-tick { font-weight: 700; }
+/* How many requests are queued behind the one on screen — the count the rail's ⚿ chip already
+   shows, spelled out where the operator is actually looking. */
+.perm-queue { margin-top: 10px; font-size: 12px; color: var(--accent-text); line-height: 1.5; }
 .ns-fixed-dir {
   display: flex; align-items: center; gap: 6px; padding: 9px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--bg-raised); color: var(--text-dim);

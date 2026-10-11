@@ -87,5 +87,44 @@ const items = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1
   check("a fractional limit is floored", splitRecent(items(10), { limit: 2.9 }).shown.length === 2);
 }
 
+// ---- a request waiting for an answer is never folded away ------------------------------------
+// The rail is the ONLY place a waiting approval is announced for a session the operator is not in
+// (`⚿ N` badge on the row), so a folded row is not a hidden list item — it is a hidden request. The
+// dialog cannot cover for it: it draws the ACTIVE session's request only.
+{
+  const list = items(20);
+  const { shown, hidden } = splitRecent(list, { mustShow: (x) => x === 9 });
+  check("a row with a waiting approval stays on screen",
+    shown.includes(9), JSON.stringify(shown));
+  check("…in place of the oldest shown row (the count stays at the limit)",
+    shown.length === RAIL_RECENT && hidden === 15 && shown[shown.length - 1] === 9,
+    JSON.stringify({ shown, hidden }));
+  check("…and the newest rows are untouched", shown.slice(0, 4).join(",") === "1,2,3,4", shown.join(","));
+}
+{
+  // two requests, two rows pinned, still one newest-first column of `limit` rows
+  const { shown, hidden } = splitRecent(items(20), { mustShow: (x) => x === 9 || x === 12 });
+  check("two waiting approvals both stay on screen",
+    shown.includes(9) && shown.includes(12), JSON.stringify(shown));
+  check("…the fold still stops at the limit", shown.length === RAIL_RECENT && hidden === 15,
+    JSON.stringify({ shown, hidden }));
+  check("…ordered as one newest-first column",
+    shown.join(",") === "1,2,3,9,12", shown.join(","));
+}
+{
+  // the ordinary case: the request is in the conversation the operator is working in
+  const { shown, hidden } = splitRecent(items(20), { isActive: (x) => x === 1, mustShow: (x) => x === 1 });
+  check("a request inside the newest few changes nothing",
+    shown.join(",") === "1,2,3,4,5" && hidden === 15, JSON.stringify({ shown, hidden }));
+}
+{
+  // more requests than the limit: the limit yields — hiding one would hide a decision
+  const { shown, hidden } = splitRecent(items(20), { limit: 3, mustShow: (x) => x >= 8 });
+  check("the limit yields when more rows must stay than it can show",
+    shown.slice(-13).join(",") === items(20).slice(7).join(","), JSON.stringify(shown));
+  check("…and nothing a must-keep rule named is hidden", hidden === 20 - shown.length,
+    JSON.stringify({ shown, hidden }));
+}
+
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${ok} ok, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

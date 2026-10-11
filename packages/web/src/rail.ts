@@ -28,7 +28,22 @@ export const RAIL_RECENT = 5;
  */
 export function splitRecent<T>(
   items: readonly T[],
-  opts: { limit?: number; searching?: boolean; expanded?: boolean; isActive?: (item: T) => boolean } = {},
+  opts: {
+    limit?: number;
+    searching?: boolean;
+    expanded?: boolean;
+    isActive?: (item: T) => boolean;
+    /**
+     * Rows that must stay on screen even when they are older than the newest `limit`.
+     *
+     * The rail is where a waiting approval is ANNOUNCED (`⚿ N` on the row, and the row is what the
+     * operator clicks to get to it), so folding such a row away does not hide a list item — it hides
+     * a request. The dialog does not cover for it either: it only ever draws the ACTIVE session's
+     * request. Measured 2026-10-11: a workspace with more than five sessions could hold an approval
+     * the rail never showed, and nothing else in the cockpit would say so.
+     */
+    mustShow?: (item: T) => boolean;
+  } = {},
 ): { shown: T[]; hidden: number } {
   const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? RAIL_RECENT)));
   const all = [...items];
@@ -36,13 +51,18 @@ export function splitRecent<T>(
     return { shown: all, hidden: 0 };
   }
   const shown = all.slice(0, limit);
-  // The conversation the operator is IN stays on screen: it is the one row whose absence would lose
-  // work rather than save space, and the rail highlights it — dropping it would leave the open session
-  // with no row pointing at it. Pin it in place of the OLDEST shown row, so the count stays `limit`
-  // instead of growing by one.
-  if (opts.isActive) {
-    const at = all.findIndex((x) => opts.isActive!(x));
-    if (at >= limit) shown[shown.length - 1] = all[at];
-  }
-  return { shown, hidden: all.length - shown.length };
+  const keep = (x: T): boolean => Boolean(opts.isActive?.(x) || opts.mustShow?.(x));
+  // A row that must stay and is already among the newest `limit` needs nothing (the ordinary case:
+  // the request is in the conversation you are working in).
+  const kept = all.slice(limit).filter(keep);
+  if (!kept.length) return { shown, hidden: all.length - shown.length };
+  // Pin each one in the place of the OLDEST shown rows, so the count stays `limit` for the ordinary
+  // case of one or two: the conversation the operator is IN — its absence loses work, and the rail
+  // highlights it — and any row with an approval waiting. Relative order is kept (both lists are
+  // newest-first), so the fold still reads as one newest-first column.
+  const drop = Math.max(0, Math.min(shown.length, kept.length));
+  const next = [...shown.slice(0, shown.length - drop), ...kept];
+  // More must-keep rows than the limit is the one case where the limit YIELDS: a hidden approval is a
+  // request nobody answers, which costs more than the folding was saving.
+  return { shown: next, hidden: all.length - next.length };
 }

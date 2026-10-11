@@ -123,6 +123,7 @@ export function App(): JSX.Element {
         <PermDialog
           req={pendingPerm}
           sessionTitle={activeView.info.title}
+          waiting={activeView.perms.length}
           onSkip={() => {
             setPermSkipped((s) => ({ ...s, [pendingPerm.requestId]: true }));
             setPermReopened("");
@@ -799,6 +800,10 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
         const { shown, hidden } = splitRecent(g.items, {
           searching: Boolean(needle),
           isActive: (i) => i.s.id === activeId,
+          // A row with a request waiting for the operator must not fold away: this badges it (`⚿ N`)
+          // and it is the way in to the conversation holding it — the dialog only draws the ACTIVE
+          // session's request, so a hidden row is a request nothing on screen announces.
+          mustShow: (i) => Boolean(cockpit.byId.get(i.s.id)?.perms.length),
           expanded: Boolean(more[key]),
         });
         return (
@@ -2187,31 +2192,49 @@ function PermSubject({ req }: { req: PermissionRequestView }): JSX.Element | nul
  *  agent already receives when nobody replies, and it is the only way out of a request
  *  whose option list has no reject. */
 function PermOptions({ sid, req, onAnswered }: {
-  sid: string; req: PermissionRequestView; onAnswered?: () => void;
+  sid: string; req: PermissionRequestView; onAnswered?: (label: string) => void;
 }): JSX.Element {
-  const answer = (decision: PermissionDecision, option?: { optionId: string; kind: string }): void => {
+  const answer = (decision: PermissionDecision, label: string, option?: { optionId: string; kind: string }): void => {
+    // One answer per request. Read the store, not this render's copy: two clicks in the same frame
+    // both see `undefined` if we trust a captured value, and the second one is exactly what the
+    // server logs as 「permission answer dropped」.
+    if (cockpit.permAnswer(req.requestId)) return;
+    cockpit.markPermAnswered(req.requestId, label);
+    onAnswered?.(label);
     cockpit.send({
       t: "respond-permission", sessionId: sid, requestId: req.requestId, decision,
       // `allow_always` is remembered per live session server-side; the signature is what
       // makes the next identical request in this session pass without asking again.
       ...(option ? { optionKind: option.kind, signature: `${req.kind}:${req.toolCallTitle}` } : {}),
     });
-    onAnswered?.();
   };
+  // The operator's click has to be visible BEFORE the server's event comes back: the answer travels
+  // out and returns as `permission-resolved`, and on a slow link (a phone on the tunnel) a popup
+  // that does not move reads as 「点了没反应」. AionUi draws the same state (`hasResponded`), and it
+  // is also what keeps a second click off a request that is already answered.
+  const answered = cockpit.permAnswer(req.requestId);
+  if (answered) {
+    return (
+      <div className="perm-answered" role="status" aria-live="polite">
+        <span className="perm-answered-tick" aria-hidden="true">✓</span>
+        <span>已提交「{answered}」—— 正在等 agent 那边回应</span>
+      </div>
+    );
+  }
   return (
     <>
       {req.options.map((o) => (
         <button
           key={o.optionId}
           className={o.kind.startsWith("allow") ? "allow" : "reject"}
-          onClick={() => answer({ outcome: "selected", optionId: o.optionId }, o)}
+          onClick={() => answer({ outcome: "selected", optionId: o.optionId }, o.name, o)}
         >
           {o.name}
         </button>
       ))}
       <button
         title="不选任何一项：agent 会收到 cancelled，这一轮就停在这里"
-        onClick={() => answer({ outcome: "cancelled" })}
+        onClick={() => answer({ outcome: "cancelled" }, "取消这次请求")}
       >
         取消这次请求
       </button>
@@ -2349,8 +2372,8 @@ function PermChanges({ diff }: { diff: PermissionDiff }): JSX.Element {
  *  brings up the next one. `稍后处理` closes the dialog WITHOUT answering — the request stays
  *  pending, its card stays in the transcript, and the header's ⚿ chip brings this back. Esc
  *  is that same "not now", never a deny: a keypress must not decide for the agent. */
-function PermDialog({ req, sessionTitle, onSkip }: {
-  req: PermissionRequestView; sessionTitle: string; onSkip: () => void;
+function PermDialog({ req, sessionTitle, waiting, onSkip }: {
+  req: PermissionRequestView; sessionTitle: string; waiting: number; onSkip: () => void;
 }): JSX.Element {
   useEscape(true, onSkip);
   // Elapsed time since the request arrived, measured (never a fabricated deadline): how long
@@ -2361,6 +2384,12 @@ function PermDialog({ req, sessionTitle, onSkip }: {
     return () => window.clearInterval(t);
   }, [req.requestId]);
   const waited = Math.max(0, Math.round((now - req.createdAt) / 1000));
+  const answered = cockpit.permAnswer(req.requestId);
+  // Answering this one brings up the NEXT request, drawn the same way (an agent that writes two
+  // files asks twice). Without saying so, that reads as 「我点了允许，它还在那儿」 — measured
+  // 2026-10-11: with two pending, the dialog swapped to the second on the first click and the
+  // operator had no way to tell it was a different request.
+  const others = Math.max(0, waiting - 1);
   return (
     /* Clicking the backdrop means "not now", not "nothing happened": the card stays in the
        transcript with the same buttons, and the ⚿ chip in the header reopens this dialog. A
@@ -2375,6 +2404,7 @@ function PermDialog({ req, sessionTitle, onSkip }: {
         aria-label="agent 请求授权"
         data-request-id={req.requestId}
         data-session-id={req.sessionId}
+        data-waiting={waiting}
         onClick={(e) => e.stopPropagation()}
       >
         <h3>Agent 请求授权</h3>
@@ -2385,12 +2415,19 @@ function PermDialog({ req, sessionTitle, onSkip }: {
         <div className="opts perm-opts">
           <PermOptions sid={req.sessionId} req={req} />
         </div>
+        {others > 0 && (
+          <div className="perm-queue" role="note">
+            这个会话还有 <b>{others}</b> 个请求等着答复 —— 答完这个，下一个会接着显示在这里。
+          </div>
+        )}
         <div className="perm-note">
           已等待 {waited} 秒。一直不答复的话，agent 那边会自己放弃这次请求（等同拒绝），这一轮就停在这里。
         </div>
-        <div className="row">
-          <button className="cancel" onClick={onSkip}>稍后处理</button>
-        </div>
+        {!answered && (
+          <div className="row">
+            <button className="cancel" onClick={onSkip}>稍后处理</button>
+          </div>
+        )}
       </div>
     </div>
   );
