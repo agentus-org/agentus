@@ -65,6 +65,7 @@
   "live-stream": "tsx scripts/qa/live-stream.mts",
   "open-target": "tsx scripts/qa/open-target.mts",
   "rail-recent": "tsx scripts/qa/rail-recent.mts",
+  "permission-echo": "node scripts/qa/permission-echo.mjs",
   "turn-pulse": "tsx scripts/qa/turn-pulse.mts",
   "resume-tail": "tsx scripts/qa/resume-tail.mts",
   "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",

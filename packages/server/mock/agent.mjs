@@ -5,6 +5,8 @@
 //
 // Env switches to simulate edge cases (append `=N` to env vars when spawning):
 //   MOCK_TOOL=1        -> prompt triggers a tool_call + requestPermission
+//   MOCK_TOOL2=1       -> TWO tool_calls + requestPermissions in one turn (a session holding more
+//                         than one pending request; `[tool2]` in the prompt does the same)
 //   MOCK_THINK=1       -> emits agent_thought_chunk before the answer
 //   MOCK_SLOW_MS=n     -> delay between chunks (default 60)
 //   MOCK_SPAWN_MS=n    -> boot latency before the handshake answers (default 0). A real agent takes
@@ -503,6 +505,42 @@ const agent = () => ({
           status: "completed",
           rawOutput: `step ${i} done (${i * 7} bytes)`,
         });
+      }
+    }
+
+    // `[tool2]` — TWO approvals from one turn, raised together (the shape an agent produces when it
+    // edits two files in parallel), with no diff payload so the two cards differ only by file name.
+    // This is the fixture for the state that has no other name: a session can hold more than one
+    // pending request, while the dialog draws only `perms[0]` — so answering the first swaps in the
+    // second, drawn identically, and the operator reads 「我点了允许，它还在那儿」 (measured
+    // 2026-10-11). QA only: scripts/qa/permission-echo.mjs.
+    if (process.env.MOCK_TOOL2 === "1" || /\btool2\b/.test(text)) {
+      const mode2 = s.currentModeId || "default";
+      if (mode2 !== "dont_ask" && mode2 !== "accept_edits") {
+        await Promise.all(["./two-a.txt", "./two-b.txt"].map(async (name, i) => {
+          const toolCallId = `tc-${sessionId}-pair-${i}`;
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "tool_call", toolCallId,
+            title: `Write file: ${name}`, kind: "edit", status: "pending",
+            rawInput: { path: name, content: `hello from the mock agent (${i + 1})` },
+          });
+          const resp = await agent._conn.requestPermission({
+            sessionId,
+            toolCall: { toolCallId, title: `Write file: ${name}`, kind: "edit" },
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "reject", name: "Reject", kind: "reject_once" },
+            ],
+          });
+          const pick = resp?.outcome?.optionId;
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "tool_call_update", toolCallId,
+            status: pick === "reject" ? "failed" : "completed",
+            rawOutput: pick === "reject"
+              ? `rejected by the operator — nothing written (chosen option: ${pick})`
+              : `wrote ${name} (chosen option: ${pick})`,
+          });
+        }));
       }
     }
 
