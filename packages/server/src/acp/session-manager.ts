@@ -268,14 +268,33 @@ export class SessionManager {
     return s.stderrBuf.slice(-lines).join("\n  ");
   }
 
+  /**
+   * Drop every pending approval of one slot, and TELL THE WIRE each one is gone.
+   *
+   * The client has exactly two ways to take an approval off the screen: the `permission-resolved`
+   * event, or a fresh `sessions` snapshot that no longer lists it. A bare `clear()` therefore
+   * leaves the popup, the transcript card, the ⚿ badge — and the phone's 待你确认 activity — for a
+   * request that does not exist any more; the operator clicks it, the server logs 「answer dropped」
+   * and answers `permission-expired`, and he reads his own cockpit as broken (measured 2026-10-11:
+   * `kill -9` the child with an approval up and the dialog is still there 4s later). So: every path
+   * that resolves these promises from the SERVER side goes through here.
+   *
+   * The decision is `cancelled` — what the agent would have received had nobody ever answered.
+   */
+  #dropPending(live: LiveSession, decision: PermissionDecision = { outcome: "cancelled" }): void {
+    if (!live.pendingPermissions.size) return;
+    for (const [requestId, { resolve, timer }] of live.pendingPermissions) {
+      clearTimeout(timer);
+      resolve({ outcome: decision });
+      this.#emit({ t: "permission-resolved", requestId, decision });
+    }
+    live.pendingPermissions.clear();
+  }
+
   /** Graceful shutdown: SIGTERM every live child before server exit. */
   async shutdown(): Promise<void> {
     const kills = [...this.#sessions.values()].map(async (s) => {
-      for (const { resolve, timer } of s.pendingPermissions.values()) {
-        clearTimeout(timer);
-        resolve({ outcome: { outcome: "cancelled" } });
-      }
-      s.pendingPermissions.clear();
+      this.#dropPending(s);
       s.child?.kill("SIGTERM");
     });
     await Promise.allSettled(kills);
@@ -690,11 +709,7 @@ export class SessionManager {
     // operator watched their slot flicker into the archive for a second — measured on :8901).
     // Mark the swap BEFORE the signal, so the exit we are causing is not read as a dead agent.
     live.replacing = true;
-    for (const { resolve, timer } of live.pendingPermissions.values()) {
-      clearTimeout(timer);
-      resolve({ outcome: { outcome: "cancelled" } });
-    }
-    live.pendingPermissions.clear();
+    this.#dropPending(live);
     live.busy = false;
     // show the swap honestly: "starting" with no pid, not a pid that is already gone
     live.info.status = "starting";
@@ -1243,11 +1258,7 @@ export class SessionManager {
    *  it / it crashed / the cockpit reclaimed it for being idle) and a rail that shows one word for
    *  all three teaches the operator to distrust the column. */
   #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): void {
-    for (const { resolve, timer } of live.pendingPermissions.values()) {
-      clearTimeout(timer);
-      resolve({ outcome: { outcome: "cancelled" } });
-    }
-    live.pendingPermissions.clear();
+    this.#dropPending(live);
     live.child?.kill("SIGTERM");
     live.info.status = why === "reaped" ? "reaped" : "closed";
     live.info.pid = null;
@@ -1647,11 +1658,7 @@ export class SessionManager {
     // …and if we are REPLACING this slot's process (restart), the exit is the one we asked for: the
     // slot has not failed, it is coming back on a new child.
     if (live.replacing) return;
-    for (const { resolve, timer } of live.pendingPermissions.values()) {
-      clearTimeout(timer);
-      resolve({ outcome: { outcome: "cancelled" } });
-    }
-    live.pendingPermissions.clear();
+    this.#dropPending(live);
     live.busy = false;
     live.info.status = "error";
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);

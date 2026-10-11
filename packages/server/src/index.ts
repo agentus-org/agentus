@@ -223,16 +223,25 @@ notify.onAction(({ ref, action, activity, device }) => {
   console.log(`[notify] action device=${device.name} activity=${activity.activityId} action=${action.actionId} type=${ref?.type ?? "none"}`);
   if (!ref) return; // the button existed but nobody claimed it: log and drop, never guess
   switch (ref.type) {
-    case "permission":
+    case "permission": {
       // The lock screen answering an agent's permission prompt — the whole point of the channel.
-      mgr.respondPermission(String(ref.sessionId), String(ref.requestId), {
+      const applied = mgr.respondPermission(String(ref.sessionId), String(ref.requestId), {
         outcome: "selected",
         optionId: String(ref.optionId),
       }, {
         optionKind: typeof ref.optionKind === "string" ? ref.optionKind : undefined,
         signature: typeof ref.signature === "string" ? ref.signature : undefined,
       });
+      // The request is gone (our timeout, the agent gave up, its process died). Take the card off
+      // the phone instead of leaving a 「待你确认」 that no longer has a request behind it — the
+      // browser gets `permission-expired` for the same click, and a phone that keeps a dead button
+      // is the same defect one device over.
+      if (!applied) {
+        console.log(`[notify] permission answer dropped for ${ref.requestId}: card dismissed`);
+        notify.dismiss(`perm:${ref.requestId}`);
+      }
       return;
+    }
     case "open":
       return; // the app already opened the deeplink; nothing to do server-side
     default:
