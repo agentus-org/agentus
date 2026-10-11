@@ -22,6 +22,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.SslErrorHandler;
@@ -33,6 +34,7 @@ import android.webkit.WebViewClient;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -70,7 +72,19 @@ public final class MainActivity extends Activity {
     private static final int TWO_PANE_MIN_DP = 720;
 
     private Profiles profiles;
+    private Ui ui;
     private LinearLayout listBox;
+    /** The toolbar's server buttons (one per saved server) — rebuilt only when it would differ.
+     *  Holds the Profiles revision the strip was built at. */
+    private LinearLayout chipStrip;
+    private HorizontalScrollView chipScroller;
+    private LinearLayout.LayoutParams chipLp;
+    private int renderedChipRev = -1;
+    private String renderedChipActive = null;
+    private boolean renderedChipOnline = false;
+    /** The one-line "which server am I on" under the toolbar (the full URL lives here, not on a chip:
+     *  the SSL waiver and the mic bridge are consented to per server, so it must stay visible). */
+    private TextView whereView;
     private TextView formTitle;
     private EditText fName, fUrl, fUser, fPass, fPair;
     private CheckBox fRemember;
@@ -78,6 +92,8 @@ public final class MainActivity extends Activity {
     private String editingId = null;
     private boolean wide = false;
     private int renderedRevision = -1;
+    /** The socket state the cards/toolbar were drawn at (they draw 在线 / 已连接). */
+    private boolean renderedConnected = false;
     /** 上岛自检进行中（再点一次就是取消）。 */
     private boolean selfTestRunning = false;
     /** 页面要麦克风、而 App 还没拿到系统录音权限时，把这次请求挂住，别 deny。 */
@@ -105,7 +121,6 @@ public final class MainActivity extends Activity {
     private static final String S_CONFIG_OPEN = "ui.configOpen";
     private FrameLayout content;
     private View configView;
-    private TextView titleView;
     private WebView webView;
     /** The native microphone behind {@code window.AgentusMic} (see Mic: the WebView's own capture
      *  will not open on this ROM, this app's AudioRecord does). */
@@ -125,8 +140,23 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ui = new Ui(this);
         profiles = new Profiles(this);
         setContentView(buildUi());
+        // Edge-to-edge means the status bar sits ON our background now, so its icons have to be told to
+        // invert: dark glyphs on the dark palette are glyphs nobody can see.
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.setSystemBarsAppearance(ui.dark ? 0 : WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
+            }
+        } else {
+            View d = getWindow().getDecorView();
+            int f = d.getSystemUiVisibility();
+            d.setSystemUiVisibility(ui.dark ? (f & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR)
+                                            : (f | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR));
+        }
         // Built once and kept alive: the 1-second refresh reads its widgets, so they must exist even
         // while the cockpit is the visible screen.
         configView = configUi();
@@ -219,6 +249,9 @@ public final class MainActivity extends Activity {
     private View buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        // The WINDOW's own background is the platform default (white) and it shows through the inset
+        // padding above the toolbar — in the dark palette that is a white band behind the status bar.
+        root.setBackgroundColor(ui.bg);
         // From Android 15 on, an app draws edge to edge whether it wants to or not: without this the
         // toolbar (and the first row of the server form) hides behind the status bar, which is also
         // why a tap meant for 服务器 landed in SystemUI's touch area (found on the emulator).
@@ -255,29 +288,146 @@ public final class MainActivity extends Activity {
         return root;
     }
 
-    /** 一条工具条：回服务器列表 / 当前是哪台、在线否 / 刷新。 */
+    /**
+     * The toolbar: 服务器 | one button per saved server | 刷新.
+     *
+     * The middle USED to be the current server's address as plain text — a 12sp line of
+     * `https://i207f47592.wicp.vip:38788`, which is what the operator was looking at when he asked
+     * for 「1、2、3 那几个按钮」. It is now one pill per saved server, showing the operator's own name
+     * for it (the form's 名称 field = the 别称), with the CURRENT one filled in the accent colour and
+     * carrying a status dot. Tap = switch to that server and open its cockpit; long-press = rename it.
+     *
+     * Order is the order they were added ({@link Profiles#ordered()}), never last-used: buttons you
+     * aim at must not move under your finger. The strip scrolls sideways, so a fourth and fifth server
+     * cost no extra height.
+     */
     private View toolbar() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setBackgroundColor(ui.panel);
+
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(8), dp(6), dp(8), dp(6));
-        bar.setBackgroundColor(Color.parseColor("#f2f2ef"));
         bar.addView(toolButton("服务器", v -> showConfig()));
-        titleView = new TextView(this);
-        titleView.setTextSize(12);
-        titleView.setTextColor(Color.parseColor("#4a4a48"));
-        titleView.setSingleLine(true);
-        titleView.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        titleView.setGravity(Gravity.CENTER_VERTICAL);
-        titleView.setPadding(dp(10), 0, dp(6), 0);
-        bar.addView(titleView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        chipStrip = new LinearLayout(this);
+        chipStrip.setOrientation(LinearLayout.HORIZONTAL);
+        chipStrip.setGravity(Gravity.CENTER_VERTICAL);
+        chipLp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        chipLp.leftMargin = dp(6);
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        chipScroller = scroller;
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.addView(chipStrip, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams stripLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        stripLp.leftMargin = dp(4);
+        stripLp.rightMargin = dp(4);
+        bar.addView(scroller, stripLp);
         bar.addView(toolButton("刷新", v -> reloadCockpit()));
-        return bar;
+        col.addView(bar, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 11sp, dim, one line: the full address of the server those buttons point at. Not decoration —
+        // the app waives the operator's self-signed TLS and lends its own microphone to THIS origin
+        // only (see isSavedHost / bridgeAllowed), so the origin stays readable on screen.
+        whereView = ui.label("", 11f, ui.dim, false);
+        whereView.setSingleLine(true);
+        whereView.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        whereView.setPadding(dp(14), 0, dp(14), dp(6));
+        col.addView(whereView, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        View line = new View(this);
+        line.setBackgroundColor(ui.line);
+        col.addView(line, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        return col;
+    }
+
+    /**
+     * One button per saved server, and the line under them.
+     *
+     * Rebuilt only when something it draws changed (the Profiles revision, the current server, the
+     * socket state): this is called from the 1-second tick, and rebuilding a view tree every second is
+     * how a toolbar starts flickering and swallowing taps.
+     */
+    private void renderChips() {
+        if (chipStrip == null) return;
+        List<Profiles.P> all = profiles.ordered();
+        Profiles.P active = profiles.active();
+        String activeId = active == null ? null : active.id;
+        boolean online = NotifyService.connected;
+        boolean sameActive = activeId == null ? renderedChipActive == null : activeId.equals(renderedChipActive);
+        if (profiles.revision() == renderedChipRev && sameActive && online == renderedChipOnline) return;
+        renderedChipRev = profiles.revision();
+        renderedChipActive = activeId;
+        renderedChipOnline = online;
+
+        chipStrip.removeAllViews();
+        if (all.isEmpty()) {
+            chipStrip.addView(ui.label("还没有服务器", 12f, ui.dim, false));
+            return;
+        }
+        LinearLayout activeChip = null;
+        for (int i = 0; i < all.size(); i++) {
+            final Profiles.P p = all.get(i);
+            final boolean on = p.id.equals(activeId);
+            // named → the name; unnamed → its number and host, so "第 1 台" is still a place to tap
+            String text = p.name != null && !p.name.isEmpty() ? p.name : (i + 1) + " · " + p.host();
+            LinearLayout chip = ui.chip(text, on, on && online);
+            chip.setOnClickListener(v -> {
+                if (on) showCockpit();
+                else switchTo(p);
+            });
+            chip.setOnLongClickListener(v -> {
+                renameDialog(p);
+                return true;
+            });
+            chipStrip.addView(chip, chipLp);
+            if (on) activeChip = chip;
+        }
+        // With more servers than fit, the current one has to be VISIBLE — a notification tap can make
+        // a server current whose button is off the right edge, and "which one am I on" is exactly what
+        // this row is for. Nothing moves when everything already fits.
+        final LinearLayout target = activeChip;
+        if (target != null && chipScroller != null) {
+            chipScroller.post(() -> {
+                int want = target.getLeft() - (chipScroller.getWidth() - target.getWidth()) / 2;
+                chipScroller.smoothScrollTo(Math.max(0, want), 0);
+            });
+        }
+    }
+
+    /**
+     * Long-press a server button to give it its name. Deliberately its own panel and not the edit form:
+     * "保存并连接" switches servers, and renaming server 3 must not drag the operator off server 1.
+     */
+    private void renameDialog(final Profiles.P p) {
+        final EditText in = new EditText(this);
+        in.setHint("例如「家里」「公司」");
+        in.setText(p.name);
+        in.setSelection(in.getText().length());
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("给「" + p.host() + "」起个别称")
+            .setView(in)
+            .setPositiveButton("保存", (d, w) -> {
+                p.name = in.getText().toString().trim();
+                profiles.upsert(p);
+                renderedChipRev = -1;   // the button's label is the revision's business, so re-ask
+                renderedRevision = -1;
+                updateToolbar();
+                setMessage(p.name.isEmpty() ? "别称已清掉，按钮显示地址" : "这台按钮叫「" + p.name + "」了");
+            })
+            .setNegativeButton("取消", null)
+            .show();
     }
 
     private void showConfig() {
         screen = SCREEN_CONFIG;
-        content.removeAllViews();
         if (webView != null && webView.getParent() == content) content.removeView(webView);
         content.addView(configView, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -315,13 +465,20 @@ public final class MainActivity extends Activity {
         else showCockpit();
     }
 
+    /**
+     * The line under the toolbar, and the buttons in it. On the cockpit it answers "which server am I
+     * actually looking at" (with the address, see toolbar()); on the settings screen it says the one
+     * thing about notifications that is otherwise invisible: they come from the current server ONLY.
+     */
     private void updateToolbar() {
-        if (titleView == null) return;
         Profiles.P p = profiles.active();
-        String where = p == null ? "（还没有服务器）" : p.label() + (NotifyService.connected ? " ●" : " ○");
-        titleView.setText(screen == SCREEN_CONFIG
-            ? "设置 · " + where
-            : where + (p == null ? "" : " · " + p.url));
+        if (whereView != null) {
+            whereView.setText(screen == SCREEN_CONFIG
+                ? "设置 · 通知只来自当前这台：" + (p == null ? "（还没有服务器）" : p.label())
+                : (p == null ? "（还没有服务器）"
+                    : p.label() + (NotifyService.connected ? " · 已连接" : " · 未连接") + " · " + p.url));
+        }
+        renderChips();
     }
 
     /**
@@ -333,6 +490,9 @@ public final class MainActivity extends Activity {
         if (webView != null) return;
         WebView.setWebContentsDebuggingEnabled(true); // a sideloaded personal build
         webView = new WebView(this);
+        // the page is the cockpit's own colours, but between loadUrl and first paint the WebView is
+        // white — which on a dark cockpit is a flash in the face
+        webView.setBackgroundColor(ui.bg);
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -464,18 +624,15 @@ public final class MainActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(ui.bg);
         root.setPadding(dp(20), dp(20), dp(20), dp(10));
 
-        TextView title = new TextView(this);
-        title.setText("服务器与通知");
-        title.setTextSize(22);
+        TextView title = ui.label("服务器与通知", 22f, ui.text, true);
         root.addView(title);
 
-        TextView hint = new TextView(this);
-        hint.setText("App 打开就是驾驶舱（这台服务器的网页）。这里只配两件事：连哪台服务器、通知怎么推。"
-            + "地址 + 用户名密码配对后，它会自己拿设备令牌；多台服务器都留在这儿，点「切换」即换。");
-        hint.setTextSize(13);
-        hint.setPadding(0, dp(6), 0, dp(10));
+        TextView hint = ui.hint("App 打开就是驾驶舱（这台服务器的网页）。工具栏上那几个按钮就是各台服务器的别称："
+            + "点一下直接切过去，长按可以改名。通知只来自高亮的那一台 —— 其它服务器不会推消息过来。");
+        hint.setPadding(0, dp(8), 0, dp(12));
         root.addView(hint);
 
         if (wide) {
@@ -509,176 +666,160 @@ public final class MainActivity extends Activity {
         return sv;
     }
 
-    /** Left (or top) panel: the saved servers. */
+    /** Left (or top) panel: the saved servers, one card each. */
     private View listPanel() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-
-        TextView h = new TextView(this);
-        h.setText("服务器");
-        h.setTextSize(17);
-        box.addView(h);
-
+        box.addView(ui.section("服务器"));
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(listBox);
         return box;
     }
 
-    /** Right (or bottom) panel: the add/edit form, the tools and the live state. */
+    /** Right (or bottom) panel: the form, the tools and the live state — in cards, not one wall. */
     private View detailPanel() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
-        // ---- add / edit form
-        formTitle = new TextView(this);
-        formTitle.setText("添加服务器");
-        formTitle.setTextSize(17);
-        formTitle.setPadding(0, dp(14), 0, dp(4));
-        root.addView(formTitle);
+        // ---- card 1: the server itself (the form, plus the pairing-string alternative)
+        root.addView(ui.section("添加 / 编辑服务器"));
+        LinearLayout form = ui.card();
+        formTitle = ui.label("添加服务器", 16f, ui.text, true);
+        form.addView(formTitle);
 
-        fName = field("名称（可留空）", false);
-        fUrl = field("服务器地址，例如 https://i207f47592.wicp.vip:38788", false);
-        fUser = field("用户名", false);
-        fPass = field("密码", true);
+        fName = ui.input("别称（留空就显示地址），例如「家里」", false);
+        fUrl = ui.input("地址，例如 https://i207f47592.wicp.vip:38788", false);
+        fUser = ui.input("用户名", false);
+        fPass = ui.input("密码", true);
         fRemember = new CheckBox(this);
-        fRemember.setText("记住密码（换令牌/重连时自动用）");
+        fRemember.setText("记住密码（换令牌 / 重连时自动用）");
+        fRemember.setTextSize(13);
+        fRemember.setTextColor(ui.dim);
         fRemember.setChecked(true);
         // Creating a field is not the same as showing it: these must be attached, or the form is
         // invisible and only the pairing-string path works at all (found on a real emulator by
         // dumping the accessibility tree — the screen looked "plausible" without them).
-        root.addView(fName);
-        root.addView(fUrl);
-        root.addView(fUser);
-        root.addView(fPass);
-        root.addView(fRemember);
+        form.addView(fName, fieldLp(8));
+        form.addView(fUrl, fieldLp(8));
+        form.addView(fUser, fieldLp(8));
+        form.addView(fPass, fieldLp(8));
+        form.addView(fRemember, fieldLp(4));
+        LinearLayout saveRow = ui.row();
+        saveRow.setPadding(0, dp(10), 0, 0);
+        saveRow.addView(ui.spaced(ui.primary("保存并连接", 14f, v -> saveForm()), 8));
+        saveRow.addView(ui.ghost("取消编辑", 14f, v -> resetForm()));
+        form.addView(saveRow);
 
-        LinearLayout saveRow = new LinearLayout(this);
-        saveRow.setOrientation(LinearLayout.HORIZONTAL);
-        saveRow.addView(button("保存并连接", v -> saveForm()));
-        saveRow.addView(button("取消编辑", v -> resetForm()));
-        root.addView(saveRow);
+        View sep = ui.hairline();
+        LinearLayout.LayoutParams sepLp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
+        sepLp.topMargin = dp(14);
+        form.addView(sep, sepLp);
+        TextView adv = ui.hint("或者贴服务端页面上那行配对串：");
+        adv.setPadding(0, dp(12), 0, dp(6));
+        form.addView(adv);
+        fPair = ui.input("agentus://pair?u=…&c=…", false);
+        form.addView(fPair, fieldLp(6));
+        form.addView(ui.ghost("用配对串添加", 14f, v -> addFromPairString()), wrapLp(10));
+        root.addView(form, cardLp());
 
-        // ---- advanced: a pairing string (what the server's /notify page prints)
-        TextView adv = new TextView(this);
-        adv.setText("或者贴服务端页面上那行配对串：");
-        adv.setTextSize(13);
-        adv.setPadding(0, dp(12), 0, dp(2));
-        root.addView(adv);
-        fPair = field("agentus://pair?u=…&c=…", false);
-        root.addView(button("用配对串添加", v -> addFromPairString()));
-
-        // ---- the way back to the thing the app is for, plus the island self-test (the two "act now"
-        // buttons — buried under the form they were invisible on a phone, which is how you end up
-        // being asked "小米灵动岛我怎么测试")
-        LinearLayout tools0 = new LinearLayout(this);
-        tools0.setOrientation(LinearLayout.HORIZONTAL);
-        tools0.addView(button("进驾驶舱", v -> showCockpit()));
-        tools0.addView(button("上岛自检", v -> islandSelfTest("", "上岛自检")));
+        // ---- card 2: the tools — the way into the cockpit, the self-tests, the reconnects. Two per
+        // row: the widest label here (「小米焦点通知权限」) plus a second pill already fills a 411dp
+        // phone, and wrapping them by hand is honest about that.
+        root.addView(ui.section("工具与自检"));
+        LinearLayout tools = ui.card();
+        tools.addView(buttonRow(ui.primary("进驾驶舱", 14f, v -> showCockpit()),
+            ui.ghost("上岛自检", 14f, v -> islandSelfTest("", "上岛自检"))));
         // Option A, on its own button: the AOSP promoted path with the vendor path skipped. Android 16's
         // Live Updates need NO Xiaomi grant (only a normal permission this app already declares), so this
         // is the one island route an individual can take without a company entity — but HyperOS may or
         // may not render it, and only this phone can answer that.
-        tools0.addView(button("原生实时动态", v -> islandSelfTest("aosp", "原生动态自检")));
-        root.addView(tools0);
-        LinearLayout tools0b = new LinearLayout(this);
-        tools0b.setOrientation(LinearLayout.HORIZONTAL);
-        tools0b.addView(button("语音自检", v -> voiceSelfTest()));
-        tools0b.addView(button("复制诊断", v -> copyDiagnosis()));
-        root.addView(tools0b);
-
-        // ---- live state
-        LinearLayout tools = new LinearLayout(this);
-        tools.setOrientation(LinearLayout.HORIZONTAL);
-        tools.addView(button("申请通知权限", v -> requestNotificationPermission()));
-        tools.addView(button("实时动态开关", v -> openPromotedSettings()));
-        root.addView(tools);
-        LinearLayout tools2 = new LinearLayout(this);
-        tools2.setOrientation(LinearLayout.HORIZONTAL);
-        tools2.addView(button("发测试通知", v -> probe()));
-        tools2.addView(button("重连", v -> {
+        tools.addView(buttonRow(ui.ghost("原生实时动态", 14f, v -> islandSelfTest("aosp", "原生动态自检")),
+            ui.ghost("语音自检", 14f, v -> voiceSelfTest())));
+        tools.addView(buttonRow(ui.ghost("重连", 14f, v -> {
             NotifyService.restart(this);
             setMessage("已请求重连");
-        }));
-        tools2.addView(button("清日志", v -> NotifyService.clearLog()));
-        root.addView(tools2);
-        LinearLayout tools3 = new LinearLayout(this);
-        tools3.setOrientation(LinearLayout.HORIZONTAL);
-        tools3.addView(button("小米焦点通知权限", v -> checkXiaomiFocus()));
-        tools3.addView(button("系统设置", v -> openAppSettings()));
-        root.addView(tools3);
+        }), ui.ghost("复制诊断", 14f, v -> copyDiagnosis())));
+        tools.addView(buttonRow(ui.ghost("申请通知权限", 14f, v -> requestNotificationPermission()),
+            ui.ghost("实时动态开关", 14f, v -> openPromotedSettings())));
+        tools.addView(buttonRow(ui.ghost("发测试通知", 14f, v -> probe()),
+            ui.ghost("清日志", 14f, v -> NotifyService.clearLog())));
+        tools.addView(buttonRow(ui.ghost("小米焦点通知权限", 14f, v -> checkXiaomiFocus()),
+            ui.ghost("系统设置", 14f, v -> openAppSettings())));
+        root.addView(tools, cardLp());
 
-        statusView = new TextView(this);
-        statusView.setTextSize(14);
-        statusView.setPadding(0, dp(12), 0, dp(4));
-        root.addView(statusView);
-
-        infoView = new TextView(this);
-        infoView.setTextSize(12);
-        root.addView(infoView);
-
-        logView = new TextView(this);
-        logView.setTextSize(11);
-        logView.setPadding(0, dp(8), 0, 0);
-        root.addView(logView);
+        // ---- card 3: what is happening right now
+        root.addView(ui.section("当前状态"));
+        LinearLayout state = ui.card();
+        statusView = ui.label("", 14f, ui.text, false);
+        statusView.setLineSpacing(dp(3), 1f);
+        state.addView(statusView);
+        infoView = ui.mono("");
+        infoView.setPadding(0, dp(10), 0, 0);
+        state.addView(infoView);
+        LinearLayout logCard = ui.card();
+        logCard.addView(ui.section("日志"));
+        logView = ui.mono("");
+        logCard.addView(logView);
+        LinearLayout.LayoutParams logLp = cardLp();
+        logLp.topMargin = dp(12);
+        root.addView(logCard, logLp);
         return root;
     }
 
-    private EditText field(String hint, boolean password) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setTextSize(14);
-        if (password) e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        return e;
+    private LinearLayout.LayoutParams cardLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(14);
+        return lp;
+    }
+
+    private LinearLayout.LayoutParams fieldLp(int topDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(topDp);
+        return lp;
+    }
+
+    private LinearLayout.LayoutParams wrapLp(int topDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(topDp);
+        return lp;
+    }
+
+    /** One row of controls; the second one is optional. Tighter than the form's rows on purpose. */
+    private LinearLayout buttonRow(View a, View b) {
+        LinearLayout r = ui.row();
+        r.setPadding(0, dp(6), 0, 0);
+        r.addView(ui.spaced(a, 8));
+        if (b != null) r.addView(b);
+        return r;
     }
 
     /**
-     * Buttons are pills, not the platform Button. A default Button carries a 48dp minimum height, a
-     * wide intrinsic padding and a raised grey gradient — in a 34dp toolbar that reads as two
-     * oversized slabs (the operator's words: 「刷新按钮太大太丑」). One helper, so the toolbar, the
-     * rows and the form all get the same shape.
+     * Every control in this app is a pill, not the platform Button: a default Button carries a 48dp
+     * minimum height, a wide intrinsic padding and a raised grey gradient — in a toolbar that reads as
+     * two oversized slabs (the operator's words: 「刷新按钮太大太丑」). The shapes live in Ui now; this
+     * is the toolbar's own size, kept small on purpose.
      */
-    private TextView pill(String label, float textSize, int padH, int padV, View.OnClickListener click) {
-        TextView t = new TextView(this);
-        t.setText(label);
-        t.setTextSize(textSize);
-        t.setTextColor(Color.parseColor("#1b1b1b"));
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(padH), dp(padV), dp(padH), dp(padV));
-        t.setMinWidth(0);
-        t.setMinimumWidth(0);
-        t.setMinHeight(0);
-        t.setMinimumHeight(0);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#ffffff"));
-        bg.setCornerRadius(dp(18));
-        bg.setStroke(Math.max(1, dp(1)), Color.parseColor("#dcdcd6"));
-        t.setBackground(new RippleDrawable(
-            ColorStateList.valueOf(Color.parseColor("#1a000000")), bg, null));
-        t.setClickable(true);
-        t.setFocusable(true);
-        t.setOnClickListener(click);
-        return t;
-    }
-
-    /** A normal action (settings rows, form): comfortable to hit. */
-    private TextView button(String label, View.OnClickListener click) {
-        return pill(label, 14f, 14, 9, click);
-    }
-
-    /** A toolbar action: deliberately smaller. */
     private TextView toolButton(String label, View.OnClickListener click) {
-        return pill(label, 13f, 11, 5, click);
+        return ui.tool(label, click);
     }
 
     // ---- render --------------------------------------------------------------
 
     private void refresh() {
-        if (profiles.revision() != renderedRevision) {
+        // Both the cards and the toolbar draw the SOCKET state (在线 / 已连接), so a change there has to
+        // redraw even when nothing about the profiles themselves changed.
+        boolean socket = NotifyService.connected;
+        if (profiles.revision() != renderedRevision || socket != renderedConnected) {
             renderedRevision = profiles.revision();
+            renderedConnected = socket;
             renderList();
-            updateToolbar(); // a server switching / coming online must show up in the toolbar too
         }
+        updateToolbar(); // cheap: it sets one line and rebuilds the buttons only if they differ
         statusView.setText(lastMessage.get() + "\n" + NotifyService.status);
 
         Profiles.P active = profiles.active();
@@ -719,44 +860,52 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The server cards. Same order as the toolbar's buttons ({@link Profiles#ordered()}), so the
+     * number on a button and the number here are the same server.
+     */
     private void renderList() {
         listBox.removeAllViews();
-        List<Profiles.P> all = profiles.all();
+        List<Profiles.P> all = profiles.ordered();
         Profiles.P active = profiles.active();
         if (all.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText("还没有服务器 —— 在下面填地址和用户名密码，或用配对串添加。");
-            empty.setTextSize(13);
-            listBox.addView(empty);
+            LinearLayout card = ui.card();
+            card.addView(ui.label("还没有服务器", 15f, ui.text, true));
+            TextView t = ui.hint("在下面填地址和用户名密码，或者用配对串添加。");
+            t.setPadding(0, dp(6), 0, 0);
+            card.addView(t);
+            listBox.addView(card, cardLp());
             return;
         }
-        for (Profiles.P p : all) {
-            boolean isActive = active != null && p.id.equals(active.id);
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(0, dp(8), 0, dp(4));
+        for (int i = 0; i < all.size(); i++) {
+            final Profiles.P p = all.get(i);
+            final boolean on = active != null && p.id.equals(active.id);
+            final boolean live = on && NotifyService.connected;
 
-            TextView head = new TextView(this);
-            head.setTextSize(15);
-            head.setText((isActive ? "● " : "○ ") + p.label()
-                + (isActive && NotifyService.connected ? "　在线" : "")
-                + (isActive ? "　【当前】" : ""));
-            row.addView(head);
+            LinearLayout card = ui.card();
 
-            TextView sub = new TextView(this);
-            sub.setTextSize(12);
-            sub.setText(p.url
-                + (p.hasLogin() ? "　·　" + p.username : "　·　无账号")
-                + (p.hasToken() ? "　·　已配对" : "　·　待配对"));
-            row.addView(sub);
+            LinearLayout head = ui.row();
+            View mark = ui.dot(on ? (live ? ui.ok : ui.dim) : ui.line, 9);
+            head.addView(mark);
+            head.addView(ui.label((i + 1) + "　" + p.label(), 16f, ui.text, true),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            head.addView(ui.badge(live ? "当前 · 在线" : on ? "当前" : p.hasToken() ? "已配对" : "待配对",
+                !on && !p.hasToken() ? ui.err : live ? ui.ok : ui.dim));
+            card.addView(head);
 
-            LinearLayout actions = new LinearLayout(this);
-            actions.setOrientation(LinearLayout.HORIZONTAL);
-            if (!isActive) actions.addView(button("切换", v -> switchTo(p)));
-            actions.addView(button("编辑", v -> edit(p)));
-            actions.addView(button("删除", v -> remove(p)));
-            row.addView(actions);
-            listBox.addView(row);
+            TextView sub = ui.hint(p.url + "\n"
+                + (p.hasLogin() ? p.username : "没有账号密码（要配对串，或点编辑补上）"));
+            sub.setPadding(dp(17), dp(6), 0, 0);
+            card.addView(sub);
+
+            LinearLayout actions = ui.row();
+            actions.setPadding(dp(17), dp(10), 0, 0);
+            if (!on) actions.addView(ui.spaced(ui.primary("切到这台", 13f, v -> switchTo(p)), 8));
+            actions.addView(ui.spaced(ui.ghost("编辑", 13f, v -> edit(p)), 8));
+            actions.addView(ui.danger("删除", 13f, v -> remove(p)));
+            card.addView(actions);
+
+            listBox.addView(card, cardLp());
         }
     }
 
