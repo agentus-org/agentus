@@ -10,6 +10,11 @@ puts the real cockpit's two file shapes on screen:
     (needs setDownloadListener / onCreateWindow)
 
 The counters let the test read back what the page actually received.
+
+Run:  python3 scripts/android-file-harness.py      (foreground; Ctrl-C to stop)
+Note: the dev cockpit also listens on :8901. This binds 127.0.0.1 explicitly and the emulator's 10.0.2.2
+maps to the host's loopback, so a probe lands here — if that ever looks ambiguous, stop the dev tree
+(scripts/dev.sh stop) or re-point the saved profile at another port.
 """
 import base64
 import http.server
