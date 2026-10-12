@@ -10,6 +10,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Downloads land in the public 下载 folder. API 29+ does that through MediaStore with no
+         permission at all; only the API 26–28 fallback writes the file directly, which is why this
+         is capped at 28 instead of dropped. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <!-- The cockpit's dictation / call mode runs on the page, and the WebView asks the app for the
          microphone through WebChromeClient.onPermissionRequest. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -21,6 +27,16 @@
          independent reports of the same symptom name this line as the fix
          (react-native-webview#3658, capacitor#802: "RECORD_AUDIO is not enough"). -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Android 11+ package visibility: without this, queryIntentActivities() answers "nothing"
+         for EVERY mime, so the download notification's "can this device open it?" pre-check would
+         always come back no and the tap-to-open action would never be offered. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
 
     <application
         android:label="@string/app_name"

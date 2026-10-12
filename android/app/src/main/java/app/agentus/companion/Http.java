@@ -130,6 +130,15 @@ final class Http {
         }
     }
 
+    /** GET with the app's trust rules; the caller owns the response and must close it. Used for
+     *  downloads, where the system downloader would refuse the operator's self-signed cockpit. */
+    static Response get(Context context, String url, String cookie, String token) throws Exception {
+        Request.Builder rb = new Request.Builder().url(url).get();
+        if (cookie != null && !cookie.isEmpty()) rb.header("cookie", cookie);
+        if (token != null && !token.isEmpty()) rb.header("authorization", "Bearer " + token);
+        return client(context).newCall(rb.build()).execute();
+    }
+
     static WebSocket openSocket(Context context, String url, WebSocketListener listener) {
         Request req = new Request.Builder().url(url).build();
         return client(context).newWebSocket(req, listener);

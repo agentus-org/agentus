@@ -2,6 +2,12 @@ package app.agentus.companion;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -9,13 +15,16 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -30,6 +39,8 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
 import android.webkit.WebViewClient;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -42,6 +53,10 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -96,6 +111,14 @@ public final class MainActivity extends Activity {
     private boolean renderedConnected = false;
     /** 上岛自检进行中（再点一次就是取消）。 */
     private boolean selfTestRunning = false;
+
+    /** Held while the system file picker is open. A WebView file input stays dead — its page-side
+     *  change handler never runs — until this callback is answered, cancel included. */
+    private ValueCallback<Uri[]> pendingFileChooser;
+    private static final int REQ_PICK_FILES = 101;
+    /** Notification channel for "saved to 下载"; its own channel so a download never mixes into the
+     *  agent's task notifications. */
+    private static final String CHANNEL_DOWNLOAD = "agentus-download";
     /** 页面要麦克风、而 App 还没拿到系统录音权限时，把这次请求挂住，别 deny。 */
     private PermissionRequest pendingAudioRequest = null;
     /** 最近一次语音自检的结果：原生那半（App 自己能不能录）与页面那半（WebView 能不能拿到）。 */
@@ -186,6 +209,18 @@ public final class MainActivity extends Activity {
         handleIntent(intent);
     }
 
+    /** The system file picker's answer. `parseResult` handles the multi-select and the "nothing was
+     *  picked" cases; answering with null on cancel is mandatory — otherwise the page's file input
+     *  never settles and the same input is dead for the rest of the session. */
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_PICK_FILES) return;
+        ValueCallback<Uri[]> cb = pendingFileChooser;
+        pendingFileChooser = null;
+        if (cb != null) cb.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+    }
+
     @Override
     protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
@@ -220,6 +255,10 @@ public final class MainActivity extends Activity {
         ticker.removeCallbacksAndMessages(null);
         if (mic != null) mic.stop();   // never leave AudioRecord open behind a dead activity
         if (webView != null) webView.destroy();
+        if (pendingFileChooser != null) {              // a picker still open: release the page's input
+            pendingFileChooser.onReceiveValue(null);
+            pendingFileChooser = null;
+        }
         super.onDestroy();
     }
 
@@ -501,6 +540,11 @@ public final class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         // the cockpit reads its replies out loud; requiring a gesture first would swallow them
         s.setMediaPlaybackRequiresUserGesture(false);
+        // window.open()/target=_blank: the cockpit opens a workspace file raw through it, and with
+        // multi-window OFF that popup is dropped on the floor (the button reads as dead). We take
+        // the popup ourselves in onCreateWindow and turn it into a download instead of a second view.
+        s.setSupportMultipleWindows(true);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
@@ -580,11 +624,44 @@ public final class MainActivity extends Activity {
                 request.deny();
             }
 
+            /** The page's <input type=file> (the composer's 📎). Android hands the picker to the
+             *  APP: a WebView with no handler here does nothing at all, silently. */
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                return showFilePicker(callback, params);
+            }
+
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
-                return false; // no popups: a target=_blank link loads in this very view
+                // No second window is ever shown: hand the popup a throwaway WebView, take the FIRST
+                // url it tries to load, drop it, and hand that url to the download path (which sends
+                // a foreign host to the browser).
+                final WebView popup = new WebView(MainActivity.this);
+                final boolean[] taken = {false};
+                popup.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                        if (taken[0]) return true;
+                        taken[0] = true;
+                        String url = req.getUrl().toString();
+                        v.destroy();
+                        startDownload(url, null, null);
+                        return true;
+                    }
+                });
+                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                transport.setWebView(popup);
+                resultMsg.sendToTarget();
+                return true;
             }
         });
+
+        // Content the WebView cannot render itself — `Content-Disposition: attachment` (导出会话,
+        // the APK route) and unknown mime types — arrives here. Without it the export url is loaded
+        // as an ordinary page and the cockpit turns into a wall of markdown instead of a file.
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) ->
+            startDownload(url, contentDisposition, mimeType));
     }
 
     /** Is this URL one of the servers the operator saved? (host + port, scheme-agnostic) */
@@ -1503,6 +1580,171 @@ public final class MainActivity extends Activity {
                 setMessage("这台设备没有这个设置入口");
             }
         }
+    }
+
+    // ---- files: the picker (upload) and the download path --------------------------------
+
+    /** The page's `<input type=file>` — the composer's 📎. Android gives the picker to the APP, and
+     *  a WebView with no handler here does nothing at all (silently), which is why the attachment
+     *  row never appeared. Same shape as the microphone: hold the callback, answer it exactly once. */
+    private boolean showFilePicker(ValueCallback<Uri[]> callback, WebChromeClient.FileChooserParams params) {
+        if (pendingFileChooser != null) {
+            pendingFileChooser.onReceiveValue(null);   // never leave a previous one hanging
+            pendingFileChooser = null;
+        }
+        Intent intent;
+        try {
+            intent = params.createIntent();            // keeps accept=, multiple, any capture hint
+        } catch (Exception e) {
+            intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        pendingFileChooser = callback;
+        try {
+            startActivityForResult(intent, REQ_PICK_FILES);
+            return true;
+        } catch (Exception e) {
+            pendingFileChooser = null;
+            setMessage("这台设备没有可选文件的界面：" + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Download a url the WebView handed us. Our own server is fetched with the app's own stack —
+     *  it carries the CA pinning, so a self-signed cockpit works where the system downloader would
+     *  refuse the certificate — and the bytes land in the public 下载 folder. Any other host is
+     *  handed to the browser. */
+    private void startDownload(String url, String contentDisposition, String mimeType) {
+        Uri u = Uri.parse(url);
+        if (!isSavedHost(u)) {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
+            return;
+        }
+        final String name = safeFileName(URLUtil.guessFileName(url, contentDisposition, mimeType));
+        final String cookie = CookieManager.getInstance().getCookie(url);
+        Profiles.P active = profiles.active();
+        final String token = active == null ? null : active.token;
+        setMessage("正在下载 " + name + " …");
+        new Thread(() -> {
+            try (okhttp3.Response r = Http.get(this, url, cookie, token)) {
+                if (!r.isSuccessful()) throw new java.io.IOException("HTTP " + r.code());
+                // The window.open() path hands us a bare url (no disposition), and a server that names
+                // the file only in its headers would otherwise save it as the path's last segment.
+                String header = r.header("content-disposition");
+                final String saved = (contentDisposition == null && header != null)
+                    ? safeFileName(URLUtil.guessFileName(url, header, r.header("content-type")))
+                    : name;
+                if (!saved.equals(name)) runOnUiThread(() -> setMessage("正在下载 " + saved + " …"));
+                okhttp3.ResponseBody body = r.body();
+                String where = saveToDownloads(saved, mimeType, body == null ? null : body.byteStream());
+                runOnUiThread(() -> setMessage("已下载：" + where));
+            } catch (Exception e) {
+                final String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+                runOnUiThread(() -> setMessage("下载失败：" + msg));
+            }
+        }, "agentus-download").start();
+    }
+
+    /** 落到系统的「下载」目录 —— 文件管理/相册/其他 app 都看得见（手机上「下载」就是这个意思）。
+     *  API 29+ 走 MediaStore，不需要任何权限；26–28 只能直接写公共目录，这就是清单里那条
+     *  `WRITE_EXTERNAL_STORAGE` 带 maxSdkVersion=28 的原因。 */
+    private String saveToDownloads(String name, String mimeType, InputStream in) throws Exception {
+        if (in == null) throw new java.io.IOException("服务器没有返回内容");
+        String mime = (mimeType == null || mimeType.isEmpty() || mimeType.startsWith("multipart/"))
+            ? "application/octet-stream" : mimeType;
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+            v.put(MediaStore.Downloads.MIME_TYPE, mime);
+            v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            v.put(MediaStore.Downloads.IS_PENDING, 1);     // invisible until the last byte is in
+            Uri item = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (item == null) throw new java.io.IOException("系统没有给出下载条目");
+            try (OutputStream os = getContentResolver().openOutputStream(item)) {
+                if (os == null) throw new java.io.IOException("无法写入下载目录");
+                copy(in, os);
+            } catch (Exception e) {
+                getContentResolver().delete(item, null, null);   // never leave a half file behind
+                throw e;
+            }
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.Downloads.IS_PENDING, 0);
+            getContentResolver().update(item, done, null, null);
+            notifySaved(name, item, mime);
+            return Environment.DIRECTORY_DOWNLOADS + "/" + name;
+        }
+        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (!dir.exists() && !dir.mkdirs()) throw new java.io.IOException("没有下载目录");
+        File out = uniqueFile(dir, name);
+        try (OutputStream os = new FileOutputStream(out)) { copy(in, os); }
+        MediaScannerConnection.scanFile(this, new String[]{out.getAbsolutePath()}, new String[]{mime}, null);
+        notifySaved(out.getName(), null, mime);   // a file:// uri cannot be handed to another app any more
+        return Environment.DIRECTORY_DOWNLOADS + "/" + out.getName();
+    }
+
+    /** Say it out loud, and — when this device actually has a viewer for that mime — make the
+     *  notification open the file. A tap that resolves to nothing looks exactly like a broken app,
+     *  so the action is dropped (and the text says so) when no activity can take it. */
+    private void notifySaved(String name, Uri item, String mime) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (nm.getNotificationChannel(CHANNEL_DOWNLOAD) == null) {
+                nm.createNotificationChannel(new NotificationChannel(
+                    CHANNEL_DOWNLOAD, "Agentus 下载", NotificationManager.IMPORTANCE_DEFAULT));
+            }
+            String type = (mime == null || mime.isEmpty() || mime.startsWith("multipart/"))
+                ? "application/octet-stream" : mime;
+            Intent open = null;
+            if (item != null) {
+                Intent candidate = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(item, type)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                if (!getPackageManager().queryIntentActivities(candidate, 0).isEmpty()) open = candidate;
+                else NotifyService.log("下载好了但本机没有能打开 " + type + " 的应用，只提示位置");
+            }
+            Notification.Builder b = new Notification.Builder(this, CHANNEL_DOWNLOAD);
+            b.setSmallIcon(R.drawable.ic_notify);
+            b.setContentTitle("已下载 " + name);
+            b.setContentText(open == null ? "在「下载」里" : "点一下打开");
+            b.setAutoCancel(true);
+            if (open != null) {
+                b.setContentIntent(PendingIntent.getActivity(this, 0, open,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+            }
+            nm.notify(("agentus-dl-" + name).hashCode(), b.build());
+        } catch (Exception e) {
+            NotifyService.log("下载完成通知失败：" + e.getMessage());
+        }
+    }
+
+    /** A name a filesystem will accept, whatever the server put in Content-Disposition. */
+    private static String safeFileName(String guess) {
+        String n = guess == null ? "" : guess.replace("/", "_").replace("\\", "_").trim();
+        if (n.isEmpty() || n.equals("_")) n = "agentus-download";
+        return n.length() > 120 ? n.substring(n.length() - 120) : n;
+    }
+
+    private static File uniqueFile(File dir, String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return f;
+        int dot = name.lastIndexOf('.');
+        String stem = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        for (int i = 1; i < 1000; i++) {
+            File c = new File(dir, stem + "-" + i + ext);
+            if (!c.exists()) return c;
+        }
+        return f;
+    }
+
+    private static void copy(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[64 * 1024];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        out.flush();
     }
 
     /** Kept for the contract doc: the capabilities this build actually implements. */
