@@ -59,3 +59,42 @@ self.addEventListener("fetch", (e) => {
     ),
   );
 });
+
+// Notification clicks (the browser channel of the notify feature).
+//
+// The worker draws the card — it is the only thing that can on a phone browser, and `new Notification()`
+// in a page throws there — so it also receives the click, and it CANNOT select a session: a service
+// worker has no cockpit. So it hands the target to a tab that does.
+//
+// Focus first, then ask that tab to switch sessions IN PLACE (`state.ts`'s opener) — a reload would
+// throw away whatever the operator had half-typed. `openWindow` is only for the case where no tab is
+// left, and it lands on the same `?session=<id>` the phone's tap target uses, so there is one owner of
+// "open the session that notified me".
+self.addEventListener("notificationclick", (e) => {
+  const data = e.notification.data || {};
+  const open = typeof data.open === "string" && data.open ? data.open : null;
+  e.notification.close();
+  e.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const mine = all.filter((c) => {
+        try {
+          return new URL(c.url).origin === self.location.origin;
+        } catch {
+          return false;
+        }
+      });
+      if (mine.length) {
+        const client = mine[0];
+        try {
+          await client.focus();
+        } catch {
+          /* some engines refuse focus outside a gesture; the message still lands */
+        }
+        for (const c of mine) c.postMessage({ t: "agentus:notify-open", open });
+        return;
+      }
+      if (open) await self.clients.openWindow(open);
+    })(),
+  );
+});

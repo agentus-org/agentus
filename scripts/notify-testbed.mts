@@ -78,6 +78,14 @@ center.onAction((e) => {
     `ref=${JSON.stringify(e.ref)} input=${JSON.stringify(e.action.input ?? null)}`);
 });
 
+// The page channel's sink, collected the way the cockpit fans it out (packages/server/src/index.ts
+// broadcasts each notice to its own page websockets). This runner has no cockpit websocket, so it
+// keeps them for /test/notices instead. What the smoke test is asserting through this door is the
+// CENTRE's decision — which event, which switch, what words — and the fan-out itself is a dozen
+// lines covered against a live cockpit by scripts/qa/notify-cockpit-e2e.mts.
+const pageNotices: unknown[] = [];
+center.onNotice((n) => { pageNotices.push(n); });
+
 function page(req: IncomingMessage): string {
   const host = String(req.headers.host ?? `localhost:${PORT}`);
   const scheme = (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http";
@@ -127,6 +135,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: (e as Error).message }));
     }
+    return;
+  }
+  if (url.pathname === "/test/notices" && req.method === "GET") {
+    const bearer = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : "";
+    const q = url.searchParams.get("token") ?? "";
+    if (!((bearer && equal(bearer, TOKEN)) || (q && equal(q, TOKEN)))) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "token required" }));
+      return;
+    }
+    const since = Number(url.searchParams.get("since") ?? 0) || 0;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ notices: pageNotices.slice(since), total: pageNotices.length }));
     return;
   }
   if (url.pathname === "/healthz") {

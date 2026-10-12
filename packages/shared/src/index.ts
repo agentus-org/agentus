@@ -194,7 +194,47 @@ export type ServerEvent =
   | { t: "plan"; sessionId: string; plan: PlanSnapshot }
   /** context-window usage for a slot (ACP usage_update) */
   | { t: "usage"; sessionId: string; usage: UsageView }
+  /** A browser notification for this machine (the web channel of the notify feature).
+   *
+   *  Same decision as the phone's cards, second renderer: the server maps an ACP event to a
+   *  title/body ONCE (notify/center.ts §ACP mapping) and hands the page a render-ready object, so the
+   *  page never re-derives what happened. Nothing here is Android's `ActivityObject` — no channels,
+   *  importances or actions; a browser ignores them, and sending fields a renderer cannot use is how a
+   *  second contract starts.
+   *
+   *  No cursor and no replay, unlike the phone's device socket: a tab that was closed has a
+   *  transcript to catch up in, and a wall of stale cards after a reload is worse than none. */
+  | { t: "notify"; notice: WebNotice }
   | { t: "error"; error: string };
+
+/**
+ * Server -> page, one browser notification (see the `notify` frame above).
+ *
+ * NOTE for whoever touches drawing: the page's ONLY jobs are (1) is this device allowed and willing
+ * (`Notification` exists, secure context, permission granted, the operator's local switch on), (2) is
+ * this tab in the background (`document.hidden` — the page's own answer to 「我正在看就不弹」, made
+ * where the fact lives), (3) draw it with `noticeId` as the notification `tag`. Everything about WHAT
+ * happened and WHEN to say it is decided server-side. */
+export interface WebNotice {
+  /** `upsert` = show (or replace) the card for `noticeId`; `dismiss` = take it away. */
+  op: "upsert" | "dismiss";
+  /** The page's slot AND its notification `tag`: one id = one card, a newer one replaces the old.
+   *  Chosen so a session's running/done cards replace themselves while each pending approval keeps
+   *  its own (every one of those is a decision still waiting for an answer). */
+  noticeId: string;
+  /** Semantic kind, for the page's own choices (per-kind sound, and whether a click is expected). */
+  kind: "agent_running" | "approval" | "agent_done" | "error";
+  /** What happened (short — the line the OS draws first). */
+  title: string;
+  /** `<会话名> · <detail>`, the same shape the phone's cards use. */
+  body: string;
+  /** Where a click lands, relative to this server (`/?session=<id>`). The phone's tap target is the
+   *  same URL, so "open the session that notified me" has one owner. */
+  open?: string | null;
+  /** True when the card must WAIT for the operator (an approval) rather than fade on its own. */
+  sticky?: boolean;
+  at: number;
+}
 
 export interface TurnTrace {
   model?: string;

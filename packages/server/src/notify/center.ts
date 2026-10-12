@@ -26,8 +26,10 @@ import type {
   NotifyFrame,
   NotifyRef,
   NotifyRules,
+  NotifyWebRules,
   Presence,
   OpenTarget,
+  WebNotice,
 } from "./types.js";
 
 export interface NotifyCenterOptions {
@@ -152,6 +154,8 @@ export class NotifyCenter {
   /** actionKey -> when it was consumed, so a button can only fire once. */
   private readonly consumed = new Map<string, number>();
   private onActionCb: ((e: ActionEvent) => void) | null = null;
+  /** The page channel's sink: index.ts fans this out to every cockpit websocket. */
+  private onNoticeCb: ((n: WebNotice) => void) | null = null;
   private timers: NodeJS.Timeout[] = [];
   private wss: WebSocketServer | null = null;
   /** Which session the cockpit is showing, and whether its tab is visible. Deliberately in
@@ -163,14 +167,34 @@ export class NotifyCenter {
 
   /** The operator's switches, always complete (a state file may predate them). */
   rules(): NotifyRules {
-    return { ...DEFAULT_NOTIFY_RULES, ...(this.state.rules ?? {}) };
+    // A state file written before the web channel existed has no `web` key at all, so the stored
+    // value is really partial — the cast says that out loud instead of pretending otherwise.
+    const stored = this.state.rules as Partial<NotifyRules> | undefined;
+    // `web` is merged one level deeper than the rest: a partial patch (one switch from the page) must
+    // not drop the other two — a nested object replaced wholesale is how a channel silently forgets
+    // its settings.
+    return {
+      ...DEFAULT_NOTIFY_RULES,
+      ...(stored ?? {}),
+      web: { ...DEFAULT_NOTIFY_RULES.web, ...(stored?.web ?? {}) },
+    };
   }
 
   setRules(patch: Partial<NotifyRules>): NotifyRules {
-    const next: NotifyRules = { ...this.rules(), ...patch };
+    const current = this.rules();
+    const next: NotifyRules = {
+      ...current,
+      ...patch,
+      web: { ...current.web, ...(patch.web ?? {}) },
+    };
     this.state.rules = next;
     this.save();
-    this.log(`[notify] rules turnStart=${next.turnStart} approval=${next.approval} completion=${next.completion} quietWhenWatching=${next.quietWhenWatching}`);
+    const w = next.web;
+    this.log(
+      `[notify] rules turnStart=${next.turnStart} approval=${next.approval} completion=${next.completion} ` +
+      `quietWhenWatching=${next.quietWhenWatching} | web enabled=${w.enabled} turnStart=${w.turnStart} ` +
+      `approval=${w.approval} completion=${w.completion}`,
+    );
     return next;
   }
 
@@ -471,6 +495,27 @@ export class NotifyCenter {
 
   replaySince(cursor: number): ActivityRecord[] {
     return this.events.filter((e) => e.seq > cursor && e.activity.op !== "clear_all");
+  }
+
+  // ---- the page channel (browser notifications) -----------------------------
+  //
+  // The same decision, a second renderer. Kept here (not in the page) so that strings, dedup and the
+  // card lifecycle have ONE owner: the page cannot re-derive "what happened" from the transcript, and
+  // a rule change must apply to both channels without shipping a bundle.
+  //
+  // What this channel deliberately does NOT do: consult presence. The page knows whether it is the
+  // tab in front (`document.hidden`) and stays quiet by itself, which is the same judgement made where
+  // the fact lives — and it must stay that way, because one browser tab cannot see the other machine.
+
+  onNotice(cb: (n: WebNotice) => void): void {
+    this.onNoticeCb = cb;
+  }
+
+  /** Emit one page notice, gated on the web channel's own switches. */
+  private notice(n: Omit<WebNotice, "at">, rule: keyof Omit<NotifyWebRules, "enabled">): void {
+    const web = this.rules().web;
+    if (!web.enabled || !web[rule]) return;
+    this.onNoticeCb?.({ ...n, at: Date.now() });
   }
 
   // ---- actions -------------------------------------------------------------
@@ -927,11 +972,11 @@ export class NotifyCenter {
     const title = (sessionId: string): string => this.sessionTitle?.(sessionId) ?? sessionId.slice(0, 8);
     const link = (sessionId: string): string => `/?session=${encodeURIComponent(sessionId)}`;
     switch (evt.t) {
-      case "turn-start":
-        // The rules gate BEFORE anything else: an event that is switched off must not even be
-        // evaluated against presence (and a suppressed event must not be mistaken for a bug).
-        if (!this.rules().turnStart || this.watching(evt.sessionId)) return;
-        this.publish({
+      case "turn-start": {
+        // Rules gate the PHONE first, and that is why the page's copy is emitted before the gate: the
+        // two channels have independent switches, and an early return for one must not starve the
+        // other. Both render the SAME object, so the words can never drift apart.
+        const running: ActivityObject = {
           schema: 1, op: "upsert", activityId: `turn:${evt.sessionId}`, revision: this.nextRevision(`turn:${evt.sessionId}`),
           kind: "agent_running", priority: "low", ongoing: true, promotable: true,
           title: "Agentus · 运行中",
@@ -939,29 +984,55 @@ export class NotifyCenter {
           progress: { indeterminate: true },
           channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
           smallIcon: "agentus", ...tapTarget(link(evt.sessionId)), visibility: "public",
-        });
+        };
+        this.notice({
+          op: "upsert", noticeId: `turn:${evt.sessionId}`, kind: "agent_running",
+          // The browser card drops the `Agentus ·` prefix the phone title carries: a browser already
+          // shows the origin and the icon, so the product's own name would spend the visible line.
+          title: "运行中", body: running.body ?? "", open: link(evt.sessionId),
+        }, "turnStart");
+        if (!this.rules().turnStart || this.watching(evt.sessionId)) return;
+        this.publish(running);
         return;
-      case "permission":
+      }
+      case "permission": {
         // Never suppressed by presence: this is a decision waiting on a human, and the whole
         // point of the phone being in the loop is answering it while away from the desk.
+        const { activity, actionRefs } = this.approvalActivity(evt.request, title(evt.request.sessionId), link(evt.request.sessionId));
+        this.notice({
+          op: "upsert", noticeId: `perm:${evt.request.requestId}`, kind: "approval",
+          title: activity.title, body: activity.body ?? "", open: link(evt.request.sessionId),
+          // Sticky: a browser card that fades away while the agent is still blocked is the same
+          // failure as a dead button on a lock screen.
+          sticky: true,
+        }, "approval");
         if (!this.rules().approval) return;
-        this.publishApproval(evt.request, title(evt.request.sessionId), link(evt.request.sessionId));
+        this.publish(activity, { actionRefs });
         return;
+      }
       case "permission-resolved":
         // Always clear the card, even if the request itself was never published — a stale
-        // "waiting for you" on the phone is worse than no notification at all.
+        // "waiting for you" on the phone is worse than no notification at all. The page's card goes
+        // away for the same reason and with the same unconditionality — and it is NOT switch-gated:
+        // taking a dead card off the screen is not an interruption, and gating it on a preference
+        // would leave a card nobody can answer.
         this.dismiss(`perm:${evt.requestId}`);
+        this.onNoticeCb?.({
+          op: "dismiss", noticeId: `perm:${evt.requestId}`, kind: "approval", title: "", body: "", at: Date.now(),
+        });
         return;
       case "turn-end": {
         // The running card goes away unconditionally — a zombie "still running" on the phone is worse
         // than no card at all, even when the frame that started it was suppressed.
         this.dismiss(`turn:${evt.sessionId}`);
+        this.onNoticeCb?.({
+          op: "dismiss", noticeId: `turn:${evt.sessionId}`, kind: "agent_running", title: "", body: "", at: Date.now(),
+        });
         // Both gates belong here and both were missing: `completion` was stored but never read, and
         // presence was only consulted for turn-start — so the completion card fired while the operator was watching
         // the very session (and, mid-call, with a sound: the reported bug).
-        if (!this.rules().completion || this.watching(evt.sessionId)) return;
         const failed = Boolean(evt.error);
-        this.publish({
+        const done: ActivityObject = {
           schema: 1, op: "upsert", activityId: `done:${evt.sessionId}:${Date.now()}`, revision: 1,
           kind: failed ? "error" : "agent_done", priority: "high", ongoing: false, promotable: false,
           title: failed ? "执行失败" : "已完成",
@@ -974,10 +1045,23 @@ export class NotifyCenter {
           },
           actions: [{ id: "open", label: "查看", style: "primary" }],
           smallIcon: "agentus", ...tapTarget(link(evt.sessionId)), visibility: "private",
-        }, { actionRefs: { open: { type: "open", sessionId: evt.sessionId } } });
+        };
+        // The page's card is keyed per SESSION (`done:<id>`), unlike the phone's per-occurrence id:
+        // a browser card carries a `tag`, so one per session is what makes the newest replace the
+        // previous one instead of stacking a wall of 「已完成」. Nothing is lost — the transcript is
+        // the history; the card only has to say what just happened.
+        this.notice({
+          op: "upsert", noticeId: `done:${evt.sessionId}`, kind: failed ? "error" : "agent_done",
+          title: done.title, body: done.body ?? "", open: link(evt.sessionId),
+        }, "completion");
+        if (!this.rules().completion || this.watching(evt.sessionId)) return;
+        this.publish(done, { actionRefs: { open: { type: "open", sessionId: evt.sessionId } } });
         return;
       }
       case "error":
+        // Phone-only, on purpose. This is the cockpit's own error with no session in scope, and on a
+        // desktop it is already ON SCREEN — the page is drawing that error right now. A browser card
+        // repeating something the operator is looking at is the one thing this channel must not do.
         this.publish({
           schema: 1, op: "upsert", activityId: `error:${Date.now()}`, revision: 1, kind: "error",
           priority: "high", ongoing: false, promotable: false, title: "Agentus 报错",
@@ -991,7 +1075,12 @@ export class NotifyCenter {
     }
   }
 
-  private publishApproval(request: PermissionRequestView, sessionTitle: string, link: string): void {
+  /** The approval card, built but not published: the phone's activity and the page's notice are two
+   *  renderings of ONE object, so the wording lives here and nowhere else. */
+  private approvalActivity(request: PermissionRequestView, sessionTitle: string, link: string): {
+    activity: ActivityObject;
+    actionRefs: Record<string, NotifyRef>;
+  } {
     const actions = request.options.slice(0, 3).map((o) => ({
       id: o.optionId,
       label: o.name.slice(0, 24),
@@ -1006,15 +1095,18 @@ export class NotifyCenter {
       };
     }
     const tool = splitToolTitle(request.toolCallTitle);
-    this.publish({
-      schema: 1, op: "upsert", activityId: `perm:${request.requestId}`, revision: 1, kind: "approval",
-      priority: "high", ongoing: true, promotable: true,
-      title: tool.head ? `待你确认：${tool.head.slice(0, 60)}` : "待你确认",
-      body: nameAndDetail(sessionTitle, tool.target || request.kind),
-      channel: { id: "agent_approval", name: "权限请求", importance: "high", sound: true, vibration: true },
-      actions: actions.length ? actions : [{ id: "open", label: "查看", style: "primary" }],
-      input: { enabled: true, placeholder: "或直接回一句" },
-      smallIcon: "agentus", ...tapTarget(link), visibility: "private",
-    }, { actionRefs });
+    return {
+      activity: {
+        schema: 1, op: "upsert", activityId: `perm:${request.requestId}`, revision: 1, kind: "approval",
+        priority: "high", ongoing: true, promotable: true,
+        title: tool.head ? `待你确认：${tool.head.slice(0, 60)}` : "待你确认",
+        body: nameAndDetail(sessionTitle, tool.target || request.kind),
+        channel: { id: "agent_approval", name: "权限请求", importance: "high", sound: true, vibration: true },
+        actions: actions.length ? actions : [{ id: "open", label: "查看", style: "primary" }],
+        input: { enabled: true, placeholder: "或直接回一句" },
+        smallIcon: "agentus", ...tapTarget(link), visibility: "private",
+      },
+      actionRefs,
+    };
   }
 }

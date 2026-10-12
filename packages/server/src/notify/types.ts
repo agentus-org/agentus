@@ -200,6 +200,21 @@ export interface NotifyRules {
   completion: boolean;
   /** Do not push while the operator is looking at that very session in the cockpit. */
   quietWhenWatching: boolean;
+  /** The OTHER channel: browser notifications on a machine that has the cockpit open. Same events,
+   *  rendered by the page (see WebNotice). Its own switches because the two channels are used in
+   *  different places: a "running" card belongs on a lock screen and is noise on a desktop that is
+   *  already showing the transcript, and a desktop has no `quietWhenWatching` need — the page knows
+   *  its own tab is in front and stays silent by itself. */
+  web: NotifyWebRules;
+}
+
+/** The web channel's own view of the same three events. */
+export interface NotifyWebRules {
+  /** The whole channel: off means the server sends pages nothing, whatever the per-kind switches say. */
+  enabled: boolean;
+  turnStart: boolean;
+  approval: boolean;
+  completion: boolean;
 }
 
 export const DEFAULT_NOTIFY_RULES: NotifyRules = {
@@ -207,7 +222,17 @@ export const DEFAULT_NOTIFY_RULES: NotifyRules = {
   approval: true,
   completion: true,
   quietWhenWatching: true,
+  // On by default, but only for the two events worth interrupting a desktop for: a decision waiting
+  // on a human, and a reply that finished while the tab was in the background.
+  web: { enabled: true, turnStart: false, approval: true, completion: true },
 };
+
+/**
+ * Server -> page: one browser notification. The type itself lives in `shared` (it is part of the
+ * browser protocol now — it rides the cockpit's websocket as `{t:"notify"}`), and is re-exported here
+ * so the notify centre keeps one import site.
+ */
+export type { WebNotice } from "../../../shared/src/index.js";
 
 /** Which session the cockpit is showing right now (in-memory only — presence is ephemeral). */
 export interface Presence {

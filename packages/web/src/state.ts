@@ -12,6 +12,7 @@ import type {
   TurnTrace,
 } from "../../shared/src/index";
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
+import { webNotify } from "./webNotify";
 
 /** Plan step: ACP's own shape (content/status), plus the cockpit's terminal stamp. */
 export interface PlanStep { content: string; status: string; priority?: string }
@@ -1741,6 +1742,14 @@ class Cockpit {
           text: `${label} 这一档没生效：agent 没有接受「${e.value}」${e.actual ? `，实际仍是「${e.actual}」` : ""}。`
             + `（模型只认它公布的那几档；换档位或换模型再试。）`,
         });
+        break;
+      }
+      case "notify": {
+        // A browser notification for THIS machine. Nothing to add here: the frame is already
+        // render-ready (the server owns the wording, the same strings the phone's cards carry), so the
+        // store hands it straight to the renderer. Whether this device shows it — and whether it makes
+        // a sound — is the page's own per-device business (webNotify.ts).
+        webNotify.handle(e.notice);
         break;
       }
       case "error": {

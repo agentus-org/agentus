@@ -57,6 +57,8 @@
   "plan-v2-sweep": "tsx scripts/qa/plan-v2-sweep.mts",
   "notify-testbed": "tsx scripts/notify-testbed.mts",
   "notify-smoke": "tsx scripts/notify-smoke.mts",
+  "web-notify-rules": "tsx scripts/qa/web-notify-rules.mts",
+  "web-notify-sweep": "node scripts/qa/web-notify-sweep.mjs",
   "apk": "bash scripts/build-apk.sh",
   "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
   "store-fold": "tsx scripts/qa/store-fold.mts",

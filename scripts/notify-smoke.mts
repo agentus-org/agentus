@@ -446,6 +446,122 @@ try {
   check("push: refused without operator auth (401)", nakedPush.status === 401, `got ${nakedPush.status}`);
   const nakedPresence = await fetch(`${BASE}/api/notify/presence`, { method: "POST" });
   check("presence: refused without operator auth (401)", nakedPresence.status === 401, `got ${nakedPresence.status}`);
+  // ---- the browser channel (网页通知) -----------------------------------------
+  // One decision, two renderers. The page's copy is produced by the SAME `observe()` switch BEFORE the
+  // phone's gate, so the two sets of switches are independent — and this phase is where that is
+  // pinned, because the page cannot be tricked into proving it: on the phone a suppressed frame is
+  // invisible, and on the page a missing card just looks like a feature nobody switched on.
+  type Notice = { op: string; noticeId: string; kind: string; title: string; body?: string; sticky?: boolean; open?: string | null };
+  const noticeLog = async (since = 0): Promise<{ notices: Notice[]; total: number }> =>
+    (await (await fetch(`${BASE}/test/notices?since=${since}`, { headers: auth })).json()) as never;
+  const base = (await noticeLog()).total; // the phases above produced frames too; start from here
+  const cards = async (): Promise<Notice[]> => (await noticeLog(base)).notices;
+  const card = (list: Notice[], id: string): Notice | undefined => list.filter((n) => n.noticeId === id).at(-1);
+  const endTurn = (sessionId: string, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+    ({ t: "turn-end", sessionId, at: Date.now(), ...extra });
+  const approval = (sessionId: string, requestId: string): Record<string, unknown> => ({
+    t: "permission", sessionId,
+    request: {
+      sessionId, requestId, kind: "edit", toolCallTitle: "Approve edit: /tmp/agentus-web.txt",
+      options: [{ optionId: "allow_once", name: "允许", kind: "allow_once" }],
+    },
+  });
+
+  const w0 = await readSettings() as unknown as { rules: { web?: Record<string, boolean> } };
+  check("web: the page channel has its own switches in the same settings call",
+    typeof w0.rules.web?.enabled === "boolean" && typeof w0.rules.web?.turnStart === "boolean",
+    JSON.stringify(w0.rules.web ?? null));
+  check("web: on by default, but quiet about 「运行中」 (a desktop is already showing the transcript)",
+    w0.rules.web?.enabled === true && w0.rules.web?.turnStart === false
+      && w0.rules.web?.approval === true && w0.rules.web?.completion === true,
+    JSON.stringify(w0.rules.web ?? null));
+
+  // independent switches, both directions: this is the pair that a single shared flag would break
+  await postJson("/api/notify/settings", { rules: { turnStart: true, completion: true, approval: true } });
+  await inject(turn("sess-web"));
+  await sleep(600);
+  check("web: 「运行中」 is off for the page while the phone still gets its card",
+    seen("turn:sess-web") && !card(await cards(), "turn:sess-web"),
+    `phone=${seen("turn:sess-web")} page=${JSON.stringify((await cards()).map((n) => n.noticeId))}`);
+
+  const turnOn = await postJson("/api/notify/settings", { rules: { web: { turnStart: true } } });
+  check("web: the page switch is written without disturbing the phone's",
+    turnOn.status === 200 && (await readSettings()).rules.turnStart === true, `got ${turnOn.status}`);
+  await inject(turn("sess-web2"));
+  await sleep(600);
+  const running = card(await cards(), "turn:sess-web2");
+  check("web: with it on, the page gets the running card (one per session — it replaces, not stacks)",
+    running?.op === "upsert" && running?.kind === "agent_running" && running.title === "运行中",
+    JSON.stringify(running ?? null));
+  check("web: the card drops the `Agentus ·` the phone title carries, and taps back to its session",
+    running?.title === "运行中" && String(running?.open ?? "").includes("session=sess-web2"),
+    JSON.stringify(running ?? null));
+
+  // a finished turn: the running card goes away, the done card arrives as an update to the recorder
+  await inject(endTurn("sess-web2", { durationMs: 61_000 }));
+  await sleep(600);
+  const afterTurn = await cards();
+  check("web: finishing clears the running card (a browser card cannot be left saying 「运行中」)",
+    card(afterTurn, "turn:sess-web2")?.op === "dismiss",
+    JSON.stringify(card(afterTurn, "turn:sess-web2") ?? null));
+  const doneCard = card(afterTurn, "done:sess-web2");
+  check("web: …and the done card carries the phone's own words + the measured turn time",
+    doneCard?.op === "upsert" && doneCard.kind === "agent_done" && doneCard.title === "已完成"
+      && doneCard.body === "sess-web · 用时 1m 1s",
+    JSON.stringify(doneCard ?? null));
+  check("web: a done card is keyed per session (`done:<id>`), so the tag collapses repeats",
+    doneCard?.noticeId === "done:sess-web2", doneCard?.noticeId);
+
+  // an approval is sticky, and taking it back is neither switch-gated nor presence-gated
+  await inject(approval("sess-web2", "req-web"));
+  await sleep(600);
+  const permCard = card(await cards(), "perm:req-web");
+  check("web: an approval is a sticky card (a browser card that fades while the agent is blocked is a dead button)",
+    permCard?.op === "upsert" && permCard.kind === "approval" && permCard.sticky === true
+      && permCard.title === "待你确认：Approve edit" && String(permCard.body ?? "").includes("/tmp/agentus-web.txt"),
+    JSON.stringify(permCard ?? null));
+
+  await postJson("/api/notify/settings", { rules: { web: { enabled: false } } });
+  await inject({ t: "permission-resolved", sessionId: "sess-web2", requestId: "req-web" } as never);
+  await sleep(500);
+  check("web: the card is taken back even with the channel OFF (clearing is not an interruption)",
+    card(await cards(), "perm:req-web")?.op === "dismiss",
+    JSON.stringify(card(await cards(), "perm:req-web") ?? null));
+
+  await inject(turn("sess-web3"));
+  await inject(endTurn("sess-web3", { error: "boom" }));
+  await sleep(600);
+  check("web: the channel off means the page is told nothing at all",
+    card(await cards(), "turn:sess-web3")?.op === "dismiss" && !card(await cards(), "done:sess-web3"),
+    JSON.stringify((await cards()).map((n) => n.noticeId)));
+  check("web: …while the phone still gets both frames (the switch belongs to one channel)",
+    seen("turn:sess-web3"), `frames ${count()}`);
+
+  // presence is the phone's idea, and the page must not inherit it: the page knows whether its own
+  // tab is in front, and one browser tab cannot see the other machine.
+  await postJson("/api/notify/settings", { rules: { web: { enabled: true, completion: true } } });
+  const before = (await cards()).length;
+  await postJson("/api/notify/presence", { sessionId: "sess-web4", visible: true });
+  await inject(endTurn("sess-web4", { durationMs: 5_000 }));
+  await sleep(600);
+  check("web: a session being WATCHED on the phone still reaches the page (it decides from document.hidden)",
+    (await cards()).length > before && card(await cards(), "done:sess-web4")?.op === "upsert",
+    JSON.stringify((await cards()).slice(before).map((n) => n.noticeId)));
+  check("phone: …and that same frame is suppressed for the phone (quietWhenWatching still holds)",
+    !seen(`done:sess-web4`), `frames ${count()}`);
+  await postJson("/api/notify/presence", { sessionId: null, visible: false });
+
+  // the cockpit's own error is deliberately phone-only: on a desktop it is on screen already
+  const beforeErr = (await cards()).length;
+  await inject({ t: "error", at: Date.now(), error: "cockpit-wide failure" });
+  await sleep(400);
+  check("web: the cockpit's own error is not repeated as a browser card (the page is drawing it)",
+    (await cards()).length === beforeErr, JSON.stringify((await cards()).slice(beforeErr).map((n) => n.noticeId)));
+
+  check("web: notices never carry a revision or a cursor — they are not a replayable log",
+    (await cards()).every((n) => !("revision" in n) && !("seq" in n)),
+    JSON.stringify((await cards())[0] ?? null));
+
   watcher.close();
 
   console.log(`  (device list: ${(await (await fetch(`${BASE}/api/notify/devices?token=${token}`)).json() as { devices: unknown[] }).devices.length} rows)`);

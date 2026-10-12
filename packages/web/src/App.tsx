@@ -30,6 +30,7 @@ import {
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "../../shared/src/index";
+import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
@@ -626,6 +627,21 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
       reportPresence(null, false, true); // leaving the page means nobody is looking
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // ---- the browser-notification channel's page half (webNotify.ts) -----------------------------
+  // Two once-per-page wirings and one gesture hook:
+  //  * the bridge, so a click that happened in the SERVICE WORKER (which cannot select a session)
+  //    comes back here to be honoured in place instead of reloading the cockpit;
+  //  * the opener, so "open the session that notified me" is the same in-page switch the rail does;
+  //  * audio unlock — a chime may only start inside a gesture, and the moment a notification arrives
+  //    is by definition not one, so the first real interaction is where the context gets created.
+  useEffect(() => {
+    installNoticeBridge();
+    setNoticeOpener((id) => cockpit.setActive(id));
+    const unlock = (): void => unlockChime();
+    const events = ["pointerdown", "keydown", "touchstart"];
+    for (const e of events) window.addEventListener(e, unlock, { passive: true });
+    return () => { for (const e of events) window.removeEventListener(e, unlock); };
+  }, []);
   const [q, setQ] = useState("");
   // ---- group folding: which DIRECTORIES are open ----------------------------------------------
   // A directory fold is a layout preference, not view state: the operator folds the projects he is

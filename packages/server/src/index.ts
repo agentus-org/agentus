@@ -234,6 +234,19 @@ notify.onAction(({ ref, action, activity, device }) => {
   }
 });
 
+// The page channel of the same decision: one `notify` frame to every cockpit websocket.
+//
+// No cursor, no replay, and no per-client state — deliberately unlike the device socket above. The
+// phone replays because it was PAIRED and may have been asleep in a pocket; a browser tab that missed
+// frames has a transcript to catch up in, and a wall of stale cards after a reload is worse than none.
+// Every gate that matters (which kinds, whether the channel is on) was applied in the notify centre.
+notify.onNotice((notice) => {
+  const wire = JSON.stringify({ t: "notify", notice });
+  for (const { ws } of clients.values()) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(wire);
+  }
+});
+
 // Operator settings (voice, theme, call knobs, talk-to-agent prefs) live in the store's
 // `settings` table: the UI owns them and env only bootstraps them (settings.ts). Read
 // before anything asks.

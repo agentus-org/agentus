@@ -13,6 +13,7 @@ import { IconArrowLeft, IconClose, IconMic, IconRefresh, IconSettings, IconStop,
 import { pushTheme, useTheme, type ThemeConfig } from "./theme";
 import { AccountPanels, type AccountInfo } from "./Account";
 import { NotifySettings } from "./NotifySettings";
+import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
@@ -45,8 +46,11 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
     ],
   },
   {
-    id: "notify", label: "通知", hint: "手机上怎么收到",
-    items: [{ anchor: "set-notify", label: "手机通知（Android 伴侣）" }],
+    id: "notify", label: "通知", hint: "电脑上怎么收到",
+    items: [
+      { anchor: "set-webnotify", label: "网页通知（这台设备）" },
+      { anchor: "set-notify", label: "手机通知（Android 伴侣）" },
+    ],
   },
   {
     id: "look", label: "外观", hint: "配色",
@@ -477,6 +481,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         <BackendsPanel />
 
         <h4 className="set-group" id="grp-notify" data-setgroup="notify">通知</h4>
+        {/* ---------- 网页通知（浏览器系统通知，本机设置） ---------- */}
+        <WebNotifySettings />
         {/* ---------- 手机通知（Android 伴侣 + 推送规则） ---------- */}
         <NotifySettings sessionId={sessionId} />
 
