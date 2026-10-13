@@ -27,5 +27,5 @@ jobs:
       - run: npm run voice-smoke
       # the reader's utterance rule is pure text logic: unit-checked, no browser
       - run: npm run sentence-units
-      # TLS: generates its own self-signed cert into a scratch dir (openssl is on the runner)
-      - run: npm run tls-smoke
+      # (the tls-smoke step is gone with the in-process TLS listener it tested —
+      #  it was dropped from the source, and CI kept calling a script that no longer exists)
