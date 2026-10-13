@@ -30,6 +30,62 @@ nvm install 22 && nvm use 22      # or
 brew install node                 # or https://nodejs.org/en/download
 ```
 
+### Which Hermes to run
+
+Plain Hermes is enough to drive sessions. The capabilities this cockpit itself leans on are **not**
+in the released build — a per-session **thinking depth** (ACP `reasoning_effort`), a **permission
+mode that survives a restart** and `session/load`, and a free-form **context budget** (with
+256K/512K/768K/1M presets). They live on the ACP branches of the fork
+[`LiangYang666/hermes-agent`](https://github.com/LiangYang666/hermes-agent), and reach the cockpit
+through one **tag per integration build**, in a namespace of its own:
+
+```
+agentus/<hermes version>/merge-<YYYYMMDD-HHMM>
+```
+
+A tag and not a branch, on purpose: the branch of the same name (under `yl-dev/`) is the working
+ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/` prefix also keeps
+ours apart from upstream's own tags (`v0.21.7`, `v0.21.7+canary.*`), and the timestamp in the
+last segment sorts, so "newest" is a `sort -V`.
+
+Install Hermes normally first — its installer brings the Python/Node runtime and puts `hermes` on
+your PATH — then run that build on top of that runtime:
+
+```bash
+# 1. Hermes itself: the runtime the slots will use
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+# 2. the newest integration build, as a tag (`refs/tags/` spelled out: never ambiguous)
+TAG=$(git ls-remote --tags --refs https://github.com/LiangYang666/hermes-agent.git \
+      'refs/tags/agentus/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
+git clone --depth=1 --branch "$TAG" https://github.com/LiangYang666/hermes-agent.git ~/Project/hermes-agent
+
+# 3. wrap it, and point the cockpit at the wrapper
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/hermes-acp-src <<'WRAP'
+#!/bin/sh
+exec env PYTHONPATH="$HOME/Project/hermes-agent" hermes "$@"
+WRAP
+chmod +x ~/.local/bin/hermes-acp-src
+AGENTUS_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
+```
+
+`PYTHONPATH` puts the checkout **ahead of** the installed package, while the installed runtime still
+supplies the interpreter and its dependencies — which is why step 1 is not optional. Verify what a
+slot will actually run (the same check Agentus suggests when a backend is missing):
+
+```bash
+PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check OK
+```
+
+For a service install, put `AGENTUS_HERMES_CMD` in the environment you hand the server — see
+"Running it as a service". Leaving it at the default (`hermes`) keeps a plain install working, so
+the fork is an upgrade, never a requirement.
+
+Moving to a newer build is a fetch + checkout in that same tree — `git fetch --depth=1 origin tag
+<tag> && git checkout <tag>` — not a reinstall; a running slot picks it up the next time it
+restarts.
+
 ## Install
 
 ### One command — the published package (public)

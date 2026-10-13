@@ -43,6 +43,10 @@ web bundle、配套 APK —— 然后直接退出，不启动任何东西）。
 可自检）或 `qodercli --acp`（先 `qodercli login`，否则 `newSession` 会以 `-32000` 失败）。没有它驾驶舱
 照样能跑、照样能登录 —— 只是没有后端可以开会话。
 
+裸装的 Hermes 就能跑会话；驾驶舱自己的那几项能力 —— 按会话切换的**思考深度**、跨重启存活的**权限模式**、
+**上下文预算**输入框 —— 来自 fork 的集成构建（tag）。装法就五行：
+[§ 该跑哪份 Hermes](docs/installation.zh-CN.md#该跑哪份-hermes)。
+
 你启动的第一个 slot 会使用**你自己的 agent 已经在用的**那个 Hermes home（`~/.hermes`），除非后端那一行
 指定了另一个 —— 见下面的「HERMES_HOME」。
 

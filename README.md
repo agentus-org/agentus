@@ -48,6 +48,11 @@ Hermes on your PATH; `hermes acp --check` self-checks) or `qodercli --acp` (`qod
 first, else `newSession` fails with `-32000`). Without one the cockpit still runs and still
 logs in — you just have no backend to start a session on.
 
+A plain Hermes install drives sessions; the cockpit's own extras — per-session **thinking
+depth**, a permission mode that survives a restart, the **context-budget** field — come from the
+fork's integration build instead. That is a five-line install:
+[§ Which Hermes to run](docs/installation.md#which-hermes-to-run).
+
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
 

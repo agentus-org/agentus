@@ -28,6 +28,57 @@ nvm install 22 && nvm use 22      # 或者
 brew install node                 # 或者 https://nodejs.org/en/download
 ```
 
+### 该跑哪份 Hermes
+
+裸装的 Hermes 足够跑会话。但驾驶舱自己依赖的那几项能力**不在发布版里** —— 按会话切换的**思考深度**
+（ACP `reasoning_effort`）、**跨重启 / `session/load` 存活的权限模式**，以及可自由填写的**上下文预算**
+（带 256K/512K/768K/1M 预设）。它们在 fork
+[`LiangYang666/hermes-agent`](https://github.com/LiangYang666/hermes-agent) 的 ACP 分支上，
+按基座版本各有一个**集成构建的 tag**，自成命名空间：
+
+```
+agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
+```
+
+用 tag 而不是分支是刻意的：同名分支（在 `yl-dev/` 下）是工作面、会被重建，而 tag 永不移动 —— 所以钉
+tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.21.7`、`v0.21.7+canary.*`）分开；最后一段是时间戳，
+可排序，所以「最新」就是一次 `sort -V`。
+
+先正常装好 Hermes（它的安装器会带上 Python/Node 运行时，并把 `hermes` 放进 PATH），再把那份构建
+套在那个运行时上跑：
+
+```bash
+# 1. Hermes 本体：槽位要用的运行时
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+# 2. 最新的集成构建，按 tag 取（写全 refs/tags/：永不歧义）
+TAG=$(git ls-remote --tags --refs https://github.com/LiangYang666/hermes-agent.git \
+      'refs/tags/agentus/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
+git clone --depth=1 --branch "$TAG" https://github.com/LiangYang666/hermes-agent.git ~/Project/hermes-agent
+
+# 3. 包一层，让驾驶舱指向这个 wrapper
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/hermes-acp-src <<'WRAP'
+#!/bin/sh
+exec env PYTHONPATH="$HOME/Project/hermes-agent" hermes "$@"
+WRAP
+chmod +x ~/.local/bin/hermes-acp-src
+AGENTUS_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
+```
+
+`PYTHONPATH` 的作用是让这份 checkout **盖在**已安装的包前面，而解释器和依赖仍由装好的运行时提供 ——
+所以第 1 步不能省。验证槽位实际会跑什么（就是 Agentus 缺后端时提示的那条自检）：
+
+```bash
+PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check OK
+```
+
+装成服务时，把 `AGENTUS_HERMES_CMD` 放进你交给服务端的环境里 —— 见「作为服务常驻」。保持默认
+（`hermes`）就是一份纯安装，所以 fork 是升级项、不是必须项。
+
+换到更新的构建只是在那棵树里 fetch + checkout（`git fetch --depth=1 origin tag <tag> && git checkout <tag>`），
+不用重装；正在跑的槽位会在下次重启时用上。
+
 ## 安装
 
 ### 一条命令 —— 用 npm 上发布的包（对外）
