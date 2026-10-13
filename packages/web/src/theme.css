@@ -398,7 +398,12 @@ button { font: inherit; }
 .work-run-items {
   display: flex; flex-direction: column; gap: 2px;
   margin: 4px 0 0 11px; padding: 3px 4px 3px 12px; border-left: 1px solid var(--line);
-  max-height: 42vh; overflow-y: auto; overscroll-behavior: contain;
+  /* NO `overscroll-behavior: contain` here, for the same measured reason the live thinking window
+     lost it (see the note above `.thought-stick`): a nested scroller inside the transcript that
+     declares a boundary swallows the gesture at its end, so a reader dragging past it never reaches
+     the transcript at all. Measured 2026-10-13: the box is 320px tall with 522px of content, i.e.
+     it is scrollable exactly where a thumb wants to be. */
+  max-height: 42vh; overflow-y: auto;
 }
 /* inside the fold the SAME rows the tail shows: a burst line that folds itself, a tool card */
 .work-run-items .msg { margin-bottom: 4px; }

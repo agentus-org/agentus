@@ -1502,28 +1502,54 @@ const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since:
 function Stream({ v }: { v: SessionView }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const programmatic = useRef(false);
   const keepUntil = useRef(0);
+  const intentAt = useRef(-1e9);   // the last time the READER's hand touched this scroller
+  const progUntil = useRef(0);     // the last time WE wrote scrollTop (short window, see below)
+  const lastTop = useRef(0);
+  const lastSH = useRef(0);
   const [follow, setFollow] = useState(true);
   const [unseen, setUnseen] = useState(false);
 
-  // How close to the bottom still counts as "following". Generous on purpose: a
-  // 48px blind spot meant the smallest scroll-up got yanked back by the next
-  // streamed chunk (the reported bug).
-  const NEAR = 140;
+  // ---- leaving is DIRECTION, returning is a small number ----------------------
+  // What this replaces, measured 2026-10-13 (track §99): ONE threshold (140px) decided both
+  // questions, so a gesture that left the reader within 140px of the tail was re-armed by the very
+  // next scroll event (`stick = isNear()`) — the wheel/touch detach was overwritten by POSITION —
+  // and the next streamed chunk (≈10 writes/s of `scrollTop = scrollHeight`) dragged the viewport
+  // back. Net effect of a 400px drag away from the tail: 0px, and the same quick flick escaped on
+  // one run and not the next ("it feels unreliable" is literally that race). Now a move toward older
+  // content detaches (studio: `delta < -1`), and returning needs the tail itself.
+  const TAIL_PX = 64;
+  const now = (): number => performance.now();
+  const isAtTail = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_PX;
+  /** How long after a real input event a content move still counts as the reader's doing. */
+  const INTENT_MS = 1200;
 
-  const isNear = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+  const markWrote = (el: HTMLDivElement): void => {
+    progUntil.current = now() + 150;
+    lastTop.current = el.scrollTop;
+    lastSH.current = el.scrollHeight;
+  };
 
   const scrollNow = (): void => {
     const el = ref.current;
     if (!el) return;
-    programmatic.current = true; // our own scroll must not count as "user scrolled away"
     el.scrollTop = el.scrollHeight;
+    markWrote(el); // our own write must not count as "the reader scrolled away"
+  };
+
+  /** The reader has taken over: stop following, and let that beat the post-send keep-alive.
+   *  (studio's keep-alive re-checks `userDetachedFromBottom` before scrolling; ours used to test
+   *  `keepUntil` first and unconditionally, so for 1.5s after a send — exactly when the first
+   *  output arrives — every gesture was ignored: a measured 500px swipe moved 0px.) */
+  const detach = (): void => {
+    stick.current = false;
+    keepUntil.current = 0;
+    setFollow(false);
   };
 
   streamReattach.current = () => {
     stick.current = true;
-    keepUntil.current = Date.now() + 1500; // keep following briefly after a send
+    keepUntil.current = now() + 1200; // keep following briefly after a send
     setFollow(true);
     setUnseen(false);
     scrollNow();
@@ -1531,54 +1557,68 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
 
   // ---- user intent beats scroll position -------------------------------------
   // Position alone is not enough: while a turn streams, the newest chunk is added
-  // right under the viewport, so a wheel/touch/key gesture has to detach *now*,
-  // not after we happen to fall more than NEAR behind.
+  // right under the viewport, so a wheel/touch/key gesture has to detach *now*.
+  // And once detached, POSITION must not re-arm it — that is the bug this file
+  // carried until §99 (see the constants above): the reader's gesture was undone by
+  // the next scroll event while the tail was still within one threshold.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const detach = (): void => {
-      programmatic.current = false;
-      stick.current = false;
-      setFollow(false);
-    };
+    const intent = (): void => { intentAt.current = now(); };
     const onScroll = (): void => {
-      if (programmatic.current) {
-        programmatic.current = false;
-        return;
-      }
-      const near = isNear(el);
-      stick.current = near;
-      setFollow(near);
+      const top = el.scrollTop;
+      const delta = top - lastTop.current;
+      lastTop.current = top;
+      const sh = el.scrollHeight;
+      // Content that got SHORTER clamps scrollTop down and fires a scroll event that reads as
+      // "moved up" with no reader behind it (hermes-webui's measured class) — never treat that as
+      // intent, or live-follow silently dies mid-stream.
+      const shrank = sh < lastSH.current - 1;
+      lastSH.current = sh;
+      // Direction decides. Our own writes only ever move scrollTop DOWN (toward the tail), so a
+      // move UP within the reader's input window is the reader, whatever produced it (wheel,
+      // touch, keyboard, a scrollbar drag — all of which stamp `intentAt`).
+      if (delta < -2 && !shrank && now() - intentAt.current < INTENT_MS) { detach(); return; }
+      if (now() < progUntil.current) return; // our own write: it says nothing about the reader
+      const near = isAtTail(el);
+      if (near !== stick.current) { stick.current = near; setFollow(near); }
       if (near) setUnseen(false);
     };
-    const onWheel = (e: WheelEvent): void => { if (e.deltaY < 0) detach(); };
+    const onWheel = (e: WheelEvent): void => { intent(); if (e.deltaY < 0) detach(); };
     let touchY = 0;
-    const onTouchStart = (e: TouchEvent): void => { touchY = e.touches[0]?.clientY ?? 0; };
+    const onTouchStart = (e: TouchEvent): void => { intent(); touchY = e.touches[0]?.clientY ?? 0; };
     // dragging the finger DOWN scrolls back toward older content => detach
     const onTouchMove = (e: TouchEvent): void => {
+      intent();
       const y = e.touches[0]?.clientY ?? 0;
       if (y > touchY + 4) detach();
     };
     const onKey = (e: KeyboardEvent): void => {
+      intent(); // Space / PageDown scroll too, and the scroll event alone is not enough evidence
       if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") detach();
     };
+    // A scrollbar drag arrives as pointerdown + scroll deltas, with no wheel/touch event at all.
+    const onPointerDown = (): void => intent();
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("keydown", onKey);
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
+    markWrote(el); // start from the real geometry instead of a stale 0
     return () => {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("keydown", onKey);
+      el.removeEventListener("pointerdown", onPointerDown);
     };
   }, []);
 
   // Follow only while following: no scroll is forced on a reader who scrolled away.
   useEffect(() => {
-    if (stick.current || Date.now() < keepUntil.current) {
+    if (stick.current || now() < keepUntil.current) {
       scrollNow();
       return;
     }
@@ -1586,6 +1626,24 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     // v.rev, not v.msgs: chunks merge into the bubble above, so the array identity is
     // stable and this effect would never run on new output.
   }, [v.rev, v.busy, v.perms.length]);
+
+  // The same follow, driven by GEOMETRY rather than by data events: late layout (an image, syntax
+  // highlighting, a markdown re-parse, a row folding) changes scrollHeight without any `v.rev`, and
+  // that used to leave the viewport a few pixels short of the tail with nothing to fix it. studio
+  // does exactly this with its ResizeObserver.
+  useEffect(() => {
+    const el = ref.current;
+    const inner = (el?.firstElementChild as HTMLElement | null) ?? null;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!stick.current && now() >= keepUntil.current) return;
+      requestAnimationFrame(() => {
+        if (stick.current || now() < keepUntil.current) scrollNow();
+      });
+    });
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [v.info.id]);
 
   // Keep the reader's place when an older page is prepended (paging used to shove
   // the viewport by a whole page, so "load earlier" felt like a jump to nowhere).
@@ -1599,8 +1657,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     requestAnimationFrame(() => {
       const after = ref.current;
       if (!after) return;
-      programmatic.current = true;
       after.scrollTop = after.scrollHeight - beforeH + beforeT;
+      markWrote(after);
     });
   };
 
@@ -1940,11 +1998,19 @@ function Thought({ m, live }: { m: Extract<MsgView, { kind: "thought" }>; live: 
   useEffect(() => {
     const el = body.current;
     if (!el || !live) return;
+    let lastTop = el.scrollTop;
     const atTail = (): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_THOUGHT;
-    // A scroll event from our own follow lands AT the tail and so keeps `stuck` true; a scroll the
-    // reader made to somewhere above it turns the follow off. Either way the position decides, which
-    // is why this one rule covers both.
-    const onScroll = (): void => setStuck(atTail());
+    // Same rule as the transcript above (§99): leaning on position alone re-arms the follow on the
+    // reader's own scroll event, so a small scroll-up inside this window was undone by the next
+    // chunk. Direction decides instead — a move toward older lines turns the follow off and the
+    // scroll listener never turns it back on.
+    const onScroll = (): void => {
+      const top = el.scrollTop;
+      const delta = top - lastTop;
+      lastTop = top;
+      if (delta < -2) { setStuck(false); return; }
+      setStuck(atTail());
+    };
     const onWheel = (e: WheelEvent): void => { if (e.deltaY < 0) setStuck(false); };
     let touchY = 0;
     const onTouchStart = (e: TouchEvent): void => { touchY = e.touches[0]?.clientY ?? 0; };
