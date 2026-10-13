@@ -178,8 +178,10 @@ try {
   }));
   check("rename trims and takes the operator's name", renamed.title === "重构 · 会话列表", String(renamed.title));
   const listAfter = await j(await fetch(`${base}/api/sessions`, { headers: H }));
-  // a freshly created mock session is LIVE, a restarted one lands in `archived` — check both
-  const afterRename = [...listAfter.live, ...listAfter.archived].find((x) => x.id === created.id);
+  // a freshly created mock session is LIVE; one that lost its process lands in `cold` and one the
+  // OPERATOR put away in `archived` (the flag, not liveness — see SessionManager.archived()), so
+  // look in all three rather than in a list that no longer carries what the comment once claimed.
+  const afterRename = [...listAfter.live, ...listAfter.cold, ...listAfter.archived].find((x) => x.id === created.id);
   check("the new name is persisted, not just echoed", afterRename?.title === "重构 · 会话列表", String(afterRename?.title));
   const clearedTitle = await j(await fetch(`${base}/api/sessions/${created.id}/rename`, {
     method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ title: "   " }),
@@ -433,9 +435,11 @@ try {
     refused.code === "home_mismatch" && refused.sessionHome === homeA && refused.rowHome === homeB,
     JSON.stringify(refused));
   const afterRefusal = await j(await fetch(`${base}/api/sessions`, { headers: H }));
+  // `cold`, not `archived`: 已归档 is the operator's flag now, and a slot that merely lost its
+  // process belongs in the cold list (SessionManager.cold() = archivedAt == null && not live).
   check("nothing was spawned for it (no live slot) and the cold slot is still there",
-    !afterRefusal.live.some((s) => s.id === probe.id) && afterRefusal.archived.some((s) => s.id === probe.id),
-    `live=${afterRefusal.live.length} archived=${afterRefusal.archived.length}`);
+    !afterRefusal.live.some((s) => s.id === probe.id) && afterRefusal.cold.some((s) => s.id === probe.id),
+    `live=${afterRefusal.live.length} cold=${afterRefusal.cold.length} archived=${afterRefusal.archived.length}`);
   check("a refusal is not recorded as a backend failure (the ROW is fine)",
     !(await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health?.errorCode,
     JSON.stringify((await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health));
@@ -483,11 +487,11 @@ try {
     (await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health?.status !== "offline",
     JSON.stringify((await j(await fetch(`${base}/api/backends`, { headers: H }))).find((b) => b.id === "qa-home")?.health));
   check("the refused slot is still cold (resumable retry is not blocked by state)",
-    (await j(await fetch(`${base}/api/sessions`, { headers: H }))).archived.some((s) => s.id === probe.id));
+    (await j(await fetch(`${base}/api/sessions`, { headers: H }))).cold.some((s) => s.id === probe.id));
   check("the operator's only useful action works: deleting the refused slot",
     (await fetch(`${base}/api/sessions/${probe.id}`, { method: "DELETE", headers: H })).status === 200);
   check("and it is gone from the cold list",
-    !(await j(await fetch(`${base}/api/sessions`, { headers: H }))).archived.some((s) => s.id === probe.id));
+    !(await j(await fetch(`${base}/api/sessions`, { headers: H }))).cold.some((s) => s.id === probe.id));
 
   // A slot closed BEFORE its first message has no state anywhere (the agent persists a session when
   // it starts working), and there is no conversation to lose: reopening it must give a working slot
