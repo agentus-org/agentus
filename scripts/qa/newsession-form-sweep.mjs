@@ -1,4 +1,5 @@
-// QA: the NEW-SESSION form — its size, its folds, and where it shows the chosen path.
+// QA: the NEW-SESSION start page — its SHAPE (a reduced copy of the chat page), its size, and the
+// workspace button that replaced the on-page directory tree.
 //
 // The operator's report (2026-10-11): 「新建会话的那个表单…感觉好差啊，手机上一屏幕都放不下，runs 和上次检查
 // 都不用显示在页面上吧…选定的路径显示是不是统一在输入栏哪里呢，为啥最下面有一个，然后候选项和地址栏中间
@@ -39,10 +40,35 @@ const ev = async (x, to = 25000) => {
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? "eval failed");
   return r.result.value;
 };
+let MOBILE = false;
 const setViewport = async (W, H) => {
-  await send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: W < 700 });
-  await send("Emulation.setTouchEmulationEnabled", { enabled: W < 700, maxTouchPoints: 5 }).catch(() => {});
+  MOBILE = W < 700;
+  await send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: 1, mobile: MOBILE });
+  await send("Emulation.setTouchEmulationEnabled", { enabled: MOBILE, maxTouchPoints: 5 }).catch(() => {});
   await sleep(450);
+};
+/** A REAL pointer, not `el.click()`.
+ *
+ *  The workspace pill ignores a synthetic click: `el.click()` on it leaves the dialog closed and the
+ *  same coordinates dispatched as a pointer event open it (measured, both viewports, no page error —
+ *  see `scripts/qa/probe-ws-pill.mjs`). Since a phone viewport needs a TOUCH event anyway, anything
+ *  the operator physically presses is asserted through here; `el.click()` stays for the controls
+ *  where it demonstrably works. */
+const clickEl = async (sel, wait = 900) => {
+  const at = await ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)});
+    if (!e) return null; const b = e.getBoundingClientRect();
+    return JSON.stringify({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) }); })()`);
+  if (!at) return false;
+  const { x, y } = JSON.parse(at);
+  if (MOBILE) {
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  }
+  await sleep(wait);
+  return true;
 };
 await send("Page.enable"); await send("Runtime.enable");
 const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`).catch(() => {}); };
@@ -66,10 +92,13 @@ try {
   check("the 「新会话」 button opens the form", opened);
 
   // ---- one reading function, used at both viewports ---------------------------------------------
+  // The start page is a REDUCED COPY OF THE CHAT PAGE (operator, 2026-10-14: 「相当于一个会话页面的一个
+  // 缩小版…不包含那些聊天记录而已…选模型啊，相关的设置啊，还有语音输入啊，这个输入框啊，应该都是一样的」).
+  // So what is asserted is the SHAPE it shares with the composer — and the one thing it deliberately
+  // does NOT share, the transcript above it. The workspace is the other half of the same report: a
+  // BUTTON with the folder tree behind it, never a section of this page.
   const measure = () => ev(`(() => {
-    const modal = document.querySelector('.modal');
-    const picker = modal?.querySelector('.wp');
-    const field = picker?.querySelector('.wp-path');
+    const modal = document.querySelector('.modal.start-page');
     const strip = modal?.querySelector('.backend-pick');
     const cards = [...(strip?.querySelectorAll('.be-card') ?? [])].filter((c) => !c.classList.contains('reload'));
     const cardGeom = cards.map((c) => {
@@ -85,113 +114,163 @@ try {
         sameColumn: Boolean(mr && lr) && Math.abs((mr.left + mr.right) / 2 - (lr.left + lr.right) / 2) <= 6,
       };
     });
-    const chips = [...(picker?.querySelectorAll('.wp-chip') ?? [])];
-    const chipGeom = chips.map((c) => { const r = c.getBoundingClientRect();
-      return { h: Math.round(r.height), font: parseFloat(getComputedStyle(c).fontSize) }; });
-    const chosen = field ? field.value : '';
-    // "the chosen path is displayed once": the field holds it (a property, not text), so ANY element
-    // whose own text carries it is a second display of the same fact
-    const dupes = modal ? [...modal.querySelectorAll('*')].filter((el) => el.children.length === 0
-      && chosen && (el.textContent ?? '').includes(chosen)).map((el) => el.className || el.tagName) : [];
     const text = (modal?.textContent ?? '');
     const detail = modal?.querySelector('.be-detail');
     const head = detail?.querySelector('.be-detail-head');
     const r = modal?.getBoundingClientRect() ?? null;
-    const go = modal?.querySelector('.row .go')?.getBoundingClientRect() ?? null;
-    const goBtn = modal?.querySelector('.row .go') ?? null;
+    const send = modal?.querySelector('.composer-bar .send-btn') ?? null;
+    const sr = send?.getBoundingClientRect() ?? null;
+    const pill = modal?.querySelector('.ws-pill') ?? null;
+    const box = modal?.querySelector('.composer-box') ?? null;
+    const bar = modal?.querySelector('.composer-bar') ?? null;
+    const ta = modal?.querySelector('.composer-box textarea') ?? null;
     return {
       present: Boolean(modal),
       modal: r ? { top: Math.round(r.top), bottom: Math.round(r.bottom), h: Math.round(r.height), w: Math.round(r.width) } : null,
       viewport: { h: innerHeight, w: innerWidth },
       fitsScreen: Boolean(r) && r.top >= -1 && r.bottom <= innerHeight + 1,
-      goReachable: Boolean(go) && go.top >= 0 && go.bottom <= innerHeight + 1,
-      goEnabled: goBtn ? goBtn.disabled === false : null,
+      sendReachable: Boolean(sr) && sr.top >= 0 && sr.bottom <= innerHeight + 1,
+      sendDisabled: send ? send.disabled === true : null,
+      // the composer shape, shared with the chat page
+      hasBox: Boolean(box), hasBar: Boolean(bar), hasTextarea: Boolean(ta),
+      textareaOnTop: Boolean(ta && bar && (ta.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      controls: [...(bar?.children ?? [])]
+        .filter((el) => el.tagName === 'BUTTON' || el.classList.contains('tb-wrap'))
+        .map((el) => el.getAttribute('data-testid') ?? el.getAttribute('aria-label') ?? el.className),
+      // …and the workspace: a button here, a listing only behind it
+      pill: Boolean(pill), pillLabel: (pill?.textContent ?? '').trim(), pillTitle: pill?.getAttribute('title') ?? '',
+      workspaceListOnPage: Boolean(modal?.querySelector('.wp-list, .wp-row, .wp-chip')),
+      // what this page is a copy of the chat page MINUS
+      hasTranscript: Boolean(modal?.querySelector('.stream-wrap, .stream, .msg-row')),
       hasRuns: /runs:/.test(text),
       hasHealth: /上次检查/.test(text),
       hasDetailFold: Boolean(head),
       detailOpen: head ? head.getAttribute('aria-expanded') === 'true' : null,
-      // the fold must HOLD the facts when closed: 'runs:' absent from the visible text, present in
-      // the DOM once opened (asserted separately below by clicking it)
-      fieldValue: chosen,
-      legacyPicked: Boolean(modal?.querySelector('.wp-picked')),
-      legacyCrumbs: Boolean(modal?.querySelector('.wp-crumbs') || modal?.querySelector('.wp-now')),
-      dupes,
-      chips: chipGeom,
-      chipCount: chips.length,
       cards: cardGeom,
       stripOverflowX: strip ? getComputedStyle(strip).overflowX : '',
     };
   })()`);
 
   // ---- the REAL phone case: a browser's own chrome eats ~140px of a 844pt screen ---------------
-  // Measured: the old form was 755px tall. It "passed" at 844 (a bare viewport, which no phone
-  // browser gives a page) and was CLIPPED at 700 — the launch button below the bottom edge, the
-  // first field above the top, with no scroller anywhere (the operator's 「手机上一屏幕都放不下」).
   await setViewport(390, 700);
   const short = await measure();
   console.log(`      phone    modal h=${short.modal?.h} viewport=${short.viewport.h} (browser chrome subtracted)`);
-  check("the form also fits a 390×700 viewport (a phone WITH its browser chrome)",
-    short.fitsScreen === true && short.goReachable === true,
+  check("the start page also fits a 390×700 viewport (a phone WITH its browser chrome)",
+    short.fitsScreen === true && short.sendReachable === true,
     `modal=${JSON.stringify(short.modal)} viewport=${JSON.stringify(short.viewport)}`);
 
   await setViewport(390, 844);
   const phone = await measure();
-  console.log(`      phone    modal h=${phone.modal?.h} viewport=${phone.viewport.h} cards=${phone.cards.length} chips=${phone.chipCount} chipH=${phone.chips.map((c) => c.h).join("/")}`);
+  console.log(`      phone    modal h=${phone.modal?.h} viewport=${phone.viewport.h} cards=${phone.cards.length} controls=${JSON.stringify(phone.controls)}`);
   const shotPhone = await send("Page.captureScreenshot", { format: "png" }, 25000);
   fs.mkdirSync(SHOTS, { recursive: true });
   fs.writeFileSync(`${SHOTS}/newsession-form-phone.png`, Buffer.from(shotPhone.data, "base64"));
 
-  check("the form is on screen at 390×844", phone.present && phone.modal?.w <= phone.viewport.w);
-  check("the whole form FITS the phone screen — no part of it off the top or the bottom",
+  check("the start page is on screen at 390×844", phone.present && phone.modal?.w <= phone.viewport.w);
+  check("the whole start page FITS the phone screen — no part of it off the top or the bottom",
     phone.fitsScreen === true, `modal=${JSON.stringify(phone.modal)} viewport=${JSON.stringify(phone.viewport)}`);
-  check("…and the launch button is a reachable tap target inside that screen",
-    phone.goReachable === true, JSON.stringify(phone.modal));
+  check("…and 发送 is a reachable tap target inside that screen",
+    phone.sendReachable === true, JSON.stringify(phone.modal));
+
+  // ---- the shape it shares with the chat page ---------------------------------------------------
+  check("it is a COMPOSER, not a form: the chat page's own input card, textarea above the bar",
+    phone.hasBox === true && phone.hasBar === true && phone.hasTextarea === true && phone.textareaOnTop === true,
+    JSON.stringify({ box: phone.hasBox, bar: phone.hasBar, ta: phone.hasTextarea, onTop: phone.textareaOnTop }));
+  check("…and the bar carries the same controls the composer does (dictation + send at the least)",
+    phone.controls.includes("send") && phone.controls.includes("dictate"),
+    JSON.stringify(phone.controls));
+  check("…and NOT the transcript it is a copy of (no messages on this page)",
+    phone.hasTranscript === false, `transcript=${phone.hasTranscript}`);
+
+  // ---- the workspace: a button, not a listing ---------------------------------------------------
+  check("the workspace is a PILL BUTTON — no directory listing on the page itself",
+    phone.pill === true && phone.workspaceListOnPage === false,
+    `pill=${phone.pill} listing=${phone.workspaceListOnPage}`);
+  check("…and it already names a directory (the placeholder is a choice, not an empty field)",
+    phone.pillLabel.length > 0, `label=${phone.pillLabel}`);
+
+  // the pill OPENS the picker — the folder tree is a STEP behind it
+  await clickEl('.modal.start-page .ws-pill', 1200);
+  const picker = await ev(`(() => {
+    const m = document.querySelector('.ws-modal');
+    const page = document.querySelector('.modal.start-page');
+    return { open: Boolean(m), rows: m?.querySelectorAll('.wp-row').length ?? 0,
+             chips: m?.querySelectorAll('.wp-chip').length ?? 0,
+             hasField: Boolean(m?.querySelector('.wp-path')),
+             // it has to be ABOVE the page it was launched from, not behind it
+             z: m ? Number(getComputedStyle(m.parentElement).zIndex) : 0,
+             pageZ: page ? Number(getComputedStyle(page.parentElement).zIndex) : 0 };
+  })()`);
+  check("the pill opens the workspace picker — a real folder browser, on top of the start page",
+    picker.open === true && picker.rows > 0 && picker.hasField === true && picker.z > picker.pageZ,
+    JSON.stringify(picker));
+  check("…with the recent-directory shortcuts INSIDE the dialog (not on the page)",
+    picker.chips > 0 && picker.chips <= 6, `chips=${picker.chips}`);
+
+  const wanted = await ev(`document.querySelector('.ws-modal .wp-chip')?.getAttribute('title')?.replace(/^选中 /, '') ?? ''`);
+  await clickEl('.ws-modal .wp-chip', 1000);
+  const picked = await ev(`(() => { const pill = document.querySelector('.modal.start-page .ws-pill');
+    return { closed: !document.querySelector('.ws-modal'), title: pill?.getAttribute('title') ?? '',
+             label: (pill?.textContent ?? '').trim() }; })()`);
+  check("…and picking a folder closes the dialog and renames the pill",
+    Boolean(wanted) && picked.closed === true && picked.title === wanted
+      && picked.label === wanted.split('/').filter(Boolean).pop(),
+    JSON.stringify({ wanted, ...picked }));
+
   check("`runs:` is gone from the page", phone.hasRuns === false);
   check("上次检查 is gone from the page", phone.hasHealth === false);
   check("…but the facts still exist behind 后端详情, and it is CLOSED by default",
     phone.hasDetailFold === true && phone.detailOpen === false, `fold=${phone.hasDetailFold} open=${phone.detailOpen}`);
 
   // the fold OPENS (the facts are folded away, not deleted — the home is the one warning that matters)
-  await ev(`document.querySelector('.modal .be-detail-head')?.click()`);
+  await ev(`document.querySelector('.modal.start-page .be-detail-head')?.click()`);
   await sleep(500);
   const openedDetail = await ev(`(() => {
-    const d = document.querySelector('.modal .be-detail');
+    const d = document.querySelector('.modal.start-page .be-detail');
     const body = d?.querySelector('.be-hint');
     return { expanded: d?.querySelector('.be-detail-head')?.getAttribute('aria-expanded') === 'true',
-             text: (body?.textContent ?? '').slice(0, 120) };
+             text: (body?.textContent ?? '').slice(0, 160) };
   })()`);
   check("opening it reveals the row's mechanics (runs / home / env)",
     openedDetail.expanded === true && /runs:/.test(openedDetail.text), JSON.stringify(openedDetail));
-  await ev(`document.querySelector('.modal .be-detail-head')?.click()`);   // fold it back
+  await ev(`document.querySelector('.modal.start-page .be-detail-head')?.click()`);   // fold it back
   await sleep(400);
-  const refolded = await ev(`(() => document.querySelector('.modal .be-detail-head')?.getAttribute('aria-expanded') === 'false' && !/runs:/.test(document.querySelector('.modal')?.textContent ?? ''))()`);
+  const refolded = await ev(`(() => document.querySelector('.modal.start-page .be-detail-head')?.getAttribute('aria-expanded') === 'false' && !/runs:/.test(document.querySelector('.modal.start-page')?.textContent ?? ''))()`);
   check("…and closing it takes them off the page again", refolded === true);
 
-  check("the chosen path is shown in exactly one place (the field)", phone.dupes.length === 0 && phone.fieldValue.startsWith("/"),
-    `dupes=${JSON.stringify(phone.dupes)} field=${phone.fieldValue}`);
-  check("a fresh form arrives with a real directory chosen (no empty field)",
-    phone.fieldValue.startsWith("/"), `field=${phone.fieldValue}`);
-  // The surface leads with the MESSAGE now (issue #1): a composer on top, the picks under it, and
-  // Enter creates. Which makes the empty box the one state where the button must NOT be pressable —
-  // there would be nothing to hand the agent.
-  const startBox = await ev(`(() => {
-    const m = document.querySelector('.modal');
-    const box = m?.querySelector('.start-input');
-    const go = m?.querySelector('.row .go');
-    return { hasBox: Boolean(box), boxOnTop: Boolean(box && m.querySelector('label') &&
-               (box.compareDocumentPosition(m.querySelector('label')) & Node.DOCUMENT_POSITION_FOLLOWING)),
-             emptyDisabled: Boolean(go && go.disabled), label: (go?.textContent ?? '').trim() };
+  // The message is REQUIRED, and the button that sends it is the composer's own.
+  check("the message is REQUIRED: 发送 is disabled while the box is empty",
+    phone.sendDisabled === true, `disabled=${phone.sendDisabled}`);
+
+  // The chat composer's own 「+」 lives on this page too. Feed the hidden input a real File through
+  // DataTransfer — the same shape a picker hands it — because "the button exists" is not the claim:
+  // the claim is that an attachment can be made BEFORE the session it belongs to does.
+  const plusPresent = await ev(`Boolean(document.querySelector('.start-composer [aria-label="attach"]'))`);
+  check("the bar carries the chat composer's own 「+」 (attach)", plusPresent === true);
+  const fed = await ev(`(async () => {
+    const input = document.querySelector('.start-composer input[type=file]');
+    if (!input) return JSON.stringify({ error: 'no file input on the page' });
+    const dt = new DataTransfer();
+    dt.items.add(new File(['probe payload from the start page'], 'probe.txt', { type: 'text/plain' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 500));
+    return JSON.stringify({
+      chips: [...document.querySelectorAll('.start-composer .draft-row .draft .draft-name')].map((e) => e.textContent),
+      sendEnabled: document.querySelector('.start-composer .send-btn')?.disabled === false,
+      boxEmpty: (document.querySelector('.start-composer textarea')?.value ?? '') === '',
+    });
   })()`);
-  check("the message box is the FIRST control on the form", startBox.hasBox === true && startBox.boxOnTop === true,
-    JSON.stringify(startBox));
-  check("…and the message is REQUIRED: send is disabled while the box is empty",
-    startBox.emptyDisabled === true, JSON.stringify(startBox));
-  check("the two extra path strips are gone (no breadcrumbs, no bottom line)",
-    phone.legacyPicked === false && phone.legacyCrumbs === false,
-    `picked=${phone.legacyPicked} crumbs=${phone.legacyCrumbs}`);
-  check("the shortcut chips are six at most, and small",
-    phone.chipCount > 0 && phone.chipCount <= 6 && phone.chips.every((c) => c.h <= 28 && c.font <= 11.5),
-    `n=${phone.chipCount} ${JSON.stringify(phone.chips)}`);
+  const attachment = JSON.parse(fed);
+  check("…feeding it a file raises a draft chip above the box",
+    (attachment.chips ?? []).includes("probe.txt"), fed);
+  check("…and the attachment ALONE arms 发送 (an attachment is a message)",
+    attachment.boxEmpty === true && attachment.sendEnabled === true, fed);
+  await ev(`(() => { document.querySelector('.start-composer .draft-x')?.click(); return true; })()`);
+  await sleep(400);
+  const chipsLeft = await ev(`document.querySelectorAll('.start-composer .draft-row .draft').length`);
+  check("…and the chip's ✕ takes it back off", chipsLeft === 0, String(chipsLeft));
+
   check("the backend strip is cards: the mark ABOVE the label, centred in one column, one per backend",
     phone.cards.length >= 2 && phone.cards.every((c) => c.stacked && c.sameColumn && c.markKind),
     JSON.stringify(phone.cards));
@@ -205,60 +284,54 @@ try {
       !phone.cards.some((c) => c.backend === "mock"), JSON.stringify(phone.cards.map((c) => c.backend)));
   }
 
-  // ---- the desktop reading: same form, same facts, no phone-only regressions ---------------------
+  // ---- the desktop reading: same surface, same facts, no phone-only regressions -----------------
   await setViewport(1440, 900);
   const desk = await measure();
   console.log(`      desktop  modal h=${desk.modal?.h} viewport=${desk.viewport.h} cards=${desk.cards.length}`);
   const shotDesk = await send("Page.captureScreenshot", { format: "png" }, 25000);
   fs.writeFileSync(`${SHOTS}/newsession-form-desktop.png`, Buffer.from(shotDesk.data, "base64"));
-  check("on a desktop viewport the form still fits and the same three facts hold",
-    desk.fitsScreen === true && desk.hasRuns === false && desk.dupes.length === 0 && desk.legacyPicked === false,
-    JSON.stringify(desk.modal));
+  check("on a desktop viewport the same facts hold (composer, pill, no transcript)",
+    desk.fitsScreen === true && desk.hasBox === true && desk.pill === true
+      && desk.workspaceListOnPage === false && desk.hasRuns === false,
+    JSON.stringify({ fits: desk.fitsScreen, box: desk.hasBox, pill: desk.pill, list: desk.workspaceListOnPage }));
   check("the desktop form is not wider than it needs to be (one column, room for a message)",
     desk.modal?.w <= 580, JSON.stringify(desk.modal));
 
-  // ---- the picker still WORKS (a slimmed layout that cannot pick a folder is not an improvement) --
+  // ---- the picker still WORKS through the dialog (a slimmed layout that cannot pick a folder is
+  //      not an improvement) ----------------------------------------------------------------------
   const TYPED = "/Users/liang/Workspace";
-  const picked = await ev(`(async () => {
-    const modal = document.querySelector('.modal');
-    const field = modal?.querySelector('.wp-path');
+  await clickEl('.modal.start-page .ws-pill', 1200);
+  const armed = await ev(`(async () => {
+    const m = document.querySelector('.ws-modal');
+    const field = m?.querySelector('.wp-path');
     if (!field) return { ok: false, why: 'no field' };
-    const names = () => [...modal.querySelectorAll('.wp-row .wp-name')].map((e) => e.textContent);
-    const before = names();
     // React keeps its own value tracker: assigning .value and firing 'input' is NOT a state change
     // (it reads as "same value, no event"). Go through the prototype setter, which is what a real
     // keystroke does.
     const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value');
     desc.set.call(field, ${JSON.stringify(TYPED)});
     field.dispatchEvent(new Event('input', { bubbles: true }));
-    await new Promise((r) => setTimeout(r, 250));
-    modal.querySelector('.wp-use')?.click();
-    await new Promise((r) => setTimeout(r, 1200));
-    const after = names();
-    return { ok: true, field: modal.querySelector('.wp-path')?.value, before: before.slice(0, 3), rows: after.length, sample: after.slice(0, 3),
-             moved: JSON.stringify(before) !== JSON.stringify(after) };
+    await new Promise((r) => setTimeout(r, 400));
+    return { ok: true, field: m.querySelector('.wp-path')?.value,
+             useEnabled: !(m.querySelector('.wp-use')?.disabled ?? true) };
   })()`);
-  check("typing a path into the field and confirming it moves the listing there",
-    picked.ok === true && picked.field === TYPED && picked.rows > 0 && picked.moved === true,
-    `field=${picked.field} rows=${picked.rows} moved=${picked.moved} sample=${JSON.stringify(picked.sample)}`);
-  const chipPick = await ev(`(async () => {
-    const modal = document.querySelector('.modal');
-    const chip = modal?.querySelector('.wp-chip');
-    if (!chip) return { ok: false, why: 'no chip' };
-    const wanted = chip.getAttribute('title')?.replace(/^选中 /, '') ?? '';
-    chip.click();
-    await new Promise((r) => setTimeout(r, 900));
-    return { ok: true, wanted, field: modal.querySelector('.wp-path')?.value, sel: Boolean(modal.querySelector('.wp-chip.sel')) };
-  })()`);
-  check("a shortcut chip picks that directory (and shows it as the chosen one)",
-    chipPick.ok === true && chipPick.field === chipPick.wanted && chipPick.sel === true,
-    JSON.stringify(chipPick));
+  check("typing a path into the dialog's field arms 「选中」", 
+    armed.ok === true && armed.field === TYPED && armed.useEnabled === true, JSON.stringify(armed));
+
+  await clickEl('.ws-modal .wp-use', 1200);
+  const used = await ev(`(() => { const pill = document.querySelector('.modal.start-page .ws-pill');
+    return { title: pill?.getAttribute('title') ?? '', label: (pill?.textContent ?? '').trim(),
+             closed: !document.querySelector('.ws-modal'),
+             listBack: Boolean(document.querySelector('.modal.start-page .wp-list')) }; })()`);
+  check("…and 选中 puts that directory on the pill — the ONE place the choice is shown",
+    used.title === TYPED && used.label === "Workspace" && used.closed === true && used.listBack === false,
+    JSON.stringify(used));
 
   // close the dialog so the next sweep does not start on top of an open modal
-  await ev(`document.querySelector('.modal-bg')?.click()`);
+  await ev(`document.querySelector('.modal.start-page')?.parentElement?.click()`);
   await sleep(400);
   check("the dialog closes again (nothing left behind for the next run)",
-    (await ev(`Boolean(document.querySelector('.modal'))`)) === false);
+    (await ev(`Boolean(document.querySelector('.modal.start-page'))`)) === false);
 
   // ---- the START-PAGE contract: the row exists before the agent does (issue #1) ------------------
   // The complaint was that 「新建会话」 held the request for the agent's whole handshake — 10–40 s on
@@ -307,20 +380,20 @@ try {
   const typed = await ev(`(async () => {
     document.querySelector('.new-btn')?.click();
     await new Promise((r) => setTimeout(r, 900));
-    const box = document.querySelector('.modal .start-input');
+    const box = document.querySelector('.modal.start-page .composer-box textarea');
     if (!box) return { ok: false, why: 'no first-message box' };
     // React keeps its own value tracker: go through the prototype setter, which is what a keystroke does
     const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value');
     desc.set.call(box, 'QA start-page probe');
     box.dispatchEvent(new Event('input', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 200));
-    const go = document.querySelector('.modal .row .go');
+    const go = document.querySelector('.modal.start-page .composer-bar .send-btn');
     const enabled = Boolean(go && !go.disabled);
     box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await new Promise((r) => setTimeout(r, 1500));
-    return { ok: true, enabled, closed: !document.querySelector('.modal'),
+    return { ok: true, enabled, closed: !document.querySelector('.modal.start-page'),
              inStream: Boolean(document.querySelector('.stream-wrap')),
-             text: (document.querySelector('.modal')?.textContent ?? '').slice(0, 80) };
+             text: (document.querySelector('.modal.start-page')?.textContent ?? '').slice(0, 80) };
   })()`);
   check("typing a first message ENABLES the send button", typed.ok === true && typed.enabled === true, JSON.stringify(typed));
   check("Enter creates the session and closes the start page (the page is now in that session)",

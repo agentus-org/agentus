@@ -99,6 +99,17 @@ export interface BackendHealthView {
   lastFailureAt: number | null;
 }
 
+/** A control the operator set on the START PAGE — i.e. before the session it belongs to existed.
+ *
+ *  The start page is a reduced copy of the chat page, so its model / thinking-depth / permission
+ *  controls read the same fields the composer does; the one difference is that there is no session
+ *  yet to read them FROM, so the values come off the backend row's cached handshake and ride with the
+ *  session until it comes up (`queueSetup` → `#applySetup`). */
+export type SetupPick =
+  | { kind: "model"; value: string }
+  | { kind: "mode"; value: string }
+  | { kind: "config"; id: string; value: string };
+
 /** Cached ACP handshake — the controls this backend advertised at its last real start. */
 export interface BackendHandshakeView {
   at: number;
@@ -106,7 +117,17 @@ export interface BackendHandshakeView {
   loadSession: boolean | null;
   fork: boolean | null;
   modes: { currentModeId: string | null; available: string[]; names?: Record<string, string> } | null;
-  configOptions: { id: string; name: string | null; currentValue: string | null }[];
+  /** The agent's own `select`s. Kept whole (type/category/options, not just id+currentValue)
+   *  because the NEW-SESSION start page has no session to read them from — it draws its composer
+   *  controls from this cache, so a reduced copy would render buttons that cannot be turned. */
+  configOptions: {
+    id: string;
+    name: string | null;
+    currentValue: string | null;
+    type?: string | null;
+    category?: string | null;
+    options?: { value: string; name: string | null; description?: string | null }[] | null;
+  }[];
   models: { currentModelId: string | null; available: string[] } | null;
   commands: string[];
 }
@@ -334,6 +355,10 @@ class Cockpit {
   /** sessionId → prompts waiting for the current turn to end. Mirrored onto the session view
    *  (`v.queue`) so the UI can render them, and persisted so a reload mid-queue does not eat them. */
   #queues = new Map<string, QueuedPrompt[]>();
+  /** sessionId → what the start page picked for a session that did not exist yet. Applied once, at
+   *  `ready`, ahead of the queued first message; dropped there so a later reload cannot re-apply a
+   *  stale pick over a change the operator has since made from the chat page. */
+  #setup = new Map<string, SetupPick[]>();
   /** Sessions where the operator pressed ↑: that prompt is on its way to taking the floor, so the
    *  drain must wait for ITS `turn-start` before handing over the next one. The `turn-end` that
    *  arrives in the meantime belongs to the turn he just interrupted — draining on that one would
@@ -853,6 +878,28 @@ class Cockpit {
     const v = this.byId.get(id);
     if (v) v.queue = rows;
     this.bump();
+  }
+
+  /** File the start page's picks against a session that does not exist yet. They are replayed at
+   *  `ready` as the very frames the chat composer sends for the same controls — see `#applySetup`.
+   *  Empty picks are not stored: "the agent's default" is the ABSENCE of a frame, not a frame that
+   *  says so, and a frame with the value already in force would be a harmless but noisy round-trip. */
+  queueSetup(sessionId: string, picks: SetupPick[]): void {
+    if (picks.length) this.#setup.set(sessionId, picks);
+  }
+
+  /** Replay those picks onto a session that has just come up, ahead of its queued first message.
+   *  One burst is enough: the socket's commands are processed in order, so a prompt sent right after
+   *  them cannot overtake them. */
+  #applySetup(sessionId: string): void {
+    const picks = this.#setup.get(sessionId);
+    if (!picks?.length) return;
+    this.#setup.delete(sessionId);
+    for (const p of picks) {
+      if (p.kind === "model") this.send({ t: "set-model", sessionId, modelId: p.value });
+      else if (p.kind === "mode") this.send({ t: "set-mode", sessionId, modeId: p.value });
+      else this.send({ t: "set-config", sessionId, configId: p.id, value: p.value });
+    }
   }
 
   /** File a prompt for later. It goes out on its own when the running turn ends. */
@@ -1632,6 +1679,10 @@ class Cockpit {
         // message of a session being created (filed into the queue the moment the row existed, when
         // the agent was still booting), or one filed while it was cold. Nothing else drains it — a
         // freshly-started slot runs no turn to end. Same guards as the `sessions` case.
+        // A slot that just came up also carries whatever the START PAGE picked for it, and those
+        // frames go FIRST: the agent must not be handed a prompt under a configuration the operator
+        // replaced before it could read one.
+        if (e.session.status === "ready") this.#applySetup(e.session.id);
         if (e.session.status === "ready" && this.#queues.get(e.session.id)?.length) {
           this.drainQueue(e.session.id);
         }

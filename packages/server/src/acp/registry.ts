@@ -204,7 +204,17 @@ export interface BackendHandshake {
   /** agentCapabilities.sessionCapabilities.fork */
   fork: boolean | null;
   modes: { currentModeId: string | null; available: string[]; names?: Record<string, string> } | null;
-  configOptions: { id: string; name: string | null; currentValue: string | null }[];
+  /** The ACP `select`s, kept WHOLE rather than reduced to id/name/currentValue: the new-session
+   *  start page has no session to read configOptions from, so the controls it draws come from
+   *  here — and a control without its `options` is a button that cannot be turned. */
+  configOptions: {
+    id: string;
+    name: string | null;
+    currentValue: string | null;
+    type?: string | null;
+    category?: string | null;
+    options?: { value: string; name: string | null; description?: string | null }[] | null;
+  }[];
   models: { currentModelId: string | null; available: string[] } | null;
   /** slash commands the agent announced (session/update or newSession) */
   commands: string[];
@@ -621,6 +631,23 @@ export function handshakeFrom(
       id: o.id,
       name: o.name ?? null,
       currentValue: o.currentValue === undefined || o.currentValue === null ? null : String(o.currentValue),
+      // Passed through defensively like everything else here: the SDK types cover only part of what
+      // the wire carries, and a session's real control set differs per agent.
+      type: typeof (o as { type?: unknown }).type === "string" ? String((o as { type?: string }).type) : null,
+      category:
+        typeof (o as { category?: unknown }).category === "string"
+          ? String((o as { category?: string }).category)
+          : null,
+      options: Array.isArray((o as { options?: unknown }).options)
+        ? ((o as unknown as { options: { value?: unknown; name?: unknown; description?: unknown }[] }).options ?? []).map(
+            (opt) => ({
+              value: String(opt.value ?? ""),
+              name: opt.name === undefined || opt.name === null ? null : String(opt.name),
+              description:
+                opt.description === undefined || opt.description === null ? null : String(opt.description),
+            }),
+          )
+        : null,
     })),
     models,
     commands: (s.availableCommands ?? []).map((c) => c.name),

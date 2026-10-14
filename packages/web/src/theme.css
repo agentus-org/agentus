@@ -898,6 +898,35 @@ code.inline {
 /* The new-session surface leads with the MESSAGE, so it gets more room than a settings dialog:
    one wide field on top, the picks under it (`StartPage`). */
 .modal.start-page { max-width: 560px; }
+
+/* The new-session surface is a REDUCED COPY of the chat page (operator, 2026-10-14: 「相当于一个会话页面的
+   一个缩小版…不包含那些聊天记录而已…选模型啊，相关的设置啊，还有语音输入啊，这个输入框啊，应该都是一样的」),
+   so the dialog is a composer + a head row + a backend strip — not a stack of form fields. */
+.start-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.start-head h3 { margin: 0; flex: 1; min-width: 0; }
+
+/* The workspace as a PILL: one button naming the directory it will run in, with the picker behind it
+   (「搞一个按钮，然后弹一个框去选择」 — the tree is a step, not a section of this page). */
+.ws-pill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 58%; flex: 0 1 auto;
+  background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; padding: 5px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.ws-pill:hover { border-color: var(--accent-dim); }
+.ws-pill.empty { color: var(--text-dim); border-style: dashed; }
+/* Locked = the rail's 「+」 already decided the folder: it reads as a fact, not as a control. */
+.ws-pill.locked { cursor: default; color: var(--text-dim); background: transparent; }
+.ws-pill.locked:hover { border-color: var(--line); }
+.ws-pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The picker opens ON TOP of the start page it was launched from — both are `.modal-bg`. */
+.ws-modal-bg { z-index: 60; }
+.ws-modal { max-width: 520px; }
+
+/* The chat composer's own box, minus the two things that only make sense at the bottom of a
+   transcript: the top hairline and the panel fill that separate it from the messages above it. */
+.composer.start-composer { border-top: none; background: transparent; padding: 0; }
+.start-page .backend-pick { margin-top: 14px; }
 .start-input {
   width: 100%; box-sizing: border-box; resize: vertical; min-height: 86px;
   background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);

@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
-import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView } from "./state";
+import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
@@ -13,6 +13,7 @@ import { BrandMark } from "./Brand";
 import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { WorkspaceButton } from "./WorkspaceButton";
 import { ToolPanel } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
@@ -3911,19 +3912,25 @@ function CardMark({ backend }: { backend: string }): JSX.Element {
 
 /** Which backends the new-session form may offer — the rule (mock is a dev-instance backend only)
  *  lives in `agents.ts`, where it can be asserted without a browser. */
-/** The new-session surface: a COMPOSER, not a form.
+/** The new-session surface: a REDUCED COPY OF THE CHAT PAGE, not a form.
  *
- *  What this replaced collected backend → working directory → title and then ran the spawn behind a
- *  "spawning…" button that held for 10–40 s (the server answered only after the agent's whole ACP
- *  handshake) with nothing on screen to read — the operator's 「显示的是 524k」 of a different kind:
- *  a number that was not moving and no reason to believe anything was happening.
+ *  The operator's correction (2026-10-14), after the first cut shipped as a message box plus a backend
+ *  list plus an expanded directory tree: 「他不是说的是那个相当于一个会话页面的一个缩小版嘛…就会话页面。
+ *  不包含那些聊天记录而已…那些什么选模型啊？相关的设置啊，还有语音输入啊，这个输入框啊，应该都是一样的。都要有的呀」.
+ *  AionUi's `pages/guid` — the reference he named — is exactly that shape: the SAME input card as the
+ *  conversation page (`GuidInputCard` = textarea + `GuidActionRow`), carrying model / permission /
+ *  speech controls, with the workspace as a footnote pill instead of a page section.
  *
- *  So the order is inverted, the way a chat product does it: the MESSAGE comes first, because the
- *  first thing you have to say is the only thing you already know, and the folder is a correction
- *  you make while typing. Enter (or 创建并发送) creates the session — the row exists immediately
- *  with `status: "starting"` — hands it the message through the queue, and opens it; the message
- *  goes out on its own the moment the agent is up. A failure lands IN that session, not in a
- *  vanished HTTP call. */
+ *  So this renders the chat composer's own bar, with its own class names, and the only real difference
+ *  is WHERE THE VALUES COME FROM: a session that does not exist yet has no configOptions, so they are
+ *  read off the backend row's cached ACP handshake (`BackendView.handshake` — kept whole by
+ *  `handshakeFrom` for exactly this page) and replayed onto the session the moment it comes up
+ *  (`cockpit.queueSetup`). Nothing is invented: a control the agent never advertised is not drawn.
+ *
+ *  The message still comes first, because it is the one thing the operator already knows — Enter
+ *  creates the row (which exists immediately as `status: "starting"`), files the text into the queue
+ *  and opens it, so the prompt goes out on its own the moment the agent is up, and a failure lands IN
+ *  that session rather than in a vanished HTTP call. */
 function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
@@ -3933,6 +3940,11 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   const [dir, setDir] = useState(initialCwd ?? "");
   const fixedDir = initialCwd ?? "";
   const [text, setText] = useState("");
+  // Attachments belong to the start page too: reading a file is a FileReader result, so nothing here
+  // needs a session — the drafts ride out with the first message as `PromptAttachment`s, on the same
+  // `enqueuePrompt` the chat composer uses.
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [attachErr, setAttachErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -3946,6 +3958,28 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   // where "this row writes into my LIVE home" is visible, and deleting it outright would delete the
   // warning that matters.
   const [detail, setDetail] = useState(false);
+  // What this composer is set to before its session exists. `null` always means "the agent's own
+  // default" — the same reading the chat page gives an option the agent reports no value for.
+  const [pickModel, setPickModel] = useState<string | null>(null);
+  const [pickEffort, setPickEffort] = useState<string | null>(null);
+  const [pickMode, setPickMode] = useState<string | null>(null);
+  const [pop, setPop] = useState<null | "model" | "effort" | "mode">(null);
+  const [prefs] = useVoicePrefs();
+  const dict = useDictation();
+  const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
+  const composing = useRef(false);
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Grow with the content, exactly as the chat composer does: a box frozen at min-height clipped the
+  // two-line placeholder on a 390px screen (measured), and dictation lands here programmatically
+  // rather than by keystroke, so a keystroke-only resize would leave it short.
+  useEffect(() => {
+    const el = ta.current;
+    if (!el) return;
+    el.style.height = "42px";
+    el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
+  }, [text]);
 
   const load = () => {
     setLoading(true); setErr("");
@@ -3954,34 +3988,98 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
       fetch("/api/version", { cache: "no-store" })
         .then((r) => r.json() as Promise<{ dev?: boolean }>)
         .catch(() => ({ dev: false }) as { dev?: boolean }),
+      // Where the session will run. It comes from the server's own idea of `home` — the same place
+      // the picker starts — because a session with NO directory cannot be sent from (发送 stays
+      // disabled without a cwd), and a form that opens unable to send is the old dead-end again.
+      // The choice is pre-made and changeable; the rail's 「+」 still wins when it hands one in.
+      fetch("/api/fs/dirs", { cache: "no-store" })
+        .then((r) => r.json() as Promise<{ home?: string }>)
+        .catch(() => ({}) as { home?: string }),
     ])
-      .then(([list, ver]) => {
+      .then(([list, ver, dirs]) => {
         setRows(list);
         setDev(Boolean(ver?.dev));
         setBackend((cur) => cur || backendChoices(list, Boolean(ver?.dev))[0]?.id || "");
+        setDir((cur) => cur || (dirs as { home?: string })?.home || "");
       })
       .catch((e) => setErr(`后端列表拉取失败：${String((e as Error).message ?? e)}`))
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
 
+  // Dictation finishes into THIS box, exactly as it does in the chat composer: the transcript has
+  // exactly one place to land, and that place is the prompt.
+  useEffect(() => {
+    if (dict.status !== "idle" || !dict.text) return;
+    const heard = dictation.consume();
+    if (!heard) return;
+    setText((cur) => (cur.trim() ? `${cur.trim()} ${heard}` : heard));
+    ta.current?.focus();
+  }, [dict.status, dict.text]);
+
   const choices = backendChoices(rows, dev);
   const sel = rows.find((b) => b.id === backend) ?? null;
+  // The controls this backend ADVERTISED at its last real start — the same set the chat page reads
+  // once a session exists. No handshake (a row that never ran) means no controls, which is honest:
+  // the alternative is a model list this project would have had to guess at.
+  const hs = sel?.handshake ?? null;
+  const hsCfg = (hs?.configOptions ?? []) as unknown as SessionView["info"]["configOptions"];
+  const effortCfg = pickConfigOption(hsCfg, "effort");
+  const effortOptions = (effortCfg?.options ?? []) as { value: string; name?: string | null }[];
+  const effortValue = pickEffort ?? String(effortCfg?.currentValue ?? "");
+  const effort = effortCfg ? effortStyle(effortValue, effortOptions) : null;
+  const effortName = effortOptions.find((o) => String(o.value) === effortValue)?.name ?? "";
+  const modeIds = hs?.modes?.available ?? [];
+  const modeValue = pickMode ?? hs?.modes?.currentModeId ?? "";
+  const modeLabel = modeValue ? (hs?.modes?.names?.[modeValue] ?? modeValue) : "默认权限";
+  // `models.available` is the ids-only shape the row cache keeps; the chat page's richer
+  // `availableModels` (names + descriptions) only exists on a live session. Ids are enough to pick
+  // by, and `shortModelName` already knows how to trim one for a button.
+  const modelIds = hs?.models?.available ?? [];
+  const modelValue = pickModel ?? hs?.models?.currentModelId ?? "";
+  const modelLabel = modelValue ? shortModelName(modelValue) : "默认模型";
 
-  /** Enter / 创建并发送: create the row, open it, and hand it the message through the QUEUE.
-   *
-   *  The queue rather than a direct prompt, because the agent is still booting when this returns —
-   *  a prompt now would come back `no such session`. The queue drains on the `ready` frame the
-   *  server broadcasts when the handshake lands (`state.ts`, `case "session"`), which is the same
-   *  mechanism a cold slot uses: one path, not two. */
+  /** The picks ride WITH the session: at `ready` the store replays them as the very frames the chat
+   *  composer sends (set-model / set-config / set-mode) and only then releases the queued first
+   *  message — one path for "apply what I chose" instead of a second one that exists only here. */
+  const pickedSetup = (): SetupPick[] => {
+    const out: SetupPick[] = [];
+    if (pickModel) out.push({ kind: "model", value: pickModel });
+    if (pickEffort && effortCfg) out.push({ kind: "config", id: String(effortCfg.id), value: pickEffort });
+    if (pickMode) out.push({ kind: "mode", value: pickMode });
+    return out;
+  };
+
+  const addFiles = async (files: FileList | File[]): Promise<void> => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    const results = await Promise.all(list.map((f) => readFileAsDraft(f)));
+    const good: Draft[] = [];
+    const bad: string[] = [];
+    for (const r of results) {
+      if ("error" in r) bad.push(r.error);
+      else good.push(r);
+    }
+    if (good.length) setDrafts((cur) => [...cur, ...good]);
+    setAttachErr(bad.join(" · "));
+  };
+
   const send = async () => {
     const msg = text.trim();
-    if (!msg || !backend || !dir.trim()) return;
+    // An attachment alone is a message: the same bargain the chat composer makes.
+    if ((!msg && !drafts.length) || !backend || !dir.trim()) return;
     setBusy(true); setErr("");
     try {
+      if (listening) dictation.stop();
+      const attachments: PromptAttachment[] = drafts.map((d) => (
+        d.kind === "image"
+          ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
+          : { kind: "text", name: d.name, text: d.payload }
+      ));
       const id = await cockpit.createSession(backend, dir.trim(), "");
+      cockpit.queueSetup(id, pickedSetup());
       cockpit.setActive(id);
-      cockpit.enqueuePrompt(id, msg);
+      cockpit.enqueuePrompt(id, msg, attachments);
       onClose();
     } catch (e) {
       setErr(String((e as Error).message ?? e));
@@ -3993,28 +4091,198 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal start-page" onClick={(e) => e.stopPropagation()}>
-        <h3>新建会话</h3>
-        {/* The message first: it is the one thing the operator already knows, and the picking below
-            is a correction they can make while typing. Enter sends (Shift+Enter is a newline, the
-            same bargain every chat box makes). */}
-        <textarea
-          className="start-input"
-          autoFocus
-          rows={3}
-          value={text}
-          placeholder="说点什么开始…（Enter 创建并发送，Shift+Enter 换行）"
-          aria-label="first message"
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
-            if (e.key === "Escape") { e.stopPropagation(); onClose(); }
-          }}
-        />
-        <label>backend</label>
-        {/* Cards, not a row of stretched pills: the mark on top and the name under it is the shape
-            the operator asked for (「上面放头像，下面写文案」), and it is what the rail already shows
-            in miniature. The strip scrolls sideways when it outgrows the screen — that is the one
-            dimension a phone does not have, so it is the one we spend on more backends. */}
+        <div className="start-head">
+          <h3>新建会话</h3>
+          {/* The workspace is a BUTTON with a dialog behind it, not a section of this page
+              (「搞一个按钮，然后弹一个框去选择」). Locked when the rail's 「+」 already decided it. */}
+          <WorkspaceButton value={fixedDir || dir} onChange={setDir} locked={Boolean(fixedDir)} />
+        </div>
+        {/* The chat page's own input card and bar — same classes on purpose: same box, same buttons,
+            same gaps. A reduced copy, not a lookalike. */}
+        <div className="composer start-composer">
+          <div className="composer-inner">
+            {/* The chat composer's own draft row, same classes: an attachment must look identical
+                whether or not the session it will belong to exists yet. */}
+            {drafts.length > 0 && (
+              <div className="draft-row">
+                {drafts.map((d) => (
+                  <span key={d.id} className={`draft ${d.kind}`} title={`${d.name} · ${humanBytes(d.bytes)}`}>
+                    {d.preview ? <img src={d.preview} alt={d.name} /> : <IconFile size={13} />}
+                    <span className="draft-name">{d.name}</span>
+                    <button
+                      className="draft-x"
+                      aria-label={`remove ${d.name}`}
+                      onClick={() => setDrafts((cur) => cur.filter((x) => x.id !== d.id))}
+                    >
+                      <IconClose size={11} />
+                    </button>
+                  </span>
+                ))}
+                <button className="draft-clear" onClick={() => setDrafts([])}>clear</button>
+              </div>
+            )}
+            {attachErr && <div className="composer-note err">{attachErr}</div>}
+            <div className="composer-box">
+              {/* The placeholder is ONE line at 390px ON PURPOSE: a placeholder is not content, so it
+                  never reaches `scrollHeight` and the auto-grow above cannot make room for a second
+                  line — a longer hint gets clipped mid-word (measured). The full bargain (Shift+Enter
+                  = 换行) is on the send button's tooltip. */}
+              <textarea
+                ref={ta}
+                rows={1}
+                autoFocus
+                value={text}
+                aria-label="first message"
+                placeholder="说点什么开始…（Enter 发送）"
+                onChange={(e) => setText(e.target.value)}
+                onCompositionStart={() => { composing.current = true; }}
+                onCompositionEnd={() => { composing.current = false; }}
+                onKeyDown={(e) => {
+                  if (composing.current || e.nativeEvent.isComposing) return;
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
+                }}
+              />
+              <div className="composer-bar">
+                {/* The chat composer's own 「+」, first in the bar exactly as it is there: attaching is a
+                    property of the MESSAGE, not of the session, so it needs nothing from a live agent. */}
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  hidden
+                  accept={`${IMAGE_TYPES.join(",")},.txt,.md,.json,.log,.csv,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.ini,.html,.css`}
+                  onChange={(e) => {
+                    if (e.target.files) void addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  className="icon-btn"
+                  title="attach an image or a text file"
+                  aria-label="attach"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <IconPlus size={16} />
+                </button>
+                {/* Thinking depth — the agent's own `select`, taken from the row's handshake. */}
+                {effortCfg && effortOptions.length ? (
+                  <div className="tb-wrap" style={{ ["--effort" as string]: effort?.color }}>
+                    <button
+                      type="button"
+                      className={`tb-btn tb-effort ${pop === "effort" ? "on" : ""}`}
+                      style={{ color: effortValue ? effort?.color : undefined }}
+                      title={`thinking depth — ${effortName || "agent default"}`}
+                      aria-label={`thinking depth: ${effortName || "agent default"}`}
+                      aria-expanded={pop === "effort"}
+                      data-testid="start-effort"
+                      onClick={() => setPop((p) => (p === "effort" ? null : "effort"))}
+                    >
+                      <EffortPips level={effort?.level ?? 0} total={effort?.total ?? 1} color={effort?.color ?? "var(--text-dim)"} />
+                      <IconChevronDown size={11} className="tb-chev" />
+                    </button>
+                    {pop === "effort" ? (
+                      <ChoiceList
+                        items={effortOptions.map((o, i) => ({
+                          value: String(o.value),
+                          name: String(o.name ?? o.value),
+                          hint: null,
+                          color: EFFORT_COLORS[Math.min(i, EFFORT_COLORS.length - 1)],
+                        }))}
+                        current={effortValue}
+                        empty="the agent advertises no levels"
+                        onPick={(value) => { setPickEffort(value); setPop(null); }}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+                {/* Permission mode — the modes the agent listed, with the names it gave them. */}
+                {modeIds.length ? (
+                  <div className="tb-wrap">
+                    <button
+                      type="button"
+                      className={`tb-btn ${pop === "mode" ? "on" : ""}`}
+                      title={`权限模式 — ${modeLabel}`}
+                      aria-label={`permission mode: ${modeLabel}`}
+                      aria-expanded={pop === "mode"}
+                      data-testid="start-mode"
+                      onClick={() => setPop((p) => (p === "mode" ? null : "mode"))}
+                    >
+                      <IconShield size={14} />
+                      <span className="tb-label">{modeLabel}</span>
+                      <IconChevronDown size={11} className="tb-chev" />
+                    </button>
+                    {pop === "mode" ? (
+                      <ChoiceList
+                        items={modeIds.map((id) => ({ value: id, name: hs?.modes?.names?.[id] ?? id }))}
+                        current={modeValue}
+                        empty="the agent lists no modes"
+                        onPick={(value) => { setPickMode(value); setPop(null); }}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+                {/* Model — the ids the agent announced. */}
+                {modelIds.length ? (
+                  <ToolbarSelect
+                    label="model"
+                    title={`model — ${modelLabel}`}
+                    icon={<IconChip size={15} />}
+                    value={modelLabel}
+                    testId="start-model"
+                    open={pop === "model"}
+                    onToggle={() => setPop((p) => (p === "model" ? null : "model"))}
+                  >
+                    <ChoiceList
+                      items={modelIds.map((id) => ({ value: id, name: shortModelName(id) }))}
+                      current={modelValue}
+                      empty="the agent lists no models"
+                      onPick={(value) => { setPickModel(value); setPop(null); }}
+                    />
+                  </ToolbarSelect>
+                ) : null}
+                <span className="head-spacer" />
+                {/* Dictation: the same control, and it needs no session to record into this box. */}
+                <button
+                  className={`icon-btn ${listening ? "on rec" : ""}`}
+                  title={dict.error ? dict.error : listening ? "stop dictation" : "dictate a prompt"}
+                  aria-label="dictate"
+                  onClick={() => {
+                    dictation.cancel();
+                    void dictation.start(prefs);
+                  }}
+                >
+                  <IconMic size={16} />
+                </button>
+                <button
+                  className="send-btn"
+                  onClick={() => void send()}
+                  disabled={busy || (!text.trim() && !drafts.length) || !dir.trim()}
+                  title={busy ? "创建中…" : "创建并发送 (Enter)"}
+                  aria-label="send"
+                >
+                  <IconSend size={16} />
+                </button>
+              </div>
+            </div>
+            {listening || dict.status === "transcribing" || dict.error ? (
+              <div className={`dict-chip ${dict.error ? "err" : ""}`}>
+                <IconMic size={13} />
+                {dict.error
+                  ? dict.error
+                  : dict.status === "requesting"
+                    ? "waiting for the microphone…"
+                    : dict.status === "transcribing"
+                      ? "transcribing…"
+                      : <>{dict.text} <span className="interim">{dict.interim}</span></>}
+                {listening ? <button className="dict-stop" onClick={() => dictation.stop()}>stop</button> : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {/* Which agent runs there. Cards, not a row of stretched pills: the mark on top and the name
+            under it is the shape the operator asked for (「上面放头像，下面写文案」), and it is what the
+            rail already shows in miniature. The strip scrolls sideways when it outgrows the screen —
+            that is the one dimension a phone does not have, so it is the one we spend on more backends. */}
         <div className="backend-pick" role="radiogroup" aria-label="backend">
           {loading && !rows.length && <span className="dim">loading…</span>}
           {!loading && !choices.length && <span className="dim">no backends</span>}
@@ -4063,26 +4331,14 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                 ) : null}
                 {sel.cwd ? <div>cwd: <code>{sel.cwd}</code></div> : null}
                 {(sel.env ?? []).length ? <div>env: <code>{(sel.env ?? []).join(", ")}</code></div> : null}
+                {hs && !hsCfg.length && !modelIds.length ? (
+                  <div>这个后端还没真跑过，所以没有可选的模型 / 设置 —— 建会话后由 agent 自己的清单决定</div>
+                ) : null}
               </div>
             ) : null}
           </div>
         ) : null}
-        <label>working directory</label>
-        {fixedDir ? (
-          <div className="ns-fixed-dir" title={fixedDir}>
-            <IconFolder size={13} />
-            <code>{fixedDir}</code>
-          </div>
-        ) : (
-          <WorkspacePicker value={dir} onChange={setDir} />
-        )}
         {err && <div className="err">{err}</div>}
-        <div className="row">
-          <button className="cancel" onClick={onClose}>取消</button>
-          <button className="go" disabled={busy || !text.trim() || !dir.trim()} onClick={() => void send()}>
-            {busy ? "创建中…" : "创建并发送"}
-          </button>
-        </div>
       </div>
     </div>
   );
