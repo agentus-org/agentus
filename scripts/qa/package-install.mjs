@@ -36,6 +36,28 @@ const check = (name, ok, detail = "") => {
 };
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Wait until the agent handshake lands. Since #1 `POST /api/sessions` returns as soon as the ROW
+ *  exists (status=starting) and hands off to the agent in the background — the real UI queues its
+ *  first message and drains it at `ready`, so a client that prompts immediately gets
+ *  "session not ready" and this smoke used to fail exactly there. A slot whose handshake FAILS also
+ *  leaves the `live` bucket entirely, so a wait that reads `live` alone would report a broken agent
+ *  as 「还在启动」 forever — poll all three buckets and take the reason off the row when it is there. */
+const waitForReady = async (base, token, id, ms = 90_000) => {
+  const t0 = Date.now();
+  let last = "unknown";
+  for (;;) {
+    const r = await fetch(`${base}/api/sessions`, { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
+    const j = await r?.json().catch(() => null);
+    const row = [...(j?.live ?? []), ...(j?.cold ?? []), ...(j?.archived ?? [])].find((s) => s.id === id);
+    if (!row) return { ok: false, detail: "the row vanished from every bucket" };
+    last = row.status ?? "?";
+    if (last === "ready") return { ok: true, detail: `ready in ${Date.now() - t0}ms` };
+    if (last === "error") return { ok: false, detail: `status=error ${row.lastError ?? ""}`.trim() };
+    if (Date.now() - t0 > ms) return { ok: false, detail: `still "${last}" after ${ms}ms` };
+    await sleep(300);
+  }
+};
+
 const freePort = () => new Promise((resolve) => {
   const srv = net.createServer();
   srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => resolve(p)); });
@@ -122,6 +144,9 @@ if (up) {
   check("the machine token creates a mock session", created.status === 201, `status ${created.status}`);
 
   if (session.id) {
+    const ready = await waitForReady(base, token, session.id);
+    check("the session reaches ready once the agent handshake lands", ready.ok, ready.detail);
+
     const turn = await new Promise((resolve) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
       let chunks = 0;
