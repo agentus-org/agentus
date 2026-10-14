@@ -36,6 +36,7 @@ import type {
   TurnTrace,
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
+import type { PlanHintSettings } from "../settings.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -219,10 +220,20 @@ export class SessionManager {
   #sessions = new Map<string, LiveSession>();
   #store: Store;
   #emit: Emitter;
+  /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
+   *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
+   *  turn with no restart and no session to hibernate. */
+  #planHint: () => PlanHintSettings = () => ({ on: true, everyTurn: false });
 
   constructor(store: Store, emit: Emitter) {
     this.#store = store;
     this.#emit = emit;
+  }
+
+  /** Wire the cockpit's plan-hint setting in. Optional on purpose: with no source wired the
+   *  manager behaves exactly as it did before the setting existed (on, 仅首条). */
+  setPlanHintSource(read: () => PlanHintSettings): void {
+    this.#planHint = read;
   }
 
   list(): SessionInfo[] {
@@ -885,10 +896,24 @@ export class SessionManager {
     if (!blocks.length) throw new Error("empty prompt");
     // The plan hand-over, owed once per agent process (§7): a restarted agent never knew about the
     // plan, and nothing else on this wire would tell it (ACP has no server->agent state channel).
-    if (s.planReminderPending) {
+    //
+    // It carries a second thing the agent cannot learn on its own: that this session HAS a plan
+    // tool. Its own description says "prefer this over any todo tool", but a runtime that keeps MCP
+    // tools in a lazy-loaded catalog (Hermes) never shows that text to the model unless the model
+    // goes looking — so the plan card stayed empty while the agent kept a todo list only its own
+    // process could see. The nudge therefore has to come from the wire; Studio does the same
+    // (its `task-plan-runs.ts` appends a template to the latest input every turn).
+    //
+    // Read per prompt, and only CONSUME the hand-over when it is actually injected: an operator who
+    // turns the hint off and later back on gets the plan hand-over then, rather than losing it.
+    const hint = this.#planHint();
+    if (hint.on) {
+      const owed = Boolean(s.planReminderPending);
       s.planReminderPending = false;
-      const reminder = this.#planReminder(s);
-      if (reminder) blocks.push(reminder);
+      if (owed || hint.everyTurn) {
+        const reminder = this.#planReminder(s, !owed);
+        if (reminder) blocks.push(reminder);
+      }
     }
     s.turnSeq += 1;
     s.busy = true;
@@ -1225,46 +1250,78 @@ export class SessionManager {
   /** The plan, handed to an agent that just (re)started, as an ACP `resource` content block: a
    *  stable URI plus the steps still owed. The card is fed by the plan OBJECT, but the AGENT's own
    *  copy died with its process — this block is the only thing that tells it the plan exists
-   *  (design-plan-service.md §7). Returns null when there is nothing to hand over: no plan at all,
-   *  or one whose steps are all closed (spending context to say "you are done" is worse than
-   *  saying nothing). */
-  #planReminder(s: LiveSession): unknown | null {
+   *  (design-plan-service.md §7).
+   *
+   *  `perTurn` = this is a mid-conversation nudge (the 每回合 setting), not the once-per-process
+   *  hand-over. It changes only what is worth SAYING: with no plan on the card there is nothing to
+   *  hand over and repeating the introduction every turn would be the noise the operator asked to
+   *  avoid, so a per-turn call with nothing to show returns null. Returns null too when a plan
+   *  exists but every step is closed — spending context to say "you are done" is worse than saying
+   *  nothing. */
+  #planReminder(s: LiveSession, perTurn = false): unknown | null {
     const plan = this.#store.getPlan(s.info.id);
-    if (!plan) return null;
-    const open = plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled");
-    if (!open.length) return null;
-    const lines = open.map((i) => `- [${i.status}] ${i.content}`).join("\n");
+    const open = plan
+      ? plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled")
+      : [];
+    if (plan && !open.length) return null;
+    if (!open.length && perTurn) return null;
+
     // How the agent keeps it current depends on which channel it actually has: an agent whose row
     // opted into native frames must use its own todo tool (those frames are what feed the card),
     // while an MCP-driven agent — which is every backend by default, Hermes included — was handed
     // `update_plan` in this very handshake, and its own todo tool does NOT reach the card.
     const mcpDriven = nativePlanSourceOf(this.#specFor(s.info.backend)) === "none";
-    const closing = mcpDriven
-      ? [
-          "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
-          "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
-          "not be seen there. Mark a step completed once its work is actually verified, and drop or",
-          "cancel what you are no longer doing. If you disagree with an item, change it rather than",
-          "quietly skipping it.",
-        ]
-      : [
-          "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
-          "completed only once its work is actually verified, and drop or cancel what you are no",
-          "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
-        ];
+    const body: string[] = [];
+
+    if (open.length) {
+      body.push(
+        "This session has an unfinished plan. It is kept by the cockpit and survives your",
+        "restarts; your own in-memory task list does not.",
+        "",
+        ...open.map((i) => `- [${i.status}] ${i.content}`),
+        "",
+      );
+    }
+
+    if (mcpDriven && open.length) {
+      body.push(
+        "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
+        "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
+        "not be seen there. Mark a step completed once its work is actually verified, and drop or",
+        "cancel what you are no longer doing. If you disagree with an item, change it rather than",
+        "quietly skipping it.",
+      );
+    } else if (mcpDriven) {
+      // No plan yet. This is the case the cockpit used to say NOTHING about — which is exactly why
+      // an agent reached for its own todo list and the card stayed empty: `update_plan`'s own
+      // description ("prefer this over any todo tool") lives on a tool a lazy-loaded MCP catalog
+      // never puts in front of the model. Keep it short; it rides on every first prompt.
+      body.push(
+        "This session has an `update_plan` tool mounted on it (MCP server `agentus_plan`), and the",
+        "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
+        "dies with your process. For anything with more than one step, publish the steps with",
+        "`update_plan` and update it as you go: mark a step completed only once its work is actually",
+        "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
+        "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
+        "that exact name. A one-step request needs no plan.",
+      );
+    } else if (open.length) {
+      body.push(
+        "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+        "completed only once its work is actually verified, and drop or cancel what you are no",
+        "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+      );
+    } else {
+      // A native-frames backend with nothing to hand over: nothing worth saying.
+      return null;
+    }
+
     return {
       type: "resource",
       resource: {
         uri: `agentus://plan/${s.info.id}`,
         mimeType: "text/plain",
-        text: [
-          "This session has an unfinished plan. It is kept by the cockpit and survives your",
-          "restarts; your own in-memory task list does not.",
-          "",
-          lines,
-          "",
-          ...closing,
-        ].join("\n"),
+        text: body.join("\n"),
       },
       // ACP reserves `_meta` for the client: tagging our own blocks is what lets us tell them from
       // the operator's words later (and strip them from anything we echo back).

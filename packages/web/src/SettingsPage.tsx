@@ -43,6 +43,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
     items: [
       { anchor: "set-backends", label: "后端" },
       { anchor: "set-lifecycle", label: "回收与热备" },
+      { anchor: "set-plan", label: "计划提示" },
     ],
   },
   {
@@ -91,6 +92,10 @@ interface SettingsView {
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
+  /** The plan-tool hint (settings.prefs.planHint): whether the cockpit tells the agent about the
+   *  plan MCP mounted on the session, and how often. Server-read per prompt, so this applies to
+   *  the very next turn. */
+  prefs?: { planHint?: { on: boolean; everyTurn: boolean } };
   updatedAt: number;
 }
 
@@ -173,6 +178,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [warmSlots, setWarmSlots] = useState<number | null>(null);
   const [warmTtl, setWarmTtl] = useState<number | null>(null);
   const [warmMsg, setWarmMsg] = useState("");
+  const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean } | null>(null);
+  const [planHintMsg, setPlanHintMsg] = useState("");
 
   const load = useCallback(async (): Promise<void> => {
     setErr("");
@@ -193,6 +200,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.idleKillMin === "number") setIdleKill(data.agent.idleKillMin);
       if (typeof data.agent?.warmSlots === "number") setWarmSlots(data.agent.warmSlots);
       if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
+      if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       await loadVoiceCaps(true);
       setCaps(voiceCaps());
       const [m, h] = await Promise.all([
@@ -271,6 +279,35 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       );
     } catch (e) {
       setWarmMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 计划提示注入 saves on its own, like the lifecycle numbers: it is not part of the voice draft
+   *  and it must apply to the next turn, not to the next 保存. */
+  const savePlanHint = async (patch: { on?: boolean; everyTurn?: boolean }): Promise<void> => {
+    const next = { on: planHint?.on ?? true, everyTurn: planHint?.everyTurn ?? false, ...patch };
+    setPlanHint(next);
+    setPlanHintMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prefs: { planHint: next } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setPlanHint(data.prefs?.planHint ?? next);
+      setPlanHintMsg(
+        !next.on
+          ? "已保存：prompt 里不再追加计划提示。"
+          : next.everyTurn
+            ? "已保存：每回合都提醒 agent 用 update_plan。"
+            : "已保存：只在每个 agent 进程的首条提醒一次。",
+      );
+    } catch (e) {
+      setPlanHintMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -615,6 +652,55 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
           {idleMsg ? <p className="set-hint">{idleMsg}</p> : null}
           {warmMsg ? <p className="set-hint">{warmMsg}</p> : null}
+        </section>
+
+        <section className="set-card" id="set-plan" data-setgroup="agent">
+          <h3>计划提示注入</h3>
+          <p className="set-hint">
+            驾驶舱给每个会话挂了一个 <b>plan MCP</b>（工具名 <code>update_plan</code>），会话卡片上那份计划就是它写进来的。
+            问题出在最后一公里：这类工具在 agent 侧是<b>懒加载</b>的 —— 它自己的工具描述写着「优先于你自带的 todo」，
+            但模型不去检索就永远看不到这句话，于是 agent 全程用自己那个「进程一死就没了、驾驶舱也看不见」的 todo，
+            计划卡片一直是空的。
+          </p>
+          <p className="set-hint">
+            打开后，驾驶舱会在你那条消息的尾部追加一小段指引，告诉 agent 这个工具存在、多步任务应当用它发布并逐步更新、
+            以及懒加载时怎么检索到它。做法对齐 Hermes Studio 的<b>每回合注入</b> —— 它就是这么做到 agent 爱用的。
+            <b>关掉后，prompt 里只有你自己打的那句话。</b>改完立刻对下一个回合生效，不用重启会话。
+          </p>
+          <div className="set-row">
+            <label>注入计划使用提示</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={planHint?.on ?? true}
+                onChange={(e) => void savePlanHint({ on: e.target.checked })}
+              />
+              <span className="set-hint">
+                {planHint?.on ?? true
+                  ? "已开启：让 agent 知道该用 update_plan 维护计划"
+                  : "已关闭：prompt 不再被追加任何内容"}
+              </span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>注入频率</label>
+            <div className="set-pair">
+              <select
+                className="set-select"
+                value={(planHint?.everyTurn ?? false) ? "every" : "first"}
+                disabled={!(planHint?.on ?? true)}
+                onChange={(e) => void savePlanHint({ everyTurn: e.target.value === "every" })}
+              >
+                <option value="first">仅每个 agent 进程的首条（省 token）</option>
+                <option value="every">每回合（对齐 Studio）</option>
+              </select>
+            </div>
+          </div>
+          <p className="set-hint">
+            没有计划可提醒时不会硬凑字数：频率选「每回合」也只在该会话确有未完成计划时才重复注入；
+            一步就能做完的请求不受影响。没注入过的那次不会作废，打开开关或从「仅首条」切回来的那一回合会补上。
+          </p>
+          {planHintMsg ? <p className="set-hint">{planHintMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-asr" data-setgroup="voice">

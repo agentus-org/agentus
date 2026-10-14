@@ -19,7 +19,7 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
-import { agentSettings, initSettings, publicSettings, saveAgent, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
+import { agentSettings, initSettings, planHintSettings, publicSettings, saveAgent, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "../../shared/src/index.js";
@@ -298,6 +298,9 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
       envWarmTtlMs != null ? envWarmTtlMs / 3_600_000 : agentSettings().warmTtlHours
     } h untouched (${envWarm != null || envWarmTtlMs != null ? "AGENTUS_WARM_*" : "settings.agent"}), 0 = off / never`,
   );
+  // The plan-tool hint: read per prompt, so the 设置 switch applies to the next turn with nothing
+  // to restart (the session's own plan card is what it fills).
+  mgr.setPlanHintSource(planHintSettings);
   mgr.startIdleReaper({
     idleMs: () => envIdleMs ?? agentSettings().idleKillMin * 60_000,
     warmSlots: () => envWarm ?? agentSettings().warmSlots,

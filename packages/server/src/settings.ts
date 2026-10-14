@@ -102,10 +102,29 @@ export interface PrefsSettings {
   serverTts: boolean;
   /** which recogniser to use, when the caller does not force one */
   stt: "auto" | "browser" | "stream" | "server";
+  /** Whether — and how often — the cockpit tells the agent about the plan MCP it was handed.
+   *  The tool's own description says "prefer this over any todo tool", but on a runtime that
+   *  keeps MCP tools in a lazy-loaded catalog the agent never reads it unless it goes looking,
+   *  so the session's plan card stays empty while the agent keeps a todo list nobody can see.
+   *  A per-turn nudge in the prompt is what closes that last mile; this is its switch. */
+  planHint: PlanHintSettings;
+}
+
+export interface PlanHintSettings {
+  /** Inject the plan-tool hint at all. Off = the prompt carries the operator's words and
+   *  nothing else (some operators do not want anything appended to their message). */
+  on: boolean;
+  /** true = every turn (the agent is re-told as the plan moves); false = only the first prompt
+   *  of each agent process (a fresh process has no memory of the plan; a running one maintains
+   *  it itself, and re-sending it every turn costs context and invites re-deriving finished work). */
+  everyTurn: boolean;
 }
 
 export const PREFS_DEFAULT: PrefsSettings = {
   autoRead: false, voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
+  // On by default: the feature exists because the tool was there and nobody used it. 仅首条 is
+  // the conservative default — it is also what the cockpit did before this was configurable.
+  planHint: { on: true, everyTurn: false },
 };
 
 export const CALL_DEFAULT: CallSettings = {
@@ -332,6 +351,12 @@ function pickPrefs(raw: unknown): PrefsSettings {
     const rate = Number(r.rate);
     if (Number.isFinite(rate) && rate >= 0.5 && rate <= 2) out.rate = rate;
     if (r.stt === "auto" || r.stt === "browser" || r.stt === "stream" || r.stt === "server") out.stt = r.stt;
+    const h = r.planHint;
+    if (h && typeof h === "object") {
+      const hr = h as Record<string, unknown>;
+      if (typeof hr.on === "boolean") out.planHint.on = hr.on;
+      if (typeof hr.everyTurn === "boolean") out.planHint.everyTurn = hr.everyTurn;
+    }
   }
   return out;
 }
@@ -512,6 +537,21 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
     if (!["auto", "browser", "stream", "server"].includes(v)) throw new Error(`invalid stt: ${JSON.stringify(patch.stt)}`);
     next.stt = v as PrefsSettings["stt"];
   }
+  if ("planHint" in patch) {
+    const h = patch.planHint;
+    if (!h || typeof h !== "object") throw new Error("invalid planHint: expected an object");
+    const hr = h as Record<string, unknown>;
+    const nextHint = { ...next.planHint };
+    if ("on" in hr) {
+      if (typeof hr.on !== "boolean") throw new Error("invalid planHint.on: expected true/false");
+      nextHint.on = hr.on;
+    }
+    if ("everyTurn" in hr) {
+      if (typeof hr.everyTurn !== "boolean") throw new Error("invalid planHint.everyTurn: expected true/false");
+      nextHint.everyTurn = hr.everyTurn;
+    }
+    next.planHint = nextHint;
+  }
   cache = { ...cache, prefs: next, updatedAt: Date.now() };
   persist();
   return cache;
@@ -545,6 +585,12 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
  *  no business holding this one. */
 export function agentSettings(): AgentSettings {
   return cache.agent;
+}
+
+/** The plan-hint knobs. Read on EVERY prompt (not cached here), so the switch in 设置 takes effect
+ *  on the operator's very next turn — no restart, no session to hibernate. */
+export function planHintSettings(): PlanHintSettings {
+  return cache.prefs.planHint;
 }
 
 /** Normalise the two URL shapes operators paste: MaaS root or .../compatible-mode/v1. */
