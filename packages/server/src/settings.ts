@@ -110,21 +110,35 @@ export interface PrefsSettings {
   planHint: PlanHintSettings;
 }
 
+/** Longest operator-authored plan instruction we store and inject. Sized for a few sentences of
+ *  house rules, not a document — the block rides on the end of the operator's message every turn,
+ *  so its cost is paid per turn, not once. */
+export const PLAN_HINT_INSTRUCTION_MAX = 2000;
+
 export interface PlanHintSettings {
   /** Inject the plan-tool hint at all. Off = the prompt carries the operator's words and
    *  nothing else (some operators do not want anything appended to their message). */
   on: boolean;
   /** true = every turn (the agent is re-told as the plan moves); false = only the first prompt
-   *  of each agent process (a fresh process has no memory of the plan; a running one maintains
-   *  it itself, and re-sending it every turn costs context and invites re-deriving finished work). */
+   *  of each agent process. Default true: this mirrors Studio, which appends its block to the
+   *  latest input on EVERY turn (services/task-plan-runs.ts) — the per-turn re-statement is the
+   *  part that makes an agent actually keep the card current, and an agent process can be
+   *  long-lived enough that "first prompt only" means "once this morning". */
   everyTurn: boolean;
+  /** The operator's own wording for the appended instruction. Empty = the built-in text (which
+   *  names the tool, says why it beats a native todo, and how to find it when the runtime defers
+   *  MCP tools). This replaces only the GUIDANCE half — the per-turn plan STATUS (which steps are
+   *  still open) is generated from the card and stays authoritative, so an edit here can never
+   *  make the prompt disagree with what the operator sees. */
+  instruction: string;
 }
 
 export const PREFS_DEFAULT: PrefsSettings = {
   autoRead: false, voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
-  // On by default: the feature exists because the tool was there and nobody used it. 仅首条 is
-  // the conservative default — it is also what the cockpit did before this was configurable.
-  planHint: { on: true, everyTurn: false },
+  // On + every turn by default: the feature exists because the tool was there and nobody used it,
+  // and 对齐 Studio means the block rides on every turn (see everyTurn's note). Both are visible
+  // and switchable in 设置 — this is a default, not a lock.
+  planHint: { on: true, everyTurn: true, instruction: "" },
 };
 
 export const CALL_DEFAULT: CallSettings = {
@@ -356,6 +370,9 @@ function pickPrefs(raw: unknown): PrefsSettings {
       const hr = h as Record<string, unknown>;
       if (typeof hr.on === "boolean") out.planHint.on = hr.on;
       if (typeof hr.everyTurn === "boolean") out.planHint.everyTurn = hr.everyTurn;
+      if (typeof hr.instruction === "string" && hr.instruction.length <= PLAN_HINT_INSTRUCTION_MAX) {
+        out.planHint.instruction = hr.instruction;
+      }
     }
   }
   return out;
@@ -549,6 +566,15 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
     if ("everyTurn" in hr) {
       if (typeof hr.everyTurn !== "boolean") throw new Error("invalid planHint.everyTurn: expected true/false");
       nextHint.everyTurn = hr.everyTurn;
+    }
+    if ("instruction" in hr) {
+      if (typeof hr.instruction !== "string") throw new Error("invalid planHint.instruction: expected a string");
+      // Trimmed on the way in: whitespace-only means "use the built-in text", and storing it as the
+      // empty string keeps that one case one case.
+      if (hr.instruction.length > PLAN_HINT_INSTRUCTION_MAX) {
+        throw new Error(`invalid planHint.instruction: longer than ${PLAN_HINT_INSTRUCTION_MAX} characters`);
+      }
+      nextHint.instruction = hr.instruction.trim() ? hr.instruction : "";
     }
     next.planHint = nextHint;
   }

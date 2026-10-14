@@ -188,6 +188,12 @@ const blocksOfLastTurn = async () => {
   }
   return null;
 };
+// The assertion further down is about the HAND-OVER (once per agent process), not about 注入频率.
+// Pin the frequency here so this sweep does not depend on whatever the previous one left behind —
+// on a fresh instance 每回合 is the default, and an unpinned run would fail this for the wrong
+// reason.
+const hintBefore = await ev(`fetch('/api/settings').then(r=>r.json()).then(d=>JSON.stringify(d.prefs?.planHint??null))`);
+await ev(`fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({prefs:{planHint:{on:true,everyTurn:false,instruction:""}}})}).then(r=>r.status)`);
 await ev(`fetch('/api/sessions/${sid}/restart',{method:'POST'})`);
 await sleep(2500);
 await promptText("[blocks] carry on");
@@ -207,5 +213,10 @@ check("the hand-over happens ONCE per agent process, not on every turn",
   Array.isArray(second) && second.length === 1, JSON.stringify(second)?.slice(0, 180));
 
 await ev(`fetch('/api/backends/mock',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(${JSON.stringify(mockRowBefore)},{nativePlanSource:${JSON.stringify(mockRowBefore?.nativePlanSource ?? "none")}}))}).then(r=>r.status)`).catch(() => null);
+// Put the injected-frequency setting back: it is global, and the next sweep must not inherit this
+// one's pin (a fresh instance's default is 每回合 + built-in wording).
+const hintRestore = hintBefore && hintBefore !== "null" ? hintBefore : JSON.stringify({ on: true, everyTurn: true, instruction: "" });
+await ev(`fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({prefs:{planHint:${hintRestore}}})})`).catch(() => null);
+
 console.log(`\nplan-service-sweep: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

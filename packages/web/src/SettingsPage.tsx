@@ -93,9 +93,9 @@ interface SettingsView {
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
   /** The plan-tool hint (settings.prefs.planHint): whether the cockpit tells the agent about the
-   *  plan MCP mounted on the session, and how often. Server-read per prompt, so this applies to
-   *  the very next turn. */
-  prefs?: { planHint?: { on: boolean; everyTurn: boolean } };
+   *  plan MCP mounted on the session, how often, and in whose words. Server-read per prompt, so
+   *  this applies to the very next turn. */
+  prefs?: { planHint?: { on: boolean; everyTurn: boolean; instruction: string } };
   updatedAt: number;
 }
 
@@ -178,7 +178,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [warmSlots, setWarmSlots] = useState<number | null>(null);
   const [warmTtl, setWarmTtl] = useState<number | null>(null);
   const [warmMsg, setWarmMsg] = useState("");
-  const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean } | null>(null);
+  const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean; instruction: string } | null>(null);
   const [planHintMsg, setPlanHintMsg] = useState("");
 
   const load = useCallback(async (): Promise<void> => {
@@ -284,8 +284,14 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
   /** 计划提示注入 saves on its own, like the lifecycle numbers: it is not part of the voice draft
    *  and it must apply to the next turn, not to the next 保存. */
-  const savePlanHint = async (patch: { on?: boolean; everyTurn?: boolean }): Promise<void> => {
-    const next = { on: planHint?.on ?? true, everyTurn: planHint?.everyTurn ?? false, ...patch };
+  const savePlanHint = async (patch: { on?: boolean; everyTurn?: boolean; instruction?: string }): Promise<void> => {
+    const next = {
+      on: planHint?.on ?? true,
+      // Defaults mirror PREFS_DEFAULT on the server (on + every turn).
+      everyTurn: planHint?.everyTurn ?? true,
+      instruction: planHint?.instruction ?? "",
+      ...patch,
+    };
     setPlanHint(next);
     setPlanHintMsg("");
     try {
@@ -687,15 +693,40 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             <div className="set-pair">
               <select
                 className="set-select"
-                value={(planHint?.everyTurn ?? false) ? "every" : "first"}
+                value={(planHint?.everyTurn ?? true) ? "every" : "first"}
                 disabled={!(planHint?.on ?? true)}
                 onChange={(e) => void savePlanHint({ everyTurn: e.target.value === "every" })}
               >
+                <option value="every">每回合（默认，对齐 Studio）</option>
                 <option value="first">仅每个 agent 进程的首条（省 token）</option>
-                <option value="every">每回合（对齐 Studio）</option>
               </select>
             </div>
           </div>
+          <div className="set-row">
+            <label>注入内容</label>
+          </div>
+          <textarea
+            className="set-textarea"
+            rows={6}
+            spellCheck={false}
+            disabled={!(planHint?.on ?? true)}
+            value={planHint?.instruction ?? ""}
+            placeholder={
+              "留空即用内置文案 —— 大意是：本会话挂着一个 update_plan 工具（MCP 服务 agentus_plan），"
+              + "它维护的那份计划就是操作者看到的那份，你自己那份 todo 在驾驶舱里看不见、进程一死就没了；"
+              + "多步任务请用它发布步骤并随进度更新，每步真正验证通过再标完成；工具不在列表里说明它是懒加载的，"
+              + "先检索 agentus_plan update_plan 再用准确的工具名调用；一步就能做完的请求不必建计划。"
+            }
+            onChange={(e) =>
+              setPlanHint((p) => ({ ...(p ?? { on: true, everyTurn: true, instruction: "" }), instruction: e.target.value }))
+            }
+            onBlur={(e) => void savePlanHint({ instruction: e.target.value })}
+          />
+          <p className="set-hint">
+            这里写的只是<b>指引</b>那一半（告诉 agent 有个计划工具、该怎么用它）。另一半是<b>计划状态</b> ——
+            「哪些步骤还没做完」，那是每个回合从驾驶舱的计划卡片现取的，任何人都改不了，所以这里的文字永远不会和卡片说的不一样。
+            清空即恢复内置文案。
+          </p>
           <p className="set-hint">
             没有计划可提醒时不会硬凑字数：频率选「每回合」也只在该会话确有未完成计划时才重复注入；
             一步就能做完的请求不受影响。没注入过的那次不会作废，打开开关或从「仅首条」切回来的那一回合会补上。

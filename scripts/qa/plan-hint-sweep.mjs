@@ -13,12 +13,15 @@
 // What it proves, in order:
 //   1. a session's FIRST prompt carries the hint block, and it names the tool (`update_plan`) —
 //      including when the session has no plan yet, which is the case that used to say NOTHING;
-//   2. a later prompt does NOT carry it (the default is 仅首条 — the conservative default, and what
-//      the cockpit did before this was configurable), so a one-step request does not pay for it;
-//   3. switching 注入频率 to 每回合 makes the next prompt carry it again, live, with no restart;
+//   2. with 频率 set to 仅首条, a later prompt does NOT carry it (a one-step request does not pay);
+//   3. 每回合 carries it on EVERY turn, plan or no plan, exactly like Studio's unconditional
+//      `task-plan-runs.ts` append — including the "no plan yet" turn, which is the one where the
+//      nudge buys the most (an agent never told the tool exists uses its own todo instead);
 //   4. switching the master switch OFF stops it on the very next prompt — and does NOT consume the
 //      hand-over, so turning it back on delivers the plan rather than losing it;
-//   5. with an unfinished plan on the card, the block carries the STEPS, not just the introduction.
+//   5. an unfinished plan rides along as STEPS, and survives a process swap;
+//   6. 注入内容 (settings.prefs.planHint.instruction) REPLACES the built-in guidance wording without
+//      touching the plan STATUS half, and clearing the box brings the built-in text back.
 //
 // The mock backend is used throughout: no tokens. Its `[blocks]` trigger reports the SHAPE of what
 // arrived (a plain `.text` read cannot see a `resource` block, which is exactly what the hint is).
@@ -132,7 +135,10 @@ const cleanup = async () => {
 console.log("== ① a session's first prompt carries the hint, and it NAMES the tool ==");
 const before = await getHint();
 console.log(`      settings before: ${JSON.stringify(before)}`);
-await setHint({ on: true, everyTurn: false });
+// instruction: "" pins the wording to the built-in text — the assertions below are about what that
+// text SAYS, and an operator who has written their own would otherwise fail them for the right
+// reason (their text is fine, it just is not this text). ⑦ puts a custom one back.
+await setHint({ on: true, everyTurn: false, instruction: "" });
 
 const s1 = await freshSession("plan-hint sweep ①");
 created.push(s1.id);
@@ -157,7 +163,7 @@ check("…and it does NOT invent a plan that does not exist (no step lines)",
 check("…and it tells the agent to prefer it over its own todo tool",
   /todo/i.test(hintBlock?.body ?? ""), String(hintBlock?.body ?? "").slice(0, 200));
 
-console.log("\n== ② a later prompt does NOT carry it (default 仅首条) ==");
+console.log("\n== ② with 频率 set to 仅首条, a later prompt does NOT carry it ==");
 await say(s1.id, "[blocks] 第二步");
 const r2 = await lastReply(s1.id);
 const b2 = blocksSeen(r2);
@@ -165,12 +171,15 @@ check("the second prompt still reported its shape", Array.isArray(b2), String(r2
 check("…and it carries NO plan block — a one-step request does not pay for the hint",
   planBlockOf(b2) === null, JSON.stringify(b2 ?? []).slice(0, 240));
 
-console.log("\n== ③ 每回合 injects again — but only when there IS a plan to keep current ==");
+console.log("\n== ③ 每回合 injects on EVERY turn — with a plan or without one (the Studio behaviour) ==");
 await setHint({ on: true, everyTurn: true });
 await say(s1.id, "[blocks] 第三步");
 const b3a = blocksSeen(await lastReply(s1.id));
-check("with NO unfinished plan, 每回合 still says nothing (no filler every turn)",
-  planBlockOf(b3a) === null, JSON.stringify(b3a ?? []).slice(0, 240));
+const hintIntro = planBlockOf(b3a);
+check("with NO plan on the card yet, 每回合 still carries the INTRODUCTION — this is the turn that matters most, because an agent never told the tool exists reaches for its own todo list",
+  hintIntro !== null, JSON.stringify(b3a ?? []).slice(0, 240));
+check("…and the introduction does not invent steps for a plan that does not exist",
+  hintIntro !== null && !/^- \[/m.test(hintIntro.body ?? ""), String(hintIntro?.body ?? "").slice(0, 240));
 
 seedPlan(s1.id, [
   { content: "跑通注入链路", status: "completed" },
@@ -241,11 +250,39 @@ check("…and the finished step is left out",
 check("…and it names the tool to keep it current with",
   /update_plan/.test(plan6?.body ?? ""), String(plan6?.body ?? "").slice(0, 300));
 
+console.log("\n== ⑦ 注入内容可编辑：自定义文案取代内置指引，计划状态仍由卡片生成 ==");
+const CUSTOM = "HOUSE RULE: 多步任务先调 update_plan 建计划（团队约定），别用自带的 todo。";
+await setHint({ on: true, everyTurn: true, instruction: CUSTOM });
+await say(s2.id, "[blocks] 自定义文案这一条");
+const b7 = blocksSeen(await lastReply(s2.id));
+const plan7 = planBlockOf(b7);
+check("with 注入内容 filled in, the block still arrives", plan7 !== null,
+  JSON.stringify(b7 ?? []).slice(0, 240));
+check("…and it carries the operator's own words", /HOUSE RULE/.test(plan7?.body ?? ""),
+  String(plan7?.body ?? "").slice(0, 300));
+check("…and the built-in wording is GONE — the edit REPLACES the guidance, it does not append to it",
+  !/This session has an `update_plan` tool mounted on it/.test(plan7?.body ?? "")
+    && !/Carry on with it, and keep it updated with the `update_plan` tool/.test(plan7?.body ?? ""),
+  String(plan7?.body ?? "").slice(0, 300));
+check("…and the STATUS half is still generated from the card (the open step is named, unedited)",
+  /旧进程留下的未完成步骤/.test(plan7?.body ?? ""), String(plan7?.body ?? "").slice(0, 300));
+
+await setHint({ on: true, everyTurn: true, instruction: "" });
+await say(s2.id, "[blocks] 清空之后");
+const b8 = blocksSeen(await lastReply(s2.id));
+const plan8 = planBlockOf(b8);
+check("clearing the box brings the built-in wording back",
+  /update_plan/.test(plan8?.body ?? "") && !/HOUSE RULE/.test(plan8?.body ?? ""),
+  String(plan8?.body ?? "").slice(0, 240));
+
 await cleanup();
-await setHint(before ?? { on: true, everyTurn: false });
+// Falls back to PREFS_DEFAULT's shape (on + every turn + built-in wording) when the instance had no
+// settings row yet — "restoring" a 仅首条 default here would silently change behaviour.
+const FALLBACK = { on: true, everyTurn: true, instruction: "" };
+await setHint(before ?? FALLBACK);
 const after = await getHint();
 check("the sweep put the setting back the way it found it",
-  JSON.stringify(after) === JSON.stringify(before ?? { on: true, everyTurn: false }),
+  JSON.stringify(after) === JSON.stringify(before ?? FALLBACK),
   `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);

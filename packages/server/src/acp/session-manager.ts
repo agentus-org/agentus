@@ -36,7 +36,7 @@ import type {
   TurnTrace,
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
-import type { PlanHintSettings } from "../settings.js";
+import { PREFS_DEFAULT, type PlanHintSettings } from "../settings.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -99,6 +99,42 @@ function boundedDiff(path: string, oldText: string, newText: string): Permission
     truncated: clipped || from > 0 || tail > CONTEXT_KEEP,
   };
 }
+
+/** The built-in wording for the plan hint's GUIDANCE half — what an operator gets when they have
+ *  not written their own (settings.prefs.planHint.instruction). Three variants, because what is
+ *  worth saying depends on the channel the agent actually has:
+ *
+ *  - MCP-driven is every backend by default (Hermes included): it was handed `update_plan` in this
+ *    handshake, and its own todo tool does NOT reach the card.
+ *  - A row that opted into native frames must use its own todo tool, since those frames are what
+ *    feed the card.
+ *
+ *  The per-turn plan STATUS (which steps are still open) is NOT part of these strings — it is
+ *  generated from the card on every call, so an operator editing the text above cannot make the
+ *  prompt disagree with what the cockpit shows. */
+const PLAN_GUIDANCE_ACTIVE = [
+  "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
+  "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
+  "not be seen there. Mark a step completed once its work is actually verified, and drop or",
+  "cancel what you are no longer doing. If you disagree with an item, change it rather than",
+  "quietly skipping it.",
+].join("\n");
+
+const PLAN_GUIDANCE_INTRO = [
+  "This session has an `update_plan` tool mounted on it (MCP server `agentus_plan`), and the",
+  "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
+  "dies with your process. For anything with more than one step, publish the steps with",
+  "`update_plan` and update it as you go: mark a step completed only once its work is actually",
+  "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
+  "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
+  "that exact name. A one-step request needs no plan.",
+].join("\n");
+
+const PLAN_GUIDANCE_NATIVE = [
+  "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+  "completed only once its work is actually verified, and drop or cancel what you are no",
+  "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+].join("\n");
 
 // A title fork is a real model turn over a copy of the conversation: give it room, but never
 // let a stuck one hang the operator's click — the caller falls back to the derived name on
@@ -223,7 +259,7 @@ export class SessionManager {
   /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
    *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
    *  turn with no restart and no session to hibernate. */
-  #planHint: () => PlanHintSettings = () => ({ on: true, everyTurn: false });
+  #planHint: () => PlanHintSettings = () => ({ ...PREFS_DEFAULT.planHint });
 
   constructor(store: Store, emit: Emitter) {
     this.#store = store;
@@ -911,7 +947,7 @@ export class SessionManager {
       const owed = Boolean(s.planReminderPending);
       s.planReminderPending = false;
       if (owed || hint.everyTurn) {
-        const reminder = this.#planReminder(s, !owed);
+        const reminder = this.#planReminder(s);
         if (reminder) blocks.push(reminder);
       }
     }
@@ -1252,19 +1288,27 @@ export class SessionManager {
    *  copy died with its process — this block is the only thing that tells it the plan exists
    *  (design-plan-service.md §7).
    *
-   *  `perTurn` = this is a mid-conversation nudge (the 每回合 setting), not the once-per-process
-   *  hand-over. It changes only what is worth SAYING: with no plan on the card there is nothing to
-   *  hand over and repeating the introduction every turn would be the noise the operator asked to
-   *  avoid, so a per-turn call with nothing to show returns null. Returns null too when a plan
-   *  exists but every step is closed — spending context to say "you are done" is worse than saying
-   *  nothing. */
-  #planReminder(s: LiveSession, perTurn = false): unknown | null {
+   *  It is also the only thing that tells an agent the tool exists AT ALL — `update_plan`'s own
+   *  description says "prefer this over any todo tool", but a runtime that keeps MCP tools in a
+   *  lazy-loaded catalog (Hermes) never shows the model that text unless it goes looking first.
+   *  Everything here goes out on the wire, every turn when 每回合 is on, exactly like Studio's
+   *  `task-plan-runs.ts` (which appends its block to the latest input unconditionally).
+   *
+   *  The ONE case that says nothing: a plan that exists with every step closed. There is no
+   *  introduction worth repeating and no work to hand over — "you are done" costs context and buys
+   *  nothing. Note that "no plan yet" is NOT that case: it is the moment the nudge matters most,
+   *  because an agent that has not been told the tool exists will reach for its own todo list. */
+  #planReminder(s: LiveSession): unknown | null {
+    // The operator's own wording, when they wrote one (设置 → 计划提示注入). Read per call, like the
+    // switches beside it, so an edit lands on the next turn with no restart. Emptiness is decided
+    // HERE rather than only at save time: a value written by an older build (or hand-edited into
+    // the DB) must not be able to inject a line of whitespace as if it were guidance.
+    const custom = this.#planHint().instruction.trim() || null;
     const plan = this.#store.getPlan(s.info.id);
     const open = plan
       ? plan.items.filter((i) => i.status !== "completed" && i.status !== "cancelled")
       : [];
     if (plan && !open.length) return null;
-    if (!open.length && perTurn) return null;
 
     // How the agent keeps it current depends on which channel it actually has: an agent whose row
     // opted into native frames must use its own todo tool (those frames are what feed the card),
@@ -1284,33 +1328,15 @@ export class SessionManager {
     }
 
     if (mcpDriven && open.length) {
-      body.push(
-        "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
-        "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
-        "not be seen there. Mark a step completed once its work is actually verified, and drop or",
-        "cancel what you are no longer doing. If you disagree with an item, change it rather than",
-        "quietly skipping it.",
-      );
+      body.push(custom ?? PLAN_GUIDANCE_ACTIVE);
     } else if (mcpDriven) {
       // No plan yet. This is the case the cockpit used to say NOTHING about — which is exactly why
       // an agent reached for its own todo list and the card stayed empty: `update_plan`'s own
       // description ("prefer this over any todo tool") lives on a tool a lazy-loaded MCP catalog
       // never puts in front of the model. Keep it short; it rides on every first prompt.
-      body.push(
-        "This session has an `update_plan` tool mounted on it (MCP server `agentus_plan`), and the",
-        "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
-        "dies with your process. For anything with more than one step, publish the steps with",
-        "`update_plan` and update it as you go: mark a step completed only once its work is actually",
-        "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
-        "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
-        "that exact name. A one-step request needs no plan.",
-      );
+      body.push(custom ?? PLAN_GUIDANCE_INTRO);
     } else if (open.length) {
-      body.push(
-        "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
-        "completed only once its work is actually verified, and drop or cancel what you are no",
-        "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
-      );
+      body.push(custom ?? PLAN_GUIDANCE_NATIVE);
     } else {
       // A native-frames backend with nothing to hand over: nothing worth saying.
       return null;
