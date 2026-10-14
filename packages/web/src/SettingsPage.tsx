@@ -122,9 +122,11 @@ interface Draft {
   hotwordsText: string;
 }
 
-/** Accent presets. The blue is the brand accent (assets/logo — the mark's nodes, #76BBDF),
- *  so the cockpit can be tinted to match its own logo; the rest are just variety. */
-const ACCENTS = ["#ffb454", "#76bbdf", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
+/** Accent presets. #4aacdf is the DEFAULT (theme.css `:root --accent`), so it is offered first and
+ *  reachable after a custom colour; #76bbdf is the brand accent (assets/logo — the mark's nodes), so
+ *  the cockpit can be tinted to match its own logo. The amber stays as a preset on purpose: an
+ *  operator who liked the old default must be able to pick it back. Rest are variety. */
+const ACCENTS = ["#4aacdf", "#ffb454", "#76bbdf", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
 
 function draftOf(v: SettingsView): Draft {
   return {
@@ -527,7 +529,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
               <input
                 type="color"
                 className="set-color"
-                value={theme.accent || "#ffb454"}
+                value={theme.accent || "#4aacdf"}
                 onChange={(e) => void pickTheme({ ...theme, accent: e.target.value })}
                 aria-label="custom accent"
               />

@@ -45,7 +45,7 @@ const setViewport = async (W, H) => {
   await sleep(450);
 };
 await send("Page.enable"); await send("Runtime.enable");
-const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`, { method: "PUT" }).catch(() => {}); };
+const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`).catch(() => {}); };
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
@@ -55,6 +55,10 @@ try {
   // directory and hides the picker — that path is rail-sweep's business, not this suite's).
   const dev = await ev(`fetch('/api/version',{cache:'no-store'}).then(r=>r.json()).then(j=>Boolean(j.dev))`);
   console.log(`      instance dev=${dev}  base=${BASE}`);
+  // What the instance already held, so this run can put it back exactly as found — the start-page
+  // block below creates sessions (and purges them).
+  const preexisting = await ev(`fetch('/api/sessions', { cache: 'no-store' }).then(r => r.json())
+    .then(j => [...(j.live ?? []), ...(j.cold ?? []), ...(j.archived ?? [])].map((s) => s.id))`);
   await setViewport(1440, 900);
   await ev(`document.querySelector('.new-btn')?.click()`);
   await sleep(1200);
@@ -165,9 +169,23 @@ try {
 
   check("the chosen path is shown in exactly one place (the field)", phone.dupes.length === 0 && phone.fieldValue.startsWith("/"),
     `dupes=${JSON.stringify(phone.dupes)} field=${phone.fieldValue}`);
-  check("a fresh form arrives with a real directory chosen (no empty field, no dead launch button)",
-    phone.fieldValue.startsWith("/") && phone.goEnabled === true,
-    `field=${phone.fieldValue} go=${phone.goEnabled}`);
+  check("a fresh form arrives with a real directory chosen (no empty field)",
+    phone.fieldValue.startsWith("/"), `field=${phone.fieldValue}`);
+  // The surface leads with the MESSAGE now (issue #1): a composer on top, the picks under it, and
+  // Enter creates. Which makes the empty box the one state where the button must NOT be pressable —
+  // there would be nothing to hand the agent.
+  const startBox = await ev(`(() => {
+    const m = document.querySelector('.modal');
+    const box = m?.querySelector('.start-input');
+    const go = m?.querySelector('.row .go');
+    return { hasBox: Boolean(box), boxOnTop: Boolean(box && m.querySelector('label') &&
+               (box.compareDocumentPosition(m.querySelector('label')) & Node.DOCUMENT_POSITION_FOLLOWING)),
+             emptyDisabled: Boolean(go && go.disabled), label: (go?.textContent ?? '').trim() };
+  })()`);
+  check("the message box is the FIRST control on the form", startBox.hasBox === true && startBox.boxOnTop === true,
+    JSON.stringify(startBox));
+  check("…and the message is REQUIRED: send is disabled while the box is empty",
+    startBox.emptyDisabled === true, JSON.stringify(startBox));
   check("the two extra path strips are gone (no breadcrumbs, no bottom line)",
     phone.legacyPicked === false && phone.legacyCrumbs === false,
     `picked=${phone.legacyPicked} crumbs=${phone.legacyCrumbs}`);
@@ -196,8 +214,8 @@ try {
   check("on a desktop viewport the form still fits and the same three facts hold",
     desk.fitsScreen === true && desk.hasRuns === false && desk.dupes.length === 0 && desk.legacyPicked === false,
     JSON.stringify(desk.modal));
-  check("the desktop form is not taller than it needs to be (a phone-shaped dialog, ~1 column)",
-    desk.modal?.w <= 460, JSON.stringify(desk.modal));
+  check("the desktop form is not wider than it needs to be (one column, room for a message)",
+    desk.modal?.w <= 580, JSON.stringify(desk.modal));
 
   // ---- the picker still WORKS (a slimmed layout that cannot pick a folder is not an improvement) --
   const TYPED = "/Users/liang/Workspace";
@@ -241,6 +259,94 @@ try {
   await sleep(400);
   check("the dialog closes again (nothing left behind for the next run)",
     (await ev(`Boolean(document.querySelector('.modal'))`)) === false);
+
+  // ---- the START-PAGE contract: the row exists before the agent does (issue #1) ------------------
+  // The complaint was that 「新建会话」 held the request for the agent's whole handshake — 10–40 s on
+  // hermes — behind a busy dialog. The proof belongs at the API, where no browser timing can flatter
+  // it: the POST must answer with `starting`, and the slot must reach `ready` with nobody asking.
+  const started = Date.now();
+  const created = await ev(`(async () => {
+    const r = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) });
+    const j = await r.json();
+    return { http: r.status, status: j.status, id: j.id ?? null, acp: j.acpSessionId ?? null };
+  })()`);
+  const answeredIn = Date.now() - started;
+  check("POST /api/sessions answers while the slot is still coming up — status 'starting', not 'ready'",
+    created.http === 201 && created.status === "starting", `${JSON.stringify(created)} in ${answeredIn}ms`);
+  check("…and it carries no agent-side id yet (the agent has not spoken)",
+    created.acp === null, JSON.stringify(created));
+  const liveStatus = async () => ev(`fetch('/api/sessions', { cache: 'no-store' }).then(r => r.json())
+    .then(j => [...(j.live ?? []), ...(j.cold ?? [])].find((s) => s.id === ${JSON.stringify(created.id)})?.status ?? null)
+    .catch(() => null)`);
+  let came = null;
+  for (let i = 0; i < 48 && came !== "ready"; i++) { await sleep(250); came = await liveStatus(); }
+  check("the slot reaches 'ready' on its own (the server pushes it — the page asks for nothing)",
+    came === "ready", `status=${came}`);
+
+  // ---- a slot closed WHILE it was still coming up must stay wakeable ---------------------------------
+  // `create()` no longer waits for the handshake (that wait is the whole of issue #1), so the operator
+  // can close a slot before the agent has answered. The row still has to end up with the agent-side id
+  // the handshake found: without it `resume()` refuses the row outright (「was never handed to an
+  // agent」) and the transcript is stranded — a slot nobody can ever wake again.
+  const fly = await ev(`(async () => {
+    const c = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
+    if (!c.id) return { ok: false, why: 'create failed', c };
+    const del = await fetch('/api/sessions/' + c.id, { method: 'DELETE' }).then((r) => r.status);
+    const back = await fetch('/api/sessions/' + c.id + '/resume', { method: 'POST' });
+    const body = await back.json().catch(() => null);
+    return { ok: true, id: c.id, del, resume: back.status, acp: body?.acpSessionId ?? null };
+  })()`);
+  check("a slot closed WHILE it was starting still ends up carrying the agent-side id",
+    fly.ok === true && fly.del === 200 && fly.acp != null, JSON.stringify(fly));
+  check("…and can therefore be woken again (a row without that id is stranded forever)",
+    fly.resume === 200, JSON.stringify(fly));
+
+  // ---- the composer really creates: type, Enter, and the page is IN that session -----------------
+  const typed = await ev(`(async () => {
+    document.querySelector('.new-btn')?.click();
+    await new Promise((r) => setTimeout(r, 900));
+    const box = document.querySelector('.modal .start-input');
+    if (!box) return { ok: false, why: 'no first-message box' };
+    // React keeps its own value tracker: go through the prototype setter, which is what a keystroke does
+    const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value');
+    desc.set.call(box, 'QA start-page probe');
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    const go = document.querySelector('.modal .row .go');
+    const enabled = Boolean(go && !go.disabled);
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await new Promise((r) => setTimeout(r, 1500));
+    return { ok: true, enabled, closed: !document.querySelector('.modal'),
+             inStream: Boolean(document.querySelector('.stream-wrap')),
+             text: (document.querySelector('.modal')?.textContent ?? '').slice(0, 80) };
+  })()`);
+  check("typing a first message ENABLES the send button", typed.ok === true && typed.enabled === true, JSON.stringify(typed));
+  check("Enter creates the session and closes the start page (the page is now in that session)",
+    typed.closed === true && typed.inStream === true, JSON.stringify(typed));
+
+  // …and the message is not lost while the agent boots: it is in that session's queue, which drains
+  // on the `ready` frame. Read it from the store the same way the UI does.
+  let delivered = false;
+  for (let i = 0; i < 40 && !delivered; i++) {
+    await sleep(300);
+    delivered = await ev(`document.body.textContent.includes('QA start-page probe')`);
+  }
+  check("the first message shows up in that session (queued, then sent when the agent was up)",
+    delivered === true);
+
+  // leave the instance as it was found: purge exactly the sessions that did not exist at login
+  const purged = await ev(`(async () => {
+    const keep = new Set(${JSON.stringify(preexisting)});
+    const j = await fetch('/api/sessions', { cache: 'no-store' }).then((r) => r.json());
+    const mine = [...(j.live ?? []), ...(j.cold ?? []), ...(j.archived ?? [])].filter((s) => !keep.has(s.id));
+    let n = 0;
+    for (const s of mine) { const r = await fetch('/api/sessions/' + s.id, { method: 'DELETE' }); if (r.ok) n++; }
+    return { made: mine.length, purged: n, ids: mine.map((s) => s.id) };
+  })()`);
+  check("the run left nothing behind (every session it created was purged)",
+    purged.made === purged.purged, JSON.stringify(purged));
 } finally {
   await closeTab();
   ws.close();

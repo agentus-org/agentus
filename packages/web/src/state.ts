@@ -1223,20 +1223,33 @@ class Cockpit {
     this.bump();
   }
 
+  /** Create a session; returns as soon as the ROW exists (`status: "starting"`).
+   *
+   *  It used to hold the request open for the agent's whole handshake — hermes boots a python
+   *  process and answers `initialize` + `session/new` in 10–40 s, which is why this carried a 120 s
+   *  timeout and why the operator watched a busy dialog with nothing to read. The server now
+   *  answers while the slot is still coming up (`SessionManager.#startup` runs off the request), so
+   *  this is an ordinary call: the page opens the session, files the first message into its queue,
+   *  and the queue drains when `{t:"session"}` reports `ready` (see `case "session"` below).
+   *
+   *  Still no retry, for the original reason: a retry would spawn a second child for one click. */
   async createSession(backend: string, cwd: string, title: string): Promise<string> {
-    // spawning a real agent boots a python process (hermes: 10-40s) — long
-    // timeout, and NO retry: a retry would spawn a second child for one click
-    const body = await this.#req<SessionInfo>(
+    const info = await this.#req<SessionInfo>(
       "/api/sessions",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ backend, cwd, title: title || undefined }),
       },
-      { timeoutMs: 120_000, retry: false },
+      { retry: false },
     );
+    // Seed the view from the response so the page can draw the `starting` session before any WS
+    // frame about it arrives (the frame that carries `ready` does come — `#updateSession`).
+    const v = this.#view(info.id);
+    v.info = { ...v.info, ...info };
+    if (!this.sessions.some((s) => s.id === info.id)) this.sessions = [info, ...this.sessions];
     this.bump();
-    return body.id;
+    return info.id;
   }
 
   /** Pull the two ON-DISK lists: cold rows (no process, not archived) and the operator's archive.
@@ -1615,6 +1628,13 @@ class Cockpit {
         this.sessions = this.sessions.map((s) => (s.id === e.session.id ? e.session : s));
         if (!this.sessions.some((s) => s.id === e.session.id)) this.sessions.push(e.session);
         this.#view(e.session.id).info = e.session;
+        // A slot that just CAME UP may be holding a prompt filed before it could take one: the first
+        // message of a session being created (filed into the queue the moment the row existed, when
+        // the agent was still booting), or one filed while it was cold. Nothing else drains it — a
+        // freshly-started slot runs no turn to end. Same guards as the `sessions` case.
+        if (e.session.status === "ready" && this.#queues.get(e.session.id)?.length) {
+          this.drainQueue(e.session.id);
+        }
         break;
       }
       case "messages": {

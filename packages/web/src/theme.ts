@@ -19,7 +19,11 @@ export interface ThemeConfig {
 
 export const THEME_DEFAULT: ThemeConfig = { mode: "system", accent: "" };
 const KEY = "agentus.theme";
-const ACCENT_FALLBACK = "#ffb454";
+// The built-in default accent, mirrored from theme.css (`:root --accent`). It is only the
+// `--accent-rgb` fallback for the soft tints: the browser resolves `--accent` itself from the
+// stylesheet, per palette. Both palettes now use the same blue, so one triplet serves both — with
+// the old amber the light palette's `--accent` (#d98116) and this dark-leaning triplet disagreed.
+const ACCENT_FALLBACK = "#4aacdf";
 
 const listeners = new Set<() => void>();
 let current: ThemeConfig = readCache();
@@ -41,7 +45,7 @@ export function normalizeTheme(raw: unknown): ThemeConfig {
   return { mode, accent };
 }
 
-/** "#ffb454" -> "255, 180, 84" (for rgba() in the stylesheet), or null when not a hex. */
+/** "#4aacdf" -> "74, 172, 223" (for rgba() in the stylesheet), or null when not a hex. */
 export function hexToRgbTriplet(hex: string): string | null {
   const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.exec(String(hex ?? "").trim());
   if (!m) return null;
@@ -253,7 +257,7 @@ export function applyTheme(config: ThemeConfig): void {
     root.style.removeProperty("--accent-text");
     root.style.removeProperty("--accent-dim");
     root.style.removeProperty("--on-accent");
-    root.style.setProperty("--accent-rgb", hexToRgbTriplet(ACCENT_FALLBACK) ?? "255, 180, 84");
+    root.style.setProperty("--accent-rgb", hexToRgbTriplet(ACCENT_FALLBACK) ?? "74, 172, 223");
   }
   // native widgets (scrollbars, form controls, the caret) follow this
   root.style.colorScheme = config.mode === "system" ? "" : config.mode;

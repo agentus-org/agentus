@@ -22,9 +22,10 @@ import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import { usePaneWidth } from "./paneWidth";
+import { ansi16, ansiExtended } from "./terminalPalette";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
-  IconPlus, IconRefresh, IconSwap, IconTerminal,
+  IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSwap, IconTerminal,
 } from "./Icons";
 
 interface Entry {
@@ -53,6 +54,22 @@ export interface PanelTarget {
 /** The preview column's floor: the tree may not eat below this, or the file being read becomes a
  *  letterbox (the operator's original complaint about the preview's size). */
 const PREVIEW_MIN = 300;
+
+/* The two column-fold switches (see the state below). Their names say which key holds which. */
+const FOLD_TREE_KEY = "agentus.panel-tree-folded";
+const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
+
+/** A remembered on/off layout flag. Private mode has no localStorage, so folding then simply does
+ *  not stick — same `try` shape as `usePaneWidth` beside it. */
+function readFlag(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw == null ? fallback : raw === "1";
+  } catch { return fallback; }
+}
+function writeFlag(key: string, on: boolean): void {
+  try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* private mode */ }
+}
 
 function humanSize(bytes?: number): string {
   if (bytes == null) return "";
@@ -93,6 +110,29 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   const [error, setError] = useState("");
   const [target, setTarget] = useState<PanelTarget | null>(null);
   const [loading, setLoading] = useState(false);
+  /* Each column folds on its own — the reference does (AionUi's ProjectPanelHost dismisses the
+   * explorer and the preview independently), and before this the only way to give the preview the
+   * full panel was to drag the tree down to its 220px floor, which still left it on screen.
+   *
+   * Remembered in localStorage exactly like the panel width and the explorer width beside it:
+   * folding is a LAYOUT preference (one choice, the same in every session), not a per-file one.
+   * They cannot BOTH be down — the panel would be an empty box with nothing on screen offering a
+   * way back — so folding one unfolds the other. */
+  const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
+  const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
+
+  const foldTree = (next?: boolean): void => {
+    const v0 = next ?? !treeFolded;
+    setTreeFolded(v0);
+    writeFlag(FOLD_TREE_KEY, v0);
+    if (v0 && previewFolded) { setPreviewFolded(false); writeFlag(FOLD_PREVIEW_KEY, false); }
+  };
+  const foldPreview = (next?: boolean): void => {
+    const v0 = next ?? !previewFolded;
+    setPreviewFolded(v0);
+    writeFlag(FOLD_PREVIEW_KEY, v0);
+    if (v0 && treeFolded) { setTreeFolded(false); writeFlag(FOLD_TREE_KEY, false); }
+  };
 
   // Switching slots re-roots the panel: the tree belongs to the slot's workspace.
   useEffect(() => {
@@ -107,6 +147,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     if (!focus) return;
     setTab("files");
     setTarget(focus);
+    foldPreview(false);
     const dir = focus.path.replace(/\/[^/]*$/, "") || "/";
     setPath(dir);
   }, [focus]);
@@ -133,6 +174,9 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       return;
     }
     setTarget({ path: entry.path });
+    // Clicking a file is a request to READ it: a folded preview unfolds (otherwise the click
+    // silently does nothing visible, which is the bug this column pair is meant to remove).
+    foldPreview(false);
   };
 
   // Breadcrumbs are relative to the workspace root when we are inside it: absolute
@@ -177,6 +221,29 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
           <IconTerminal size={14} /> terminal
         </button>
         <span className="head-spacer" />
+        {tab === "files" ? (
+          <>
+            <button
+              className={`icon-btn ${target && !previewFolded ? "on" : ""}`}
+              disabled={!target}
+              title={previewFolded || !target ? "展开预览列" : "收起预览列"}
+              aria-label="toggle the preview column"
+              aria-pressed={Boolean(target) && !previewFolded}
+              onClick={() => foldPreview()}
+            >
+              <IconPanelLeft size={15} />
+            </button>
+            <button
+              className={`icon-btn ${treeFolded ? "" : "on"}`}
+              title={treeFolded ? "展开文件树" : "收起文件树"}
+              aria-label="toggle the file tree column"
+              aria-pressed={!treeFolded}
+              onClick={() => foldTree()}
+            >
+              <IconPanelRight size={15} />
+            </button>
+          </>
+        ) : null}
         <button
           className="icon-btn"
           title={`workspace: ${root}\nclick to point this session at another directory`}
@@ -197,7 +264,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
            the preview gets its own column beside the chat column, the tree keeps its own, and each has
            a draggable edge whenever both are on screen. On a phone (one pane at a time, see the
            ≤720px rules) opening a file replaces the tree and its own close button brings it back. */
-        <div className={`panel-split ${target ? "has-preview" : ""}`}>
+        <div className={`panel-split ${target ? "has-preview" : ""} ${treeFolded ? "tree-folded" : ""} ${previewFolded ? "preview-folded" : ""}`}>
           {target ? (
             <div className="preview-col">
               <FilePreviewPane path={target.path} line={target.line} onClose={() => setTarget(null)} />
@@ -271,23 +338,23 @@ type TermStatus = "connecting" | "ready" | "closed" | "error";
  *  The wire protocol is three messages: term-input (raw bytes up), term-data (raw bytes down),
  *  term-resize (cols/rows). Resizing matters as much as input: without it `vim` draws at 80x24
  *  forever. */
-const ANSI_16 = {
-  black: "#2e3436", red: "#cc0000", green: "#4e9a06", yellow: "#c4a000",
-  blue: "#3465a4", magenta: "#75507b", cyan: "#06989a", white: "#d3d7cf",
-  brightBlack: "#555753", brightRed: "#ef2929", brightGreen: "#8ae234", brightYellow: "#fce94f",
-  brightBlue: "#729fcf", brightMagenta: "#ad7fa8", brightCyan: "#34e2e2", brightWhite: "#eeeeec",
-};
-
 /** The palette follows the cockpit's own theme tokens, so the terminal is not a foreign body in
- *  either palette. Read at construction time: the panel remounts when the terminal tab is opened. */
+ *  either palette. Read at construction time: the panel remounts when the terminal tab is opened.
+ *
+ *  The 16 ANSI colours come from `terminalPalette.ts` and are PER THEME: the dark panel paints
+ *  `--bg-1` #0e1518, on which the shared Tango palette's `black` sat at 1.5:1 and simply was not
+ *  there (ls output, diagnostics, diff context). `extendedAnsi` does the same job for the 256-
+ *  colour ramp, whose dark end has the identical problem on a dark background. */
 function terminalTheme(dark: boolean): ITheme {
   const cs = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string): string => cs.getPropertyValue(name).trim() || fallback;
   return dark
     ? { background: v("--bg-1", "#0e1518"), foreground: v("--text", "#e3ecf3"),
-        cursor: v("--accent", "#4aacdf"), selectionBackground: "rgba(74,172,223,0.30)", ...ANSI_16 }
+        cursor: v("--accent", "#4aacdf"), selectionBackground: "rgba(74,172,223,0.30)",
+        ...ansi16(true), extendedAnsi: ansiExtended(true) }
     : { background: v("--bg-1", "#ffffff"), foreground: v("--text", "#1c2735"),
-        cursor: v("--accent", "#2679a5"), selectionBackground: "rgba(38,121,165,0.25)", ...ANSI_16 };
+        cursor: v("--accent", "#2679a5"), selectionBackground: "rgba(38,121,165,0.25)",
+        ...ansi16(false), extendedAnsi: ansiExtended(false) };
 }
 
 /** Flow-control watermarks, in BYTES of output handed to xterm but not yet parsed.

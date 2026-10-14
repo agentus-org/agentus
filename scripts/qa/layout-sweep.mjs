@@ -17,7 +17,11 @@ const CDP = process.env.CDP_URL || 'http://127.0.0.1:9222';
 const PORT = Number(process.env.PORT || 8901);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const RAIL_KEYS = ['agentus.rail-width', 'agentus.panel-width', 'agentus.explorer-width'];
+// Every remembered layout key the suite leans on. The two fold flags belong here for the same
+// reason as the widths: they PERSIST by design, so a previous run hands this one whatever the panel
+// was left in — and 「the tree column is folded」 would then be measured as this run's behaviour.
+const RAIL_KEYS = ['agentus.rail-width', 'agentus.panel-width', 'agentus.explorer-width',
+  'agentus.panel-tree-folded', 'agentus.panel-preview-folded'];
 
 let pass = 0, fail = 0;
 const check = (ok, what, detail = '') => {
@@ -99,18 +103,49 @@ for (let i = 0; i < 60; i++) {
   if (await ev(`document.readyState === 'complete' && location.href.includes(':${PORT}')`)) break;
 }
 await sleep(1500);
-// a clean slate for the widths: these are the operator's, and a stale value would make "did the drag
-// work" ambiguous
+// a clean slate for the layout: these are the operator's, and a stale value would make both "did the
+// drag work" and "which column is folded" ambiguous
 await ev(`(() => { ${JSON.stringify(RAIL_KEYS)}.forEach((k) => localStorage.removeItem(k)); return true })()`);
 await ev('location.reload()');
 await sleep(3000);
 check(await until(`Boolean(document.querySelector('.sidebar .session-item'))`), 'the cockpit rendered with sessions');
 
-const sid = await ev(`(async () => { const me = await fetch('/api/auth/me',{credentials:'same-origin'}).then(r=>r.json());
-  if (!me.authenticated) return 'UNAUTHED';
-  const r = await fetch('/api/sessions',{credentials:'same-origin'}).then(r=>r.json());
-  const l = r.live || []; return (l[0] && l[0].id) || ''; })()`);
-check(sid && sid !== 'UNAUTHED', 'a live session to measure against', String(sid));
+// The suite measures a REAL conversation: the rail's colours are read off live session titles and the
+// bubble geometry off an operator turn. So it needs a slot that exists AND has a turn in it — and it
+// makes one when the instance has none (a dev box after other sweeps have cleaned up after themselves
+// is exactly that case: 「no .msg.user rows in this session」 made three checks unreadable rather than
+// failing honestly).
+const fixture = JSON.parse(await ev(`(async () => {
+  const me = await fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json());
+  if (!me.authenticated) return JSON.stringify({ sid: 'UNAUTHED', made: false });
+  const list = (p) => fetch(p, { cache: 'no-store', credentials: 'same-origin' }).then((r) => r.json());
+  const hasTurn = async (id) => {
+    const m = await list('/api/sessions/' + id + '/messages?tail=1').catch(() => null);
+    return Boolean(m && (m.messages || []).some((x) => x.kind === 'user'));
+  };
+  const now = await list('/api/sessions');
+  for (const s of (now.live || [])) if (await hasTurn(s.id)) return JSON.stringify({ sid: s.id, made: false });
+  // nothing suitable: build one, wait for its handshake, and give it a turn over the app's own socket
+  const c = await fetch('/api/sessions', { method: 'POST', credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
+  if (!c.id) return JSON.stringify({ sid: '', made: false, why: 'create failed' });
+  for (let i = 0; i < 80; i++) {
+    const l = await list('/api/sessions');
+    const s = (l.live || []).find((x) => x.id === c.id);
+    if (s && s.status === 'ready') break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/ws');
+  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; setTimeout(rej, 8000); });
+  ws.send(JSON.stringify({ t: 'prompt', sessionId: c.id, text: 'layout sweep fixture' }));
+  await new Promise((r) => setTimeout(r, 2500));
+  try { ws.close(); } catch { /* already gone */ }
+  return JSON.stringify({ sid: c.id, made: true });
+})()`));
+const sid = fixture.sid;
+check(sid && sid !== 'UNAUTHED', 'a live session with an operator turn to measure against',
+  `${sid}${fixture.made ? ' (created by this run)' : ''}${fixture.why ? ` — ${fixture.why}` : ''}`);
 await ev(`location.href = ${JSON.stringify(`${BASE}/?session=`)} + ${JSON.stringify(String(sid))}`);
 await sleep(3200);
 await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
@@ -423,6 +458,147 @@ console.log('== ⑧ a short row is not stretched, ⑨ the operator\'s own turns 
     const narrowest = Math.min(...m.user.bubbles.map((b) => b.w));
     check(narrowest < m.streamW - 40, 'a short turn does not stretch to the full width', `narrowest ${narrowest}px of ${m.streamW}px`);
     check(Math.max(...m.user.bubbles.map((b) => b.w)) <= m.streamW, 'and a long one never overflows the column');
+  }
+}
+
+// ------------------------------------------- each panel column folds on its own (issue #3)
+console.log('== ⑤c each column of the workspace panel folds on its own ==');
+{
+  const read = async () => JSON.parse(await ev(`(() => {
+    const box = (sel) => { const el = document.querySelector(sel); if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width), display: getComputedStyle(el).display }; };
+    const split = document.querySelector('.panel-split');
+    return JSON.stringify({
+      cls: split ? split.className : '',
+      splitW: split ? Math.round(split.getBoundingClientRect().width) : 0,
+      preview: box('.preview-col'), explorer: box('.explorer-col'),
+      toggles: [...document.querySelectorAll('.tool-tabs .icon-btn[aria-label^="toggle"]')]
+        .map((b) => b.getAttribute('aria-label') + '=' + (b.getAttribute('aria-pressed') === 'true')),
+    });
+  })()`));
+  const click = async (label) => {
+    await ev(`(() => { document.querySelector('.tool-tabs [aria-label=${JSON.stringify(label)}]')?.click(); return true; })()`);
+    await sleep(500);
+  };
+
+  check(await openPanel(), 'the panel is open for the fold check');
+  check(await openAFile(), 'with a file open (both columns are up)');
+  const both = await read();
+  check(both.toggles.length === 2, 'the toolbar carries one fold button per column', JSON.stringify(both.toggles));
+  check(both.preview && both.preview.display !== 'none' && both.explorer && both.explorer.display !== 'none',
+    '…and with a file open both columns really are on screen', JSON.stringify(both));
+
+  await click('toggle the file tree column');
+  const noTree = await read();
+  check(noTree.explorer === null || noTree.explorer.display === 'none',
+    'folding the FILE TREE takes that column off the screen', JSON.stringify(noTree.explorer));
+  check(noTree.preview && Math.abs(noTree.preview.w - noTree.splitW) <= 2,
+    '…and the preview gets the whole panel (what dragging could never reach)', `${noTree.preview?.w} vs ${noTree.splitW}`);
+
+  await click('toggle the preview column');
+  const noPreview = await read();
+  check(noPreview.preview === null || noPreview.preview.display === 'none',
+    'folding the PREVIEW takes that column off the screen', JSON.stringify(noPreview.preview));
+  check(noPreview.explorer && noPreview.explorer.display !== 'none',
+    '…and folding one column UNFOLDS the other (the panel is never an empty box nobody can escape)',
+    JSON.stringify(noPreview.explorer));
+
+  const stored = await ev(`JSON.stringify({ tree: localStorage.getItem('agentus.panel-tree-folded'),
+    preview: localStorage.getItem('agentus.panel-preview-folded') })`);
+  check(/"tree":"0"/.test(stored) && /"preview":"1"/.test(stored),
+    'the folds are remembered like the panel width beside them (a layout preference, in localStorage)', stored);
+
+  // Put it back the way the rest of the suite expects it. Each button is a TOGGLE, so "click the
+  // thing that looks folded" is the only safe move: drive it from the measured state until both
+  // columns are on screen (at most one click per column can be needed).
+  for (let i = 0; i < 3; i++) {
+    const st = await read();
+    const treeOpen = Boolean(st.explorer && st.explorer.display !== 'none');
+    const prevOpen = Boolean(st.preview && st.preview.display !== 'none');
+    if (treeOpen && prevOpen) break;
+    await click(treeOpen ? 'toggle the preview column' : 'toggle the file tree column');
+  }
+  const restored = await read();
+  check(restored.explorer && restored.explorer.display !== 'none'
+    && restored.preview && restored.preview.display !== 'none',
+    'both columns back on screen for the checks below', JSON.stringify(restored));
+}
+
+// ------------------------------------------- scrollbars stay out of the way
+console.log('== ⑤d the scrollbars are quiet until you use them ==');
+{
+  // The operator's report: 「滚动条很明显…感觉好宽啊」 on the session list and the transcript, while
+  // AionUi (Electron/macOS) looks bare — because those are OVERLAY bars. A browser cannot ask for that
+  // any more, so the equivalent is a thin, see-through track with a thumb that only shows on hover.
+  // Asserted on the RESOLVED pseudo-element style, which is the only place a browser will answer.
+  const bar = async (sel) => JSON.parse(await ev(`(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return JSON.stringify(null);
+    const cs = getComputedStyle(el, '::-webkit-scrollbar');
+    const th = getComputedStyle(el, '::-webkit-scrollbar-thumb');
+    const tr = getComputedStyle(el, '::-webkit-scrollbar-track');
+    const scrolls = el.scrollHeight > el.clientHeight + 2;
+    return JSON.stringify({ width: cs.width, thumb: th.backgroundColor, track: tr.backgroundColor, scrolls });
+  })()`));
+
+  const rail = await bar('.session-list');
+  const stream = await bar('.stream');
+  check(rail && stream, 'both scroll containers are on screen (rail list + transcript)',
+    JSON.stringify({ rail, stream }));
+  for (const [name, b] of [['session list', rail], ['transcript', stream]]) {
+    if (!b) continue;
+    const px = Number.parseFloat(b.width);
+    check(px > 0 && px <= 10, `${name}: the bar is thin (<=10px, was the platform default)`, `${b.width}`);
+    check(/rgba?\(0, 0, 0, 0\)|transparent/.test(b.thumb), `${name}: nothing is drawn while idle`, b.thumb);
+    check(/rgba?\(0, 0, 0, 0\)|transparent/.test(b.track), `${name}: the track is see-through, not a groove`, b.track);
+  }
+  // …and it becomes visible on hover, which is the half that keeps it usable (drag, "there is more").
+  const hoverThumb = await ev(`(() => {
+    // Read cssText, not the shorthand: the bundler rewrites '*:hover::-webkit-scrollbar-thumb' to
+    // ':hover::-webkit-scrollbar-thumb', and CSSOM reports an empty background for a shorthand whose
+    // value is a var() — so the property lookup would say "no rule" about a rule that is right there.
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch { continue; }
+      for (const r of rules) {
+        if (r.cssText && r.cssText.includes(':hover::-webkit-scrollbar-thumb')
+          && r.cssText.includes("scroll-thumb")) return true;
+      }
+    }
+    return false;
+  })()`);
+  check(hoverThumb === true, 'a hover rule reveals the thumb (so it can still be dragged)',
+    String(hoverThumb));
+  // Scrolling itself must be untouched. Hiding a bar is only cosmetic, so the test is that the box is
+  // still a real scroller (overflow-y: auto) AND that it actually moves whenever there is anything to
+  // move through — a transcript that happens not to overflow right now is not evidence of a bug.
+  const scrollable = JSON.parse(await ev(`(() => {
+    const out = {};
+    for (const [name, sel] of [['stream', '.stream'], ['rail', '.session-list']]) {
+      const el = document.querySelector(sel);
+      if (!el) { out[name] = null; continue; }
+      const before = el.scrollTop;
+      // Both directions: a transcript sitting at its tail clamps a +40 nudge (that is the whole point of
+      // the follow-the-stream behaviour), so "it did not move" there would be the wrong conclusion.
+      el.scrollTop = before + 40;
+      const movedDown = el.scrollTop !== before;
+      el.scrollTop = before - 40;
+      const movedUp = el.scrollTop !== before;
+      el.scrollTop = before;
+      out[name] = {
+        overflowY: getComputedStyle(el).overflowY,
+        overflows: el.scrollHeight > el.clientHeight + 2,
+        moved: movedDown || movedUp,
+        at: el.scrollTop,
+      };
+    }
+    return JSON.stringify(out);
+  })()`));
+  for (const [name, s] of Object.entries(scrollable)) {
+    if (!s) continue;
+    check(s.overflowY === 'auto', `${name}: still a scroll container (overflow-y: auto)`, s.overflowY);
+    check(!s.overflows || s.moved, `${name}: scrolls for real when there is more content`,
+      JSON.stringify(s));
   }
 }
 

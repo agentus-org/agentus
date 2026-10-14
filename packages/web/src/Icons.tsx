@@ -121,6 +121,15 @@ export const IconDot = (p: IconProps = {}): JSX.Element => svg(<circle cx="12" c
 export const IconPanel = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></>, p);
 
+/** The workspace panel's two columns, each foldable on its own: the frame with a rule marking the
+ *  column the button acts on. Left = the preview column, right = the file tree (the order the
+ *  panel actually draws them, chat | preview | explorer). */
+export const IconPanelLeft = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></>, p);
+
+export const IconPanelRight = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></>, p);
+
 /** one shell: a prompt inside a window */
 export const IconTerminal = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>, p);

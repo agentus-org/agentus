@@ -52,6 +52,8 @@
   "workspace-smoke": "node scripts/workspace-smoke.mjs",
   "voice-smoke": "node scripts/voice-smoke.mjs",
   "sentence-units": "tsx scripts/qa/sentence-units.mts",
+  "token-format": "tsx scripts/qa/token-format.mts",
+  "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
   "plan-service-sweep": "node scripts/qa/plan-service-sweep.mjs",
   "plan-mcp-sweep": "node scripts/qa/plan-mcp-sweep.mjs",
   "plan-v2-sweep": "tsx scripts/qa/plan-v2-sweep.mts",

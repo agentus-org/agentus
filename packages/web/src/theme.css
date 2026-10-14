@@ -1,4 +1,7 @@
-/* Agentus cockpit theme — original design, dark slate + amber track accents. */
+/* Agentus cockpit theme — original design, dark slate + a cool blue accent.
+   The blue is the default because an accent doubles as the SELECTION/LINK/STATUS colour and has to
+   get along with the terminal's own palette and the syntax colours: amber collided with the
+   「warning/waiting」 half of both. It is the same family as the terminal cursor (#4aacdf). */
 :root {
   --bg: #0c1116;
   --bg-panel: #121a22;
@@ -13,9 +16,12 @@
      secondary is #ced3da ≈ 11.6:1, its comment says "~11:1"; hermes-studio's is #a0a0a0 ≈ 6.7:1);
      this is the step that keeps a readable hierarchy under #e3ecf3 primary text. */
   --text-dim: #b6bec3;
-  --accent: #ffb454;
-  --accent-rgb: 255, 180, 84;
-  --accent-dim: #8a6230;
+  /* Default accent: a cool blue. 6.90:1 on the panel (#121a22) — it is also --accent-text here,
+     which is why the dark value has to be the LIGHT one. --accent-dim is the accent mixed 45%
+     toward black, the same rule theme.ts applies to a custom accent. */
+  --accent: #4aacdf;
+  --accent-rgb: 74, 172, 223;
+  --accent-dim: #295f7b;
   --ok: #4ec9a0;
   --err: #e57373;
   --err-rgb: 229, 115, 115;
@@ -30,12 +36,15 @@
   --code-line: rgba(255, 255, 255, 0.1);
   --chip-bg: #1e2b38;
   --on-accent: #101820;
-  /* Accent as TEXT needs a different value from accent as FILL: amber on a light surface
-     is ~2.7:1, which is why links and small accent labels were unreadable in light mode.
-     Fills keep --accent (their label is --on-accent). */
-  --accent-text: #ffb454;
+  /* Accent as TEXT needs a different value from accent as FILL: the blue fill on a light surface
+     is ~2.5:1, the same way amber was ~2.7:1, which is why links and small accent labels need a
+     darker variant. Fills keep --accent (their label is --on-accent). */
+  --accent-text: #4aacdf;
   --scrim: rgba(0, 0, 0, 0.55);
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  /* The scrollbar thumb, when it is shown at all — see the global rule near `box-sizing`. */
+  --scroll-thumb: rgba(255, 255, 255, 0.18);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.34);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 /* Theme: one token set per palette, nothing else in this file names a colour, so
@@ -51,9 +60,11 @@
   /* 9.42:1 on white, 8.09:1 on the hover surface — see the dark block for why the second step
      was needed (was #566475 = 6.10/5.19, then #424c57 = 8.74/7.50). */
   --text-dim: #3f4750;
-  --accent: #d98116;
-  --accent-rgb: 217, 129, 22;
-  --accent-dim: #e0b070;
+  /* The light palette keeps the FILL bright and puts the dark variant in --accent-text (#16659b,
+     6.23:1 on white) — exactly the shape #d98116/#9c5a08 had. The label on the fill stays dark. */
+  --accent: #4aacdf;
+  --accent-rgb: 74, 172, 223;
+  --accent-dim: #9bd1ed;
   --ok: #1f9d75;
   --err: #c2453f;
   --err-rgb: 194, 69, 63;
@@ -64,10 +75,12 @@
   --code-bar: rgba(255, 255, 255, 0.07);
   --code-line: rgba(255, 255, 255, 0.12);
   --chip-bg: #e8ecf2;
-  --accent-text: #9c5a08;
-  --on-accent: #1b1206;
+  --accent-text: #16659b;
+  --on-accent: #101820;
   --scrim: rgba(12, 17, 22, 0.42);
   --shadow: 0 18px 40px rgba(23, 36, 48, 0.18);
+  --scroll-thumb: rgba(12, 17, 22, 0.22);
+  --scroll-thumb-hover: rgba(12, 17, 22, 0.38);
 }
 /* follow the OS — only when the operator picked "system" (theme.ts writes data-theme).
    Kept in sync with the block above by hand: a media query cannot be merged into a
@@ -81,9 +94,9 @@
     --line: #d7dde6;
     --text: #1c2735;
     --text-dim: #3f4750;
-    --accent: #d98116;
-    --accent-rgb: 217, 129, 22;
-    --accent-dim: #e0b070;
+    --accent: #4aacdf;
+    --accent-rgb: 74, 172, 223;
+    --accent-dim: #9bd1ed;
     --ok: #1f9d75;
     --err: #c2453f;
   --err-rgb: 194, 69, 63;
@@ -94,13 +107,46 @@
   --code-bar: rgba(255, 255, 255, 0.07);
   --code-line: rgba(255, 255, 255, 0.12);
   --chip-bg: #e8ecf2;
-  --accent-text: #9c5a08;
-    --on-accent: #1b1206;
+  --accent-text: #16659b;
+    --on-accent: #101820;
     --scrim: rgba(12, 17, 22, 0.42);
     --shadow: 0 18px 40px rgba(23, 36, 48, 0.18);
+    --scroll-thumb: rgba(12, 17, 22, 0.22);
+    --scroll-thumb-hover: rgba(12, 17, 22, 0.38);
   }
 }
 * { box-sizing: border-box; }
+
+/* ---- scrollbars: quiet until you use them ------------------------------------------------------
+   The platform default on a machine set to 「always show scroll bars」 is a wide, permanent bar down
+   the rail and the transcript — a heavy border the design never asked for. AionUi looks bare because
+   it is Electron on macOS, where bars are OVERLAY: invisible until you actually scroll. A browser
+   cannot ask for that any more (`overflow: overlay` is gone), so this is the equivalent: a thin track
+   that is see-through, and a thumb that only appears while the pointer is over the scrolling area.
+
+   Not `display: none`: a scroll container with no affordance at all leaves a mouse user unable to
+   DRAG it and hides that there is more content above — the transcript and the rail both rely on that.
+
+   Only the `::-webkit-scrollbar` family is used, and deliberately nothing else: setting
+   `scrollbar-width` or `scrollbar-color` (even to `thin`) makes Chromium ignore these pseudo-elements
+   entirely. Firefox therefore keeps its own default bars. */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  /* `background-color`, NOT the `background` shorthand: the CSS bundler expands a shorthand and DROPS
+     a var() inside it (measured — `background: var(--scroll-thumb)` came out as an empty
+     background-color, so the thumb never appeared on hover at all). Longhands keep the reference.
+     transparent rather than `none`, so the space is reserved from the start and revealing the thumb
+     cannot shift the text under the pointer; the transparent border insets it into a thin pill. */
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+*:hover::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); }
+*::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+
 html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
@@ -142,6 +188,10 @@ button { font: inherit; }
    different in every browser). Pin it to the secondary token, opacity 1, so there is one answer. */
 .rail-search::placeholder { color: var(--text-dim); opacity: 1; }
 .load-earlier { display: flex; justify-content: center; margin-bottom: 10px; }
+/* The two states of that row while paging backwards: a pull in flight, and "no more history".
+   Both quiet and centred where the button was, so the top of the transcript is never a blank band
+   the reader reads as the beginning, and never a control offering something that is not there. */
+.load-earlier-busy, .load-earlier-end { font-size: 11px; color: var(--text-dim); line-height: 1.6; }
 /* cold-slot purge: quiet until you hover the row, then a clear ✕ */
 .cold-purge {
   margin-left: auto; background: transparent; border: 1px solid transparent;
@@ -845,6 +895,27 @@ code.inline {
   padding: 20px; width: 100%; max-width: 420px;
   max-height: calc(100dvh - 32px); overflow-y: auto;
 }
+/* The new-session surface leads with the MESSAGE, so it gets more room than a settings dialog:
+   one wide field on top, the picks under it (`StartPage`). */
+.modal.start-page { max-width: 560px; }
+.start-input {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 86px;
+  background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 10px; padding: 11px 12px; font: inherit; line-height: 1.5;
+}
+.start-input:focus { outline: none; border-color: var(--accent-dim); }
+/* A session whose agent is still booting — or failed to boot — shows its state where the first
+   message would appear, because an empty transcript reads as "it ate my message". */
+.start-hold {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--text-dim); font-size: 12.5px; padding: 22px 8px;
+}
+.start-fail {
+  border: 1px solid var(--err); border-radius: 10px; padding: 12px 14px; margin: 8px 0 12px;
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.start-fail-why { color: var(--err); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.start-fail-act { display: flex; gap: 8px; margin-top: 10px; }
 .modal h3 { margin: 0 0 14px; font-size: 16px; }
 .modal label { display: block; font-size: 12.5px; color: var(--text-dim); margin: 10px 0 4px; }
 .modal input, .modal select {
@@ -1103,6 +1174,14 @@ code.inline {
   display: flex; flex-direction: column; min-height: 0;
 }
 .panel-split:not(.has-preview) .explorer-col { width: 100%; }
+/* Each column folds on its own (the toolbar carries one button per column, left to right in the
+   order the panel draws them). A folded tree hands the preview the whole panel, and a folded
+   preview leaves the tree the whole panel — so `display: none` IS the rule, and the surviving
+   column's own `flex`/`width` does the rest. The tree's drag handle lives inside its column, so
+   it leaves with it (nothing to drag to a width that is not on screen). */
+.panel-split.tree-folded .explorer-col { display: none; }
+.panel-split.preview-folded .preview-col { display: none; }
+.panel-split.preview-folded .explorer-col { width: 100%; }
 
 /* ---- the drag handles (rail · workspace panel · file tree) ------------------------------
    A 12px hit area straddling the boundary with a 2px line inside it: the line is invisible until
@@ -2048,7 +2127,6 @@ body.pane-dragging * { cursor: col-resize !important; }
   overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 9px;
   border-top: 1px solid var(--line);
-  scrollbar-width: thin;
 }
 .call-hm { font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .call-hm-who {

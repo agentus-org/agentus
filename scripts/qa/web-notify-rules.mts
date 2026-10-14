@@ -13,6 +13,7 @@ import {
   sessionIdOf,
   shouldChime,
   shouldDrawNotice,
+  type SoundGate,
   type WebNotifyPrefs,
 } from "../../packages/web/src/webNotify";
 
@@ -31,6 +32,9 @@ const gate = (over: Partial<Parameters<typeof shouldDrawNotice>[0]> = {}) => ({
   ...over,
 });
 
+// The SOUND channel's gate is a different, much smaller thing on purpose — see the block below.
+const sound = (over: Partial<SoundGate> = {}): SoundGate => ({ enabled: true, hidden: true, ...over });
+
 // ---- drawing: every condition the page can check, and the one it must not skip
 check("a granted, enabled, backgrounded tab draws", shouldDrawNotice(gate()));
 check("a FOREGROUND tab does not (the page is the notification)", !shouldDrawNotice(gate({ hidden: false })));
@@ -40,20 +44,37 @@ check("the device's own switch off ⇒ nothing", !shouldDrawNotice(gate({ enable
 check("no Notification API (Android WebView) ⇒ nothing", !shouldDrawNotice(gate({ available: false })));
 check("an insecure origin (http://LAN-IP) ⇒ nothing", !shouldDrawNotice(gate({ available: false })));
 
-// ---- sound: three ways to decide not to make a noise, and one to decide to
+// ---- sound: its OWN gate, independent of the notification channel ------------------------------
 const prefs = (over: Partial<WebNotifyPrefs> = {}): WebNotifyPrefs => ({ ...WEB_NOTIFY_DEFAULT, sound: "chime", ...over });
-check("chosen chime + real event ⇒ chime", shouldChime(prefs(), "agent_done", false));
-check("an approval gets one too", shouldChime(prefs(), "approval", false));
-check("a failed turn gets one", shouldChime(prefs(), "error", false));
-check("a 「运行中」 status line never chimes", !shouldChime(prefs(), "agent_running", false));
-check("silent means silent", !shouldChime(prefs({ sound: "silent" }), "agent_done", false));
-check("the platform's own tone is not ours to add to", !shouldChime(prefs({ sound: "default" }), "agent_done", false));
-check("a live call mutes the chime (the mic is open)", !shouldChime(prefs(), "agent_done", true));
-check("…even for an approval", !shouldChime(prefs(), "approval", true));
+check("chosen chime + real event ⇒ chime", shouldChime(prefs(), "agent_done", sound(), false));
+check("an approval gets one too", shouldChime(prefs(), "approval", sound(), false));
+check("a failed turn gets one", shouldChime(prefs(), "error", sound(), false));
+check("a 「运行中」 status line never chimes", !shouldChime(prefs(), "agent_running", sound(), false));
+check("silent means silent", !shouldChime(prefs({ sound: "silent" }), "agent_done", sound(), false));
+check("the platform's own tone is not ours to add to", !shouldChime(prefs({ sound: "default" }), "agent_done", sound(), false));
+check("a live call mutes the chime (the mic is open)", !shouldChime(prefs(), "agent_done", sound(), true));
+check("…even for an approval", !shouldChime(prefs(), "approval", sound(), true));
+check("the device's own switch off ⇒ no tone", !shouldChime(prefs(), "agent_done", sound({ enabled: false }), false));
+check("looking at the page ⇒ no tone (「正在看就不打扰」)", !shouldChime(prefs(), "agent_done", sound({ hidden: false }), false));
+check("…and that holds for an approval too", !shouldChime(prefs(), "approval", sound({ hidden: false }), false));
+
+// The whole point of the split (issue #7): the tone must not be reachable-or-not depending on the
+// notification channel. `shouldChime` cannot even SEE the permission, the API's presence or the draw
+// result — its gate has two fields — so these are asserted as the *shape* of the gate, which is what
+// makes the independence structural rather than a promise in a comment.
+check("the sound gate has exactly two fields — no permission/availability can leak into it",
+  Object.keys(sound()).sort().join(",") === "enabled,hidden", Object.keys(sound()).join(","));
+// The issue's own acceptance test, as a pure-logic statement: with the site's notifications DENIED the
+// banner is gone and the tone still fires. This is the difference the round is about.
+check("notifications denied ⇒ no banner, but the turn is still HEARD",
+  shouldDrawNotice(gate({ permission: "denied" })) === false
+  && shouldChime(prefs(), "agent_done", sound(), false) === true);
 
 // ---- the two chimes: a decision waiting on a human is worth more than a finished turn
 check("an approval is the two-tone chime", chimeIsDouble("approval"));
 check("a finished turn is the single tone", !chimeIsDouble("agent_done"));
+check("a FAILED turn also wears the interruptive tone (it wants him back)", chimeIsDouble("error"));
+check("a 「运行中」 status line is not even a single tone", !chimeIsDouble("agent_running"));
 
 // ---- the tap target: the same `?session=` the phone's card carries
 check("session id is read off the notice's open target", sessionIdOf("/?session=abc123") === "abc123");
@@ -63,7 +84,10 @@ check("a malformed target does not throw", sessionIdOf("::::") === null);
 
 // ---- defaults: on, and quiet until the operator asks for something else
 check("defaults: the channel is on", WEB_NOTIFY_DEFAULT.on);
-check("defaults: the platform's own tone (nobody gets a surprise chime)", WEB_NOTIFY_DEFAULT.sound === "default");
+// Was `default` (hand the tone to the OS). That is silent whenever the system banner is dropped or the
+// site's notification permission is off — the exact setups where the operator walked away and needs to
+// hear the turn finish — so the page's own chime is the default now.
+check("defaults: our own chime, not the platform's tone", WEB_NOTIFY_DEFAULT.sound === "chime");
 
 console.log(`\n${pass}/${pass + fail} passed`);
 process.exit(fail ? 1 : 0);

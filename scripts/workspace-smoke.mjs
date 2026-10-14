@@ -156,11 +156,36 @@ try {
   check("fs/* refuses an anonymous caller", (await fetch(`${base}/api/fs/file?path=${encodeURIComponent(root)}`)).status === 401);
 
   // ---- the slot's workspace ------------------------------------------------------
+  /** Wait for a just-created slot's HANDSHAKE, and hand back its current row.
+   *
+   *  `POST /api/sessions` answers as soon as the ROW exists (issue #1: 「新建会话」 must not be held
+   *  hostage by the agent's 10–40 s boot), so the response carries `status:"starting"`, a live pid and
+   *  no agent-side id yet. Everything below that drives the SLOT — fork, set-model, resume — has to
+   *  wait for the handshake to land, or the server rightly answers 409 「session not ready」. Reading
+   *  the create response as if it were the finished slot is what this wait replaces. */
+  const settled = async (id, ms = 25000) => {
+    const until = Date.now() + ms;
+    let last = null;
+    while (Date.now() < until) {
+      const list = await j(await fetch(`${base}/api/sessions`, { headers: H }));
+      last = [...(list.live ?? []), ...(list.cold ?? []), ...(list.archived ?? [])].find((s) => s.id === id) ?? null;
+      if (last && last.status !== "starting") return last;
+      await sleep(80);
+    }
+    return last;
+  };
+
   const created = await j(await fetch(`${base}/api/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json", ...H },
     body: JSON.stringify({ backend: "mock", cwd: ROOT }),
   }));
+  check("a new slot is usable while the agent is still booting (it answers `starting`, with a pid)",
+    created.status === "starting" && created.pid > 0 && !created.acpSessionId,
+    `status=${created.status} pid=${created.pid} acp=${created.acpSessionId}`);
+  Object.assign(created, await settled(created.id) ?? {});
+  check("…and the handshake lands on its own, with no second request",
+    created.status === "ready" && Boolean(created.acpSessionId), `status=${created.status} acp=${created.acpSessionId}`);
   check("created a session with no workspace override", created.workspace === null || created.workspace === undefined, String(created.workspace));
   const setWs = await j(await fetch(`${base}/api/sessions/${created.id}/workspace`, {
     method: "POST",
@@ -422,6 +447,9 @@ try {
     body: JSON.stringify({ backend: "qa-home", cwd: ROOT }),
   }));
   check("a session on it starts", Boolean(probe.id) && probe.pid > 0, `${probe.id} pid=${probe.pid}`);
+  // Same wait as above — and it matters twice here: the closing DELETE below now lets the handshake
+  // land before it kills (so the row keeps the agent-side id), and this check compares that id later.
+  Object.assign(probe, await settled(probe.id) ?? {});
   check("closing it leaves a cold slot",
     (await fetch(`${base}/api/sessions/${probe.id}`, { method: "DELETE", headers: H })).status === 200);
 

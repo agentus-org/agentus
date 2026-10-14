@@ -27,5 +27,9 @@ jobs:
       - run: npm run voice-smoke
       # the reader's utterance rule is pure text logic: unit-checked, no browser
       - run: npm run sentence-units
+      # token counts are formatted in binary units (1024) — the 512K preset must read 512k
+      - run: npm run token-format
+      # the terminal's ANSI palettes are per theme, judged against their own background
+      - run: npm run terminal-palette
       # (the tls-smoke step is gone with the in-process TLS listener it tested —
       #  it was dropped from the source, and CI kept calling a script that no longer exists)

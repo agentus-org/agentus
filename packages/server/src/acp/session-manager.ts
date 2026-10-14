@@ -108,6 +108,14 @@ const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTUS_TITLE_TIMEOUT_MS || 90_
 // (an agent that ignores session/cancel must not hang the operator's next sentence forever).
 const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTUS_SETTLE_TIMEOUT_MS || 15_000);
 
+/** How long a close/archive waits for a slot's in-flight handshake before killing it anyway.
+ *
+ *  `#stop` waits because the agent-side session id only exists once the handshake lands, and a row
+ *  closed without it can never be resumed (see `#stop`). The wait is bounded so a spawn that never
+ *  answers cannot hold the operator's click open forever: past this, the slot closes with whatever it
+ *  has — a broken agent is not made worse by a row we cannot wake. */
+const CLOSE_STARTUP_WAIT_MS = Number(process.env.AGENTUS_CLOSE_WAIT_MS || 30_000);
+
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
  *
  *  Resuming has to *ask* the agent: `session/load` is "do you still have this session?", and the
@@ -159,6 +167,14 @@ interface LiveSession {
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
   turnSeq: number;
+  /** The spawn-time handshake, while it is still running.
+   *
+   *  `create()` no longer waits for it (that wait is what made 「新建会话」 feel broken), so the slot
+   *  exists — and can be closed, archived or reaped — before the agent has answered. This handle is
+   *  how the teardown waits for the one thing only the handshake can tell us: the agent-side session
+   *  id. Killing the child before it arrives leaves a row with `acpSessionId: null` that `resume()`
+   *  refuses forever (「was never handed to an agent」) — see `#stop`. */
+  startup?: Promise<void>;
   /** When the operator last USED this slot — he opened it, or his page reported it as the one on
    *  screen. In memory on purpose: this is the half of the idle rule that says "he was just here",
    *  and the store's message clock (which survives restarts) is the other half. Reading only the
@@ -417,6 +433,33 @@ export class SessionManager {
     });
     child.on("exit", (code, sig) => this.#onChildExit(live, code, sig));
 
+    // The row is complete and already persisted with `status: "starting"` — hand it back to the
+    // caller NOW and let the handshake finish OFF the request. See `#startup`.
+    // Kept on the slot (not dropped with `void`) so a close during the window can wait for the
+    // agent-side id instead of orphaning the session — see `#stop`.
+    live.startup = this.#startup(live, backend, spec, cwd, spawnStarted);
+    void live.startup.catch(() => {}); // `#startup` reports failure on the slot; nobody is awaiting
+    return live.info;
+  }
+
+  /** The spawn-time handshake — `initialize` + `newSession` + the row's default permission mode.
+   *
+   *  Deliberately NOT awaited by `create()`. Holding the HTTP response open for the whole handshake
+   *  is what made 「新建会话」 feel broken: hermes boots a python process and answers in 10–40 s, the
+   *  page sat on a busy dialog with no progress to show and a 120 s timeout behind it (measured; the
+   *  old `state.ts` comment said so in as many words). The row is born `starting` — the rail can
+   *  draw it, the page can open it and file the first message — and when this resolves,
+   *  `#updateSession` broadcasts `ready`, which is also the signal the client drains that queued
+   *  first message on (`state.ts`, `case "session"`).
+   *
+   *  Failure is reported INSIDE the session, never to a caller that has long since answered: the
+   *  status goes `error` with `lastError` (the reason + the agent's stderr tail, delivered while the
+   *  slot is still in the live map so the frame carries it), then the slot is dropped and the row is
+   *  closed. That is what makes 「启动失败 → 因为什么 → 再试一次」 possible at all. */
+  async #startup(live: LiveSession, backend: BackendId, spec: BackendSpec, cwd: string, spawnStarted: number): Promise<void> {
+    const id = live.info.id;
+    const child = live.child;
+    if (!child) return; // the slot was torn down between `create()` returning and this line
     try {
       const conn = new ClientSideConnection(
         () => ({
@@ -458,18 +501,19 @@ export class SessionManager {
       // this method — that is exactly what keeps a per-session pick from being silently undone.
       await this.#applyDefaultMode(live);
       this.#updateSession(live);
-      return live.info;
     } catch (err) {
       child.kill("SIGKILL");
       live.info.status = "error";
       live.info.lastError = errMessage(err) + stderrTail(live);
-      this.#sessions.delete(id); // failed handshake => don't keep zombie session rows
+      // Announce the failure WHILE the slot is still live: `{t:"session"}` is the only frame that
+      // carries `lastError`, and the page needs it to say why nothing came up.
+      this.#updateSession(live);
+      this.#sessions.delete(id); // failed handshake => don't keep a zombie slot
       this.#store.upsertSession({ ...sessionRow(live.info), closedAt: Date.now() });
       this.#noteBackendCheck(String(backend), {
         ok: false, error: live.info.lastError, errorCode: classifyError(err),
         latencyMs: Date.now() - spawnStarted,
       });
-      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
@@ -1230,7 +1274,10 @@ export class SessionManager {
 
   async closeSession(sessionId: string): Promise<void> {
     const s = this.#need(sessionId);
-    this.#stop(s, "closed");
+    // Awaited, not fired and forgotten: the row has to be settled (and carry the agent-side id) by the
+    // time the DELETE that asked for this answers, or the page loads a slot the store still calls
+    // `starting`.
+    await this.#stop(s, "closed");
     this.#emitSessions();
   }
 
@@ -1245,7 +1292,7 @@ export class SessionManager {
     const live = this.#sessions.get(id);
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`no such session: ${id}`);
-    if (on && live) this.#stop(live, "archived");
+    if (on && live) await this.#stop(live, "archived");
     this.#store.setArchived(id, on ? Date.now() : null);
     this.#emitSessions();
     return this.#sessions.get(id)?.info ?? this.#coldInfo(id);
@@ -1257,11 +1304,30 @@ export class SessionManager {
    *  `reaped` is its own status on purpose — 「它怎么变冷了」 has three different answers (I closed
    *  it / it crashed / the cockpit reclaimed it for being idle) and a rail that shows one word for
    *  all three teaches the operator to distrust the column. */
-  #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): void {
+  async #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): Promise<void> {
     this.#dropPending(live);
-    live.child?.kill("SIGTERM");
-    live.info.status = why === "reaped" ? "reaped" : "closed";
+    // A slot can be closed while its handshake is still in flight — `create()` no longer waits for it
+    // (see there). Killing the child on the spot was WRONG in a way the operator would eventually hit:
+    // the agent had already created a session, but the row was written with `acpSessionId: null`, and
+    // `resume()` refuses such a row outright (「was never handed to an agent」) — the slot became a
+    // transcript nobody could ever wake again. So let the startup land first: it is the only thing that
+    // knows the agent-side id, and the child it spawned is the one really there to kill.
+    //
+    // The slot stays in the live map for the duration, on purpose: the child IS alive and about to be
+    // `ready`, and calling it cold while it boots is the mirror-image lie (a cold row that wakes up by
+    // itself). The wait is bounded — see `CLOSE_STARTUP_WAIT_MS`.
+    if (live.startup && live.info.status === "starting") {
+      await Promise.race([
+        live.startup.catch(() => {}),
+        new Promise<void>((r) => { setTimeout(r, CLOSE_STARTUP_WAIT_MS).unref?.(); }),
+      ]);
+    }
+    // Applied LAST, and only over a non-terminal status: `#startup` writes `ready` when the handshake
+    // lands and `error` (with `lastError`) when it fails — and a handshake that failed on its own has a
+    // better answer than 「closed」, so it keeps it.
+    if (live.info.status !== "error") live.info.status = why === "reaped" ? "reaped" : "closed";
     live.info.pid = null;
+    live.child?.kill("SIGTERM");
     const row = this.#store.getSession(live.info.id);
     if (row) {
       this.#store.upsertSession({
@@ -1382,7 +1448,9 @@ export class SessionManager {
             `[agentus] idle reap: ${s.info.id} (${Math.round(age / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
           );
         }
-        this.#stop(s, "reaped");
+        // Fire and forget: the reaper skips `starting` slots, so there is no in-flight handshake to
+        // wait for here and nothing downstream needs the row settled in this tick.
+        void this.#stop(s, "reaped");
         reaped += 1;
       }
       // Only speak when something changed: a frame every tick would be noise on the socket (and on

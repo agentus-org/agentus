@@ -35,7 +35,11 @@ export interface WebNotifyPrefs {
 }
 
 export const WEB_NOTIFY_KEY = "agentus.webnotify";
-export const WEB_NOTIFY_DEFAULT: WebNotifyPrefs = { on: true, sound: "default", volume: 0.6 };
+// `chime`, not `default`: handing the tone to the platform is silent on exactly the setups that
+// matter — a system banner the OS drops (专注模式 / notification-centre settings) or a site whose
+// notification permission is off takes the platform's tone with it, and the turn finishes in silence.
+// The page's own chime is the only feedback we can actually guarantee (AionUi made the same call).
+export const WEB_NOTIFY_DEFAULT: WebNotifyPrefs = { on: true, sound: "chime", volume: 0.6 };
 
 export type Availability = "ok" | "no-api" | "insecure";
 export type PermissionState = NotificationPermission | "unavailable";
@@ -70,23 +74,49 @@ export function shouldDrawNotice(g: NoticeGate): boolean {
 }
 
 /**
+ * The SOUND channel's own gate — two fields, and that is the point.
+ *
+ * Nothing about the notification channel belongs in here: not whether `Notification` exists, not the
+ * permission, not whether a card was actually drawn. Those are the questions that make the banner
+ * unreliable (a system banner can be dropped by the OS or switched off for the site), and the tone was
+ * previously hung off them — so the page went completely silent at exactly the moment the operator had
+ * walked away and needed to hear something. (AionUi's `completionSound.ts` opens with the same rule:
+ * "Deliberately independent from the browser Notification API".)
+ */
+export interface SoundGate {
+  /** This device's own switch. */
+  enabled: boolean;
+  /** The tab is in the background. */
+  hidden: boolean;
+}
+
+/**
  * Should the page make its own sound?
  *
- * Three rules, all deliberate: the operator asked for `chime`; a voice call is not live (the call's
+ * Four rules, all deliberate: the operator asked for `chime`; a voice call is not live (the call's
  * capture is a plain microphone with no echo cancellation, so a tone goes straight into the very
  * audio the agent is listening to — the same reason the phone channel goes quiet, on this machine);
- * and the event is one worth hearing. A "still running" card is a status line, and a status line that
- * dings is noise.
+ * he is NOT looking at the page (「正在看就不打扰」 is the whole reason the channel exists); and the
+ * event is one worth hearing. A "still running" card is a status line, and a status line that dings is
+ * noise.
  */
-export function shouldChime(prefs: WebNotifyPrefs, kind: WebNotice["kind"], callLive: boolean): boolean {
+export function shouldChime(
+  prefs: WebNotifyPrefs,
+  kind: WebNotice["kind"],
+  gate: SoundGate,
+  callLive: boolean,
+): boolean {
   if (prefs.sound !== "chime" || callLive) return false;
+  if (!gate.enabled || !gate.hidden) return false;
   return kind === "approval" || kind === "agent_done" || kind === "error";
 }
 
-/** Which of the two chimes a kind gets: a decision waiting on a human is worth two tones, a finished
- *  turn one. (The same asymmetry the phone channel has between 权限请求 and 任务完成.) */
+/** Which of the two chimes a kind gets: something that wants the operator — a decision waiting on a
+ *  human, or a turn that died — is worth two tones, a clean finish one. (The same asymmetry the phone
+ *  channel has between 权限请求 and 任务完成; a failure wears the interruptive tone because it is the
+ *  one case where waiting for him to come back on his own is the wrong default.) */
 export function chimeIsDouble(kind: WebNotice["kind"]): boolean {
-  return kind === "approval";
+  return kind === "approval" || kind === "error";
 }
 
 /** `/?session=<id>` (what the server sends) -> the id, or null when the target says nothing. */
@@ -362,14 +392,22 @@ class WebNotify {
       enabled: this.#prefs.on,
       hidden: typeof document === "undefined" ? false : document.hidden,
     };
+    // The SOUND goes first, before any drawing decision — it is the channel that survives a system
+    // banner being dropped or the site's notification permission being off, so it must not sit behind
+    // `shouldDrawNotice`'s four gates (that placement is what made a finished turn completely silent
+    // whenever the OS ate the banner). Its own gate is `SoundGate`: switch on + tab hidden.
+    const sound: SoundGate = {
+      enabled: this.#prefs.on,
+      hidden: typeof document === "undefined" ? false : document.hidden,
+    };
+    if (shouldChime(this.#prefs, notice.kind, sound, isCallActive())) {
+      playChime(this.#prefs.volume, chimeIsDouble(notice.kind));
+    }
     if (!shouldDrawNotice(gate)) return;
     void draw(notice, this.#prefs).then((ok) => {
       this.#last = { title: notice.title, at: Date.now(), drawn: ok };
       this.#publish();
     });
-    if (shouldChime(this.#prefs, notice.kind, isCallActive())) {
-      playChime(this.#prefs.volume, chimeIsDouble(notice.kind));
-    }
   }
 
   /** 发一条测试通知: the same drawing path as a real one, minus the "is the tab hidden" gate — the
@@ -380,7 +418,12 @@ class WebNotify {
     unlockChime();
     const notice: WebNotice = {
       op: "upsert",
-      noticeId: "test:manual",
+      // A FRESH id every press, on purpose: the noticeId is the Notification `tag`, and a repeated
+      // tag is a silent REPLACE of a card the operator has usually already swiped away — the banner
+      // does not come back, the settings card still reports 「已交给系统」, and the whole channel looks
+      // broken. A test that cannot be repeated is not a test. (Real turn notices keep their
+      // session-scoped tag — `done:<sessionId>` — because there replacing IS the intent.)
+      noticeId: `test:${Date.now()}`,
       kind: "agent_done",
       title: "测试通知",
       body: "这条通知能弹出来，就说明这台设备没问题",

@@ -169,7 +169,30 @@ for (const mode of ["dark", "light"]) {
     `${accentSat} vs ${dimSat} = ${(accentSat - dimSat).toFixed(2)}`);
 }
 
-console.log("-- dark, built-in amber (the default must not regress) --");
+// The built-in default is a blue now (issue #5). What a device with NO stored theme — a first visit,
+// the login page before any JS — actually paints is the stylesheet's own `:root --accent`, so that is
+// what gets asserted here; the token is then exercised for real through the operator's blue below.
+{
+  const cssDefault = JSON.parse(await ev(`(() => {
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = sheet.cssRules; } catch { continue; }
+      for (const r of rules) {
+        if (r.selectorText === ':root' && r.style.getPropertyValue('--accent')) {
+          return JSON.stringify({
+            accent: r.style.getPropertyValue('--accent').trim(),
+            rgb: r.style.getPropertyValue('--accent-rgb').trim(),
+          });
+        }
+      }
+    }
+    return JSON.stringify(null);
+  })()`));
+  check(cssDefault?.accent === "#4aacdf" && cssDefault?.rgb === "74, 172, 223",
+    "the stylesheet's own default accent is the blue (a first paint with no stored theme)",
+    JSON.stringify(cssDefault));
+}
+
+console.log("-- dark, the OLD default amber (kept as a preset — it must not regress) --");
 {
   const audit = await setTheme("dark", "#ffb454");
   const dimmest = [...audit.rows].sort((a, b) => a.contrast - b.contrast)[0];

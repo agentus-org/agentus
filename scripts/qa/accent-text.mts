@@ -20,7 +20,7 @@ import { accentTextColor, contrastRatio } from "../../packages/web/src/theme";
 
 const PANELS = { dark: "#121a22", light: "#ffffff" } as const;
 // The presets the settings page offers (SettingsPage.tsx → ACCENTS).
-const PRESETS = ["#ffb454", "#76bbdf", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
+const PRESETS = ["#4aacdf", "#ffb454", "#76bbdf", "#4ec9a0", "#8f7bd7", "#ff6b9d"];
 const FLOOR = 4.8;
 /** Saturation an accent-as-text colour must carry. */
 const SAT_FLOOR = 0.72;
@@ -174,9 +174,43 @@ for (const [label, toks, panel, raised] of [
 }
 // the @media copy of the light palette is hand-synced; a fix applied to one copy only is a bug
 if (light && sysLight) {
-  const keys = ["--bg", "--bg-panel", "--bg-raised", "--line", "--text", "--text-dim", "--accent-text"];
+  const keys = ["--bg", "--bg-panel", "--bg-raised", "--line", "--text", "--text-dim", "--accent-text",
+    "--accent", "--accent-rgb", "--accent-dim", "--on-accent"];
   check(keys.every((k) => light.get(k) === sysLight.get(k)), "the two light-palette copies agree",
     keys.filter((k) => light.get(k) !== sysLight.get(k)).map((k) => `${k}: ${light.get(k)} vs ${sysLight.get(k)}`).join("; ") || "all equal");
+}
+
+console.log("== ①f the built-in DEFAULT accent is the blue — in every palette block ==");
+// The factory default is not in TypeScript at all: `THEME_DEFAULT.accent = ""` means "resolve it from
+// theme.css", and that is also what the login page paints before any JS has run. So the stylesheet IS
+// the default — a palette block left on the old amber would ship a first frame the operator rightly
+// reports as 「还是橙的」, and nothing on the TS side would ever fail.
+{
+  const want = "#4aacdf";
+  const wantRgb = "74, 172, 223";
+  const panels: Array<[string, Map<string, string> | undefined, string, boolean]> = [
+    ["dark", dark, "#121a22", true], ["light", light, "#ffffff", false], ["system-light", sysLight, "#ffffff", false],
+  ];
+  for (const [label, toks, panel, asTextOn] of panels) {
+    const acc = toks?.get("--accent") ?? "";
+    check(acc === want, `${label} --accent is the default blue`, acc || "(missing)");
+    check((toks?.get("--accent-rgb") ?? "") === wantRgb, `${label} --accent-rgb matches it`,
+      toks?.get("--accent-rgb") ?? "(missing)");
+    // The dark palette uses the accent AS TEXT (its --accent-text is the accent itself), so there the
+    // fill colour has to clear the text floor. The light palettes keep a bright fill and put the
+    // readable value in --accent-text, which is what has to clear the floor there.
+    const asText = asTextOn ? acc : (toks?.get("--accent-text") ?? "");
+    check(contrastRatio(asText, panel) >= FLOOR, `${label} accent-as-text clears ${FLOOR}:1 on its panel`,
+      `${asText} = ${contrastRatio(asText, panel).toFixed(2)}:1`);
+    check(hsvS(asText) >= 0.30, `${label} default accent keeps its chroma`,
+      `hsv-saturation ${hsvS(asText).toFixed(2)}`);
+  }
+  // the label drawn ON an accent fill is a separate token, and has to hold up in both palettes
+  for (const [label, toks] of [["dark", dark], ["light", light]] as const) {
+    const onAcc = toks?.get("--on-accent") ?? "#000000";
+    check(contrastRatio(onAcc, want) >= FLOOR, `${label}: --on-accent reads on the blue fill`,
+      `${onAcc} = ${contrastRatio(onAcc, want).toFixed(2)}:1`);
+  }
 }
 
 console.log("== the OLD rule FAILS these (an assertion the wrong implementation also passes is not evidence) ==");

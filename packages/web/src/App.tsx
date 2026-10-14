@@ -19,6 +19,7 @@ import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, splitRecent } from "./rail";
 import { copyText } from "./clipboard";
+import { fmtTokens } from "./tokens";
 import {
   browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
@@ -114,7 +115,7 @@ export function App(): JSX.Element {
         panelWidth={panel.width}
         panelHandle={panel.handle}
       />
-      {modal && <NewSessionModal cwd={modal.cwd} onClose={() => setModal(false)} />}
+      {modal && <StartPage cwd={modal.cwd} onClose={() => setModal(false)} />}
       {/* Rendered here, not in the rail: the operator may have triggered the resume from the
           phone's bottom sheet and closed it, and this must still be on screen. */}
       {snap.blocked && <BlockedSlotDialog slot={snap.blocked} />}
@@ -1407,7 +1408,6 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
   if (!usage || (!usage.used && !usage.size)) return null;
   const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
   const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
-  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n));
   const R = 7;
   const C = 2 * Math.PI * R;
   const traceText = trace && (trace.effort || trace.mode)
@@ -1435,7 +1435,7 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
         ) : null}
       </svg>
       <span className="ctx-text">
-        {fmt(usage.used)}{usage.size > 0 ? `/${fmt(usage.size)}` : ""}
+        {fmtTokens(usage.used)}{usage.size > 0 ? `/${fmtTokens(usage.size)}` : ""}
       </span>
     </span>
   );
@@ -1446,6 +1446,12 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
  *  no shared parent state and threading a ref through the tree for this would be
  *  more code than the behaviour is worth. */
 const streamReattach: { current: () => void } = { current: () => {} };
+
+/** How many pages the AUTOMATIC path may pull in a row before it stops and leaves the button for
+ *  the reader. A slot with hundreds of messages must not load its whole history in the background
+ *  (this was the ceiling of the fill-an-empty-screen rule; it now also bounds the scroll-driven
+ *  pulls, which is what keeps a fast scroll from queueing a dozen requests). */
+const AUTO_PAGE_MAX = 4;
 
 /** A turn in flight, at ZERO vertical cost.
  *
@@ -1647,12 +1653,21 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
 
   // Keep the reader's place when an older page is prepended (paging used to shove
   // the viewport by a whole page, so "load earlier" felt like a jump to nowhere).
-  const loadEarlier = async (): Promise<void> => {
+  //
+  // `fromScroll` marks the AUTOMATIC path: it must not touch the follow state, because it only
+  // fires once the reader has already left the tail — clearing `stick` there would mean a reader
+  // who scrolled up and then came back down stayed detached for good. The prepend anchoring below
+  // runs on BOTH paths (markWrote stamps `progUntil`, so the scroll this write raises can never be
+  // mistaken for the reader's gesture by the contract effect above).
+  const pageOlder = async (fromScroll: boolean): Promise<void> => {
     const el = ref.current;
     const beforeH = el?.scrollHeight ?? 0;
     const beforeT = el?.scrollTop ?? 0;
-    stick.current = false;
-    setFollow(false);
+    if (!fromScroll) {
+      stick.current = false;
+      setFollow(false);
+    }
+    setPagedOnce(true);
     await cockpit.loadEarlier(v.info.id);
     requestAnimationFrame(() => {
       const after = ref.current;
@@ -1661,6 +1676,22 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
       markWrote(after);
     });
   };
+  const loadEarlier = (): void => { void pageOlder(false); };
+
+  /** A failed STARTUP, retried. The row never got an agent (that is exactly why it failed), so
+   *  `resume` has nothing to attach to — the only honest retry is a new row with the same backend
+   *  and cwd, carrying over whatever was waiting in the queue (the first message, normally). */
+  const retryStart = async (view: SessionView): Promise<void> => {
+    const pending = [...view.queue];
+    try {
+      const id = await cockpit.createSession(String(view.info.backend), view.info.cwd, "");
+      cockpit.setActive(id);
+      for (const q of pending) cockpit.enqueuePrompt(id, q.text, q.attachments);
+      cockpit.purgeCold(view.info.id);
+    } catch {
+      /* the failed row stays where it is, and so does its queue */
+    }
+  };
 
   // The transcript is FOLDED now (a turn's tool calls are one row, finished thinking is one
   // line), so one page of history can fit on a screen with more still on disk — and a
@@ -1668,14 +1699,34 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
   // cannot read anything into. Keep pulling pages while there is room. Bounded: a slot with
   // hundreds of messages must not load forever in the background.
   const autoPages = useRef(0);
-  useEffect(() => { autoPages.current = 0; }, [v.info.id]);
+  const [pagedOnce, setPagedOnce] = useState(false);   // has this view ever paged backwards?
+  useEffect(() => { autoPages.current = 0; setPagedOnce(false); }, [v.info.id]);
   useEffect(() => {
     const el = ref.current;
-    if (!el || !v.hasOlder || v.loadingOlder || autoPages.current >= 4) return;
+    if (!el || !v.hasOlder || v.loadingOlder || autoPages.current >= AUTO_PAGE_MAX) return;
     if (el.scrollHeight > el.clientHeight + 80) return;
     autoPages.current += 1;
-    void cockpit.loadEarlier(v.info.id);
+    void pageOlder(true);
   }, [v.rev, v.hasOlder, v.loadingOlder, v.info.id]);
+
+  // Sliding up to the top pages backwards by itself (the operator's ask: 去掉那个手动点击). The
+  // trigger is one and a half screens from the top rather than the exact top, so the next page is
+  // already in place by the time the reader gets there — the browser's own infinite-scroll feel.
+  // Anchoring lives in `pageOlder`, so a page landing mid-gesture does not move the text under the
+  // reader's eye. Own effect (not folded into the contract effect above) because this one has to
+  // re-read `v.hasOlder` / `v.loadingOlder`; the contract effect is deliberately mount-once.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScroll = (): void => {
+      if (!v.hasOlder || v.loadingOlder || autoPages.current >= AUTO_PAGE_MAX) return;
+      if (el.scrollTop > el.clientHeight * 1.5) return;
+      autoPages.current += 1;
+      void pageOlder(true);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [v.info.id, v.hasOlder, v.loadingOlder]);
 
   // The transcript tail no longer carries a turn hint (operator: 「太占地方了」) — the turn's state
   // lives in the chat head (`TurnPulse`) and in the rail row, both of which cost no row here.
@@ -1683,13 +1734,43 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     <div className="stream-wrap">
       <div className="stream" ref={ref} tabIndex={0}>
         <div className="stream-inner">
-          {v.hasOlder && (
-            <div className="load-earlier">
-              <button className="ghost-btn" disabled={v.loadingOlder} onClick={() => void loadEarlier()}>
-                {v.loadingOlder ? "loading…" : "↑ load earlier messages"}
-              </button>
+          {/* A session that is still COMING UP (created a moment ago, or woken from cold) has a row
+              and no agent yet. Say so here, where its first message will appear, instead of leaving
+              an empty transcript that reads as "it ate my message". */}
+          {v.info.status === "starting" ? (
+            <div className="start-hold" role="status">
+              <span className="stream-spin" aria-hidden="true" />
+              <span>正在启动 agent 进程…好了会自动把消息发出去</span>
             </div>
-          )}
+          ) : null}
+          {/* …and the other end of it: the handshake failed. The reason is the server's own
+              `lastError` (the error plus the agent's stderr tail), delivered in the session rather
+              than in an HTTP call that has long since answered. */}
+          {v.info.status === "error" && v.info.lastError ? (
+            <div className="start-fail" role="alert">
+              <div className="start-fail-why">会话启动失败：{v.info.lastError}</div>
+              <div className="start-fail-act">
+                <button className="ghost-btn" onClick={() => void retryStart(v)}>再试一次</button>
+                <button className="ghost-btn" onClick={() => cockpit.purgeCold(v.info.id)}>删除这个会话</button>
+              </div>
+            </div>
+          ) : null}
+          {/* The paging affordance: while there is more it is the button (and, once a pull is in
+              flight, a quiet "loading…" in its place so the top of the transcript is never a blank
+              band that the reader reads as the beginning). When the history is exhausted it says so
+              — but only if this view actually paged, so a one-page session does not carry a label
+              announcing that nothing happened. */}
+          {v.hasOlder ? (
+            <div className="load-earlier">
+              {v.loadingOlder ? (
+                <span className="load-earlier-busy">正在加载更早的消息…</span>
+              ) : (
+                <button className="ghost-btn" onClick={() => loadEarlier()}>↑ load earlier messages</button>
+              )}
+            </div>
+          ) : pagedOnce && v.msgs.length ? (
+            <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
+          ) : null}
           {foldWork(v.msgs).map((row) => (row.kind === "work"
             ? <WorkRun key={row.key} items={row.items} />
             : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} base={v.info.workspace || v.info.cwd} />))}
@@ -2801,7 +2882,6 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const limit = declared ?? remembered ?? usage.size;
   const pct = limit > 0 ? Math.min(100, Math.round((usage.used / limit) * 100)) : 0;
   const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
-  const fmt = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
   const remaining = limit > 0 ? Math.max(0, limit - usage.used) : 0;
   const commands = v.info.commands ?? [];
   const has = (name: string): boolean => commands.some((c) => c.name === name);
@@ -2853,7 +2933,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
         {/* used / total · pct — the shape every other agent product uses (AionUi "45.2K / 200K",
             studio "12.3K / 200K (6%)"): a bare length answers nothing about how much of it is spent
             (operator: 「已用上下文的数量也要写上去……应该把总的、还有已用的、占的百分比都写上去」). */}
-        {limit > 0 ? `${fmt(usage.used)} / ${fmt(limit)}` : `${fmt(usage.used)} / —`}
+        {limit > 0 ? `${fmtTokens(usage.used)} / ${fmtTokens(limit)}` : `${fmtTokens(usage.used)} / —`}
         {limit > 0 ? ` · ${pct}%` : ""}
         {source === "session" ? " · 声明" : source === "model" ? " · 模型记录" : ""}
       </button>
@@ -2974,8 +3054,8 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
           <div>已用 {usage.used} / {limit || "—"} tokens（{pct}%）</div>
           <div>剩余：{limit > 0 ? remaining : "unknown"} tokens</div>
           <div>窗口来源：<b>{sourceLabel}</b></div>
-          {usage.size > 0 && source !== "agent" ? <div>agent 上报：{fmt(usage.size)} tokens (usage_update)</div> : null}
-          {remembered && source === "session" ? <div>本模型记录：{fmt(remembered)} tokens</div> : null}
+          {usage.size > 0 && source !== "agent" ? <div>agent 上报：{fmtTokens(usage.size)} tokens (usage_update)</div> : null}
+          {remembered && source === "session" ? <div>本模型记录：{fmtTokens(remembered)} tokens</div> : null}
           {usage.cost != null ? <div>本轮花费：${usage.cost.toFixed(6)}</div> : null}
           {trace?.model ? <div>model：{trace.model}</div> : null}
           {trace && (trace.effort || trace.mode)
@@ -3831,7 +3911,20 @@ function CardMark({ backend }: { backend: string }): JSX.Element {
 
 /** Which backends the new-session form may offer — the rule (mock is a dev-instance backend only)
  *  lives in `agents.ts`, where it can be asserted without a browser. */
-function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
+/** The new-session surface: a COMPOSER, not a form.
+ *
+ *  What this replaced collected backend → working directory → title and then ran the spawn behind a
+ *  "spawning…" button that held for 10–40 s (the server answered only after the agent's whole ACP
+ *  handshake) with nothing on screen to read — the operator's 「显示的是 524k」 of a different kind:
+ *  a number that was not moving and no reason to believe anything was happening.
+ *
+ *  So the order is inverted, the way a chat product does it: the MESSAGE comes first, because the
+ *  first thing you have to say is the only thing you already know, and the folder is a correction
+ *  you make while typing. Enter (or 创建并发送) creates the session — the row exists immediately
+ *  with `status: "starting"` — hands it the message through the queue, and opens it; the message
+ *  goes out on its own the moment the agent is up. A failure lands IN that session, not in a
+ *  vanished HTTP call. */
+function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
   // A rail group's 「+」 hands its directory in (`initialCwd`): then the only thing left to
@@ -3839,7 +3932,7 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
   // decided, and re-picking it is the step the operator asked to be rid of.
   const [dir, setDir] = useState(initialCwd ?? "");
   const fixedDir = initialCwd ?? "";
-  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -3875,11 +3968,20 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
   const choices = backendChoices(rows, dev);
   const sel = rows.find((b) => b.id === backend) ?? null;
 
-  const create = async () => {
+  /** Enter / 创建并发送: create the row, open it, and hand it the message through the QUEUE.
+   *
+   *  The queue rather than a direct prompt, because the agent is still booting when this returns —
+   *  a prompt now would come back `no such session`. The queue drains on the `ready` frame the
+   *  server broadcasts when the handshake lands (`state.ts`, `case "session"`), which is the same
+   *  mechanism a cold slot uses: one path, not two. */
+  const send = async () => {
+    const msg = text.trim();
+    if (!msg || !backend || !dir.trim()) return;
     setBusy(true); setErr("");
     try {
-      const id = await cockpit.createSession(backend, dir.trim(), title.trim());
+      const id = await cockpit.createSession(backend, dir.trim(), "");
       cockpit.setActive(id);
+      cockpit.enqueuePrompt(id, msg);
       onClose();
     } catch (e) {
       setErr(String((e as Error).message ?? e));
@@ -3890,8 +3992,24 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
 
   return (
     <div className="modal-bg" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New session</h3>
+      <div className="modal start-page" onClick={(e) => e.stopPropagation()}>
+        <h3>新建会话</h3>
+        {/* The message first: it is the one thing the operator already knows, and the picking below
+            is a correction they can make while typing. Enter sends (Shift+Enter is a newline, the
+            same bargain every chat box makes). */}
+        <textarea
+          className="start-input"
+          autoFocus
+          rows={3}
+          value={text}
+          placeholder="说点什么开始…（Enter 创建并发送，Shift+Enter 换行）"
+          aria-label="first message"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
+            if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+          }}
+        />
         <label>backend</label>
         {/* Cards, not a row of stretched pills: the mark on top and the name under it is the shape
             the operator asked for (「上面放头像，下面写文案」), and it is what the rail already shows
@@ -3958,12 +4076,12 @@ function NewSessionModal({ cwd: initialCwd, onClose }: { cwd?: string; onClose: 
         ) : (
           <WorkspacePicker value={dir} onChange={setDir} />
         )}
-        <label>title (optional)</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. fix flaky tests" />
         {err && <div className="err">{err}</div>}
         <div className="row">
-          <button className="cancel" onClick={onClose}>cancel</button>
-          <button className="go" disabled={busy || !dir.trim()} onClick={create}>{busy ? "spawning…" : "launch"}</button>
+          <button className="cancel" onClick={onClose}>取消</button>
+          <button className="go" disabled={busy || !text.trim() || !dir.trim()} onClick={() => void send()}>
+            {busy ? "创建中…" : "创建并发送"}
+          </button>
         </div>
       </div>
     </div>
