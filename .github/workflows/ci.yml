@@ -31,5 +31,8 @@ jobs:
       - run: npm run token-format
       # the terminal's ANSI palettes are per theme, judged against their own background
       - run: npm run terminal-palette
+      # the Android client's trust merge (system ∪ user store) still verifies a user-CA chain
+      # and still refuses one that chains to a root in neither store
+      - run: npm run android-trust-merge
       # (the tls-smoke step is gone with the in-process TLS listener it tested —
       #  it was dropped from the source, and CI kept calling a script that no longer exists)

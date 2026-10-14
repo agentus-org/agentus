@@ -10,7 +10,20 @@
     which a LAN IP is not, so system trust + hostname verification cannot be used as-is.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <!--
+      The user store is declared here as well as merged in code (Http.java), because the two cover
+      different callers: anything the platform validates for this app (WebView, the download
+      manager, an OkHttp call built without our factory) reads THIS, while the app's own client
+      reads the merged store. Since Android 7 a third-party app's default chain leaves user-added
+      CAs out — the browser does not, which is why a private root can be "fine in Chrome" and a
+      trust-anchor failure here. Additive only: the system roots stay trusted either way.
+    -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">192.168.0.109</domain>
         <domain includeSubdomains="false">192.168.0.108</domain>

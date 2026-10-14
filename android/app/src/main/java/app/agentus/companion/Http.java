@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.Enumeration;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLContext;
@@ -62,27 +63,85 @@ final class Http {
         return client;
     }
 
-    /** Trust = system store ∪ bundled Agentus root. */
+    /** Trust = (system store ∪ the CAs the operator installed) ∪ bundled Agentus root. */
     private static X509TrustManager composite(Context context) throws Exception {
-        final X509TrustManager system = defaultManager();
+        final X509TrustManager device = deviceManager();
         final X509TrustManager mine = manager(bundled(context));
         return new X509TrustManager() {
             @Override public void checkClientTrusted(X509Certificate[] chain, String authType) throws java.security.cert.CertificateException {
-                system.checkClientTrusted(chain, authType);
+                device.checkClientTrusted(chain, authType);
             }
 
             @Override public void checkServerTrusted(X509Certificate[] chain, String authType) throws java.security.cert.CertificateException {
                 try {
-                    system.checkServerTrusted(chain, authType);
+                    device.checkServerTrusted(chain, authType);
                 } catch (java.security.cert.CertificateException e) {
-                    mine.checkServerTrusted(chain, authType);
+                    try {
+                        mine.checkServerTrusted(chain, authType);
+                    } catch (java.security.cert.CertificateException e2) {
+                        // Say WHICH store failed and for what leaf: "trust anchor not found" from a
+                        // phone is otherwise indistinguishable from a wrong host, a proxy, or a
+                        // server that forgot to send its intermediate.
+                        NotifyService.log("TLS 校验失败：" + describe(chain) + "；系统/用户信任链：" + e.getMessage()
+                            + "；内置 CA：" + e2.getMessage());
+                        throw e2;
+                    }
                 }
             }
 
             @Override public X509Certificate[] getAcceptedIssuers() {
-                return system.getAcceptedIssuers();
+                return device.getAcceptedIssuers();
             }
         };
+    }
+
+    private static String describe(X509Certificate[] chain) {
+        if (chain == null || chain.length == 0) return "(空证书链)";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < chain.length; i++) {
+            if (i > 0) sb.append(" <- ");
+            sb.append(chain[i].getSubjectX500Principal().getName());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The device's own trust sources, as ONE store: the system roots PLUS the CAs the operator
+     * installed. Since Android 7 the user-added CAs are deliberately kept out of a third-party
+     * app's default chain, and the browser ships its own store — which is exactly why "it opens
+     * fine in Chrome" does not imply "this app trusts it". An operator's private root installed
+     * for an internal reverse proxy is that case, and this is the only way the app can honour it.
+     *
+     * Purely additive: every anchor here is one the system already trusted, or one the operator
+     * put on the device themselves. Nothing that was untrusted becomes trusted.
+     */
+    private static X509TrustManager deviceManager() throws Exception {
+        KeyStore merged = KeyStore.getInstance(KeyStore.getDefaultType());
+        merged.load(null, null);
+        int n = 0;
+        for (X509Certificate c : defaultManager().getAcceptedIssuers()) {
+            merged.setCertificateEntry("system-" + (n++), c);
+        }
+        try {
+            // The platform's own store, including the user: entries the default factory hides.
+            KeyStore acs = KeyStore.getInstance("AndroidCAStore");
+            acs.load(null, null);
+            for (Enumeration<String> aliases = acs.aliases(); aliases.hasMoreElements(); ) {
+                String alias = aliases.nextElement();
+                java.security.cert.Certificate c = acs.getCertificate(alias);
+                if (c instanceof X509Certificate) merged.setCertificateEntry("user-" + (n++), (X509Certificate) c);
+            }
+        } catch (Exception e) {
+            // Not an Android runtime (the unit tests run on a JVM), where there is no such store
+            // and the system roots above are the whole trust source. Not an error.
+            NotifyService.log("AndroidCAStore 不可用（非 Android 运行时），仅用系统信任链：" + e.getMessage());
+        }
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(merged);
+        for (TrustManager tm : tmf.getTrustManagers()) {
+            if (tm instanceof X509TrustManager) return (X509TrustManager) tm;
+        }
+        throw new IllegalStateException("no device X509TrustManager");
     }
 
     private static SSLSocketFactory pinnedFactory(Context context) throws Exception {
