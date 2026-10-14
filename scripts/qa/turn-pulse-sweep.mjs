@@ -138,7 +138,7 @@ try {
 
   await ev(`fetch('/api/sessions/'+${JSON.stringify(sid)},{method:'DELETE'})`).catch(() => {});
 } finally {
-  await fetch(`${CDP}/json/close/${t.id}`, { method: "PUT" }).catch(() => {});
+  await fetch(`${CDP}/json/close/${t.id}`).catch(() => {});
   ws.close();
 }
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -307,14 +307,34 @@ async function main() {
       typeof mockAfter?.handshake?.modes?.names?.dont_ask === "string",
       JSON.stringify(mockAfter?.handshake?.modes?.names ?? null));
 
+    /** The row a session id belongs to, wherever it currently sits. A slot that FAILED its handshake
+     *  leaves the `live` bucket (the server drops it from the map and stores the row closed), so a
+     *  poll that only reads `live` loses sight of it and reports the last thing it saw — `starting`
+     *  — for a slot that is really `error`. Read all three buckets so the settle is honest. */
+    const settledRow = async (id) => {
+      const r = await api("GET", "/api/sessions");
+      const j = r.json ?? {};
+      return [...(j.live ?? []), ...(j.cold ?? []), ...(j.archived ?? [])].find((s) => s.id === id) ?? null;
+    };
+
+    /** Create a slot and wait for its HANDSHAKE, returning both the create RESPONSE and the settled row.
+     *
+     *  The two are no longer the same thing (issue #1): `POST /api/sessions` answers as soon as the row
+     *  exists — 「新建会话」 must not be held for the agent's 10–40 s boot — so `r.json` carries
+     *  `status:"starting"` and none of the agent's own metadata (modes/models/configOptions). Anything
+     *  asserted about the AGENT has to be read off `live`; `r` is only good for the row's own fields. */
     const mkSession = async (backend, title) => {
       const r = await api("POST", "/api/sessions", { backend, cwd: tmpdir(), title });
       if (r.status !== 201) return { r, live: null };
       const id = r.json?.id;
       let live = null;
-      for (let i = 0; i < 90 && !live; i++) {
+      // `i < 90 && !live` would have polled EXACTLY ONCE: the assignment above makes `!live` false on the
+      // first pass, so the loop exited with whatever the very first read showed. A slot still `starting`
+      // a second in — i.e. every real agent — was reported as never coming up.
+      for (let i = 0; i < 120; i++) {
         await sleep(1000);
-        live = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === id) ?? null;
+        const row = await settledRow(id);
+        if (row) live = row;
         if (live && live.status !== "starting") break;
       }
       return { r, live };
@@ -332,9 +352,12 @@ async function main() {
       `defaultMode=${modeRow?.defaultMode}`);
 
     const s1 = await mkSession("qa-mode", "default mode smoke");
+    check("the create answers while the agent is still booting (starting, no modes yet)",
+      s1.r.json?.status === "starting" && s1.r.json?.modes == null && s1.r.json?.pid > 0,
+      `status=${s1.r.json?.status} modes=${s1.r.json?.modes} pid=${s1.r.json?.pid}`);
     check("a NEW session comes up in the row's default permission mode",
-      s1.live?.modes?.currentModeId === "dont_ask" && s1.r.json?.modes?.currentModeId === "dont_ask",
-      `live=${s1.live?.modes?.currentModeId} create=${s1.r.json?.modes?.currentModeId} ${s1.live?.lastError ?? ""}`);
+      s1.live?.modes?.currentModeId === "dont_ask",
+      `live=${s1.live?.modes?.currentModeId} status=${s1.live?.status} ${s1.live?.lastError ?? ""}`);
 
     // The per-session pick wins, and resuming must NOT re-apply the row default over it — the failure
     // this checks for is a default that silently overwrites what a conversation was already using.
@@ -381,13 +404,22 @@ async function main() {
       check("a hermes row spawns too", hs.status === 201, `status=${hs.status} ${hs.text.slice(0, 140)}`);
       const hid = hs.json?.id;
       let hLive = null;
-      for (let i = 0; i < 90 && !hLive; i++) {
+      // Same polling bug as `mkSession` had, and it mattered more here: a real hermes boots a python
+      // process (10–40 s measured, longer under load), so the single poll this loop really did always
+      // saw `starting`. `!hLive` is NOT part of the condition — the row exists from the moment it is
+      // created, and it is the STATUS that has to settle. A slot that fails leaves `live`, so the
+      // read spans every bucket (see `settledRow`) — otherwise a broken ACP install reads as a slot
+      // that is still booting 240 s later, which hides the real error.
+      for (let i = 0; i < 240; i++) {
         await sleep(1000);
-        hLive = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === hid) ?? null;
+        const row = await settledRow(hid);
+        if (row) hLive = row;
         if (hLive && hLive.status !== "starting") break;
       }
+      const hermesWhy = ((await api("GET", "/api/backends")).json ?? [])
+        .find((b) => b.id === "qa-fork")?.health?.message ?? "";
       check("the hermes slot reached a non-starting state", Boolean(hLive) && hLive.status !== "starting",
-        `status=${hLive?.status} ${hLive?.lastError ?? ""}`);
+        `status=${hLive?.status} ${String(hermesWhy).slice(0, 200)}`);
       // The REAL adapter contract for the round's feature: a hermes session created from a row that
       // names a default permission mode comes up in it. Judgeable only against what THIS hermes
       // advertises (an older runtime may offer no modes at all), so it is asserted, not assumed.

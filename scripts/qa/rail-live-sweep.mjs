@@ -44,7 +44,7 @@ const ev = async (x, to = 25000) => {
   return r.result.value;
 };
 await send("Page.enable"); await send("Runtime.enable");
-const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`, { method: "PUT" }).catch(() => {}); };
+const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`).catch(() => {}); };
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
