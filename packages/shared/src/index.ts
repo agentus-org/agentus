@@ -273,6 +273,62 @@ export interface PlanSnapshot {
   updatedAt: number;
 }
 
+// ---- the built-in plan-hint wording ----
+//
+// It lives in `shared` because TWO sides need the same bytes: the server injects it
+// (`session-manager.ts#planReminder`) and the settings page has to be able to SHOW the operator
+// what "leave the box empty" actually sends. Keeping a prose copy on the web side would drift,
+// and a settings screen that paraphrases the thing it configures is a control that lies.
+//
+// Three variants, because what is worth saying depends on the channel the agent really has:
+//
+//  - `INTRO` — no plan on the session yet. The moment the nudge matters most: an agent that has
+//    not been told `update_plan` exists will reach for its own todo tool, which never reaches the
+//    cockpit's card. Explicitly teaches the deferred-tool lookup, because the tool's own
+//    description ("prefer this over any todo tool") is invisible until the model finds it.
+//  - `ACTIVE` — a plan exists with steps still open, on an MCP-driven backend.
+//  - `NATIVE` — a backend whose row opted into native plan frames: those frames are what feed the
+//    card, so its own todo tool IS the right instrument and `update_plan` is not mentioned.
+//
+// The per-turn plan STATUS (which steps are still open) is NOT part of these strings — the server
+// generates it from the card on every call, so an operator editing the hint text cannot make the
+// prompt disagree with what the cockpit displays.
+
+/** Injected when the session has no plan yet and the backend is MCP-driven. */
+export const PLAN_GUIDANCE_INTRO = [
+  "This session has an `update_plan` tool mounted on it (MCP server `agentus_plan`), and the",
+  "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
+  "dies with your process. For anything with more than one step, publish the steps with",
+  "`update_plan` and update it as you go: mark a step completed only once its work is actually",
+  "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
+  "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
+  "that exact name. A one-step request needs no plan.",
+].join("\n");
+
+/** Injected when the session HAS an open plan and the backend is MCP-driven. */
+export const PLAN_GUIDANCE_ACTIVE = [
+  "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
+  "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
+  "not be seen there. Mark a step completed once its work is actually verified, and drop or",
+  "cancel what you are no longer doing. If you disagree with an item, change it rather than",
+  "quietly skipping it.",
+].join("\n");
+
+/** Injected when the backend's row feeds the card from its OWN native plan frames. */
+export const PLAN_GUIDANCE_NATIVE = [
+  "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
+  "completed only once its work is actually verified, and drop or cancel what you are no",
+  "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
+].join("\n");
+
+/** The three built-ins with the case each one covers — so a surface can list them without
+ *  inventing its own labels (and without a second copy of the prose). */
+export const PLAN_GUIDANCE_VARIANTS: ReadonlyArray<{ id: string; when: string; text: string }> = [
+  { id: "intro", when: "该会话还没有计划（最要紧的一刻：不告诉它，它就会用自己的 todo）", text: PLAN_GUIDANCE_INTRO },
+  { id: "active", when: "已有未完成的计划，且 agent 是 MCP 驱动", text: PLAN_GUIDANCE_ACTIVE },
+  { id: "native", when: "该后端的计划卡由它自己的原生计划帧喂（不用 update_plan）", text: PLAN_GUIDANCE_NATIVE },
+];
+
 // ---- WS envelope (browser -> server) ----
 /** Media the operator attaches to a prompt. Images ride ACP as base64 blocks (that
  *  is the wire shape the protocol defines), text files are inlined as text with a

@@ -36,6 +36,7 @@ import type {
   TurnTrace,
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
+import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { PREFS_DEFAULT, type PlanHintSettings } from "../settings.js";
 
 // Permission prompts must not hang a session forever (design.md §8-4).
@@ -100,41 +101,10 @@ function boundedDiff(path: string, oldText: string, newText: string): Permission
   };
 }
 
-/** The built-in wording for the plan hint's GUIDANCE half — what an operator gets when they have
- *  not written their own (settings.prefs.planHint.instruction). Three variants, because what is
- *  worth saying depends on the channel the agent actually has:
- *
- *  - MCP-driven is every backend by default (Hermes included): it was handed `update_plan` in this
- *    handshake, and its own todo tool does NOT reach the card.
- *  - A row that opted into native frames must use its own todo tool, since those frames are what
- *    feed the card.
- *
- *  The per-turn plan STATUS (which steps are still open) is NOT part of these strings — it is
- *  generated from the card on every call, so an operator editing the text above cannot make the
- *  prompt disagree with what the cockpit shows. */
-const PLAN_GUIDANCE_ACTIVE = [
-  "Carry on with it, and keep it updated with the `update_plan` tool as you go — that list is",
-  "the ONLY one the cockpit shows the operator, so a built-in todo/checklist tool of yours will",
-  "not be seen there. Mark a step completed once its work is actually verified, and drop or",
-  "cancel what you are no longer doing. If you disagree with an item, change it rather than",
-  "quietly skipping it.",
-].join("\n");
-
-const PLAN_GUIDANCE_INTRO = [
-  "This session has an `update_plan` tool mounted on it (MCP server `agentus_plan`), and the",
-  "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
-  "dies with your process. For anything with more than one step, publish the steps with",
-  "`update_plan` and update it as you go: mark a step completed only once its work is actually",
-  "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
-  "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
-  "that exact name. A one-step request needs no plan.",
-].join("\n");
-
-const PLAN_GUIDANCE_NATIVE = [
-  "Carry on with it, and keep it updated with your own plan/todo tool as you go: mark a step",
-  "completed only once its work is actually verified, and drop or cancel what you are no",
-  "longer doing. If you disagree with an item, change it rather than quietly skipping it.",
-].join("\n");
+// The built-in wording for the plan hint's GUIDANCE half lives in `shared` (PLAN_GUIDANCE_*), not
+// here: the settings page has to SHOW an operator exactly what "leave the box empty" sends, and a
+// second prose copy on the web side is a copy that drifts. Read the doc comment there for which
+// variant covers which case.
 
 // A title fork is a real model turn over a copy of the conversation: give it room, but never
 // let a stuck one hang the operator's click — the caller falls back to the derived name on

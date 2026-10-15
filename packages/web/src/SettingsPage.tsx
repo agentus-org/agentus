@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { IconArrowLeft, IconClose, IconMic, IconRefresh, IconSettings, IconStop, IconVolume } from "./Icons";
 import { pushTheme, useTheme, type ThemeConfig } from "./theme";
 import { AccountPanels, type AccountInfo } from "./Account";
+import { PLAN_GUIDANCE_VARIANTS } from "../../shared/src/index";
 import { NotifySettings } from "./NotifySettings";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
@@ -711,17 +712,32 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             spellCheck={false}
             disabled={!(planHint?.on ?? true)}
             value={planHint?.instruction ?? ""}
-            placeholder={
-              "留空即用内置文案 —— 大意是：本会话挂着一个 update_plan 工具（MCP 服务 agentus_plan），"
-              + "它维护的那份计划就是操作者看到的那份，你自己那份 todo 在驾驶舱里看不见、进程一死就没了；"
-              + "多步任务请用它发布步骤并随进度更新，每步真正验证通过再标完成；工具不在列表里说明它是懒加载的，"
-              + "先检索 agentus_plan update_plan 再用准确的工具名调用；一步就能做完的请求不必建计划。"
-            }
+            placeholder="留空即用内置文案 —— 原文就在下面「内置文案」里，能直接看、能照着改。"
             onChange={(e) =>
               setPlanHint((p) => ({ ...(p ?? { on: true, everyTurn: true, instruction: "" }), instruction: e.target.value }))
             }
             onBlur={(e) => void savePlanHint({ instruction: e.target.value })}
           />
+          {/* The box above is an OVERRIDE, so an empty one is the normal case — which used to leave
+              the operator with a paraphrase in the placeholder and no way to read what actually goes
+              out. Show the real strings, from the same constant the server injects (shared). */}
+          <details className="set-builtin" open={!planHint?.instruction?.trim()}>
+            <summary>
+              {planHint?.instruction?.trim()
+                ? "内置文案（你写了自定义的，下面这些不再生效；清空即可恢复）"
+                : "内置文案（留空时生效的就是它，按情况三选一）"}
+            </summary>
+            <p className="set-hint">
+              驾驶舱按这次的情况挑一条，接在「这次还有哪些步骤没做完」后面一起发给你那条消息的尾部。
+              内容会随计划变，所以这里只列<b>指引</b>那半段的原文。
+            </p>
+            {PLAN_GUIDANCE_VARIANTS.map((v) => (
+              <div className="set-builtin-item" key={v.id}>
+                <div className="set-builtin-when">{v.when}</div>
+                <pre className="set-builtin-text">{v.text}</pre>
+              </div>
+            ))}
+          </details>
           <p className="set-hint">
             这里写的只是<b>指引</b>那一半（告诉 agent 有个计划工具、该怎么用它）。另一半是<b>计划状态</b> ——
             「哪些步骤还没做完」，那是每个回合从驾驶舱的计划卡片现取的，任何人都改不了，所以这里的文字永远不会和卡片说的不一样。
