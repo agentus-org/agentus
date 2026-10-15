@@ -51,7 +51,8 @@ logs in — you just have no backend to start a session on.
 A plain Hermes install drives sessions; the cockpit's own extras — per-session **thinking
 depth**, a permission mode that survives a restart, the **context-budget** field — come from the
 fork's integration build instead. That is a five-line install:
-[§ Which Hermes to run](docs/installation.md#which-hermes-to-run).
+[§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
+`agentus/v0.22.0/merge-20261015-0014`, on Hermes `v0.22.0`.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
