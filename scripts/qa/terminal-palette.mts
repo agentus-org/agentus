@@ -33,8 +33,11 @@ function contrast(a: string, b: string): number {
   return (x + 0.05) / (y + 0.05);
 }
 
-// The two backgrounds the panel actually paints (`terminalTheme` reads these same tokens).
-const BG_DARK = "#0e1518";
+// The two backgrounds the panel actually paints (`terminalTheme` reads these same tokens:
+// `--bg-panel`, light #ffffff / dark #121a22). Reading the token rather than the JS fallback is the
+// point — the old suite asserted against `#0e1518`, a value computed for a `--bg-1` variable that never
+// existed, so it was measuring contrast on a colour the panel never painted.
+const BG_DARK = "#121a22";
 const BG_LIGHT = "#ffffff";
 
 const KEYS = Object.keys(ANSI_DARK) as (keyof Ansi16)[];

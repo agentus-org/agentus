@@ -23,6 +23,7 @@ import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import { usePaneWidth } from "./paneWidth";
 import { ansi16, ansiExtended } from "./terminalPalette";
+import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
   IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSwap, IconTerminal,
@@ -339,20 +340,25 @@ type TermStatus = "connecting" | "ready" | "closed" | "error";
  *  term-resize (cols/rows). Resizing matters as much as input: without it `vim` draws at 80x24
  *  forever. */
 /** The palette follows the cockpit's own theme tokens, so the terminal is not a foreign body in
- *  either palette. Read at construction time: the panel remounts when the terminal tab is opened.
+ *  either palette. Read at construction time (the panel remounts when the terminal tab is opened)
+ *  with the theme resolved through `resolveDark` — the same reading the page's own palette uses.
+ *  Asking `data-theme` instead is WRONG: its third value is `system`, so `!== "light"` called a
+ *  light cockpit dark and a `system`-mode operator on a light OS got a dead-black terminal in a
+ *  white page. `TerminalTab` re-applies this when the resolved palette changes, so an OS flip or a
+ *  theme switch does not leave the panel wearing the other one.
  *
  *  The 16 ANSI colours come from `terminalPalette.ts` and are PER THEME: the dark panel paints
- *  `--bg-1` #0e1518, on which the shared Tango palette's `black` sat at 1.5:1 and simply was not
+ *  `--bg-panel` #121a22, on which the shared Tango palette's `black` sat at 1.5:1 and simply was not
  *  there (ls output, diagnostics, diff context). `extendedAnsi` does the same job for the 256-
  *  colour ramp, whose dark end has the identical problem on a dark background. */
 function terminalTheme(dark: boolean): ITheme {
   const cs = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string): string => cs.getPropertyValue(name).trim() || fallback;
   return dark
-    ? { background: v("--bg-1", "#0e1518"), foreground: v("--text", "#e3ecf3"),
+    ? { background: v("--bg-panel", "#121a22"), foreground: v("--text", "#e3ecf3"),
         cursor: v("--accent", "#4aacdf"), selectionBackground: "rgba(74,172,223,0.30)",
         ...ansi16(true), extendedAnsi: ansiExtended(true) }
-    : { background: v("--bg-1", "#ffffff"), foreground: v("--text", "#1c2735"),
+    : { background: v("--bg-panel", "#ffffff"), foreground: v("--text", "#1c2735"),
         cursor: v("--accent", "#2679a5"), selectionBackground: "rgba(38,121,165,0.25)",
         ...ansi16(false), extendedAnsi: ansiExtended(false) };
 }
@@ -398,7 +404,7 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
     setError("");
     setTty(null);
 
-    const dark = document.documentElement.getAttribute("data-theme") !== "light";
+    const dark = resolveDark(themeConfig());
     const term = new Terminal({
       theme: terminalTheme(dark),
       fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -540,6 +546,17 @@ function TerminalTab({ v, root }: { v: SessionView; root: string }): JSX.Element
     // `root` is a dependency on purpose: re-pointing the session's workspace must move the shell too
     // (the server starts it in sessionRoot(sessionId)), and a shell cannot be re-cd'd from outside.
   }, [v.info.id, root, nonce]);
+
+  // The palette is chosen at construction, so a palette that CHANGES while the panel is open would
+  // leave the terminal on the one it was born with: an OS light/dark flip under `system` mode, or the
+  // operator switching the theme in settings. `useResolvedDark` is the reactive reading of the same
+  // question `terminalTheme` was answered with above (the brand mark asks it for the same reason —
+  // xterm's palette cannot be a CSS variable). Handler deps stay [v.info.id, root, nonce]: only the theme moves.
+  const resolvedDark = useResolvedDark();
+  useEffect(() => {
+    const t = termRef.current;
+    if (t) t.options.theme = terminalTheme(resolvedDark);
+  }, [resolvedDark]);
 
   const statusWord = status === "ready" ? (tty === false ? "shell (no tty)" : "shell")
     : status === "connecting" ? "starting…" : status;

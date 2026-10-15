@@ -68,8 +68,11 @@ export function useTheme(): ThemeConfig {
   return useSyncExternalStore(subscribeTheme, themeConfig);
 }
 
-/** "system" + the OS preference resolved: which palette is actually on screen. */
-function resolveDark(cfg: ThemeConfig): boolean {
+/** "system" + the OS preference resolved: which palette is actually on screen.
+ *  Single source of truth for "is the dark palette in use": `applyTheme` derives the accent's
+ *  neighbours with it, and any surface that cannot be recoloured in CSS asks it too — read it
+ *  off the theme config, never off the `data-theme` attribute, whose third value is `system`. */
+export function resolveDark(cfg: ThemeConfig): boolean {
   return cfg.mode === "dark"
     || (cfg.mode === "system" && typeof window !== "undefined"
         && window.matchMedia("(prefers-color-scheme: dark)").matches);
