@@ -138,9 +138,12 @@ check(s1, "the command's output arrives", after1.split("\n").filter((l) => l.inc
 // The echo is the proof of a tty: the terminal prints what was typed BEFORE the command runs, so the
 // token lands on two lines (the echoed command line, then its output). A pipe shell echoes nothing.
 // Wait for the second one instead of measuring once — the output line arrives a moment later.
+// Count on the WHITESPACE-STRIPPED screen: at a narrow pane width the prompt pushes the echoed command
+// over the wrap boundary and the token is split across two rows, which reads as "1x" on a correct build
+// (measured, once, right after the pane-size section had left the pane narrow).
 let occurrences = 0;
 for (let i = 0; i < 24; i++) {
-  occurrences = ((await screen()).match(/TTY_PROBE_ONE/g) || []).length;
+  occurrences = ((await screen()).replace(/\s+/g, "").match(/TTY_PROBE_ONE/g) || []).length;
   if (occurrences >= 2) break;
   await sleep(250);
 }
@@ -259,7 +262,7 @@ for (const [mode, os] of [["system", "light"], ["system", "dark"], ["light", "da
   const expectBlue = pal.bgPanel === "#121a22" ? ONEHALF_BLUE : TANGO_BLUE;
   const expectDark = pal.bgPanel === "#121a22";
   check(pal.hostBg === cssRgb(pal.bgPanel),
-    `${mode} + OS ${os}: the terminal's surface IS the panel token, not a hardcoded constant`,
+    `${mode} + OS ${os}: the terminal's painted surface IS the panel token, not a hardcoded constant`,
     `surface ${pal.hostBg} vs --bg-panel ${cssRgb(pal.bgPanel)}`);
   check(pal.blue === expectBlue,
     `${mode} + OS ${os}: its ANSI palette is the ${expectDark ? "dark" : "light"} one, matching the page`,
@@ -301,8 +304,12 @@ async function readPalette() {
     const spans = [...row.querySelectorAll('span')].map((s) => ({ t: s.textContent, c: getComputedStyle(s).color }));
     const pick = (m) => ((spans.find((s) => s.t.includes(m)) || {}).c) || '';
     const tok = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    // The element xterm actually paints its theme.background on (v6's DOM renderer puts it here, not
+    // on .term-host): reading THIS is what makes the second half of issue #10 measurable — the old
+    // code fed it a constant fallback from --bg-1, a variable that never existed.
+    const surf = document.querySelector('.term-host .xterm-scrollable-element') || document.querySelector('.term-host');
     return JSON.stringify({ black: pick('BLACK_PROBE'), blue: pick('BLUE_PROBE'),
-      hostBg: getComputedStyle(document.querySelector('.term-host')).backgroundColor, bgPanel: tok('--bg-panel') });
+      hostBg: getComputedStyle(surf).backgroundColor, bgPanel: tok('--bg-panel') });
   })()`));
   return raw === 'null' ? null : JSON.parse(raw);
 }
