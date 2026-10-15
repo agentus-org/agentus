@@ -45,8 +45,13 @@ agentus/<hermes version>/merge-<YYYYMMDD-HHMM>
 
 A tag and not a branch, on purpose: the branch of the same name (under `yl-dev/`) is the working
 ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/` prefix also keeps
-ours apart from upstream's own tags (`v0.21.7`, `v0.21.7+canary.*`), and the timestamp in the
+ours apart from upstream's own tags (`v0.22.0`, `v0.22.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
+
+**Current integration build: `agentus/v0.22.0/merge-20261015-0014`** — the newest tag on the fork,
+built on Hermes `v0.22.0`. This line is for orientation only, not the source of truth: the
+`TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
+ever looks stale.
 
 Install Hermes normally first — its installer brings the Python/Node runtime and puts `hermes` on
 your PATH — then run that build on top of that runtime:
