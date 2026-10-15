@@ -687,6 +687,10 @@ export function shouldAutoRead(key: string, prefs: VoicePrefs, isNewTurn: boolea
 
 // ----------------------------------------------------------------- dictation
 
+/** Which composer the transcript belongs to (see `Dictation.setOwner`): two of them are mounted at
+ *  once while the new-session dialog is up, and only one may take the words. */
+export type DictSink = "chat" | "start";
+
 export interface DictationState {
   /** `requesting` = we asked for the microphone and the browser has not answered yet
    *  (its permission prompt is modal, so without this state the button looks dead). */
@@ -1425,6 +1429,24 @@ class Dictation {
     this.#set({ status: "idle", text: "", interim: "", seconds: 0 });
     return out;
   }
+
+  /** Which composer owns the transcript.
+   *
+   *  Two composers are mounted at the SAME time while the new-session dialog is up — it is an
+   *  overlay, so the chat page keeps its own `.composer-bar` behind it — and both sinks react to the
+   *  same snapshot. React flushes the CHAT page's effect first (it sits before the dialog in the
+   *  tree), so the words landed in the prompt box BEHIND the dialog while the dialog's own box
+   *  stayed empty: the operator's 「语音录完点停止，没有填到输入框里」, reproduced on the new-session
+   *  form 2026-10-15 (the chat composer had「你好这是语音测试」, the dialog's box nothing).
+   *
+   *  The box on screen takes the transcript; the other one must not touch it. */
+  setOwner(who: DictSink): void {
+    this.#owner = who;
+  }
+  owns(who: DictSink): boolean {
+    return this.#owner === who;
+  }
+  #owner: DictSink = "chat";
 }
 
 /** Float32 [-1,1] at `from` Hz -> Int16 PCM at `to` Hz (linear interpolation).

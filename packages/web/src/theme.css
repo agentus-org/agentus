@@ -703,7 +703,7 @@ code.inline {
   font: inherit; min-height: 42px; max-height: 40vh; overflow-y: auto;
 }
 .composer textarea:focus { outline: none; }
-.composer-bar { display: flex; align-items: center; gap: 3px; padding: 2px 6px 6px; }
+.composer-bar { display: flex; align-items: center; gap: 6px; padding: 2px 6px 6px; }
 .icon-btn.on { background: var(--bg-panel); border-color: var(--accent-dim); color: var(--accent-text); }
 .icon-btn.rec { color: var(--err); border-color: var(--err); animation: pulse 1.4s infinite; }
 .icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
@@ -1566,6 +1566,14 @@ body.pane-dragging * { cursor: col-resize !important; }
 .tb-wrap { flex: 0 1 auto; min-width: 0; }
 .tb-btn { min-width: 0; }
 .tb-label { min-width: 0; }
+/* …but the wrapper shrinking is only half of it: the BUTTON inside it has to be bounded by the
+   wrapper too. Without this the button keeps its own max-width (190px / 34vw), spills out of the
+   shrunken wrapper and paints OVER the control next to it — measured on the new-session bar at
+   390px (2026-10-15, the operator's 「权限、模型、语音输入键重合交叉重叠」): 权限 spilled 12px onto
+   模型, whose label then ran 15px into the microphone (25px at 360px). Bounded, the label ellipsises
+   inside its own box instead. AionUi guards its model button the same way (`actionConfigGroup
+   .sendbox-model-btn { min-width: 0; max-width: 100% }`, guid/index.module.css). */
+.tb-wrap > .tb-btn { max-width: 100%; }
 .tb-effort { padding: 0 5px; gap: 4px; }
 .tb-pips { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
 .tb-pips i { display: block; width: 3px; border-radius: 1px; background: var(--line); }
@@ -1599,9 +1607,47 @@ body.pane-dragging * { cursor: col-resize !important; }
   .tb-btn { max-width: 34vw; padding: 0 4px; gap: 3px; }
   .tb-btn .tb-chev { display: none; }
   .tb-effort { max-width: none; }
-  .composer-bar { gap: 2px; padding: 2px 4px 4px; }
-  .composer-bar .icon-btn { width: 36px; height: 36px; }
-  .send-btn { width: 44px; height: 36px; }
+  /* 6px, not 2px: at 2px the three config controls read as ONE control on a phone (the operator's
+     「权限…模型…语音输入键…重合」). The room comes out of the two round buttons below. */
+  .composer-bar { gap: 6px; padding: 2px 5px 5px; }
+  .composer-bar .icon-btn { width: 32px; height: 32px; }
+  .send-btn { width: 40px; height: 36px; }
+  /* The model name is the label that gets cut first: shrinking every control by the same ratio left
+     the MODE name at 「Defa…」, which is worse than 「deepseek-v4-…」 — the mode is the SAFETY label
+     (Default / Accept Edits / Yolo) and it is short, so it keeps its room and the model gives its
+     own back (AionUi caps its model label to 90px on a phone for the same reason). The 42vw ceiling
+     is for an agent that one day advertises a mode with a paragraph for a name: truncate it rather
+     than let it push the send button off the row. */
+  .composer-bar .tb-wrap:has([data-testid="start-model"]),
+  .composer-bar .tb-wrap:has([data-testid="tb-model"]) { flex-shrink: 6; }
+  .composer-bar .tb-wrap:has([data-testid="start-mode"]) { flex-shrink: 0; max-width: 42vw; }
+}
+
+@media (max-width: 420px) {
+  /* The depth pips are a glyph, not a word: thinner bars hand the model label ~12px back on a
+     390px screen (measured), where that is the difference between 「deepseek」 and 「dee…」. */
+  .tb-pips { gap: 1px; }
+  .tb-pips i { width: 2px; }
+}
+
+@media (max-width: 340px) {
+  /* The row runs out of room here before anything else does (measured: the model label's own floor
+     is ~289px of bar width; below that it starts pushing the microphone). So the model pill gives up
+     its WORD entirely rather than paint over its neighbour — the name is in the list it opens, with
+     the pick it is on marked — and it drops the 40px thumb floor with it: an icon that is smaller
+     than a thumb beats a chip lying on top of the microphone. */
+  .composer-bar .tb-wrap:has([data-testid="start-model"]),
+  .composer-bar .tb-wrap:has([data-testid="tb-model"]) { flex-shrink: 1; }
+  .composer-bar .tb-wrap:has([data-testid="start-model"]) .tb-label,
+  .composer-bar .tb-wrap:has([data-testid="tb-model"]) .tb-label { display: none; }
+  .composer-bar .tb-wrap:has([data-testid="start-model"]) .tb-btn,
+  .composer-bar .tb-wrap:has([data-testid="tb-model"]) .tb-btn { min-width: 0; }
+  /* Below the project's own floor (360px). Seven controls on one 268px bar do not fit at any
+     spacing, so this is the last place the chrome can be squeezed: the gaps the operator asked for
+     come down to 4px and the two round buttons lose 2-4px each. Measured at 320px: no overlap. */
+  .composer-bar { gap: 4px; padding: 2px 4px 4px; }
+  .composer-bar .icon-btn { width: 30px; height: 30px; }
+  .composer-bar .send-btn { width: 36px; }
 }
 
 /* ---- rail: the two sections (团队, 工作空间) --------------------------------- */

@@ -333,6 +333,80 @@ try {
   check("the dialog closes again (nothing left behind for the next run)",
     (await ev(`Boolean(document.querySelector('.modal.start-page'))`)) === false);
 
+  // ---- the toolbar the operator reported: 权限 / 模型 / 语音输入 must not overlap ----------------
+  // His words (2026-10-15): 「权限还有那个模型以及那个语音输入键…好像重合有一点交叉重叠」. The measured
+  // cause was NOT tight spacing but a box that escaped: `.tb-wrap` is the flex item that shrinks
+  // (flex 0 1 auto + min-width 0), while the `.tb-btn` inside it kept its own max-width — so at 390px
+  // 权限 painted 12px onto 模型 and the model label ran 15px into the microphone (25px at 360px).
+  // This is the contract that keeps it fixed: the three config controls are separate boxes at every
+  // width the cockpit runs at, the microphone is never underneath one of them, and the MODE name
+  // (the safety label) is never the one that gets cut.
+  const barGeom = async (W, H) => {
+    await setViewport(W, H);
+    await ev(`document.querySelector('.new-btn')?.click()`);
+    await sleep(1000);
+    const g = JSON.parse(await ev(`(() => {
+      const bar = document.querySelector('.modal.start-page .composer-bar');
+      const btns = [...bar.querySelectorAll(':scope > .tb-wrap > .tb-btn')];
+      const rs = btns.map((b) => b.getBoundingClientRect());
+      const overlaps = [];
+      for (let i = 1; i < rs.length; i += 1) {
+        if (rs[i - 1].right > rs[i].left + 0.5) overlaps.push(Math.round(rs[i - 1].right - rs[i].left));
+      }
+      const mic = bar.querySelector('[aria-label="dictate"]')?.getBoundingClientRect() ?? null;
+      const send = bar.querySelector('.send-btn')?.getBoundingClientRect() ?? null;
+      const last = rs[rs.length - 1] ?? null;
+      const modeLab = bar.querySelector('[data-testid="start-mode"] .tb-label');
+      return JSON.stringify({
+        overlaps,
+        micGap: mic && last ? Math.round(mic.left - last.right) : null,
+        sendInView: Boolean(send) && send.right <= window.innerWidth + 1,
+        modeShown: modeLab ? Math.round(modeLab.getBoundingClientRect().width) >= modeLab.scrollWidth - 1 : null,
+        controls: btns.length,
+      });
+    })()`));
+    await ev(`document.querySelector('.modal.start-page')?.parentElement?.click()`);
+    await sleep(350);
+    return g;
+  };
+  // 1440 = the desktop reading, 390 = the phone the operator reported, 360/320 = the floor below it
+  for (const [W, H] of [[1440, 900], [390, 844], [360, 780], [320, 700]]) {
+    const g = await barGeom(W, H);
+    check(`at ${W}px the config controls are separate boxes — none paints over its neighbour`,
+      g.controls >= 3 && g.overlaps.length === 0, JSON.stringify({ W, ...g }));
+    check(`…at ${W}px the microphone is not underneath the model pill`,
+      g.micGap === null || g.micGap >= 0, `W=${W} micGap=${g.micGap}`);
+    check(`…at ${W}px the permission mode still reads as its whole name (that is the safety label)`,
+      g.modeShown !== false, `W=${W} modeShown=${g.modeShown}`);
+    check(`…and 发送 is still on that screen`, g.sendInView === true, `W=${W}`);
+  }
+
+  // ---- dictation lands in the box you are LOOKING at --------------------------------------------
+  // The operator's second report: 「语音录入完了，点停止后…没有把消息填充到输入框里面」. Two composers are
+  // mounted at once while this dialog is up (it is an overlay), both sinks ran on the same dictation
+  // snapshot, and the chat page's effect runs FIRST (it is earlier in the tree) — so it took the words
+  // and the dialog's own box stayed empty. `window.__asFeed` is the seam the call sweep uses: the
+  // injected text stands in for a microphone nobody has in CI.
+  const sink = JSON.parse(await ev(`(async () => {
+    document.querySelector('.new-btn')?.click();
+    await new Promise((r) => setTimeout(r, 900));
+    window.__asFeed = { level: 0.3, text: 'QA start-page dictation probe', interim: '' };
+    document.querySelector('.modal.start-page [aria-label="dictate"]')?.click();
+    await new Promise((r) => setTimeout(r, 700));
+    const recording = Boolean(document.querySelector('.modal.start-page .dict-chip'));
+    document.querySelector('.modal.start-page .dict-chip .dict-stop')?.click();
+    await new Promise((r) => setTimeout(r, 900));
+    const mine = document.querySelector('.modal.start-page textarea')?.value ?? '';
+    const all = [...document.querySelectorAll('textarea')].map((t) => t.value);
+    return JSON.stringify({ recording, mine, landed: all.filter((v) => v.includes('QA start-page dictation probe')).length });
+  })()`));
+  check("dictation runs INSIDE the dialog (the chip and its stop are on the start page)", sink.recording === true, JSON.stringify(sink));
+  check("…and STOP fills the dialog's OWN box (the operator's report)", sink.mine.includes("QA start-page dictation probe"), JSON.stringify(sink));
+  check("…and the transcript lands in exactly ONE box (the chat composer behind it does not swallow it)",
+    sink.landed === 1, JSON.stringify(sink));
+  await ev(`(() => { window.__asFeed = undefined; document.querySelector('.modal.start-page')?.parentElement?.click(); return true; })()`);
+  await sleep(350);
+
   // ---- the START-PAGE contract: the row exists before the agent does (issue #1) ------------------
   // The complaint was that 「新建会话」 held the request for the agent's whole handshake — 10–40 s on
   // hermes — behind a busy dialog. The proof belongs at the API, where no browser timing can flatter

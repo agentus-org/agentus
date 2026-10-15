@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape } from "./useDismiss";
 import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
@@ -3409,6 +3409,11 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     // the phone's microphone mid-reply), which lands the transcript here in an idle state — so the
     // operator's words went into the composer AND the IME popped up in the middle of the answer.
     if (call) return;
+    // The new-session dialog is an overlay ON this page and carries a composer of its own: while it
+    // is up the transcript is HIS box's, not this one's. This effect runs FIRST (this page is
+    // earlier in the tree than the dialog), so without the check it took the words and the dialog's
+    // box stayed empty — the operator's 「点停止后没有填到输入框里」.
+    if (!dictation.owns("chat")) return;
     if (dict.status !== "idle" || !dict.text) return;
     const heard = dictation.consume();
     if (!heard) return;
@@ -4007,9 +4012,20 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   };
   useEffect(load, []);
 
+  // While this dialog is up, THIS box is the one that takes the words: the chat page behind it is
+  // still mounted with a sink of its own and its effect runs first (it is earlier in the tree). A
+  // layout effect, because the claim has to be in place before that passive effect in the same
+  // commit — opening the dialog exactly as an utterance ends is otherwise a race the box we cannot
+  // see wins.
+  useLayoutEffect(() => {
+    dictation.setOwner("start");
+    return () => dictation.setOwner("chat");
+  }, []);
+
   // Dictation finishes into THIS box, exactly as it does in the chat composer: the transcript has
   // exactly one place to land, and that place is the prompt.
   useEffect(() => {
+    if (!dictation.owns("start")) return;
     if (dict.status !== "idle" || !dict.text) return;
     const heard = dictation.consume();
     if (!heard) return;
