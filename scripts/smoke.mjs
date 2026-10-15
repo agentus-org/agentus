@@ -24,7 +24,24 @@ console.log("session:", JSON.stringify(session));
 const ws = new WebSocket(wsUrl(BASE));
 const events = [];
 let chunks = 0;
+/** The slot a prompt lands on must be `ready` first: a prompt sent while it is still `starting` is
+ *  REFUSED server-side ("session not ready"), so the run then asserts nothing at all and reads exactly
+ *  like a product failure (measured under load, where the mock child's spawn had simply not finished —
+ *  the session was `ready` a second later). Assert the precondition instead of inheriting the race. */
+const waitReady = async (id) => {
+  for (let i = 0; i < 80; i++) {
+    const list = await fetch(`${BASE}/api/sessions`, { headers: authHeaders() }).then((r) => r.json());
+    const row = [...(list.live || []), ...(list.pending || [])].find((s) => s.id === id);
+    if (row && row.status === "ready") return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+};
 ws.on("open", async () => {
+  if (!(await waitReady(session.id))) {
+    console.error("TIMEOUT waiting for the session to become ready — no prompt was sent");
+    process.exit(4);
+  }
   ws.send(JSON.stringify({ t: "prompt", sessionId: session.id, text: promptText }));
 });
 ws.on("message", async (raw) => {
