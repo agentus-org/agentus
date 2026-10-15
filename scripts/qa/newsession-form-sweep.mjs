@@ -381,6 +381,91 @@ try {
     check(`…and 发送 is still on that screen`, g.sendInView === true, `W=${W}`);
   }
 
+  // ---- the model picker: on screen, and readable at both ends ------------------------------------
+  // The operator's third report (2026-10-15): 「选择模型的时候好像不太对…那个框的位置能不能调调好一下…而且好像
+  // 显示不清楚是什么模型」. Two separate defects, both measured:
+  //   · the list is anchored to a bar that sits high in the dialog, and `.modal` is `overflow-y: auto`
+  //     — an absolutely positioned list got CLIPPED by the dialog's own frame (at 1440×900 it wanted
+  //     414px and the dialog painted 130px of it, turning the rest into scrollable overflow);
+  //   · the dialog fed the picker a FLAT id list — 439 rows, no filter, no grouping — with the current
+  //     model on row 245, so you could not see which model you were on, let alone find another one.
+  // The list is now `position: fixed` with measured placement (usePopoverFit) and BOTH composers render
+  // the same grouped, filterable ModelList. The assertions below are the reading, not the internals: a
+  // real pointer opens it, the whole box is on screen AND actually painted there, the current row is in
+  // view on open, and the filter narrows the list and still picks.
+  const modelPicker = async (W, H) => {
+    await setViewport(W, H);
+    await ev(`document.querySelector('.new-btn')?.click()`);
+    await sleep(1000);
+    await clickEl('.modal.start-page [data-testid="start-model"]', 900);
+    const m = JSON.parse(await ev(`(() => {
+      const el = document.querySelector('.modal.start-page .tb-list');
+      if (!el) return JSON.stringify({ open: false });
+      const r = el.getBoundingClientRect();
+      const sc = el.querySelector('.tb-scroll') ?? el;
+      const box = sc.getBoundingClientRect();
+      const rows = [...el.querySelectorAll('.tb-opt')];
+      const sel = el.querySelector('.tb-opt.sel');
+      const sr = sel ? sel.getBoundingClientRect() : null;
+      const cx = Math.round(Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 1));
+      const cy = Math.round(Math.min(Math.max(r.top + r.height / 2, 1), window.innerHeight - 1));
+      const hit = document.elementFromPoint(cx, cy);
+      const dlg = document.querySelector('.modal.start-page');
+      return JSON.stringify({
+        open: true,
+        rect: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)],
+        inside: r.top >= 0 && r.left >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+        painted: Boolean(hit && el.contains(hit)),
+        rows: rows.length, groups: el.querySelectorAll('.tb-group').length,
+        hasFilter: Boolean(el.querySelector('.tb-search')),
+        visRows: rows.filter((x) => { const b = x.getBoundingClientRect(); return b.top >= box.top - 1 && b.bottom <= box.bottom + 1; }).length,
+        selInView: Boolean(sr) && sr.top >= box.top - 1 && sr.bottom <= box.bottom + 1,
+        selText: sel ? sel.innerText.trim() : null,
+        dialogScrolls: dlg ? dlg.scrollHeight > dlg.clientHeight + 1 : null,
+      });
+    })()`));
+    return m;
+  };
+  for (const [W, H] of [[1440, 900], [390, 844]]) {
+    const p = await modelPicker(W, H);
+    check(`at ${W}px the model list is fully on screen (neither off the window nor out of the dialog)`,
+      p.open === true && p.inside === true, JSON.stringify({ W, ...p }));
+    check(`…at ${W}px the list is really PAINTED where it says it is (the dialog used to cut it in half)`,
+      p.painted === true, `W=${W} painted=${p.painted} rows=${p.rows} visRows=${p.visRows}`);
+    check(`…at ${W}px the current model is in view the moment the list opens`,
+      p.selInView === true && Boolean(p.selText), `W=${W} sel=${p.selText}`);
+    check(`…and opening the picker does not turn the dialog into a scroller`,
+      p.dialogScrolls === false, `W=${W} dialogScrolls=${p.dialogScrolls}`);
+    if (p.rows > 12) {
+      check(`…at ${W}px ${p.rows} models come with a filter box and provider grouping`,
+        p.hasFilter === true && p.groups > 1, `W=${W} filter=${p.hasFilter} groups=${p.groups} visRows=${p.visRows}`);
+      const typed = JSON.parse(await ev(`(async () => {
+        const inp = document.querySelector('.modal.start-page .tb-search');
+        if (!inp) return JSON.stringify({ ok: false });
+        const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(inp), 'value');
+        desc.set.call(inp, 'qwen');
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 400));
+        const el = document.querySelector('.modal.start-page .tb-list');
+        const narrowed = el ? el.querySelectorAll('.tb-opt').length : -1;
+        const row = el?.querySelector('.tb-opt') ?? null;
+        const name = row ? row.innerText.trim() : '';
+        row?.click();
+        await new Promise((r) => setTimeout(r, 800));
+        const pill = document.querySelector('.modal.start-page [data-testid="start-model"]');
+        return JSON.stringify({ ok: true, narrowed, name, closed: !document.querySelector('.modal.start-page .tb-list'),
+          pill: pill ? pill.innerText.trim() : '' });
+      })()`));
+      check(`…at ${W}px filtering “qwen” narrows the list, and picking from the narrowed list sets the pill`,
+        typed.ok === true && typed.narrowed > 0 && typed.narrowed < p.rows && typed.closed === true && typed.pill.length > 0 && typed.name.length > 0,
+        JSON.stringify({ W, rows: p.rows, ...typed }));
+      await sleep(300);
+    }
+    await ev(`document.querySelector('.modal.start-page')?.parentElement?.click()`);
+    await sleep(350);
+  }
+
+
   // ---- dictation lands in the box you are LOOKING at --------------------------------------------
   // The operator's second report: 「语音录入完了，点停止后…没有把消息填充到输入框里面」. Two composers are
   // mounted at once while this dialog is up (it is an overlay), both sinks ran on the same dictation

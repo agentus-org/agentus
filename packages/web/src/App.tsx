@@ -1,6 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { useDismiss, useEscape } from "./useDismiss";
+import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
+import { ModelList } from "./ModelList";
+import { modelProvider, shortModelName } from "./modelNames";
 import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
@@ -2708,35 +2710,6 @@ function humanBytes(n: number): string {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} kB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
-/** What to print on the model button: the model, not its provider.
- *  Agents name models "Provider · model" (Hermes) or "provider:model" (wire ids), and the
- *  toolbar only has room for the interesting half. */
-export function shortModelName(name: string, modelId?: string): string {
-  const source = (name || modelId || "").trim();
-  if (!source) return "";
-  const afterDot = source.includes("·") ? source.split("·").pop()!.trim() : source;
-  const afterColon = afterDot.includes(":") ? afterDot.split(":").pop()!.trim() : afterDot;
-  return afterColon || afterDot || source;
-}
-
-/** Which provider a model came from: the id prefix ("openrouter:anthropic/…") or the
- *  description agents attach ("Provider: OpenRouter"). Used to group the list. */
-export function modelProvider(m: { modelId: string; name?: string; description?: string | null }): string {
-  const clean = (raw: string): string => raw
-    // agents mark the active entry in the description ("Provider: X · current"): that is
-    // a state, not a provider, and keeping it split one provider into two groups.
-    .replace(/[•·|,-]?\s*\b(current|active|selected|default)\b\s*$/i, "")
-    .replace(/[•·|,\s-]+$/g, "")
-    .trim();
-  const fromDesc = /^\s*provider:\s*(.+)$/i.exec(m.description ?? "");
-  if (fromDesc) {
-    const name = clean(fromDesc[1]);
-    if (name) return name;
-  }
-  const prefix = m.modelId.includes(":") ? m.modelId.split(":")[0] : "";
-  return clean(prefix) || "other";
-}
-
 /** Thinking depth as colour + filled pips rather than words: the operator asked for the
  *  label to go away, and a level is easier to read as a small scale than as text. */
 const EFFORT_COLORS = ["#7f8c98", "#5fb3a1", "#7fb069", "#d9a441", "#e8843c", "#f0603f", "#ff4d4d"];
@@ -2815,9 +2788,11 @@ function ChoiceList({ items, current, onPick, empty }: {
   onPick: (value: string) => void;
   empty: string;
 }): JSX.Element {
-  if (!items.length) return <div className="tb-list"><div className="tb-empty">{empty}</div></div>;
+  // the list is what has to stay on screen: the new-session dialog puts this bar near the top
+  const listRef = usePopoverFit<HTMLDivElement>();
+  if (!items.length) return <div className="tb-list" ref={listRef}><div className="tb-empty">{empty}</div></div>;
   return (
-    <div className="tb-list" role="listbox">
+    <div className="tb-list" role="listbox" ref={listRef}>
       {items.map((it) => (
         <button
           key={it.value}
@@ -3308,7 +3283,6 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   const [settingsOpen, setSettingsOpen] = useState(false);
   // which toolbar popover is open: "effort" | "model" | null (settings has its own flag)
   const [pop, setPop] = useState<"effort" | "model" | null>(null);
-  const [modelQuery, setModelQuery] = useState("");
 
   // Grow with the content on EVERY value change — not only on keystrokes: dictation, the slash
   // palette and a restored draft all set `text` programmatically, and a box frozen at 42px is
@@ -3458,33 +3432,6 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   const modelName = shortModelName(modelFullName, currentModel);
   const effortName = effortCfg?.options?.find((o) => String(o.value) === String(effortCfg.currentValue ?? ""))?.name ?? "";
   const effort = effortCfg ? effortStyle(String(effortCfg.currentValue ?? ""), effortCfg.options ?? []) : null;
-  // Group by provider (Hermes knows 500+ models: a flat list is unusable), with the
-  // current model's group open. Filtering opens everything that matches.
-  const [closedGroups, setClosedGroups] = useState<Record<string, boolean>>({});
-  const modelGroups = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    const filtered = q
-      ? models.filter((m) => `${m.modelId} ${m.name} ${m.description ?? ""}`.toLowerCase().includes(q))
-      : models;
-    const byProvider = new Map<string, typeof filtered>();
-    for (const m of filtered) {
-      const key = modelProvider(m);
-      const list = byProvider.get(key);
-      if (list) list.push(m);
-      else byProvider.set(key, [m]);
-    }
-    const currentProvider = models.find((m) => m.modelId === currentModel);
-    const currentKey = currentProvider ? modelProvider(currentProvider) : "";
-    return [...byProvider.entries()]
-      .map(([provider, list]) => ({
-        provider,
-        list: list.slice(0, 200),
-        truncated: list.length > 200,
-        current: provider === currentKey,
-      }))
-      // the operator's provider first, then alphabetically
-      .sort((a, b) => (a.current === b.current ? a.provider.localeCompare(b.provider) : a.current ? -1 : 1));
-  }, [models, modelQuery, currentModel]);
 
   return (
     <div
@@ -3758,80 +3705,28 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 onToggle={() => { setSettingsOpen(false); setPop((p) => (p === "model" ? null : "model")); }}
               >
                 {models.length > 0 ? (
-                  <div className="tb-list wide">
-                    {/* The refused pick's own sentence, kept above the list: the row may be
-                        scrolled out of view or filtered away, the reason must not be. */}
-                    {modelErr ? (
-                      <div className="tb-err" role="alert" data-model-err={modelErr.id}>
-                        <span className="tb-err-id">{modelErr.id}</span>
-                        <span className="tb-err-text">{modelErr.text}</span>
-                      </div>
-                    ) : null}
-                    {models.length > 12 ? (
-                      <input
-                        className="tb-search"
-                        autoFocus
-                        value={modelQuery}
-                        placeholder={`filter ${models.length} models…`}
-                        aria-label="filter models"
-                        onChange={(e) => setModelQuery(e.target.value)}
-                      />
-                    ) : null}
-                    {modelGroups.map((g) => {
-                      const open = Boolean(modelQuery.trim()) || !closedGroups[g.provider];
-                      return (
-                        <div className="tb-group" key={g.provider}>
-                          <button
-                            type="button"
-                            className={`tb-group-head ${open ? "open" : ""}`}
-                            aria-expanded={open}
-                            title={`${g.provider} · ${g.list.length} model(s)`}
-                            data-provider={g.provider}
-                            onClick={() => setClosedGroups((c) => ({ ...c, [g.provider]: !c[g.provider] }))}
-                          >
-                            <IconChevronRight size={11} className={`tb-group-chev ${open ? "open" : ""}`} />
-                            <span className="tb-group-name">{g.provider}</span>
-                            <span className="tb-group-count">{g.list.length}</span>
-                          </button>
-                          {open ? (
-                            <div className="tb-group-body">
-                              {g.list.map((m) => (
-                                <button
-                                  key={m.modelId}
-                                  className={`tb-opt ${m.modelId === currentModel ? "sel" : ""} ${modelErr?.id === m.modelId || modelBad[m.modelId] ? "bad" : ""}`}
-                                  title={modelBad[m.modelId]
-                                    ? `${m.modelId} — this agent refused it: ${modelBad[m.modelId]}`
-                                    : (m.description ? `${m.modelId} — ${m.description}` : m.modelId)}
-                                  data-model={m.modelId}
-                                  data-model-refused={modelBad[m.modelId] ? "1" : undefined}
-                                  onClick={() => {
-                                    if (m.modelId === currentModel) { setPop(null); setModelQuery(""); return; }
-                                    setSwitching(true);
-                                    setModelErr(null);
-                                    // Not closed up front: a refusal has to be read where the pick
-                                    // was made, with the list still in front of the operator.
-                                    void cockpit.setModel(v.info.id, m.modelId)
-                                      .then(() => { setPop(null); setModelQuery(""); setModelErr(null); setAttachErr(""); })
-                                      .catch((e) => {
-                                        const text = String((e as Error)?.message ?? e);
-                                        setModelErr({ id: m.modelId, text });
-                                        setModelBad((prev) => ({ ...prev, [m.modelId]: text }));
-                                        setAttachErr(`model switch failed: ${text}`);
-                                      })
-                                      .finally(() => setSwitching(false));
-                                  }}
-                                >
-                                  <span className="tb-opt-name">{shortModelName(m.name, m.modelId)}</span>
-                                </button>
-                              ))}
-                              {g.truncated ? <div className="tb-empty">first 200 of this provider — filter to narrow</div> : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                    {!modelGroups.length ? <div className="tb-empty">no model matches “{modelQuery}”</div> : null}
-                  </div>
+                  <ModelList
+                    models={models}
+                    current={currentModel}
+                    bad={modelBad}
+                    err={modelErr}
+                    onPick={(modelId) => {
+                      if (modelId === currentModel) { setPop(null); return; }
+                      setSwitching(true);
+                      setModelErr(null);
+                      // Not closed up front: a refusal has to be read where the pick was made,
+                      // with the list still in front of the operator.
+                      void cockpit.setModel(v.info.id, modelId)
+                        .then(() => { setPop(null); setModelErr(null); setAttachErr(""); })
+                        .catch((e) => {
+                          const text = String((e as Error)?.message ?? e);
+                          setModelErr({ id: modelId, text });
+                          setModelBad((prev) => ({ ...prev, [modelId]: text }));
+                          setAttachErr(`model switch failed: ${text}`);
+                        })
+                        .finally(() => setSwitching(false));
+                    }}
+                  />
                 ) : (
                   <ChoiceList
                     items={(modelCfg?.options ?? []).map((o) => ({ value: String(o.value), name: o.name }))}
@@ -4248,11 +4143,14 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                     open={pop === "model"}
                     onToggle={() => setPop((p) => (p === "model" ? null : "model"))}
                   >
-                    <ChoiceList
-                      items={modelIds.map((id) => ({ value: id, name: shortModelName(id) }))}
+                    {/* The same list as the chat page — grouped by provider, filterable once
+                        the agent knows many models, and opening on the current choice. This dialog
+                        is meant to be a smaller session page, not a plainer one; with Hermes's 439
+                        models the old flat id list was a wall you could not read. */}
+                    <ModelList
+                      models={modelIds.map((id) => ({ modelId: id }))}
                       current={modelValue}
-                      empty="the agent lists no models"
-                      onPick={(value) => { setPickModel(value); setPop(null); }}
+                      onPick={(id) => { setPickModel(id); setPop(null); }}
                     />
                   </ToolbarSelect>
                 ) : null}

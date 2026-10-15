@@ -1502,12 +1502,35 @@ body.pane-dragging * { cursor: col-resize !important; }
 .tb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-chev { opacity: 0.55; }
 .tb-list {
-  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 15;
+  /* FIXED, not absolute, and do not "simplify" it back: the trigger often lives inside a dialog,
+     and `.modal` is `overflow-y: auto` — an absolutely positioned list is CLIPPED by the dialog's
+     own frame. That is exactly what the new-session model picker did (measured 2026-10-15 at
+     1440×900: the list wanted to be 414px tall, the dialog's bottom edge cut it at 130px, and the
+     rest turned into scrollable overflow on the dialog itself). Fixed escapes the clip without a
+     portal. It needs real coordinates, which is what usePopoverFit computes (top/left inline);
+     phones never get here — the 720px query below pins the list to the viewport as a sheet. */
+  position: fixed; z-index: 15;
   min-width: 180px; max-width: min(420px, 78vw); max-height: 46vh; overflow-y: auto;
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px;
   padding: 4px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
 }
 .tb-list.wide { min-width: 320px; }
+/* The model list is the tall one: the filter box and the group headings stay put and only the rows
+   scroll. Before, with an agent that knows 439 models, the filter box scrolled away with the list
+   and after one flick nobody could tell which provider they were looking at. AionUi pins its search
+   box above its scroll area for the same reason (`dropdown-search-scroll`). */
+.tb-list.stacked { display: flex; flex-direction: column; overflow: hidden; }
+.tb-list.stacked .tb-err, .tb-list.stacked .tb-search { flex: 0 0 auto; }
+.tb-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.tb-list.stacked .tb-group { border-top: 1px solid var(--line); }
+.tb-list.stacked .tb-group:first-child { border-top: none; }
+.tb-list.stacked .tb-group-head { position: sticky; top: 0; z-index: 1; background: var(--bg-raised); }
+/* Fitting (see usePopoverFit). The list is `position: fixed`, so it needs real coordinates — the
+   hook writes `top`/`left` (and a `max-height` for the room that is actually there) because CSS
+   cannot know where the trigger landed. Which side it opens on is the hook's call too: upward in
+   the chat page (the composer sits at the bottom of the window, 700+px of room above), downward in
+   the new-session dialog when that side is the roomier one. On a phone none of this runs — the 720px
+   query pins the list to the viewport as a sheet above the composer. */
 .tb-search {
   width: 100%; margin-bottom: 3px; background: var(--bg-panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12px;

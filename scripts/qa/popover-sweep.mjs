@@ -117,4 +117,24 @@ for (const [name, open, sel] of openers) {
   await ev(`document.querySelectorAll('.usage-detail').forEach(() => document.querySelector('.usage-text')?.click())`);
   await sleep(200);
 }
+// …and the new-session dialog's own pickers. They are a different risk from the four above: the bar
+// sits high inside `.modal` (which is `overflow-y: auto`), so a list that is absolutely positioned
+// gets CLIPPED by the dialog's frame — measured 2026-10-15 at 1440×900: the 439-row model list wanted
+// 414px and only 130px of it was painted, the rest becoming scrollable overflow on the dialog. The
+// centre hit test below is what catches that: clipped content is not hit-testable.
+await ev(`document.querySelector('.new-btn')?.click()`);
+await sleep(1100);
+for (const [name, tid] of [['start mode', 'start-mode'], ['start depth', 'start-effort'], ['start model', 'start-model']]) {
+  const st = await ev(`(() => { const b = document.querySelector('.modal.start-page [data-testid="${tid}"]');
+    if (!b) return 'no button'; if (!document.querySelector('.modal.start-page .tb-list')) b.click(); return 'clicked'; })()`);
+  await sleep(500);
+  const m = await ev(MEASURE('.modal.start-page .tb-list'));
+  const verdict = !m.found ? 'MISSING' : m.inside && m.hitAtCentre === 'ok' ? 'INSIDE  ✔' : m.inside ? 'PAINTED? ✘' : 'OUTSIDE ✘';
+  console.log(`${name.padEnd(14)} ${verdict}  open=${st}  ${JSON.stringify(m)}`);
+  await ev(`document.querySelector('.modal.start-page [data-testid="${tid}"]')?.click()`);
+  await sleep(250);
+}
+await ev(`document.querySelector('.modal-bg')?.click()`);
+await sleep(400);
+
 process.exit(0);
