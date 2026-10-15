@@ -2,7 +2,7 @@
  *  background and the two themes have opposite ones.
  *
  *  Until now the panel had a single Tango palette shared by both. On the dark theme's
- *  `--bg-1` (#0e1518) that put `black` #2e3436 at **1.5:1** and `brightBlack` #555753 at ~2.3:1 —
+ *  `--bg-panel` (#121a22) that put `black` #2e3436 at **1.5:1** and `brightBlack` #555753 at ~2.2:1 —
  *  several common writers (shell `dircolors`, diagnostics, diff context lines) use them, so
  *  their output disappeared into the panel (operator: 深色主题下「黑成一片」). `blue` #3465a4
  *  sat at 3.1:1 for the same reason.
@@ -29,9 +29,12 @@ export const ANSI_LIGHT: Ansi16 = {
   brightBlue: "#729fcf", brightMagenta: "#ad7fa8", brightCyan: "#34e2e2", brightWhite: "#eeeeec",
 };
 
-/** One Half Dark's hues, with both greys lifted off the panel background. */
+/** One Half Dark's hues, with both greys lifted off the panel background.
+ *  The lift is measured against the panel's REAL token (`--bg-panel` #121a22, see ToolPanel's
+ *  `terminalTheme`): One Half's own `black` #5c6370 is 2.90:1 there — under the 3:1 floor this
+ *  suite holds — so it moves to #636c79 (3.30:1), keeping the step to `brightBlack` (5.71:1). */
 export const ANSI_DARK: Ansi16 = {
-  black: "#5c6370", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
+  black: "#636c79", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
   blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
   brightBlack: "#8b949e", brightRed: "#ff7b86", brightGreen: "#b5e08f", brightYellow: "#ffd580",
   brightBlue: "#82c4ff", brightMagenta: "#e0a0f0", brightCyan: "#7fd8e0", brightWhite: "#ffffff",
@@ -58,7 +61,7 @@ export function ansiExtended(dark: boolean): string[] {
       for (const b of steps) out.push(hex(r, g, b));
     }
   }
-  const floor = dark ? 72 : 8;
+  const floor = dark ? 78 : 8;
   const ceil = dark ? 242 : 238;
   for (let i = 0; i < 24; i += 1) {
     const c = Math.round(floor + (i * (ceil - floor)) / 23);

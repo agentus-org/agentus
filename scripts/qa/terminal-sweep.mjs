@@ -226,6 +226,92 @@ async function typeLineAndRead(line) {
   return screen();
 }
 
+// ---- the terminal wears the cockpit's palette, never a foreign one -------------------------------
+// The operator's report (issue #10): on the default `system` theme with a light OS the cockpit was
+// white and the terminal inside it was a black block. Two causes, one per assertion below:
+//  ① the panel asked the DOM for `data-theme` (whose third value is `system`) and read "not light"
+//    as dark, so `system` ALWAYS took the dark branch — the ANSI palette was the dark one on a light
+//    page, which is where the unreadable terminal came from;
+//  ② the surface it painted came from `--bg-1`, a variable that exists nowhere in the repo, so it
+//    fell back to a hardcoded constant and could never follow the theme tokens at all.
+// Both are read off the RENDERED page here. The two blues are spelled out instead of imported from
+// `terminalPalette.ts` on purpose — a bug in the module under test must not be able to write its own
+// verdict (the rule rail-contrast-sweep follows for theme.ts's maths).
+const TANGO_BLUE = "rgb(52, 101, 164)";    // ANSI_LIGHT.blue #3465a4 — Tango, read on white
+const ONEHALF_BLUE = "rgb(97, 175, 239)";  // ANSI_DARK.blue  #61afef — One Half, read on the dark panel
+const PROBE_COLOURS = "printf '\\033[30mBLACK_PROBE\\033[0m|\\033[34mBLUE_PROBE\\033[0m\\n'";
+console.log("== the terminal follows the cockpit's theme (issue #10) ==");
+const themeBefore = JSON.parse(String(await ev(
+  `fetch('/api/settings',{credentials:'same-origin'}).then(r=>r.json()).then(d=>JSON.stringify(d.theme||{}))`)));
+for (const [mode, os] of [["system", "light"], ["system", "dark"], ["light", "dark"], ["dark", "light"]]) {
+  await send("Emulation.setEmulatedMedia", { media: "", features: [{ name: "prefers-color-scheme", value: os }] });
+  await ev(`fetch('/api/settings',{method:'PUT',credentials:'same-origin',headers:{'content-type':'application/json'},
+    body: JSON.stringify({theme:{mode:${JSON.stringify(mode)}, accent:${JSON.stringify(themeBefore.accent || "")}}})}).then(r=>r.status)`);
+  // A real reload: the palette is applied at boot, and the emulated OS preference must be in place
+  // before the page resolves `system`.
+  await ev(`location.reload()`);
+  await sleep(2800);
+  await openTerminal();
+  const pal = await readPalette();
+  if (!pal) { check(false, `${mode} + OS ${os}: the terminal is on screen to judge`, "no probe row"); continue; }
+  // The resolved palette as the PAGE has it, not as the probe assumes it: `--bg-panel` is the token
+  // `terminalTheme` reads for the surface, so the two must agree byte for byte.
+  const expectBlue = pal.bgPanel === "#121a22" ? ONEHALF_BLUE : TANGO_BLUE;
+  const expectDark = pal.bgPanel === "#121a22";
+  check(pal.hostBg === cssRgb(pal.bgPanel),
+    `${mode} + OS ${os}: the terminal's surface IS the panel token, not a hardcoded constant`,
+    `surface ${pal.hostBg} vs --bg-panel ${cssRgb(pal.bgPanel)}`);
+  check(pal.blue === expectBlue,
+    `${mode} + OS ${os}: its ANSI palette is the ${expectDark ? "dark" : "light"} one, matching the page`,
+    `blue ${pal.blue} (expected ${expectBlue}; the other palette's is ${expectDark ? TANGO_BLUE : ONEHALF_BLUE})`);
+  check(pal.black !== "", `${mode} + OS ${os}: the colour probe reached the screen`, `black ${pal.black}`);
+}
+await send("Emulation.setEmulatedMedia", { media: "", features: [] });
+await ev(`fetch('/api/settings',{method:'PUT',credentials:'same-origin',headers:{'content-type':'application/json'},
+  body: JSON.stringify({theme:{mode:${JSON.stringify(themeBefore.mode || "dark")}, accent:${JSON.stringify(themeBefore.accent || "")}}})}).then(r=>r.status)`);
+
+/** Open the workspace panel on its terminal tab and wait for a shell — after a reload this is not
+ *  a no-op, so the theme section uses the same steps the file's first half does. */
+async function openTerminal() {
+  if (!(await ev(`Boolean(document.querySelector('.tool-panel'))`))) {
+    await until(`Boolean(document.querySelector('button[aria-label="workspace panel"]'))`, 8000);
+    await ev(`(() => { const b = document.querySelector('button[aria-label="workspace panel"]'); if (b) b.click(); return !!b })()`);
+    await until(`Boolean(document.querySelector('.tool-panel'))`, 6000);
+  }
+  await ev(`(() => { const t = [...document.querySelectorAll('.tool-tab')].find((x) => /terminal/i.test(x.textContent)); if (t) t.click(); return !!t })()`);
+  await until(`Boolean(document.querySelector('.term-host .xterm'))`, 10000);
+  await until(`!!document.querySelector('.term-dot.ready')`, 15000);
+  await sleep(900);
+}
+/** Type the ANSI probe and read the colours xterm actually rendered, plus the surface the panel
+ *  painted and the tokens it claims to follow. Returns null when no probe row landed. */
+async function readPalette() {
+  await typeLine(PROBE_COLOURS);
+  for (let i = 0; i < 24; i++) {
+    if (await ev(`(() => [...document.querySelectorAll('.term-host .xterm-rows > div')]
+      .some((r) => /BLACK_PROBE/.test(r.textContent) && r.textContent.trim().length <= 34))()`)) break;
+    await sleep(250);
+  }
+  const raw = String(await ev(`(() => {
+    const rows = [...document.querySelectorAll('.term-host .xterm-rows > div')];
+    // the echoed command line carries the token too, and it is the longer row; the OUTPUT row is short
+    const hits = rows.filter((r) => /BLACK_PROBE/.test(r.textContent) && r.textContent.trim().length <= 34);
+    const row = hits[hits.length - 1];
+    if (!row) return 'null';
+    const spans = [...row.querySelectorAll('span')].map((s) => ({ t: s.textContent, c: getComputedStyle(s).color }));
+    const pick = (m) => ((spans.find((s) => s.t.includes(m)) || {}).c) || '';
+    const tok = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return JSON.stringify({ black: pick('BLACK_PROBE'), blue: pick('BLUE_PROBE'),
+      hostBg: getComputedStyle(document.querySelector('.term-host')).backgroundColor, bgPanel: tok('--bg-panel') });
+  })()`));
+  return raw === 'null' ? null : JSON.parse(raw);
+}
+/** #121a22 -> `rgb(18, 26, 34)`, the form getComputedStyle hands back. */
+function cssRgb(hex) {
+  const n = Number.parseInt(String(hex).replace("#", "").slice(0, 6), 16) || 0;
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}
+
 console.log(`\n${pass} ok, ${fail} failed`);
 closeTab();
 ws.close();
