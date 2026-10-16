@@ -45,7 +45,7 @@
         android:allowBackup="false"
         android:resizeableActivity="true"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.Agentus">
 
         <!-- Foldable continuity: Xiaomi's HyperOS ignores an app's own configChanges and forces a
              relaunch on fold/unfold (their words: "我们忽略了这部分 app 的 configChanges"). So this

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The night half of the app theme: the SAME theme with isLightTheme flipped to false, which is
+     what makes WebView answer "prefers-color-scheme: dark" to the cockpit page. See
+     res/values/themes.xml for the full story, and note that the parent stays the LIGHT platform
+     theme so the flag is the only difference and nothing but the page's palette changes.
+
+     Night is a resource qualifier (Configuration.UI_MODE_NIGHT_YES), so this file applies exactly
+     when the system is in dark mode, and the activity is recreated on the flip (the manifest
+     declares no configChanges), so a fresh WebView picks the new value up without a reload dance. -->
+<resources>
+    <style name="Theme.Agentus" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:isLightTheme">false</item>
+    </style>
+</resources>

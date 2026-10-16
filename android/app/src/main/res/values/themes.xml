@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app theme, and the ONLY place that tells WebView which palette the page should paint.
+
+     Why this file exists at all: the companion IS a WebView (the cockpit page is the UI), and
+     WebView does not read the system's night setting; it reads the theme's android:isLightTheme.
+     Per Android's "Darken web content in WebView": "WebView always sets prefers-color-scheme
+     according to isLightTheme. If isLightTheme is true or not specified, then prefers-color-scheme
+     is light; otherwise, it is dark."
+
+     The app used to point straight at @android:style/Theme.Material.Light.NoActionBar, whose
+     isLightTheme is true, so the page was pinned to the light palette for good while the native
+     toolbar (Ui.java, which reads Configuration.UI_MODE_NIGHT_MASK) followed the system. Measured
+     on Android 16 with the system in night mode: matchMedia('(prefers-color-scheme: dark)') came
+     back false and the page's bg token was #f4f6f9 (light) under a dark toolbar.
+
+     So: one theme per night qualifier, identical except for isLightTheme. Both parent the LIGHT
+     platform theme on purpose, so the only difference is the flag and the app's own widget styling
+     (and the window background) does not change behind Ui.java's back. Add no colors here.
+
+     API note: android:isLightTheme landed in API 29 (minSdk here is 26). On older devices the
+     attribute is simply unused; no values-v29 copy is needed. -->
+<resources>
+    <style name="Theme.Agentus" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:isLightTheme">true</item>
+    </style>
+</resources>
