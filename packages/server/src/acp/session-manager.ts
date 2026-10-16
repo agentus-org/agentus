@@ -203,6 +203,12 @@ interface LiveSession {
    *  conversation. Cleared the moment the operator actually says something — from then on the agent
    *  really is answering. */
   replaying?: boolean;
+  /** Whether the store ALREADY held this slot's transcript when the current spawn/resume began —
+   *  i.e. whether the agent's replay is a duplicate of work we have. Frozen for the whole replay
+   *  window on purpose (see #onSessionUpdate): re-reading `maxSeq` per frame closes the window on
+   *  the first frame an EMPTY slot accepts, so a replay that was the only copy — a fork, or a slot
+   *  whose rows are gone — came up holding one message and silently dropped its own history. */
+  replayHadRows?: boolean;
   /** The plan hand-over is owed on the NEXT prompt: a freshly (re)started agent has no memory of
    *  the plan it was working on, while the cockpit still has it (design-plan-service.md §7).
    *  Cleared after the first prompt, because after that the agent maintains the plan itself —
@@ -434,6 +440,7 @@ export class SessionManager {
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
       // into the live DB on one restart and pushed every session's clock to「刚刚」.
       replaying: true,
+      replayHadRows: this.#store.maxSeq(id) > 0,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
@@ -614,6 +621,7 @@ export class SessionManager {
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
       // into the live DB on one restart and pushed every session's clock to「刚刚」.
       replaying: true,
+      replayHadRows: this.#store.maxSeq(id) > 0,
     };
     this.#sessions.set(id, live);
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
@@ -1598,10 +1606,13 @@ export class SessionManager {
     // live DB on one restart and pushed every session's clock to 「刚刚」.
     //
     // Dropped only when we DO hold a transcript: a slot whose rows are gone has nothing else to
-    // rebuild from, so that replay is the only copy and it is kept.
+    // rebuild from, so that replay is the only copy and it is kept. THAT decision is frozen at
+    // spawn (`replayHadRows`), never re-read here: an empty slot accepting its first frame makes
+    // `maxSeq` non-zero, so a per-frame test ends the replay window after ONE row — the shape a
+    // fork used to come up in (260-row parent, fork holding a single `thought`).
     const isTextFrame = st === "agent_message_chunk" || st === "agent_thought_chunk";
     const isToolFrame = st === "tool_call" || st === "tool_call_update";
-    if (live.replaying && (isTextFrame || isToolFrame) && this.#store.maxSeq(live.info.id) > 0) {
+    if (live.replaying && live.replayHadRows && (isTextFrame || isToolFrame)) {
       return;
     }
     let msg: Parameters<Store["appendMessage"]>[0] | null = null;
@@ -2154,6 +2165,15 @@ export class SessionManager {
       commands: source.info.commands ?? [],
       workspace: source.info.workspace ?? null,
     });
+    // The agent copied the CONTEXT; the cockpit copies what the operator can SEE. The new slot's
+    // own `session/load` replay cannot stand in for this (see Store.copyTranscript: the operator's
+    // prompts are not on the wire) — and pre-filling the store is also what makes that replay
+    // harmless, since the window drops it as the duplicate it now is.
+    const copied = this.#store.copyTranscript(id, newId);
+    // A fork starts a NEW conversation, so its clock is now: the transcript came along with its
+    // real timestamps, but the rail must not file a click made a second ago under the parent's
+    // last activity (「3 天前」).
+    if (copied) this.#store.touchActivity(newId, now);
     this.#emitSessions();
     // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
     return await this.resume(newId);

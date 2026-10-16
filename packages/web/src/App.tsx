@@ -308,32 +308,66 @@ function CopyButton({ text, what = "消息" }: { text: string; what?: string }):
 
 /** Fork from the tail of the conversation (studio shows this on the LAST message only:
  *  a fork is "continue this work as a new session", and that only makes sense at the end
- *  of what the agent currently holds). The agent does the copying — ACP `session/fork`. */
+ *  of what the agent currently holds). The agent does the copying — ACP `session/fork`.
+ *
+ *  Confirmed first, and that is not politeness: this button is a small icon in a row of peers
+ *  (copy / read-aloud / fork) sitting under every agent bubble, and a stray click used to make a
+ *  whole session — a real agent process, a new row in the rail — with no way back but deleting it.
+ *  One modal, one sentence about what the fork carries, and the two actions on it. */
 function ForkHere({ sid, busy }: { sid: string; busy: boolean }): JSX.Element {
+  const [ask, setAsk] = useState(false);
   const [state, setState] = useState<"idle" | "working" | "failed">("idle");
   const [err, setErr] = useState("");
+  useEscape(ask, () => setAsk(false));
+  const go = async (): Promise<void> => {
+    setState("working");
+    setErr("");
+    try {
+      await cockpit.fork(sid);
+      // the fork becomes the active session, so this row is off screen by now — the reset is for
+      // the failure path only, but leaving "working" set would poison the next open.
+      setState("idle");
+      setAsk(false);
+    } catch (er) {
+      setErr(String((er as Error)?.message ?? er));
+      setState("failed");
+    }
+  };
   return (
-    <button
-      type="button"
-      className={`bubble-btn fork ${state}`}
-      disabled={busy || state === "working"}
-      title={err || (state === "failed" ? "fork 失败" : "从这里 fork —— agent 把这段上下文复制到一个新会话")}
-      aria-label={state === "failed" ? "fork 失败" : "从这里 fork"}
-      onClick={async (e) => {
-        e.stopPropagation();
-        setState("working");
-        setErr("");
-        try {
-          await cockpit.fork(sid);
-          setState("idle");
-        } catch (er) {
-          setErr(String((er as Error)?.message ?? er));
-          setState("failed");
-        }
-      }}
-    >
-      <IconFork size={13} />
-    </button>
+    <>
+      <button
+        type="button"
+        className={`bubble-btn fork ${state === "failed" ? "failed" : state === "working" ? "working" : ""}`}
+        disabled={busy || state === "working"}
+        title={state === "failed" ? "fork 失败" : "从这里 fork —— agent 把这段上下文复制到一个新会话"}
+        aria-label={state === "failed" ? "fork 失败" : "从这里 fork"}
+        onClick={(e) => {
+          e.stopPropagation();
+          setErr("");
+          setAsk(true);
+        }}
+      >
+        <IconFork size={13} />
+      </button>
+      {ask ? (
+        <div className="modal-bg" onClick={() => setAsk(false)}>
+          <div className="modal" role="dialog" aria-label="确认 fork" onClick={(e) => e.stopPropagation()}>
+            <h3>从这里 fork？</h3>
+            <div className="hint">
+              新的会话会带着这条消息之前的整段对话继续，原会话不受影响。开出的是一个新
+              agent 进程，会在侧栏里多一行。
+            </div>
+            {err ? <div className="err">{err}</div> : null}
+            <div className="row">
+              <button className="cancel" onClick={() => setAsk(false)}>取消</button>
+              <button className="go" disabled={busy || state === "working"} onClick={() => void go()}>
+                {state === "working" ? "fork 中…" : "确认 fork"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

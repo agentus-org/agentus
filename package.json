@@ -74,6 +74,7 @@
   "resume-tail": "tsx scripts/qa/resume-tail.mts",
   "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
   "replay-window": "node scripts/qa/replay-window.mjs",
+  "fork-transcript": "node scripts/qa/fork-transcript.mjs",
   "think-cadence": "node scripts/qa/think-cadence.mjs"
  },
  "engines": {

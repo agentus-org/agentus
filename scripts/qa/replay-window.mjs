@@ -61,12 +61,29 @@ const lastAtOf = async () => {
   const d = await j(await fetch(`${BASE}/api/sessions`, { headers: H }));
   return [...(d.live ?? []), ...(d.archived ?? [])].find((s) => s.id === sid)?.lastAt ?? 0;
 };
+/** A freshly created slot is a ROW, not a process: /prompt against it fails with "session not
+ *  ready", and the fixture then reads 0 rows — which silently made every assertion below vacuous
+ *  (measured 2026-10-16: "the fixture really has a transcript" had been failing, and the check that
+ *  matters compared 0 rows with 0 rows). Resume the slot, as the composer does, before asking. */
+const waitStatus = async (want) => {
+  for (let i = 0; i < 200; i++) {
+    const st = await statusOf();
+    if (want(st)) return st;
+    await sleep(250);
+  }
+  return "timeout";
+};
+
+const up = await fetch(`${BASE}/api/sessions/${sid}/resume`, { method: "POST", headers: H });
+check("the fixture slot comes up (it is asked something below)", up.ok, `HTTP ${up.status}`);
+const ready = await waitStatus((st) => st === "ready");
+check("…and it is ready before its first prompt", ready === "ready", `status=${ready}`);
 
 await fetch(`${BASE}/api/sessions/${sid}/prompt`, {
   method: "POST", headers: { "content-type": "application/json", ...H },
   body: JSON.stringify({ text: "原始回合 original turn" }),
 });
-for (let i = 0; i < 120 && (await statusOf()) === "running"; i++) await sleep(250);
+await waitStatus((st) => st !== "running");
 await sleep(500);
 
 const before = await rows();

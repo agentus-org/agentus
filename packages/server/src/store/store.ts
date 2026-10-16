@@ -810,6 +810,45 @@ export class Store {
     return (row.m ?? 0) + 1;
   }
 
+  /** Copy one session's whole transcript into another — where a FORK starts from.
+   *
+   *  A fork continues the parent's conversation: the AGENT deep-copies the context (`session/fork`),
+   *  and the record the operator SEES has to come along too. Its only other source is the agent's
+   *  `session/load` replay, and a replay cannot carry the operator's own side — `user_message_chunk`
+   *  is not a row this store renders (their words are written here when they SEND them, not rebuilt
+   *  from the wire) — so a fork left to the replay opens on the agent's half of the conversation.
+   *
+   *  Rows keep their kind/payload/ids and their REAL timestamps (this history happened when it
+   *  happened; the slot's own clock is `touchActivity`, deliberately not this) and `seq` is
+   *  renumbered from 1. A target that already holds rows is left alone: this is a copy, never a
+   *  merge. Returns how many rows moved. */
+  copyTranscript(from: string, to: string): number {
+    if (!from || !to || from === to) return 0;
+    if (this.maxSeq(to) > 0) return 0;
+    const rows = this.#db
+      .prepare("select kind, payload, tool_call_id, block_key, created_at from messages where session_id = ? order by seq")
+      .all(from) as unknown as {
+        kind: string; payload: string; tool_call_id: string | null;
+        block_key: string | null; created_at: number;
+      }[];
+    if (!rows.length) return 0;
+    const insert = this.#db.prepare(
+      `insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at)
+       values (?,?,?,?,?,?,?)`,
+    );
+    // One transcript or none: a half-copied fork would read as a truncation that never happened.
+    this.#db.exec("begin");
+    try {
+      rows.forEach((r, i) =>
+        insert.run(i + 1, to, r.kind, r.payload, r.tool_call_id, r.block_key, r.created_at));
+      this.#db.exec("commit");
+    } catch (err) {
+      this.#db.exec("rollback");
+      throw err;
+    }
+    return rows.length;
+  }
+
   /** The session's plan object, or null when it never made one.
    *
    *  This — not the transcript — is what the cockpit's card renders, because the two are not the
