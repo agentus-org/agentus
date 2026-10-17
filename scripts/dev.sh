@@ -194,8 +194,27 @@ case "${1:-}" in
     #   · the live process is still under `tsx watch`                  -> old launcher, migrate it
     # and then prove it: relaunch.sh fails loudly if the pid is unchanged, i.e. if old code were
     # about to keep serving.
-    server_changed="$(git -C "$LIVE" diff --name-only "$old_tip" "$tip" -- packages/server/src packages/shared/src 2>/dev/null | wc -l | tr -d ' ')"
-    shape_changed="$(git -C "$LIVE" diff --name-only "$old_tip" "$tip" -- scripts/start.sh package.json 2>/dev/null | wc -l | tr -d ' ')"
+    # …measured against the code the PROCESS booted, not against the tree's previous checkout.
+    # A tree can be moved before the restart happens (an earlier promote that died after its
+    # checkout, a manual checkout, a plain re-run), and then tree-vs-tree says "nothing changed"
+    # forever while the old process keeps serving — a release that reports green from one commit
+    # behind. /api/version answers `commit` from the boot, so the question is asked of the process.
+    boot_commit="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/api/version" 2>/dev/null \
+      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).commit||"")}catch{console.log("")}})')"
+    base="$old_tip"
+    if [ -n "$boot_commit" ] && git -C "$LIVE" cat-file -e "${boot_commit}^{commit}" 2>/dev/null; then
+      base="$boot_commit"
+      if [ "$boot_commit" != "$(git -C "$LIVE" rev-parse --short "$tip")" ]; then
+        echo "[promote] the running server booted $boot_commit, target is $(git -C "$LIVE" rev-parse --short "$tip")"
+      fi
+    else
+      # No boot commit, or one this tree cannot resolve, is not evidence of sameness: either the
+      # process predates this field or it booted from somewhere else. Both mean "assume stale" —
+      # the failure we are preventing is the silent one, and a needless restart is loud and cheap.
+      base=""; echo "[promote] the running server reports no usable boot commit (${boot_commit:-none}) — assuming stale"
+    fi
+    server_changed="$( [ -z "$base" ] && echo unknown || git -C "$LIVE" diff --name-only "$base" "$tip" -- packages/server/src packages/shared/src 2>/dev/null | wc -l | tr -d ' ')"
+    shape_changed="$( [ -z "$base" ] && echo unknown || git -C "$LIVE" diff --name-only "$base" "$tip" -- scripts/start.sh package.json 2>/dev/null | wc -l | tr -d ' ')"
     # The listener is the launcher's CHILD when a watcher is in play, so ask the process-group
     # leader (the launcher spawned it with its own session) — that is the process that holds the
     # `watch` flag.

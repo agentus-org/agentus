@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -71,6 +72,23 @@ const DATA_DIR_SOURCE = ENV_DATA_DIR
   : DATA_DIR === REPO_DATA_DIR
     ? "in-repo packages/server/.data"
     : hasData(DEFAULT_DATA_DIR) ? "existing ~/.agentus" : "default ~/.agentus (created on this boot)";
+// WHICH CODE THIS PROCESS IS RUNNING — resolved once, at boot, on purpose.
+//
+// The live server has no watcher, so the only thing that decides "is this release live?" is what
+// this process loaded. A promote used to compare the live tree's previous checkout with the new
+// tip, which stops being true the moment anything moves the tree first (an earlier promote that
+// died after checkout, a manual `git checkout`, a re-run): every later promote then saw a zero
+// diff, printed "no server-side change" and left the old process serving — the release looked
+// green while the code was a commit behind. This is that fact, from the process itself: promote
+// asks the server what it booted, and restarts because the answer is not the target commit.
+const BOOT_COMMIT = (() => {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: path.resolve(HERE, "../.."), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out || null;
+  } catch { return null; } // a published install has no .git — nothing to name
+})();
 const WEB_DIST = process.env.AGENTUS_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
 // The Android companion artifact (/notify links to it, /agentus-companion.apk streams it).
 // First candidate is relative to THIS FILE (src → packages/server → packages → repo root,
@@ -1529,7 +1547,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       // launcher sets neither, so live answers false. An instance-level fact, so it rides the
       // endpoint that already describes the instance rather than every backend row.
       const dev = Boolean(process.env.DEV_TREE) || process.env.AGENTUS_DEV === "1";
-      return send(res, 200, { asset, dev });
+      // `commit`: the code THIS process booted from (see BOOT_COMMIT). It is the only honest answer
+      // to "did the release actually land", because the tree can be moved under a running server.
+      return send(res, 200, { asset, dev, commit: BOOT_COMMIT });
     }
     if (url.pathname.startsWith("/api/")) return send(res, 404, { error: "not_found" });
     return serveStatic(req, res);
