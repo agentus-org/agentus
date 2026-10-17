@@ -193,6 +193,7 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 |---|---|---|
 | `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT`) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see [Data directory](#data-directory) |
+| `AGENTUS_TITLE` | `Agentus` | this instance's own name — the tab title and the PWA label, so several cockpits on one machine are told apart |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one |

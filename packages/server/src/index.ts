@@ -10,7 +10,7 @@ import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store } from "./store/store.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
-import { SessionManager, SessionUnavailable } from "./acp/session-manager.js";
+import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
@@ -33,6 +33,13 @@ import {
 } from "./cockpit/api.js";
 
 const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
+
+// The INSTANCE's own name (issue #19). One person runs several cockpits — live, a pre-release box,
+// the one at home — and every tab plus every home-screen icon said "Agentus", so the only way to
+// tell them apart was the domain. The name is not a build input: the HTML is already served
+// no-store and names the hashed bundle, so renaming it here costs nothing and needs no rebuild.
+// Unset keeps "Agentus" byte for byte, so an install that never set it is unchanged.
+const TITLE = (process.env.AGENTUS_TITLE ?? "").trim() || "Agentus";
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
 // launches from the repo root while the dev server runs from packages/server, and a
 // cwd-relative path would silently open a second database (the operator's slots would
@@ -87,6 +94,7 @@ if (process.env.AGENTUS_PRINT_PATHS) {
   console.log(`[agentus] web bundle    ${WEB_DIST}  (${has(path.join(WEB_DIST, "index.html"))})`);
   console.log(`[agentus] companion apk ${APK_FILE}  (${has(APK_FILE)})`);
   console.log(`[agentus] http port     ${PORT}`);
+  console.log(`[agentus] instance name ${TITLE}`);
   process.exit(0);
 }
 
@@ -397,13 +405,21 @@ function runPrompt(
     console.error(`[agentus] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
     // `rejectedPrompt` is the operator's own sentence, handed back with the refusal so the client can
     // put it back in line instead of losing it with the red bubble (see state.ts, case "message").
-    // Only for the one refusal that means 「你的话我还没收到，不是它失败了」.
+    // Only for the refusals that mean 「你的话我还没收到，不是它失败了」: a busy agent, and an agent that
+    // cannot take the picture the operator just attached (issue #17) — there the sentence is still
+    // worth keeping, it is the image that has to go.
+    const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED;
     emit({ t: "message", message: {
       seq: -1, sessionId, kind: "meta",
-      payload: { text: `turn failed: ${msg}`, ...(msg === "turn already running" ? { rejectedPrompt: text } : {}) },
+      payload: { text: `turn failed: ${msg}`, ...(lost ? { rejectedPrompt: text } : {}) },
       createdAt: Date.now(),
     } });
-    emit({ t: "turn-end", sessionId, error: msg });
+    // `turn-end` is the frame that says A TURN IS OVER. For the two "nothing left the client" refusals
+    // there was no turn to end: the busy case still has the operator's ORIGINAL turn running (its own
+    // turn-end will come), and a refused image never started one. Emitting one anyway flipped the page
+    // to idle mid-turn — the stop button vanished while the agent was still working (measured 2026-10-17
+    // in `attachment-capability`, on the busy branch).
+    if (!lost) emit({ t: "turn-end", sessionId, error: msg });
   });
 }
 
@@ -452,6 +468,33 @@ function send(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** Escape the one instance name that reaches HTML — an operator's `AGENTUS_TITLE` is not markup. */
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Put the instance name in the tab title. A body without a `<title>` is left alone rather than
+ *  guessed at: a release that changes index.html will fail the sweep, not silently ship a title. */
+function withTitle(html: string): string {
+  if (TITLE === "Agentus") return html; // never set → the built file is the answer, byte for byte
+  return html.replace(/<title>[^<]*<\/title>/i, `<title>${htmlEscape(TITLE)}</title>`);
+}
+
+/** Put the instance name on the home screen. `name` is the install dialog and the launcher label in
+ *  most launchers; `short_name` is what actually fits under the icon, and Android truncates it
+ *  itself — inventing our own abbreviation produced names nobody chose. */
+function withManifestName(text: string): string {
+  if (TITLE === "Agentus") return text;
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    j.name = TITLE;
+    j.short_name = TITLE;
+    return JSON.stringify(j, null, 2);
+  } catch {
+    return text; // an unparseable manifest is not worth failing a page load over
+  }
+}
+
 function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   // SPA fallback for web build; only GET
   if (!fs.existsSync(WEB_DIST)) {
@@ -469,6 +512,29 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
     ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json",
     ".json": "application/json", ".ico": "image/x-icon",
   };
+  // The two bodies this server EDITS on the way out are the two that carry the instance's name
+  // (issue #19): the tab title lives in index.html, the home-screen label in the manifest. Every
+  // other file is streamed untouched — the hashed assets are immutable and must stay byte-exact.
+  if (ext === ".html" || ext === ".webmanifest") {
+    let body: string;
+    try {
+      body = fs.readFileSync(file, "utf8");
+    } catch {
+      res.writeHead(500); res.end("web build unreadable"); return;
+    }
+    if (ext === ".html") body = withTitle(body);
+    else body = withManifestName(body);
+    res.writeHead(200, {
+      "content-type": types[ext] ?? "text/plain",
+      // Same rule as below: the HTML names the hashed bundle, so it must never be cached. The
+      // manifest carries the instance name, which an operator changes by restarting with a new
+      // AGENTUS_TITLE — a cached copy would keep the old label on the home screen for a year.
+      "cache-control": "no-cache, must-revalidate",
+      "content-length": String(Buffer.byteLength(body)),
+    });
+    res.end(body);
+    return;
+  }
   res.writeHead(200, {
     "content-type": types[ext] ?? "application/octet-stream",
     // The HTML must never be cached: it names the hashed bundle, so a cached index.html keeps serving

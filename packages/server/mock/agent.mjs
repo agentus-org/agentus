@@ -179,6 +179,11 @@ const agent = () => ({
         // feature is such a client — it forks the session, asks the fork to summarise, and
         // throws the fork away. Advertising it makes that path testable offline.
         sessionCapabilities: { list: {}, cancel: {}, fork: {} },
+        // Issue #17: ACP lets an agent say which prompt parts it takes, and this one starts out
+        // saying NO to images — the honest default, because a non-vision model is the common case
+        // and a silently dropped image is what the cockpit's gate exists to prevent. `MOCK_IMAGE=1`
+        // flips it, so both sides of the gate are testable without a vision model.
+        promptCapabilities: { image: process.env.MOCK_IMAGE === "1", audio: false, embeddedContext: false },
       },
       authMethods: [{ id: "mock", name: "Mock auth (no-op)" }],
     };

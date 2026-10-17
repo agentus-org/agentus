@@ -110,6 +110,7 @@ layer never changes.
 |---|---|---|
 | `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
+| `AGENTUS_TITLE` | `Agentus` | this instance's own name: the browser tab title and the PWA/home-screen label. Set it when one person runs several cockpits (`AGENTUS_TITLE="Agentus（pre-betabox）"`) |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |

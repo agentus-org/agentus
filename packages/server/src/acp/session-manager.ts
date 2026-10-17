@@ -177,9 +177,10 @@ interface LiveSession {
   }>;
   alwaysAllow: Set<string>; // "allow_always" remembered per live session only (AionUi F-PERM-05)
   stderrBuf: string[];
-  /** What the agent says it can do (initialize.agentCapabilities), kept because the title
-   *  regeneration is only possible when it advertises `session/fork`. */
-  caps: { fork: boolean; load: boolean };
+  /** What the agent says it can do (initialize.agentCapabilities). `fork` gates title
+   *  regeneration, `load` gates resume; `image` is the one a TURN can be refused on — see
+   *  `IMAGE_UNSUPPORTED` in `prompt()`. */
+  caps: { fork: boolean; load: boolean; image: boolean };
   /** Incremented when a turn STARTS. An interrupt waits for the specific turn it cancelled,
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
@@ -481,7 +482,7 @@ export class SessionManager {
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -553,14 +554,7 @@ export class SessionManager {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
-      const caps = (init?.agentCapabilities ?? {}) as {
-        loadSession?: boolean;
-        sessionCapabilities?: { fork?: unknown };
-      };
-      live.caps = {
-        fork: Boolean(caps.sessionCapabilities?.fork),
-        load: Boolean(caps.loadSession),
-      };
+      live.caps = readCaps(init?.agentCapabilities);
       const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
@@ -672,7 +666,7 @@ export class SessionManager {
         commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
-      caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -714,6 +708,7 @@ export class SessionManager {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
+      live.caps = readCaps(reloadInit?.agentCapabilities);
       let loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
@@ -959,6 +954,14 @@ export class SessionManager {
   ): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
+    // An image the agent cannot take is refused HERE, above the floor-taking logic (issue #17):
+    // · below it, a busy agent answers "turn already running" and the operator never learns that the
+    //   picture is the problem — they retry, the turn ends, and it fails the same way for a new reason;
+    // · through it, one of two silent failures: the agent errors on a content block, or drops it and
+    //   answers as if nothing was attached.
+    // Neither is something the cockpit could explain afterwards, so it is said now, and the running
+    // turn is left alone (a refused prompt must never cancel one).
+    if (attachments.some((a) => a.kind === "image") && !s.caps.image) throw new Error(IMAGE_UNSUPPORTED);
     if (s.busy) {
       // Someone is talking over the agent. Plain prompts are refused (the operator's send
       // button is a stop button), but a call utterance carries `interrupt: true`: give the
@@ -2353,6 +2356,30 @@ export class SessionManager {
 /** ACP ContentBlock[] for a prompt: text first (the instruction), then media.
  *  Text attachments are inlined with a filename header because that is what every
  *  agent actually reads well; images go as protocol image blocks. */
+/** What a turn must say when the agent cannot take a picture (issue #17).
+ *
+ *  Kept as a module constant because TWO places have to agree on it: `prompt()` throws it, and the
+ *  server turns it into "your sentence comes back" just like `turn already running`. A second
+ *  literal would drift the moment one side is reworded. */
+export const IMAGE_UNSUPPORTED =
+  "这个后端不支持图片输入（agent 没在 initialize 里声明 promptCapabilities.image）—— 去掉图片再发，或换一个能看图的模型";
+
+/** Read the three capabilities this cockpit acts on. Defensive on purpose: `promptCapabilities`
+ *  is absent on agents that predate it, and an absent field means "no", not "try anyway" — a
+ *  silently dropped image is the failure this whole read exists to prevent. */
+function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image: boolean } {
+  const c = (capabilities ?? {}) as {
+    loadSession?: boolean;
+    sessionCapabilities?: { fork?: unknown };
+    promptCapabilities?: { image?: unknown };
+  };
+  return {
+    fork: Boolean(c.sessionCapabilities?.fork),
+    load: Boolean(c.loadSession),
+    image: c.promptCapabilities?.image === true,
+  };
+}
+
 function buildPromptBlocks(text: string, attachments: PromptAttachment[]): unknown[] {
   const blocks: unknown[] = [];
   const body = text.trim();
