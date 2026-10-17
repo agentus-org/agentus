@@ -325,6 +325,19 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         setPhase("error");
         return;
       }
+      // 按键打断 means NOBODY is listening while it speaks — not for the barge, not for the
+      // transcript, not for the level. The operator's rule, verbatim: 「打断的时候就不要去用
+      // 语音识别这个打断情况了，只有语音打断的时候才需要去识别我的语音是否打断了」. So the
+      // microphone is closed for the whole turn (it is reopened by whatever takes the floor back:
+      // the 打断 button, 按住说话, or the end of the reply). Closing it is stronger than ignoring
+      // its numbers: a recogniser that keeps running during playback hears our own TTS, and the
+      // stale sentence would then be waiting in `heard` the moment listening resumes.
+      if (c.interruptMode === "button" && (phaseRef.current === "speaking" || phaseRef.current === "thinking")) {
+        if (st.status !== "idle" && !mutedRef.current) dictation.stop();
+        bargeRef.current = 0;
+        echoBaseRef.current = 0;
+        return;
+      }
       if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
@@ -1238,7 +1251,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                 flip back) but they are visibly off and the reason is written next to them. */}
             {cfg.interruptMode === "button" ? (
               <p className="call-sheet-warn">
-                现在是「按键打断」：语音抢话已关闭，所以灵敏度和持续时间当前不起作用（切回「语音打断」，在通话页上一下就行）
+                现在是「按键打断」：它说话的时候麦克风是关的 —— 不识别、不抢话，只在你说完之后才重新打开。
+                所以灵敏度和持续时间这会儿不起作用（切回「语音打断」就恢复）。
               </p>
             ) : null}
             {/* What the capture ACTUALLY turned on — read from the live track, not from the

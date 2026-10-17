@@ -40,7 +40,7 @@ export const CALL_DEFAULT: CallSettings = {
 /** The switch's two ends, in the operator's words. */
 export const INTERRUPT_MODES: { id: InterruptMode; label: string; hint: string }[] = [
   { id: "voice", label: "语音打断", hint: "说一句就能打断它（灵敏度、持续时间在设置里调）" },
-  { id: "button", label: "按键打断", hint: "只有点圆球才打断——外放串音、环境吵的时候用它" },
+  { id: "button", label: "按键打断", hint: "只认按钮：它说话的时候麦克风关着，不识别、不抢话——外放串音、环境吵的时候用它" },
 ];
 
 /** The NUMERIC knobs (slider ends live here). `interruptMode` is a two-way choice, not a slider. */

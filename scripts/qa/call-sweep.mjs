@@ -798,6 +798,20 @@ try {
     (await phase2()) === "speaking" && (await frameCount("cancel")) === cancelsBeforeBtn,
     JSON.stringify({ phase: await phase2(), cancelsBefore: cancelsBeforeBtn, cancels: await frameCount("cancel") }));
 
+  // 按键打断 = the call is DEAF while it speaks. Not "a higher threshold" — the microphone is
+  // closed, so nothing of the operator's (and nothing of our own TTS) reaches the recogniser.
+  // 「打断的时候就不要去用语音识别这个打断情况了」. Asserted with words, not just a level: the
+  // sentence must never appear in the call at all.
+  await feed(0.6, "按键模式下不该被听到", "");
+  await sleep(1200);
+  const deaf = await ev2(`(() => ({ phase: document.querySelector('.call-mode').dataset.phase,
+    txt: ((document.querySelector('.call-lines')?.textContent ?? '') + '|'
+      + (document.querySelector('.call-cc-list')?.textContent ?? '')).slice(-400) }))()`);
+  check("…and in 按键打断 the microphone is CLOSED while it talks: spoken words are never heard",
+    deaf.phase === "speaking" && !String(deaf.txt).includes("按键模式下不该被听到"),
+    JSON.stringify(deaf));
+  await feed(0.35, "", "");
+
   // the receipt: the switch as the operator sees it, on a phone (the case the mode exists for)
   fs.writeFileSync(`${SHOTS}/call-modes.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
   await openSheet(); await sleep(400);
