@@ -30,7 +30,9 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
-import { IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings } from "./Icons";
+import {
+  IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings, IconSubtitles,
+} from "./Icons";
 import {
   bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES, patchCallSettings, useCallSettings,
   type CallSettings,
@@ -85,6 +87,10 @@ function charCount(text: string): number {
  *  operator hears. */
 const PREFETCH_SENTENCES = 1;
 
+/** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
+ *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
+const CAPTION_KEY = "agentus.call.caption";
+
 /** One line of history in the call's window.
  *  Memoised: the reply streams in chunks, the window re-renders on every one of them, and the rows
  *  that did not change must not re-render with it. */
@@ -137,6 +143,20 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   const [histOpen, setHistOpen] = useState(false);
   const [histAtBottom, setHistAtBottom] = useState(true);
   const histRef = useRef<HTMLDivElement | null>(null);
+  // 字幕 (captions) — the transcript view. The orb is the default face of a call (that is what the
+  // operator's eye expects when it rings), and this is the ONE toggle that turns the page into a
+  // readable conversation: the ball drops behind a frosted panel and the transcript takes the
+  // layout. Modelled on Gemini Live's captions button (top-right corner, sticky setting) and on
+  // ChatGPT's move to voice-inside-the-chat — both keep the immersive shape as an option and let
+  // the words take over on request. Persisted locally: it is a personal reading preference, not a
+  // server-side threshold, and a phone call and a desktop call need not agree.
+  const [caption, setCaption] = useState<boolean>(() => {
+    try { return localStorage.getItem(CAPTION_KEY) === "1"; } catch { return false; }
+  });
+  const captionRef = useRef(caption);
+  captionRef.current = caption;
+  const [ccAtBottom, setCcAtBottom] = useState(true);
+  const ccRef = useRef<HTMLDivElement | null>(null);
   const [cfgErr, setCfgErr] = useState("");
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
@@ -502,16 +522,22 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     const wctx = wave.getContext("2d");
     if (!ctx || !wctx) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
+    /** The transcript view paints this same canvas full-bleed, blurred, behind a frosted panel —
+     *  out-of-focus pixels do not need the same density, and a full-screen canvas at dpr 2 is the
+     *  one thing in this file that could cost a phone frames. */
+    const px = (): number => (captionRef.current ? 1.25 : dpr);
     const waveBuf = new Float32Array(96);
     let raf = 0;
+    let frame = 0;
 
     const size = (): void => {
+      const d = px();
       const r = canvas.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.round(r.width * dpr));
-      canvas.height = Math.max(1, Math.round(r.height * dpr));
+      canvas.width = Math.max(1, Math.round(r.width * d));
+      canvas.height = Math.max(1, Math.round(r.height * d));
       const wr = wave.getBoundingClientRect();
-      wave.width = Math.max(1, Math.round(wr.width * dpr));
-      wave.height = Math.max(1, Math.round(wr.height * dpr));
+      wave.width = Math.max(1, Math.round(wr.width * d));
+      wave.height = Math.max(1, Math.round(wr.height * d));
     };
     size();
     const ro = new ResizeObserver(size);
@@ -520,6 +546,9 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
 
     const draw = (t: number): void => {
       raf = window.requestAnimationFrame(draw);
+      // In the transcript view the ball is blurred light behind glass: 30 fps is indistinguishable
+      // there and halves the phone's work, while the stage view keeps every frame.
+      if (captionRef.current && (frame++ & 1)) return;
       const phase = phaseRef.current;
       const pal = PALETTE[phase];
 
@@ -542,11 +571,14 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       const breath = 1 + 0.05 * Math.sin(t / 1150);
       const energy = raw < 0 ? 0.22 + 0.1 * Math.sin(t / 1150) : 0.2 + 0.8 * lv;
 
-      const W = canvas.width / dpr, H = canvas.height / dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const s = px();
+      const W = canvas.width / s, H = canvas.height / s;
+      ctx.setTransform(s, 0, 0, s, 0, 0);
       ctx.clearRect(0, 0, W, H);
       const cx = W / 2, cy = H / 2;
-      const base = Math.min(W, H) * 0.33;
+      /* Full-bleed behind the transcript the ball wants to be a light SOURCE, larger than the
+         screen so the blur has no visible edge; in the stage view it is an object on the page. */
+      const base = Math.min(W, H) * (captionRef.current ? 0.52 : 0.33);
 
       // organic wobble: two slow terms at different frequencies (a perfect circle reads as
       // a spinner; two incommensurate sines read as something alive)
@@ -672,8 +704,8 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       ctx.globalCompositeOperation = "source-over";
 
       // ---- input / output waveform (two colours, one strip: whose voice is this) ---------
-      const WW = wave.width / dpr, WH = wave.height / dpr;
-      wctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const WW = wave.width / s, WH = wave.height / s;
+      wctx.setTransform(s, 0, 0, s, 0, 0);
       wctx.clearRect(0, 0, WW, WH);
       let have = false;
       if (phase === "listening") {
@@ -747,6 +779,36 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     setHistOpen(!histOpen);
   };
 
+  // ---- captions (the transcript view) ------------------------------------------------------
+  const toggleCaption = (): void => {
+    const next = !caption;
+    setCaption(next);
+    if (next) setCcAtBottom(true);             // opening lands on the newest line
+    try {
+      localStorage.setItem(CAPTION_KEY, next ? "1" : "0");
+    } catch {
+      /* private mode: the choice just does not survive a reload */
+    }
+  };
+  const onCcScroll = (): void => {
+    const el = ccRef.current;
+    if (!el) return;
+    setCcAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 28);
+  };
+  const toLatestCc = (): void => {
+    const el = ccRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    setCcAtBottom(true);
+  };
+  // Follow the newest line ONLY while the operator is at the bottom — the same rule as the
+  // transcript and the history window: scrolling back to read must not be yanked away by the next
+  // streamed chunk.
+  useEffect(() => {
+    if (!caption || !ccAtBottom) return;
+    const el = ccRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [caption, ccAtBottom, msgs.length, heard, reply, phase]);
+
   // Saying something short and having nothing happen is the worst kind of silence: the hint
   // names the reason instead of leaving the operator to guess (the minChars knob).
   const heardCount = charCount(heard);
@@ -762,8 +824,31 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
       : phase === "thinking" ? "点一下停止它" : "";
 
+  /* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It belongs
+     on the call because it is the one setting that changes with the ROOM (a phone on a table, a
+     headset, a noisy cafe) — flipping it has to be one tap while the call is misbehaving, and both
+     ends stay visible so the current mode is never a guess.
+     ONE definition, two homes: the call's header in the stage view, the transcript panel's toolbar
+     in the captions view. Neither view is allowed to make it a sheet-only option. */
+  const modesSwitch = (
+    <div className="call-modes" role="group" aria-label="打断方式" data-mode={cfg.interruptMode}>
+      {INTERRUPT_MODES.map((m) => (
+        <button
+          key={m.id}
+          type="button"
+          className={`call-mode-btn ${cfg.interruptMode === m.id ? "on" : ""}`}
+          aria-pressed={cfg.interruptMode === m.id}
+          title={m.hint}
+          onClick={() => applyCfg({ interruptMode: m.id })}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+
   return createPortal(
-    <div className="call-mode" data-phase={phase} role="dialog" aria-modal="true" aria-label="语音通话">
+    <div className="call-mode" data-phase={phase} data-caption={caption} role="dialog" aria-modal="true" aria-label="语音通话">
       <button
         type="button"
         className="call-gear"
@@ -774,28 +859,29 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         <IconSettings size={18} />
       </button>
 
-      <div className="call-head">
-        <span className="call-title">{PHASE_LABEL[phase]}</span>
-        <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
-        {/* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It
-            belongs here because it is the one setting that changes with the ROOM (a phone on a
-            table, a headset, a noisy cafe) — flipping it has to be one tap while the call is
-            misbehaving, and both ends stay visible so the current mode is never a guess. */}
-        <div className="call-modes" role="group" aria-label="打断方式" data-mode={cfg.interruptMode}>
-          {INTERRUPT_MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              className={`call-mode-btn ${cfg.interruptMode === m.id ? "on" : ""}`}
-              aria-pressed={cfg.interruptMode === m.id}
-              title={m.hint}
-              onClick={() => applyCfg({ interruptMode: m.id })}
-            >
-              {m.label}
-            </button>
-          ))}
+      {/* 字幕 — the transcript toggle. Top-right, next to the gear: Gemini Live puts its captions
+          button in the same corner, and this one has to be reachable without opening a sheet
+          (turning the words on is a reaction to "what did it just say?", not a preference). */}
+      <button
+        type="button"
+        className={`call-cc-btn${caption ? " on" : ""}`}
+        onClick={toggleCaption}
+        aria-pressed={caption}
+        aria-label={caption ? "收起聊天记录" : "显示聊天记录"}
+        title={caption ? "收起聊天记录" : "显示聊天记录"}
+      >
+        <IconSubtitles size={18} />
+      </button>
+
+      {/* The stage header exists only in the stage view: the transcript view's toolbar carries the
+          same switch, and drawing both would say the phase twice and cost the record 44px. */}
+      {!caption ? (
+        <div className="call-head">
+          <span className="call-title">{PHASE_LABEL[phase]}</span>
+          <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
+          {modesSwitch}
         </div>
-      </div>
+      ) : null}
 
       <button
         type="button"
@@ -807,47 +893,100 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         <canvas ref={canvasRef} className="call-orb-canvas" />
       </button>
 
-      <div className="call-lines">
-        {heard ? <p className="call-heard">{heard}</p> : null}
-        {reply ? <p className="call-reply">{reply}</p> : null}
-        {err ? <p className="call-err">{err}</p> : null}
-        {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
-        {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
-      </div>
-
-      <canvas ref={waveRef} className="call-wave" aria-hidden="true" />
-
-      {/* Browsing what was already said, without leaving the call. Collapsed it is one bar (44px, a
-          thumb target); open it scrolls — overscroll stays inside it, so the call page never moves. */}
-      <div className="call-hist" data-open={histOpen}>
-        <button
-          type="button"
-          className="call-hist-bar"
-          onClick={toggleHist}
-          aria-expanded={histOpen}
-          aria-label={histOpen ? "收起历史聊天记录" : "翻阅历史聊天记录"}
-          title={histOpen ? "收起" : "翻阅历史聊天记录"}
-        >
-          <IconHistory size={15} />
-          <span className="call-hist-title">历史记录</span>
-          <span className="call-hist-n">{msgs.length} 条</span>
-          {!histOpen && histLast ? <span className="call-hist-peek">{histLast.slice(0, 60)}</span> : null}
-          <span className="call-hist-chev" aria-hidden="true"><IconChevronDown size={14} /></span>
-        </button>
-        {histOpen ? (
-          <>
-            <div className="call-hist-list" ref={histRef} onScroll={onHistScroll}>
-              {msgs.map((m, i) => {
-                const l = histLine(m);
-                return <HistRow key={m.key} kind={l.kind} who={l.who} text={l.text} current={i === msgs.length - 1 && phase === "speaking"} />;
-              })}
-            </div>
-            {!histAtBottom ? (
-              <button type="button" className="call-hist-back" onClick={toLatest}>回到最新 ↓</button>
+      {caption ? (
+        /* The transcript view: the page is the words. The ball is still there (the canvas is
+           untouched, `.call-orb` is just moved behind the frosted panel by CSS), so the phases keep
+           their colour and the reply keeps pulsing — it is the LIGHT behind the text, not a
+           decoration competing with it. */
+        <div className="call-cc">
+          <div className="call-cc-head">
+            {/* The phase chip is the floor control in this view: the orb itself is behind glass
+                and out of reach, so "take the floor back / send what I said" has to keep a home. */}
+            <button
+              type="button"
+              className="call-cc-state"
+              onClick={() => void tapOrb()}
+              title={hint || "点击切换"}
+              aria-label={`${PHASE_LABEL[phase]} — ${hint || "点击切换"}`}
+            >
+              <span className="call-cc-dot" aria-hidden="true" />
+              {PHASE_LABEL[phase]}
+            </button>
+            {modesSwitch}
+            <span className="call-cc-n">{msgs.length} 条</span>
+          </div>
+          <div className="call-cc-list" ref={ccRef} onScroll={onCcScroll} role="log" aria-live="polite">
+            {msgs.map((m, i) => {
+              const l = histLine(m);
+              const current = i === msgs.length - 1 && (phase === "speaking" || phase === "thinking");
+              return <HistRow key={m.key} kind={l.kind} who={l.who} text={l.text} current={current} />;
+            })}
+            {/* What the recogniser has so far is not a message yet (it has not been sent), but in
+                this view it is the row the operator is watching — so it takes the user's shape. */}
+            {phase === "listening" && heard ? (
+              <div className="call-hm user live">
+                <span className="call-hm-who">你</span>
+                <span>{heard}</span>
+              </div>
             ) : null}
-          </>
-        ) : null}
-      </div>
+            {err ? <p className="call-err">{err}</p> : null}
+            {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
+            {(!heard && !msgs.length) || tooShort ? <p className="call-hint">{hint}</p> : null}
+          </div>
+          {/* Floating, not in the toolbar: it only exists while the operator is reading back, and
+              the toolbar already carries phase + interrupt mode + the count. */}
+          {!ccAtBottom ? (
+            <button type="button" className="call-cc-latest" onClick={toLatestCc}>回到最新 ↓</button>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <div className="call-lines">
+            {heard ? <p className="call-heard">{heard}</p> : null}
+            {reply ? <p className="call-reply">{reply}</p> : null}
+            {err ? <p className="call-err">{err}</p> : null}
+            {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
+            {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
+          </div>
+
+          {/* Browsing what was already said, without leaving the call. Collapsed it is one bar (44px, a
+              thumb target); open it scrolls — overscroll stays inside it, so the call page never moves. */}
+          <div className="call-hist" data-open={histOpen}>
+            <button
+              type="button"
+              className="call-hist-bar"
+              onClick={toggleHist}
+              aria-expanded={histOpen}
+              aria-label={histOpen ? "收起历史聊天记录" : "翻阅历史聊天记录"}
+              title={histOpen ? "收起" : "翻阅历史聊天记录"}
+            >
+              <IconHistory size={15} />
+              <span className="call-hist-title">历史记录</span>
+              <span className="call-hist-n">{msgs.length} 条</span>
+              {!histOpen && histLast ? <span className="call-hist-peek">{histLast.slice(0, 60)}</span> : null}
+              <span className="call-hist-chev" aria-hidden="true"><IconChevronDown size={14} /></span>
+            </button>
+            {histOpen ? (
+              <>
+                <div className="call-hist-list" ref={histRef} onScroll={onHistScroll}>
+                  {msgs.map((m, i) => {
+                    const l = histLine(m);
+                    return <HistRow key={m.key} kind={l.kind} who={l.who} text={l.text} current={i === msgs.length - 1 && phase === "speaking"} />;
+                  })}
+                </div>
+                {!histAtBottom ? (
+                  <button type="button" className="call-hist-back" onClick={toLatest}>回到最新 ↓</button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </>
+      )}
+
+      {/* Kept mounted in BOTH views. The animation loop owns this canvas together with the orb's,
+          and a call that STARTED with captions on would otherwise find no wave node and animate
+          nothing at all (that effect runs once, on mount). The transcript view hides it in CSS. */}
+      <canvas ref={waveRef} className="call-wave" aria-hidden="true" />
 
       <div className="call-controls">
         <button
