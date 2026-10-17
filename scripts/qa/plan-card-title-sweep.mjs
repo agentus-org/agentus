@@ -120,21 +120,20 @@ try {
   const barUp = await waitFor(`!!document.querySelector('.plan-bar .plan-title')`);
   check("the live plan bar rendered", barUp);
   const shown = await ev(`(() => {
-    const el = document.querySelector('.plan-bar .plan-title');
-    if (!el) return null;
-    const cs = getComputedStyle(el);
-    return { text: el.textContent, attr: el.getAttribute('title'), overflow: cs.overflow,
-      truncated: el.scrollWidth > el.clientWidth + 1, dotsVisible: !!document.querySelector('.plan-bar .plan-dots'),
-      count: document.querySelector('.plan-bar .plan-count')?.textContent ?? null };
+    const head = document.querySelector('.plan-bar .plan-title');
+    return { headText: head?.textContent ?? null,
+      dotsVisible: !!document.querySelector('.plan-bar .plan-dots'),
+      count: document.querySelector('.plan-bar .plan-count')?.textContent ?? null,
+      nameInHead: head ? head.textContent.includes('清空') : null };
   })()`);
-  check("`.plan-title` IS the plan's name, not the word 任务计划", shown?.text === TITLE, JSON.stringify(shown));
-  check("…with the full name in `title=` for the hover/long-press case", shown?.attr === TITLE, shown?.attr);
-  check("…and it may truncate instead of pushing the rest of the header off the line",
-    shown?.overflow === "hidden", shown?.overflow);
-  check("the dots and the step count survived beside a long name",
+  check("the HEADER stays the label 任务计划 — the name never lives there",
+    shown?.headText === "任务计划" && shown?.nameInHead === false, JSON.stringify(shown));
+  check("the dots and the step count own that whole line",
     shown?.dotsVisible === true && /^\d+\/\d+$/.test(shown?.count ?? ""), `dots=${shown?.dotsVisible} count=${shown?.count}`);
+  check("the name is not rendered while the card is COLLAPSED (a closed card is one line)",
+    (await ev(`document.querySelectorAll('.plan-bar .plan-name').length`)) === 0);
 
-  // a name longer than the line must not widen the header
+  // a name longer than the line must WRAP inside the card, not widen anything
   const LONG = "把 agentus 的任务计划面板在手机上重新排一遍包括标题和每一步的字号";
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
@@ -143,23 +142,30 @@ try {
     return r.status;
   })()`);
   await sleep(600);
+  await ev(`document.querySelector('.plan-bar .plan-head')?.click()`);
+  const nameUp = await waitFor(`!!document.querySelector('.plan-bar .plan-name')`, 4000);
+  check("opening the card reveals the name as its first line", nameUp);
   const wide = await ev(`(() => {
     const bar = document.querySelector('.plan-bar');
     const head = document.querySelector('.plan-bar .plan-head');
-    const el = document.querySelector('.plan-bar .plan-title');
+    const el = document.querySelector('.plan-bar .plan-name');
+    const first = document.querySelector('.plan-bar .plan-body > *');
+    const lines = el ? Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight || '18')) : 0;
     return { barOverflow: bar ? bar.scrollWidth - bar.clientWidth : -1,
       headOverflow: head ? head.scrollWidth - head.clientWidth : -1,
-      titleTruncated: el ? el.scrollWidth > el.clientWidth + 1 : null };
+      isFirstRow: first === el, wraps: lines > 1, lines,
+      text: el?.textContent ?? null };
   })()`);
-  check("a 40-character name does not make the bar scroll sideways",
+  check("a 40-character name does not widen the bar or the header",
     wide.barOverflow <= 1 && wide.headOverflow <= 1, JSON.stringify(wide));
+  check("…it is the card's FIRST row, verbatim (no ellipsis in the middle of a task name)",
+    wide.isFirstRow === true && wide.text === LONG, JSON.stringify(wide));
 
   // --- 4: the phone: steps one size down ---------------------------------------------------
-  // The bar ships COLLAPSED, and a collapsed bar renders no steps at all — so measure after opening
-  // it, otherwise `getComputedStyle` on a missing node is the only thing being tested.
-  await ev(`document.querySelector('.plan-bar .plan-head')?.click()`);
+  // Section 3 left the card OPEN; a second click here would collapse it and `getComputedStyle` would
+  // then be measuring a node that does not exist (that is how this suite went red for a day).
   const opened = await waitFor(`!!document.querySelector('.plan-bar .plan-step')`, 4000);
-  check("the bar opens to show its steps", opened);
+  check("the card is open, so its steps are real nodes", opened);
   const deskFont = await ev(`(() => { const s = document.querySelector('.plan-bar .plan-step');
     return s ? getComputedStyle(s).fontSize : null; })()`);
   check("desktop steps stay 13px", deskFont === "13px", deskFont);
@@ -168,18 +174,26 @@ try {
   await sleep(800);
   const phone = await ev(`(() => {
     const step = document.querySelector('.plan-bar .plan-step');
-    const title = document.querySelector('.plan-bar .plan-title');
+    const name = document.querySelector('.plan-bar .plan-name');
+    const head = document.querySelector('.plan-bar .plan-title');
     const exp = document.querySelector('.plan-bar .plan-explanation');
     return { stepFont: step ? getComputedStyle(step).fontSize : null,
-      titleFont: title ? getComputedStyle(title).fontSize : null,
-      titleText: title?.textContent ?? null,
+      nameFont: name ? getComputedStyle(name).fontSize : null,
+      nameText: name?.textContent ?? null,
+      headFont: head ? getComputedStyle(head).fontSize : null,
       expFont: exp ? getComputedStyle(exp).fontSize : null,
-      titleVisible: title ? title.getBoundingClientRect().width > 20 : false };
+      nameVisible: name ? name.getBoundingClientRect().height > 10 : false,
+      nameLines: name ? Math.round(name.getBoundingClientRect().height / parseFloat(getComputedStyle(name).lineHeight || '18')) : 0,
+      nameOverflowsX: name ? name.scrollWidth - name.clientWidth : -1 };
   })()`);
   check("on a 390px phone a plan step is 12px (`稍微小一点点`, not unreadable)",
     phone?.stepFont === "12px", phone?.stepFont);
   check("…and the name is still there and still readable at that width",
-    phone?.titleText === LONG && phone?.titleVisible === true, JSON.stringify(phone));
+    phone?.nameText === LONG && phone?.nameVisible === true, JSON.stringify(phone));
+  check("…without outgrowing the steps it titles (12.5px vs 12px, header 12.5px)",
+    phone?.nameFont === "12.5px" && phone?.headFont === "12.5px", JSON.stringify(phone));
+  check("…and on that width the name WRAPS (it may never be clipped or scrolled sideways)",
+    phone?.nameLines > 1 && phone?.nameOverflowsX <= 1, JSON.stringify(phone));
 
   await send("Emulation.clearDeviceMetricsOverride");
   await sleep(600);
@@ -191,10 +205,13 @@ try {
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: null, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
-  const fellBack = await waitFor(`document.querySelector('.plan-bar .plan-title')?.textContent === '任务计划'`, 5000);
-  const fallback = await ev(`document.querySelector('.plan-bar .plan-title')?.textContent ?? null`);
-  check("the clear reached the card at all", fellBack, String(fallback));
-  check("an unnamed plan still says 任务计划", fallback === "任务计划", String(fallback));
+  const fellBack = await waitFor(`document.querySelectorAll('.plan-bar .plan-name').length === 0`, 5000);
+  check("the clear reached the page: the name row is gone", fellBack);
+  const fallback = await ev(`({ head: document.querySelector('.plan-bar .plan-title')?.textContent ?? null,
+    names: document.querySelectorAll('.plan-bar .plan-name').length,
+    steps: document.querySelectorAll('.plan-bar .plan-step').length })`);
+  check("an unnamed plan is only its label and its steps (no empty first row)",
+    fallback?.head === "任务计划" && fallback?.names === 0 && fallback?.steps === 3, JSON.stringify(fallback));
   // put the name back: the next section archives THIS plan into the transcript
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
@@ -203,7 +220,7 @@ try {
     return r.status;
   })()`);
   check("…and a name can come back after being cleared",
-    await waitFor(`document.querySelector('.plan-bar .plan-title')?.textContent === ${JSON.stringify(TITLE)}`, 5000));
+    await waitFor(`document.querySelector('.plan-bar .plan-name')?.textContent === ${JSON.stringify(TITLE)}`, 5000));
 
   // --- 6: the name survives the trip into the transcript -----------------------------------
   // A plan is retired when a NEW turn's plan arrives: the old one becomes an ARCHIVED card in the
@@ -231,12 +248,18 @@ try {
   check("the second update was accepted", secondUpd?.body?.accepted === true,
     `status=${secondUpd?.status} accepted=${secondUpd?.body?.accepted} reason=${secondUpd?.body?.reason} plan.title=${secondUpd?.body?.plan?.title}`);
   const archived = await waitFor(`[...document.querySelectorAll('.plan-card .plan-title')].length > 0`, 8000);
-  const names = await ev(`[...document.querySelectorAll('.plan-card .plan-title')].map(e => e.textContent)`);
-  check("the retired plan keeps its own name in the transcript", archived && names.includes(TITLE), JSON.stringify(names));
-  const nowBar = await waitFor(`document.querySelector('.plan-bar .plan-title')?.textContent === ${JSON.stringify("第二轮：换一份计划")}`, 5000)
-    ? "第二轮：换一份计划"
-    : await ev(`document.querySelector('.plan-bar .plan-title')?.textContent ?? null`);
-  check("…and the live bar shows the NEW plan's name", nowBar === SECOND, String(nowBar));
+  check("a plan card was archived into the transcript", archived);
+  // The archived card is COLLAPSED in the transcript (one line, like a tool row), so opening it is what
+  // reveals its name — and the card must show its OWN name, not the live plan's.
+  await ev(`[...document.querySelectorAll('.plan-card .plan-head')].pop()?.click()`);
+  const archivedName = await waitFor(`[...document.querySelectorAll('.plan-card .plan-name')].length > 0`, 5000)
+    ? await ev(`[...document.querySelectorAll('.plan-card .plan-name')].map(e => e.textContent)`)
+    : [];
+  check("the retired plan keeps its own name in the transcript", archivedName.includes(TITLE), JSON.stringify(archivedName));
+  const nowBar = await waitFor(`document.querySelector('.plan-bar .plan-name')?.textContent === ${JSON.stringify(SECOND)}`, 5000)
+    ? SECOND
+    : await ev(`document.querySelector('.plan-bar .plan-name')?.textContent ?? null`);
+  check("…and the live card opens on the NEW plan's name", nowBar === SECOND, String(nowBar));
 } catch (e) {
   fail++;
   console.log("FAIL  sweep threw —", e.message);

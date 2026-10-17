@@ -2001,11 +2001,12 @@ function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
         aria-expanded={open}
         title="任务计划 · 点击展开/折叠"
       >
-        {/* 任务计划 was a LABEL, so every plan looked the same. When the agent names its plan
-            (`update_plan`'s `title`, issue #11) that name is the useful string — with several slots
-            open, 「任务计划」 says nothing about WHICH plan this is. Absent → the old label, so
-            nothing changes for agents that never send one. */}
-        <span className="plan-title" title={plan.title || "任务计划"}>{plan.title || "任务计划"}</span>
+        {/* The header stays the LABEL 「任务计划」, always: it answers 「这一块是什么」, and a 40-character
+            name shoved in here crowds out the dots, the count and the state (measured — the operator's
+            words: 「不能直接把那个标题放这里面，太长了看不了」). The name is the card's FIRST LINE
+            instead, one line under this header, where it has the full width and only costs height when
+            the card is open. */}
+        <span className="plan-title">任务计划</span>
         <span className="plan-dots" aria-hidden="true">
           {plan.items.map((it, i) => (
             <span key={i} className={`dot ${it.status}`} />
@@ -2017,6 +2018,7 @@ function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
       </button>
       {open ? (
         <ol className="plan-body">
+          {plan.title ? <li className="plan-name" aria-label="计划名">{plan.title}</li> : null}
           {plan.items.map((it, i) => (
             <li key={i} className={`plan-step ${it.status}`}>
               <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : it.status === "cancelled" ? "✕" : "○"}</span>
@@ -2055,7 +2057,7 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
     <div className="msg">
       <div className={`plan-card ${allDone && !m.terminal ? "completed" : ""}`}>
         <button type="button" className="plan-head" onClick={() => setOpen((x) => !x)} aria-expanded={open} title="任务计划 · click to collapse/expand">
-          <span className="plan-title" title={m.title || "任务计划"}>{m.title || "任务计划"}</span>
+          <span className="plan-title">任务计划</span>
           <span className="plan-dots" aria-hidden="true">
             {m.items.map((it, i) => (
               <span key={i} className={`dot ${it.status}`} />
@@ -2067,6 +2069,7 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
         </button>
         {open ? (
           <ol className="plan-body">
+            {m.title ? <li className="plan-name" aria-label="计划名">{m.title}</li> : null}
             {m.items.map((it, i) => (
               <li key={i} className={`plan-step ${it.status}`}>
                 <span className="step-icon" aria-hidden="true">{it.status === "completed" ? "✓" : it.status === "in_progress" ? "◉" : it.status === "cancelled" ? "✕" : "○"}</span>
