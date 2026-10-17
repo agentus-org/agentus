@@ -12,7 +12,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { BACKENDS } from "../../packages/server/src/acp/backends.js";
 import { rowToSpec } from "../../packages/server/src/acp/registry.js";
-import { SKILLS_ROOT, bundledSkills, installSkills, resolveSkillsDir } from "../../packages/server/src/skills/install.js";
+import { SKILLS_ROOT, bundledSkills, installSkills } from "../../packages/server/src/skills/install.js";
 
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 let pass = 0, fail = 0;
@@ -77,25 +77,31 @@ check("a package with no skills is a silent no-op, not an error", empty.installe
   JSON.stringify(empty));
 
 // ---- the per-backend wiring ----
-check("Hermes declares a native skills dir under its own home",
-  BACKENDS.hermes.skillsDir === "{home}/skills", String(BACKENDS.hermes.skillsDir));
-check("…which resolves inside the home the child is given, not the cockpit's own",
-  resolveSkillsDir(BACKENDS.hermes.skillsDir!, "/tmp/fake-home") === "/tmp/fake-home/skills", "");
-check("Qoder declares none (no native skill folder — it gets the prompt line instead)",
-  !BACKENDS.qoder.skillsDir, String(BACKENDS.qoder.skillsDir));
+// The channel changed: Hermes is pointed at our corpus for the LIFETIME OF THE PROCESS instead of
+// being handed a copy. Writing `{home}/skills` was correct code aimed at the wrong place — the
+// operator's `~/.hermes` is shared with Studio, cron and every terminal `hermes`, so the skill showed
+// up in sessions that have nothing to do with the cockpit (and went stale there).
+check("Hermes takes the per-process channel, not a copy into its home",
+  BACKENDS.hermes.skillsEnv === "HERMES_EXTERNAL_SKILLS_DIRS", String(BACKENDS.hermes.skillsEnv));
+check("…and therefore declares NO skills dir to write", !BACKENDS.hermes.skillsDir, String(BACKENDS.hermes.skillsDir));
+check("Qoder declares neither (no native skill folder, no extra-roots variable — prompt line only)",
+  !BACKENDS.qoder.skillsEnv && !BACKENDS.qoder.skillsDir,
+  `${BACKENDS.qoder.skillsEnv} / ${BACKENDS.qoder.skillsDir}`);
 
 // A REAL spawn does not read BACKENDS — it reads the stored backend ROW (`#spawnShape` prefers it),
-// folded through rowToSpec. The first version of this feature set skillsDir only on the builtin, so
-// every row that had ever been seeded silently skipped the install. This is that regression.
+// folded through rowToSpec. The first version of this feature set the field only on the builtin, so
+// every row that had ever been seeded silently skipped it. This is that regression.
 const row = {
   id: "hermes", kind: "hermes" as const, nativePlanSource: "none" as const, label: "Hermes",
   cmd: "hermes", args: ["acp"], env: {}, profile: null, home: "/tmp/stored-home",
 };
-check("a STORED backend row inherits the skills dir from its builtin (the bug that skipped every real row)",
-  rowToSpec(row as never).skillsDir === "{home}/skills", String(rowToSpec(row as never).skillsDir));
-check("…and a row of a kind with no native dir gets none",
-  rowToSpec({ ...row, id: "qoder", kind: "qoder" as const, label: "Qoder", cmd: "qodercli", args: ["--acp"] } as never).skillsDir ===
+check("a STORED backend row inherits the channel from its builtin (the bug that skipped every real row)",
+  rowToSpec(row as never).skillsEnv === "HERMES_EXTERNAL_SKILLS_DIRS", String(rowToSpec(row as never).skillsEnv));
+check("…and a row of a kind with no channel gets none",
+  rowToSpec({ ...row, id: "qoder", kind: "qoder" as const, label: "Qoder", cmd: "qodercli", args: ["--acp"] } as never).skillsEnv ===
     undefined, "");
+check("the corpus we point at is the real one (SKILLS_ROOT holds the cockpit's own skill)",
+  fs.existsSync(path.join(SKILLS_ROOT, "agentus-cockpit/SKILL.md")), SKILLS_ROOT);
 
 // ---- and the CLI can hand out the same document with no cockpit, no token ----
 const LAUNCHER = path.join(REPO, "bin/agentus.mjs");

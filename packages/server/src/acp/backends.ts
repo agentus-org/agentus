@@ -63,6 +63,16 @@ export interface BackendSpec {
    * can still read the same document on demand (`agentus cockpit skill`). Absent ≠ broken.
    */
   skillsDir?: string;
+  /**
+   * The env var this vendor reads as "extra skill roots for THIS process", when it has one.
+   *
+   * This is the first choice and `skillsDir` is the fallback: it scopes our skills to the one agent
+   * process we spawn, so the operator's own `~/.hermes` (shared with Studio, the CLI and every other
+   * Hermes on the box) never learns that Agentus exists. Hermes names it
+   * `HERMES_EXTERNAL_SKILLS_DIRS`, the per-process half of `skills.external_dirs` — see the upstream
+   * PR draft in the workspace (`areas/upstream-prs/`), because stock Hermes has no such variable yet.
+   */
+  skillsEnv?: string;
   /** free-form note shown next to the row in the UI */
   notes?: string;
 }
@@ -87,9 +97,12 @@ export const BACKENDS: Record<string, BackendSpec> = {
       homeVar: "HERMES_HOME",
       homeDefault: defaultHermesHome,
     },
-    // `hermes skill_view` scans <HERMES_HOME>/skills/<name>/SKILL.md at session start, and we spawn
-    // a session per slot — so the install below lands before the agent looks.
-    skillsDir: "{home}/skills",
+    // `hermes skill_view` scans <HERMES_HOME>/skills/<name>/SKILL.md at session start — writing there
+    // would land in the operator's REAL home, which Studio and every terminal `hermes` also read. So
+    // we hand the child one more root for its own lifetime instead (no copy, no stale twin, nothing
+    // outside Agentus sees it). `skillsDir` stays as the documented fallback for vendors that only
+    // know how to scan their home.
+    skillsEnv: "HERMES_EXTERNAL_SKILLS_DIRS",
   },
   qoder: {
     label: "Qoder",

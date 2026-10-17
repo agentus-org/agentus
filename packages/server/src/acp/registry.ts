@@ -276,6 +276,7 @@ export function rowToSpec(row: BackendRow): BackendSpec {
     // same kind, so a stored row inherits it and a new hermes row needs no migration (this is the bug
     // that made the first install silently skip every real row — stored rows never reach BACKENDS).
     skillsDir: BACKENDS[row.kind as keyof typeof BACKENDS]?.skillsDir,
+    skillsEnv: BACKENDS[row.kind as keyof typeof BACKENDS]?.skillsEnv,
   };
   if (row.kind === "hermes") {
     spec.isolation = {

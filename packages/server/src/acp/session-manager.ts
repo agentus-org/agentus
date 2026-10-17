@@ -14,7 +14,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
-import { installSkills, resolveSkillsDir } from "../skills/install.js";
+import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
@@ -436,8 +436,9 @@ export class SessionManager {
 
     // isolation: never let a child inherit its way back into the live runtime home
     const plan = buildSpawnEnv(spec);
-    // before the handshake, because Hermes scans its skills dir when the session starts — not later
-    this.#installSkills(spec, plan.home);
+    // before the handshake, because the agent resolves its skill roots when the session starts —
+    // not later
+    plan.env = this.#skillsEnv(spec, plan.env);
     // the cockpit CLI's identity for THIS process (issue #15) — minted before the spawn because it
     // travels in the child's own environment
     const cockpitToken = randomUUID();
@@ -614,9 +615,9 @@ export class SessionManager {
     // point of the workspace being a separate field (see shared/index.ts).
     const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
-    // A resumed slot is a fresh agent process and re-reads its skills dir, so a release that changed
-    // the skill lands here too — not only on first create.
-    this.#installSkills(spec, plan.home);
+    // A resumed slot is a fresh agent process and re-resolves its skill roots, so a release that
+    // changed the skill lands here too — not only on first create.
+    plan.env = this.#skillsEnv(spec, plan.env);
     // a resumed slot is a NEW process: its cockpit identity is minted here, like create()'s. The old
     // child's token died with the old child.
     const cockpitToken = randomUUID();
@@ -1207,8 +1208,23 @@ export class SessionManager {
     };
   }
 
+  /** Hand this package's skills to the agent for THIS process only, when its backend has a channel.
+   *
+   *  `skillsEnv` (Hermes: `HERMES_EXTERNAL_SKILLS_DIRS`, the per-process half of `skills.external_dirs`)
+   *  is a root the agent reads and we never write: `skill_view` resolves our corpus, and not one byte
+   *  lands in the operator's home — the same `~/.hermes` that Studio, cron and every terminal `hermes`
+   *  share, where a copied skill would surface in sessions that have nothing to do with the cockpit.
+   *  A backend without such a variable falls through to `#installSkills`, the only channel it has.
+   */
+  #skillsEnv(spec: BackendSpec, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    if (!spec.skillsEnv) return env;
+    return { ...env, [spec.skillsEnv]: SKILLS_ROOT };
+  }
+
   /**
-   * Install this package's skills into the agent's own skills directory, when its backend has one.
+   * FALLBACK (vendors with no extra-roots channel): copy this package's skills into the agent's own
+   * skills directory. Every backend we ship today takes `skillsEnv` instead, so this only runs for a
+   * row whose spec names `skillsDir` without one.
    *
    * Failures are WARNINGS, never session failures: a slot whose skill could not be written still runs
    * — it just learns about the CLI from the one-line reminder and `agentus cockpit skill` instead of
