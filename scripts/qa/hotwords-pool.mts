@@ -150,5 +150,26 @@ check("a commit-sha fragment never becomes a hotword",
 check("…while tickers that merely look hex-ish still bias (LITE / NVDA)",
   shaWords.some((w) => w === "LITE") && shaWords.some((w) => w === "NVDA"), shaWords.join(","));
 
+// ---- 7. one word, one slot ----
+// `Release` and `release` are the same word to a recogniser. Counting them apart spends two of the
+// operator's slots on one term and sends both as separate vocabulary keys; a dynamic `hermes` beside a
+// fixed `Hermes` did the same. The spelling that survives is the one seen most often.
+const dup = "sess-voice-case";
+store.upsertSession({
+  id: dup, backend: "mock", acpSessionId: "a", cwd: "/tmp", title: dup, status: "idle",
+  pid: null, createdAt: 1, closedAt: null, home: null,
+} as never);
+add("user", { text: "Release 发了吗，release 流程里 hermes 的 tag 要不要动", attachments: [] }, dup);
+add("user", { text: "release 的说明写进 Hermes 了吗，release 正文也要提", attachments: [] }, dup);
+const dupWords = hotwordsFor(store, dup).map((h) => h.word);
+const releaseForms = dupWords.filter((w) => w.toLowerCase() === "release");
+check("case variants of one word collapse to a single slot",
+  releaseForms.length === 1, `release-like: ${releaseForms.join(",")} / ${dupWords.join(",")}`);
+check("…and it is the spelling seen most often (`release` 3 vs `Release` 1)",
+  releaseForms[0] === "release", String(releaseForms[0]));
+const hermesForms = dupWords.filter((w) => w.toLowerCase() === "hermes");
+check("…a fixed word is not repeated by a differently-cased dynamic twin",
+  hermesForms.length === 1, `hermes-like: ${hermesForms.join(",")} / ${dupWords.join(",")}`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

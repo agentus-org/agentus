@@ -48,7 +48,11 @@ const WORD_RE = /[A-Za-z][A-Za-z0-9_+.-]{2,}|[一-龥]{2,8}/g;
 /** Term-frequency over the operator's recent text, filtered and ranked. Returns at most
  *  `limit` terms; fixed hotwords always survive the cap separately. */
 export function extractDynamicHotwords(texts: string[], limit = 20): Hotword[] {
-  const counts = new Map<string, { n: number; sample: string }>();
+  // One entry per WORD, not per spelling: `Release` / `release` are one word to a recogniser, so
+  // counting them apart spends two of the operator's slots on one term and sends both as separate
+  // vocabulary keys. Keyed lowercase; the emitted spelling is the one seen most often (ties keep
+  // whichever appeared first — usually the sentence that introduced the term).
+  const counts = new Map<string, { n: number; forms: Map<string, number> }>();
   for (const text of texts) {
     for (const m of text.matchAll(WORD_RE)) {
       const raw = m[0];
@@ -66,18 +70,29 @@ export function extractDynamicHotwords(texts: string[], limit = 20): Hotword[] {
       // they are commit shas and ids the transcript cites. Require a digit so real hex-ish words
       // (`LITE`, `NVDA`, `ACP`) survive.
       if (/^(?=.*\d)[0-9a-f]{5,}$/i.test(raw)) continue;
-      const prev = counts.get(raw);
-      if (prev) prev.n += 1;
-      else counts.set(raw, { n: 1, sample: raw });
+      const prev = counts.get(lower);
+      if (prev) {
+        prev.n += 1;
+        prev.forms.set(raw, (prev.forms.get(raw) ?? 0) + 1);
+      } else {
+        counts.set(lower, { n: 1, forms: new Map([[raw, 1]]) });
+      }
     }
   }
+  const spelled = (forms: Map<string, number>): string => {
+    let best = "";
+    let bestN = 0;
+    for (const [form, n] of forms) if (n > bestN) { best = form; bestN = n; }
+    return best;
+  };
   const ranked = [...counts.entries()]
     .filter(([, v]) => v.n >= 2)
-    .sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0]))
+    .map(([lower, v]) => ({ lower, word: spelled(v.forms), n: v.n }))
+    .sort((a, b) => b.n - a.n || a.lower.localeCompare(b.lower))
     .slice(0, limit);
-  return ranked.map(([word, v]) => ({
+  return ranked.map(({ word, n }) => ({
     word,
-    weight: v.n >= 5 ? 5 : 4,
+    weight: n >= 5 ? 5 : 4,
     origin: "dynamic" as const,
   }));
 }
@@ -169,14 +184,17 @@ export function dictationContext(store: Store, sessionId?: string, turns = 5): {
 export function hotwordsFor(store: Store, sessionId?: string): Hotword[] {
   const v = getSettings().voice;
   const fixed = v.hotwords.map(parseHotword).filter((h): h is Hotword => Boolean(h));
-  const seen = new Set(fixed.map((h) => h.word));
+  // lowercase on purpose: a dynamic `hermes` must not ride along beside a fixed `Hermes` (same word to
+  // the recogniser, two vocabulary keys and two slots for us)
+  const seen = new Set(fixed.map((h) => h.word.toLowerCase()));
   const limit = Math.max(0, Math.min(200, v.hotwordLimit));
   const out: Hotword[] = fixed.slice(0, limit);
   if (v.dynamicHotwords) {
     const dyn = extractDynamicHotwords(contextTexts(store, sessionId), Math.max(0, limit - out.length));
     for (const h of dyn) {
-      if (seen.has(h.word)) continue;
-      seen.add(h.word);
+      const key = h.word.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
       out.push(h);
     }
   }
