@@ -43,8 +43,17 @@ export type CockpitSessionRow = {
   name: string;
   backend: string;
   status: string;
-  /** the directory the session's panels work in (what an operator would call its workplace) */
+  /** the directory the agent process was spawned in */
   cwd: string;
+  /** the WORKSPACE the rail groups by (`workspace || cwd` on the session) — what an operator means
+   *  when they say 「这个项目里的会话」. Equal to `cwd` unless the operator re-pointed the panels. */
+  workspace: string;
+  /** when the session was created — the other end of the clock from `lastAt` */
+  createdAt: number;
+  /** who named it: absent/null = the operator, a session id = that session's agent renamed it */
+  titleBy?: string | null;
+  /** this row is the CALLER — reported in the list, but never a send target */
+  self?: boolean;
   /** no agent process: the message would have to wake it first */
   cold: boolean;
   /** on the operator's 已归档 shelf — OUT of scope for the cockpit channel */
@@ -79,7 +88,12 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
     commands: [
       { name: "capabilities", args: [], returns: "this object — the contract, without needing a doc" },
       { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/agentus-cockpit/SKILL.md), served from the package with no auth" },
-      { name: "session list", args: [], returns: "who you are + every session in scope (id/name/status/plan/permissions/lastAt)" },
+      {
+        name: "session list",
+        args: ["--here", "--workspace <path>", "--status <s>", "--waiting", "--since <when>", "--created-since <when>", "--grep <text>", "--sort last|created|name", "--limit N", "--all", "--include-self"],
+        returns: "who you are + the sessions in scope that match (id/name/workspace/status/cold/createdAt/lastAt/plan/permissions/self)",
+      },
+      { name: "session rename", args: ["<id>", "<title…>", "--auto"], returns: "name a session (--auto clears back to the generated name)" },
       { name: "session show", args: ["<id>"], returns: "one session in detail, including any approval it is waiting on" },
       { name: "session messages", args: ["<id>", "--tail N"], returns: `the last N messages (default ${MESSAGES_TAIL_DEFAULT}, max ${MESSAGES_TAIL_MAX}), each cut to ${MESSAGE_CHARS} chars` },
       { name: "session plan", args: ["<id>"], returns: "the plan object the operator's card renders (title/items/explanation/terminal)" },
@@ -94,6 +108,13 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the agentus launcher itself, so every call is \"$AGENTUS_COCKPIT_BIN\" session <verb>",
       rule: "never print, echo, export or pass those variables anywhere — they identify your session",
     },
+    session_list: {
+      default: `live first, then most recently active, ${LIST_LIMIT_DEFAULT} rows (max ${LIST_LIMIT_MAX}); 已归档 excluded; your OWN row excluded unless you pass --include-self (it then appears marked self:true, and is never a send target)`,
+      clocks: "lastAt = when someone last SAID something; createdAt = when the slot was made. --since filters ACTIVITY, --created-since filters CREATION, --sort only orders. Both stamps are on every row.",
+      here: "--here is usually what you want: it narrows to YOUR workspace (the project you are working in), which is the same grouping the operator's rail uses",
+      waiting: "--waiting is the operator's queue: sessions with an approval outstanding. Do NOT use --since 5m for this — a session waiting on a human has no new messages, so its lastAt goes stale.",
+      filter_refusals: "an unparsable --since is an error (bad_request), never a silent 'everything'",
+    },
     scope: {
       read: "every session the operator can see: live and cold, never 已归档",
       send: sendEnabled
@@ -105,6 +126,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       "read before you assert: call `context` instead of trusting your memory of another session",
       "queued/busy is not read: a target that is mid-turn answers code:target_busy and saw nothing",
       "rate_limited means STOP and tell the operator — two agents can otherwise spin forever",
+      "a rename is a claim about what a session IS, and it is attributed: the row records titleBy, so the operator can see an agent named their conversation",
     ],
   };
 }
@@ -113,7 +135,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
  *  for one it may talk to. */
 export function sessionRow(
   info: SessionInfo,
-  opts: { plan?: PlanSnapshot | null; permissions?: number; focused?: boolean } = {},
+  opts: { plan?: PlanSnapshot | null; permissions?: number; focused?: boolean; self?: boolean } = {},
 ): CockpitSessionRow {
   const items = opts.plan?.items ?? [];
   return {
@@ -121,7 +143,9 @@ export function sessionRow(
     name: info.title,
     backend: info.backend,
     status: info.status,
-    cwd: info.workspace || info.cwd,
+    cwd: info.cwd,
+    workspace: info.workspace || info.cwd,
+    createdAt: info.createdAt,...(info.titleBy ? { titleBy: info.titleBy } : {}),
     cold: Boolean(info.cold),
     archived: Boolean(info.archivedAt),
     lastAt: info.lastAt ?? info.createdAt,
@@ -132,7 +156,157 @@ export function sessionRow(
     },
     permissions: opts.permissions ?? 0,
     ...(opts.focused ? { focused: true } : {}),
+    ...(opts.self ? { self: true } : {}),
   };
+}
+
+/** How many rows `session list` returns unless told otherwise, and the hard ceiling. The point of a
+ *  DEFAULT here is the same as the tail's: an agent that lists the whole cockpit burns the operator's
+ *  context on a workplace it is not working in. */
+export const LIST_LIMIT_DEFAULT = 20;
+export const LIST_LIMIT_MAX = 200;
+
+/** What `session list` may be asked to do. Every field is optional; the empty query is the default
+ *  view (live first, then most recently active, 20 rows, archived excluded, self included but marked).
+ *
+ *  ORDER OF THE THREE CLOCKS, because they are easy to confuse and this is the only place that
+ *  decides: `lastAt` = when someone last SAID something (activity), `createdAt` = when the slot was
+ *  made. `--since` filters on activity, `--created-since` on creation; `--sort` only orders. */
+export interface ListQuery {
+  /** exact workspace path (already resolved by the caller — see `here` in the route) */
+  workspace?: string;
+  /** a status word, or the pseudo-status `cold` */
+  status?: string;
+  /** only sessions with an approval waiting — the operator's real to-do queue */
+  waiting?: boolean;
+  /** `30m` / `2h` / `1d` / `2w` / `2026-10-17` / `2026-10-17T14:30` — measured against ACTIVITY */
+  since?: string;
+  /** same grammar, measured against CREATION */
+  createdSince?: string;
+  /** case-insensitive substring of the TITLE (never the transcript — see the skill) */
+  grep?: string;
+  sort?: "last" | "created" | "name";
+  limit?: number;
+  /** include 已归档 rows. They are out of scope by default, and that is a product rule, not a default */
+  all?: boolean;
+  /** include the caller's own row (marked `self`) — off shows only sessions it could talk to */
+  includeSelf?: boolean;
+  /** fixed clock for tests; never set by a caller over the wire */
+  now?: number;
+}
+
+export interface ListResult {
+  rows: CockpitSessionRow[];
+  meta: {
+    total: number;
+    returned: number;
+    capped: boolean;
+    /** the filters that were actually applied, echoed back so a caller cannot misread an empty list
+     *  as "there is nothing" when what happened is "your filter matched nothing" */
+    applied: Record<string, string | number | boolean>;
+  };
+}
+
+const SINCE_UNITS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+
+/** Parse a `--since` value.
+ *
+ *  Relative windows out of `s/m/h/d/w`, or an ISO date (`2026-10-17` = local midnight that day) or an
+ *  ISO date-time without a zone (`2026-10-17T14:30`, LOCAL — the operator's clock is the one they
+ *  mean; a Z or offset, if sent, is honoured by `Date.parse`).
+ *
+ *  Deliberately NOT accepted: `yesterday`, `last week`, `1M` (month vs minute is a trap), and empty
+ *  strings. A wrong window silently returning everything would be worse than a refusal. */
+export function parseSince(raw: string, now = Date.now()): { ok: true; at: number } | { ok: false; why: string } {
+  const v = raw.trim();
+  const rel = /^(\d+)([smhdw])$/.exec(v);
+  if (rel) {
+    const at = now - Number(rel[1]) * SINCE_UNITS[rel[2]];
+    return { ok: true, at };
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const at = new Date(`${v}T00:00:00`).getTime();
+    return Number.isFinite(at) ? { ok: true, at } : { ok: false, why: `not a date: ${raw}` };
+  }
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?/.test(v)) {
+    const at = new Date(v.replace(" ", "T")).getTime();
+    return Number.isFinite(at) ? { ok: true, at } : { ok: false, why: `not a date-time: ${raw}` };
+  }
+  return { ok: false, why: `--since wants 30m/2h/1d/2w or 2026-10-17[T14:30], got "${raw}"` };
+}
+
+/** Filter + order + cap the scope list. Pure, so the CLI contract can be tested without a server.
+ *
+ *  Reads nothing it was not given: the caller decides WHICH rows exist (the cockpit's own scope rule
+ *  lives in `cockpitRows`), this decides which of those answer the question that was asked. */
+export function listSessions(rows: CockpitSessionRow[], q: ListQuery = {}): ListResult {
+  const now = q.now ?? Date.now();
+  const applied: Record<string, string | number | boolean> = {};
+  let out = rows;
+
+  if (q.since) {
+    const p = parseSince(q.since, now);
+    if (p.ok) {
+      applied.since = new Date(p.at).toISOString();
+      out = out.filter((r) => r.lastAt >= p.at);
+    }
+    // a bad value is reported by the ROUTE as bad_request; the pure function must not pretend it filtered
+  }
+  if (q.createdSince) {
+    const p = parseSince(q.createdSince, now);
+    if (p.ok) {
+      applied.created_since = new Date(p.at).toISOString();
+      out = out.filter((r) => r.createdAt >= p.at);
+    }
+  }
+  if (q.workspace) {
+    const want = normPath(q.workspace);
+    applied.workspace = q.workspace;
+    out = out.filter((r) => normPath(r.workspace) === want);
+  }
+  if (q.status) {
+    applied.status = q.status;
+    out = q.status === "cold" ? out.filter((r) => r.cold) : out.filter((r) => r.status === q.status);
+  }
+  if (q.waiting) {
+    applied.waiting = true;
+    out = out.filter((r) => r.permissions > 0);
+  }
+  if (q.grep) {
+    const needle = q.grep.toLowerCase();
+    applied.grep = q.grep;
+    out = out.filter((r) => r.name.toLowerCase().includes(needle));
+  }
+  if (!q.all) {
+    applied.archived = false;
+    out = out.filter((r) => !r.archived);
+  }
+  if (!q.includeSelf) {
+    applied.self = false;
+    out = out.filter((r) => !r.self);
+  }
+
+  const sort = q.sort ?? "last";
+  applied.sort = sort;
+  const byName = new Intl.Collator("zh").compare;
+  out = [...out].sort((a, b) => {
+    // live before cold, always: a session with no process cannot be talked to, and burying it is how
+    // an agent ends up "sending" to something the cockpit would only answer target_cold about
+    if (a.cold !== b.cold) return a.cold ? 1 : -1;
+    if (sort === "name") return byName(a.name, b.name);
+    if (sort === "created") return b.createdAt - a.createdAt;
+    return b.lastAt - a.lastAt || b.createdAt - a.createdAt;
+  });
+
+  const limit = Math.max(1, Math.min(LIST_LIMIT_MAX, Math.round(q.limit ?? LIST_LIMIT_DEFAULT)));
+  applied.limit = limit;
+  const total = out.length;
+  const capped = total > limit;
+  return { rows: out.slice(0, limit), meta: { total, returned: Math.min(total, limit), capped, applied } };
+}
+
+function normPath(p: string): string {
+  return p.replace(/\/+$/, "") || "/";
 }
 
 /** A transcript row in the CLI's vocabulary: the payload is normalised to TEXT and cut, because an

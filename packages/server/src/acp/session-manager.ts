@@ -926,7 +926,8 @@ export class SessionManager {
       workspace: r.workspace ?? null,
       models: (r.models ?? null) as SessionInfo["models"],
       contextLimit: r.contextLimit ?? null,
-      title: r.title, autoTitle: r.autoTitle ?? null, status: r.status, pid: null, createdAt: r.createdAt,
+      title: r.title, autoTitle: r.autoTitle ?? null, titleBy: r.titleBy ?? null, status: r.status, pid: null,
+      createdAt: r.createdAt,
       modes: (r.modes ?? null) as SessionModeState | null,
       configOptions: (r.configOptions ?? []) as ConfigOptionView[],
       usage: (r.usage ?? null) as SessionInfo["usage"],
@@ -2026,14 +2027,18 @@ export class SessionManager {
    *  renamable without waking it up (the agent never hears about this). `null`/blank
    *  clears back to the generated title; control characters fold to spaces and the
    *  result is capped, because this string is rendered in a single-line row. */
-  rename(id: string, title: string | null): SessionInfo {
+  rename(id: string, title: string | null, by: string | null = null): SessionInfo {
     const clean = title == null ? null : title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 120).trim();
-    if (!this.#store.renameSession(id, clean && clean.length ? clean : null)) {
+    // A cleared name has no author: after `--auto` the session carries the GENERATED title again, so
+    // keeping "an agent named this" would describe a name that no longer exists.
+    const attributed = clean && clean.length ? by : null;
+    if (!this.#store.renameSession(id, clean && clean.length ? clean : null, attributed)) {
       throw new Error(`no such session: ${id}`);
     }
     const live = this.#sessions.get(id);
     if (live) {
       live.info.title = this.#store.getSession(id)?.title ?? live.info.title;
+      live.info.titleBy = attributed;
       this.#updateSession(live);
       this.#emit({ t: "session", session: live.info });
       return live.info;
@@ -2045,7 +2050,7 @@ export class SessionManager {
       workspace: row.workspace ?? null,
       models: (row.models ?? null) as SessionInfo["models"],
       contextLimit: row.contextLimit ?? null,
-      title: row.title, status: row.status, pid: null, createdAt: row.createdAt,
+      title: row.title, titleBy: row.titleBy ?? null, status: row.status, pid: null, createdAt: row.createdAt,
       modes: (row.modes ?? null) as SessionModeState | null,
       configOptions: (row.configOptions ?? []) as ConfigOptionView[],
       usage: (row.usage ?? null) as SessionInfo["usage"],

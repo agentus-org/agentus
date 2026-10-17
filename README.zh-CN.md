@@ -247,7 +247,8 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 
 ```bash
 "$AGENTUS_COCKPIT_BIN" capabilities                     # 契约本身，自述（先跑这个）
-"$AGENTUS_COCKPIT_BIN" session list                     # 我是谁 + 权限内所有会话
+"$AGENTUS_COCKPIT_BIN" session list --here              # 收窄：我的工作空间，按活跃时间倒序
+"$AGENTUS_COCKPIT_BIN" session rename <id> "…名字…"      # 给会话改名（行里会记下是谁改的）
 "$AGENTUS_COCKPIT_BIN" session show <id>                # 单个会话，外加它此刻在等什么
 "$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
 "$AGENTUS_COCKPIT_BIN" session plan <id>

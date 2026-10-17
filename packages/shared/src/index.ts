@@ -46,6 +46,11 @@ export interface SessionInfo {
   status: SessionStatus;
   pid: number | null;
   title: string;
+  /** WHO named this session's CURRENT title: null = the operator (or nobody in particular), a
+   *  session id = that session's agent renamed it through the cockpit CLI. The rail shows a note
+   *  when a name came from another agent — a rename is a claim about what a conversation IS, and
+   *  nothing else in this product says who made one. */
+  titleBy?: string | null;
   /** The GENERATED name (what the agent announced via ACP `session_info_update`, or our
    *  own derivation from the first prompt). `title` is what the rail shows — normally the
    *  same string, but the operator's rename lives only in `title`, so a hand-written name

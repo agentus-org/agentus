@@ -20,13 +20,26 @@ const BIN = path.join(REPO, "bin/agentus.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();
+// One retry on a dropped keep-alive socket. undici reuses connections, and a server that just
+// reloaded (tsx watch) closes the ones it inherited — a harness that dies on that reports a product
+// failure that did not happen. Only connection errors are retried; a real HTTP answer is final.
 const api = async (p, init = {}) => {
-  const r = await fetch(`${BASE}${p}`, {
-    ...init,
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
-  });
-  const text = await r.text();
-  try { return { status: r.status, body: JSON.parse(text) }; } catch { return { status: r.status, body: text }; }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(`${BASE}${p}`, {
+        ...init,
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+      });
+      const text = await r.text();
+      try { return { status: r.status, body: JSON.parse(text) }; } catch { return { status: r.status, body: text }; }
+    } catch (e) {
+      const code = String(e?.cause?.code ?? e?.code ?? "");
+      if (attempt >= 1 || !/ECONNRESET|EPIPE|ECONNREFUSED|other side closed/i.test(String(e?.cause?.message ?? "") + code + String(e?.message ?? ""))) {
+        throw e;
+      }
+      await sleep(300);
+    }
+  }
 };
 
 let pass = 0, fail = 0;
@@ -123,6 +136,66 @@ try {
   check("…and lists the other live session in scope",
     (ctx?.data?.sessions ?? []).some((s) => s.id === dst.id), `${(ctx?.data?.sessions ?? []).length} rows`);
   check("…never an archived row", (ctx?.data?.sessions ?? []).every((s) => s.archived === false));
+
+  // ---- session list: filters, clocks, the cap ----
+  const all = cli(env, ["session", "list"]).doc;
+  check("session list is capped by default and says so in meta",
+    all?.meta?.capped === true || all?.meta?.returned === all?.meta?.total,
+    JSON.stringify({ returned: all?.meta?.returned, total: all?.meta?.total, capped: all?.meta?.capped }));
+  if ((all?.data?.sessions ?? []).length > 1) {
+    const one = cli(env, ["session", "list", "--limit", "1"]).doc;
+    check("--limit N shortens the page and meta.total still counts the rest",
+      one?.data?.sessions?.length === 1 && one?.meta?.capped === true && one?.meta?.total > 1,
+      JSON.stringify({ rows: one?.data?.sessions?.length, ...one?.meta }));
+  }
+  const here = cli(env, ["session", "list", "--here"]).doc;
+  check("--here narrows to the CALLER's workspace", (here?.data?.sessions ?? []).every((s) => !s.workspace || s.workspace === "/tmp"),
+    JSON.stringify((here?.data?.sessions ?? []).map((s) => s.workspace)));
+  check("every row carries BOTH clocks (createdAt and lastAt) and a workspace",
+    (all?.data?.sessions ?? []).every((s) => typeof s.createdAt === "number" && typeof s.lastAt === "number" && typeof s.workspace === "string"),
+    JSON.stringify(Object.keys(all?.data?.sessions?.[0] ?? {})));
+  check("the caller's own row is EXCLUDED by default (you are asking who ELSE is there)",
+    !(all?.data?.sessions ?? []).some((s) => s.id === SID), "");
+  const withSelf = cli(env, ["session", "list", "--include-self"]).doc;
+  const mine = (withSelf?.data?.sessions ?? []).find((s) => s.id === SID);
+  check("--include-self brings it back, MARKED as self (never a send target)", mine?.self === true, JSON.stringify(mine ?? null));
+  const waiting = cli(env, ["session", "list", "--waiting"]).doc;
+  check("--waiting answers an empty list, not an error, when nobody is waiting",
+    Array.isArray(waiting?.data?.sessions) && waiting.data.sessions.every((s) => s.permissions > 0),
+    `${waiting?.data?.sessions?.length} rows`);
+  const nonsense = cli(env, ["session", "list", "--since", "yesterday"]);
+  check("an unparsable --since is REFUSED (never silently 'everything')",
+    nonsense.code !== 0 && nonsense.doc?.error?.code === "bad_request", JSON.stringify(nonsense.doc?.error));
+  const again = cli(env, ["session", "list", "--since", "30m"]).doc;
+  check("--since 30m accepts the relative grammar and echoes the window it applied",
+    Boolean(again?.meta?.applied?.since), JSON.stringify(again?.meta?.applied));
+  const created = cli(env, ["session", "list", "--created-since", "1d", "--sort", "created"]).doc;
+  check("--created-since is a separate clock from --since (both can be set independently)",
+    Boolean(created?.meta?.applied?.created_since) && created?.meta?.applied?.sort === "created",
+    JSON.stringify(created?.meta?.applied));
+  const sorted = (created?.data?.sessions ?? []).map((s) => s.createdAt);
+  check("--sort created really orders by creation, newest first",
+    sorted.every((v, i) => i === 0 || sorted[i - 1] >= v), JSON.stringify(sorted.slice(0, 5)));
+  const byStatus = cli(env, ["session", "list", "--status", "cold"]).doc;
+  check("--status cold selects the no-process rows", (byStatus?.data?.sessions ?? []).every((s) => s.cold === true), "");
+
+  // ---- rename: attributed to the caller, and reversible ----
+  const renamed = cli(env, ["session", "rename", dst.id, "CLI 改的", "名字"]);
+  check("session rename renames a session", renamed.code === 0 && renamed.doc?.data?.name === "CLI 改的 名字",
+    JSON.stringify(renamed.doc?.data ?? renamed.doc?.error));
+  check("…and the row records WHO named it (titleBy = the caller's session id)",
+    renamed.doc?.data?.titleBy === SID, String(renamed.doc?.data?.titleBy));
+  const viaList = (cli(env, ["session", "list", "--include-self"]).doc?.data?.sessions ?? []).find((s) => s.id === dst.id);
+  check("…the attribution is visible in the LIST too (so a page can label it)",
+    viaList?.titleBy === SID && viaList?.name === "CLI 改的 名字", JSON.stringify({ name: viaList?.name, titleBy: viaList?.titleBy }));
+  const cleared = cli(env, ["session", "rename", dst.id, "--auto"]);
+  check("--auto clears back to the generated name", cleared.code === 0 && cleared.doc?.data?.name !== "CLI 改的 名字",
+    JSON.stringify(cleared.doc?.data ?? null));
+  check("…and drops the attribution (a generated name has no author)",
+    cleared.doc?.data?.titleBy == null, String(cleared.doc?.data?.titleBy));
+  const empty = cli(env, ["session", "rename", dst.id]);
+  check("rename with no title and no --auto is refused", empty.code !== 0 && empty.doc?.error?.code === "bad_request",
+    JSON.stringify(empty.doc?.error));
 
   // ---- messages: the tail, bounded, with a per-message cap ----
   await api(`/api/sessions/${SID}/prompt`, { method: "POST", body: JSON.stringify({ text: "你好，CLI 转录测试" }) });

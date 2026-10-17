@@ -285,7 +285,8 @@ channel that lets an agent read that — and, if you allow it, hand a message to
 
 ```bash
 "$AGENTUS_COCKPIT_BIN" capabilities                    # the contract, self-describing (start here)
-"$AGENTUS_COCKPIT_BIN" session list                    # who am I + every session in scope
+"$AGENTUS_COCKPIT_BIN" session list --here             # …narrowed: my workspace, newest activity first
+"$AGENTUS_COCKPIT_BIN" session rename <id> "…name…"    # name a session (the row records who did it)
 "$AGENTUS_COCKPIT_BIN" session show <id>               # one session, + what it is waiting on
 "$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
 "$AGENTUS_COCKPIT_BIN" session plan <id>

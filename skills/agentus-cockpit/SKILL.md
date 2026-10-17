@@ -44,7 +44,8 @@ commands that are *not* about a session sit at the top level.
 "$AGENTUS_COCKPIT_BIN" capabilities                          # the contract: commands, fields, sizes, is send on?
 "$AGENTUS_COCKPIT_BIN" skill [--path]                        # this document, straight from the package
 
-"$AGENTUS_COCKPIT_BIN" session list                          # who you are (self) + every session in scope
+"$AGENTUS_COCKPIT_BIN" session list [flags]                  # who you are (self) + the sessions in scope
+"$AGENTUS_COCKPIT_BIN" session rename <id> "…name…" | --auto # name a session (attributed to you)
 "$AGENTUS_COCKPIT_BIN" session show <id>                     # one session in detail, plus any approval it waits on
 "$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20       # recent transcript, each message cut to the documented size
 "$AGENTUS_COCKPIT_BIN" session plan <id>                     # the plan object the operator's card renders
@@ -53,6 +54,32 @@ commands that are *not* about a session sit at the top level.
 
 `session list` is the cheap one: one call, one row per session, enough to answer "what is the
 operator working on besides me". Reach for `messages` only when a specific session matters.
+
+### Narrowing `session list`
+
+| flag | what it does |
+|---|---|
+| `--here` | ONLY your own workspace — usually the right first move (it is the grouping the operator's rail uses too) |
+| `--workspace <path>` | a specific workspace, when you are asking about a different project |
+| `--waiting` | sessions with an approval outstanding — **the operator's queue** |
+| `--since 30m` \| `2h` \| `1d` \| `2w` \| `2026-10-17[T14:30]` | activity inside that window |
+| `--created-since <same grammar>` | creation inside that window (a separate clock) |
+| `--status running\|ready\|cold` | state; `cold` = no process, so `send` would answer `target_cold` |
+| `--grep <text>` | title substring only — there is no transcript search here (see below) |
+| `--sort last\|created\|name` | default `last` |
+| `--limit N` | default 20, max 200; `meta.total`/`capped` tell you what you did not see |
+| `--all` | include 已归档 (off by default — an archive means that work is closed) |
+| `--include-self` | add your own row (marked `self`); it is excluded by default |
+
+**Two clocks, and they are not interchangeable.** `lastAt` is when someone last *said* something;
+`createdAt` is when the slot was made. Every row carries both. `--since` filters activity,
+`--created-since` filters creation.
+
+**The trap:** a session *waiting for the operator's approval* has no new messages, so its `lastAt`
+goes stale. `--since 5m` will miss exactly the session that needs attention — use `--waiting`.
+
+An unparsable `--since` is refused (`bad_request`), never treated as "everything": a window that
+silently widened would make you report the wrong thing with confidence.
 
 Stray arguments are refused rather than ignored (`session show a b` → `bad_request`), so a typo
 never turns into a quietly different answer.
@@ -124,5 +151,27 @@ trimmed — say "the last N" honestly instead of implying you read everything.
 ## Scope
 
 You see the sessions the cockpit shows the operator: live slots and the recent cold ones. Archived
-sessions are gone from your view entirely, and so are hidden system sessions (observer agents). That
-is deliberate: an archive is a statement that the work is closed.
+sessions are gone from your view entirely (`--all` overrides that for one call), and so are hidden
+system sessions (observer agents). That is deliberate: an archive is a statement that the work is
+closed.
+
+## This is NOT your Hermes session history
+
+Two different windows onto conversations, and mixing them up produces confident wrong answers:
+
+| | `agentus session …` (here) | `hermes sessions …` / your own session search |
+|---|---|---|
+| store | the COCKPIT's `sessions` table (`AGENTUS_DATA`) | `$HERMES_HOME/state.db` |
+| scope | sessions this cockpit created and shows | EVERY session in that home — CLI chats, Studio, the gateway, cron |
+| knows about | live/cold state, plans, pending approvals, workspaces | full transcripts + FTS search |
+| search | title substring only (`--grep`) | full text over message history |
+
+So: "what is happening in the cockpit right now" → this CLI. "What did I do last week" → your own
+memory/session search. A Hermes session that was never opened through the cockpit has **no** row
+here, and an archived cockpit session is invisible to you by design. The bridge between the two is
+the cockpit row's `acpSessionId` (the Hermes-side id) — ask the operator if you need it; do not go
+reading their `state.db` on your own.
+
+Renaming is the same story in miniature: `agentus session rename` changes the name the RAIL shows and
+records that you did it (`titleBy`), while `hermes sessions rename` changes the name in `state.db`.
+They will drift, by design — one writer per store.

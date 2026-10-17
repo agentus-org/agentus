@@ -71,6 +71,8 @@ export interface SessionRow {
   /** the generated name, kept aside so a rename is reversible and an automatic title can
    *  never stomp the operator's own (see the interface comment in @agentus/shared) */
   autoTitle?: string | null;
+  /** session id of whoever renamed it through the cockpit CLI; null = the operator's own name */
+  titleBy?: string | null;
   status: SessionStatus;
   pid: number | null;
   createdAt: number;
@@ -111,7 +113,7 @@ export interface SessionRow {
 
 interface RawSessionRow {
   id: string; backend: BackendId; acp_session_id: string | null; cwd: string;
-  title: string; auto_title?: string | null; status: SessionStatus; pid: number | null;
+  title: string; auto_title?: string | null; title_by?: string | null; status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null; archived_at?: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
@@ -176,7 +178,7 @@ function blockKeyOf(kind: string, payload: unknown): string | null {
 function rowToSession(r: RawSessionRow): SessionRow {
   return {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
-    title: r.title, autoTitle: r.auto_title ?? null, status: r.status, pid: r.pid,
+    title: r.title, autoTitle: r.auto_title ?? null, titleBy: r.title_by ?? null, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at, archivedAt: r.archived_at ?? null,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
@@ -369,6 +371,11 @@ export class Store {
     // row: nobody ever archived them, they were just dead. The 已归档 section starts empty and fills
     // with what the operator actually archives.
     if (!cols.has("archived_at")) this.#db.exec("alter table sessions add column archived_at integer");
+    // WHO GAVE THIS SESSION ITS NAME. `title` says what a slot is called; nothing said who called it
+    // that, so another agent could quietly rename the operator's conversation to 「已完成 ✓」 and the
+    // rail would show it as fact. NULL = the operator (every existing row), a session id = that
+    // session's agent renamed it through the cockpit CLI.
+    if (!cols.has("title_by")) this.#db.exec("alter table sessions add column title_by text");
     // The session's own ACTIVITY clock — when the operator or the agent last really said something
     // in it. A COLUMN, not a derived `max(messages.created_at)` (AionUi's model: `modified_at` on
     // the conversation row, indexed, which is what its sidebar sorts by): every ingestion path
@@ -1087,13 +1094,15 @@ export class Store {
    *  Only `title` changes — `auto_title` is what the generated name survives in, so a
    *  rename is always reversible (studio keeps the two apart the same way: a null title
    *  falls back to the first-message preview). Returns false when the id is unknown. */
-  renameSession(id: string, title: string | null): boolean {
+  renameSession(id: string, title: string | null, by: string | null = null): boolean {
     const row = this.#db.prepare("select title, auto_title from sessions where id = ?").get(id) as
       | { title: string; auto_title: string | null }
       | undefined;
     if (!row) return false;
     const next = title == null || !title.length ? (row.auto_title ?? row.title) : title;
-    const info = this.#db.prepare("update sessions set title = ? where id = ?").run(next, id);
+    // `by` rides along on every write, including a reset: after `--auto` the name is generated again,
+    // and the note that an agent once renamed it would be a lie about the CURRENT name.
+    const info = this.#db.prepare("update sessions set title = ?, title_by = ? where id = ?").run(next, by, id);
     return Number(info.changes ?? 0) > 0;
   }
 

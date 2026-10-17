@@ -27,7 +27,10 @@ import { ObserverHub } from "./observer/hub.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
-import { COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, capabilities, sendAllowed, sessionRow, tailMessages } from "./cockpit/api.js";
+import {
+  COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, capabilities, listSessions, parseSince,
+  sendAllowed, sessionRow, tailMessages, type ListQuery,
+} from "./cockpit/api.js";
 
 const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
@@ -512,13 +515,73 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return send(res, 200, capabilities(sendOk));
       }
       if (url.pathname === "/api/cockpit/context" && req.method === "GET") {
+        const sp = url.searchParams;
         const self = rowOf(caller);
+        // `--all` is the ONE way archived rows enter this channel, and it is opt-in per call: the
+        // product rule (an archive is a statement that the work is closed) still holds by default.
+        const pool = sp.get("all") === "1" || sp.get("all") === "true"
+          ? [...rows, ...mgr.archived()]
+          : rows;
+        // `--here`: the CALLER's own workspace, resolved here because only the server knows the
+        // canonical path the rail groups by.
+        const here = sp.get("here") === "1" || sp.get("here") === "true";
+        const query: ListQuery = {
+          workspace: here ? (self ? self.workspace || self.cwd : undefined) : sp.get("workspace") ?? undefined,
+          status: sp.get("status") ?? undefined,
+          waiting: sp.get("waiting") === "1" || sp.get("waiting") === "true",
+          since: sp.get("since") ?? undefined,
+          createdSince: sp.get("created_since") ?? undefined,
+          grep: sp.get("grep") ?? undefined,
+          sort: (sp.get("sort") as ListQuery["sort"] | null) ?? undefined,
+          limit: sp.get("limit") ? Number(sp.get("limit")) : undefined,
+          all: sp.get("all") === "1" || sp.get("all") === "true",
+          includeSelf: sp.get("include_self") === "1" || sp.get("include_self") === "true",
+        };
+        if (query.sort && !["last", "created", "name"].includes(query.sort)) {
+          return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: `--sort wants last|created|name, got "${query.sort}"` });
+        }
+        // A window that cannot be parsed is REFUSED. Silently ignoring it would answer a different
+        // question than the one asked, and the caller would believe the empty list.
+        for (const [field, raw] of [["since", query.since], ["created_since", query.createdSince]] as const) {
+          if (!raw) continue;
+          const parsed = parseSince(raw);
+          if (!parsed.ok) return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: parsed.why });
+        }
+        // Mark the caller's own row: it stays visible (you are part of the cockpit) but it is never a
+        // send target, and saying so in the data is cheaper than making every reader remember.
+        const marked = pool.map((s) => ({ ...summarize(s), ...(s.id === caller ? { self: true } : {}) }));
+        const listed = listSessions(marked, query);
         return send(res, 200, {
           schema_version: COCKPIT_SCHEMA_VERSION,
           self: self ? summarize(self) : null,
-          sessions: rows.map(summarize),
-          meta: { count: rows.length, scope: "live+cold, archived excluded" },
+          sessions: listed.rows,
+          meta: {
+            ...listed.meta,
+            scope: query.all ? "live+cold+archived (--all)" : "live+cold, archived excluded",
+          },
         });
+      }
+      if (url.pathname === "/api/cockpit/rename" && req.method === "POST") {
+        const body = await readJson(req);
+        const id = String(body.id ?? "");
+        if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        // Recorded as THIS session's doing (titleBy), so the operator can tell an agent-named
+        // conversation from one they named. `auto` clears back to the generated title.
+        const title = body.auto === true ? null : String(body.title ?? "").trim();
+        if (body.auto !== true && !title) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        try {
+          const info = mgr.rename(id, title, caller);
+          return send(res, 200, {
+            schema_version: COCKPIT_SCHEMA_VERSION,
+            renamed: true,
+            id,
+            name: info.title,
+            titleBy: info.titleBy ?? null,
+          });
+        } catch (e) {
+          return send(res, 404, { error: COCKPIT_ERRORS.outOfScope, message: String((e as Error)?.message ?? e) });
+        }
       }
       if (url.pathname === "/api/cockpit/session" && req.method === "GET") {
         const id = url.searchParams.get("id") ?? "";

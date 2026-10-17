@@ -39,11 +39,21 @@ const SELF = process.env.AGENTUS_COCKPIT_SESSION ?? "";
 const USAGE = `agentus — read the cockpit from inside a session, and (if the operator allowed it) talk to
 another one
 
-  agentus session list                who you are + every session in scope, one line each
+  agentus session list [flags]        who you are + the sessions in scope that match
+        --here            only MY workspace (usually what you want)
+        --workspace <p>   only that workspace            --status running|ready|cold
+        --waiting         only sessions with an approval outstanding (the operator's queue)
+        --since <when>    activity within 30m/2h/1d/2w or 2026-10-17[T14:30]
+        --created-since <when>   same grammar, measured against CREATION
+        --grep <text>     title substring        --sort last|created|name
+        --limit N         default 20, max 200    --all include 已归档   --include-self
+  agentus session rename <id> <title…> | --auto    name it (attributed to you)
   agentus session show <id>           one session in detail, with any approval it is waiting on
   agentus session messages <id> [--tail N]
                                       the last N messages, each cut to the documented size
   agentus session plan <id>           the plan object the operator's card renders
+  agentus session rename <id> <title…> | --auto
+                                      name a session (the row records that YOU named it)
   agentus session send <id> <text…>   deliver a message into another session (stdin if no text)
 
   agentus capabilities                the contract: commands, fields, truncation, scope, send state
@@ -124,8 +134,49 @@ if (cmd === "capabilities") {
   const id = args[0];
 
   if (verb === "list") {
-    const data = await call("/api/cockpit/context");
+    // Flags only after the verb, and the id-less list is the one command where that is the whole
+    // surface: everything here narrows WHICH sessions answer, nothing changes them.
+    const params = new URLSearchParams();
+    const VALUE_FLAGS = ["workspace", "status", "since", "created-since", "grep", "sort", "limit"];
+    const BOOL_FLAGS = ["here", "waiting", "all", "include-self"];
+    // flags start at 0 here: `session list` takes no positional id (unlike show/messages/plan)
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (!a.startsWith("--")) fail("bad_request", `unexpected argument "${a}" (session list takes flags only)`);
+      const name = a.slice(2);
+      if (BOOL_FLAGS.includes(name)) {
+        params.set(name.replaceAll("-", "_"), "1");
+      } else if (VALUE_FLAGS.includes(name)) {
+        const v = args[++i];
+        if (v === undefined) fail("bad_request", `--${name} needs a value`);
+        if (name === "limit" && !/^\d+$/.test(v)) fail("bad_request", `--limit wants a number, got "${v}"`);
+        params.set(name.replaceAll("-", "_"), v);
+      } else {
+        fail("bad_request", `unknown flag --${name} (see agentus capabilities)`);
+      }
+    }
+    const qs = params.toString();
+    const data = await call(`/api/cockpit/context${qs ? `?${qs}` : ""}`);
     out({ success: true, data, meta: meta(data) });
+  } else if (verb === "rename") {
+    if (!id) fail("bad_request", "usage: agentus session rename <id> <new title…> | --auto");
+    const auto = args.includes("--auto");
+    const title = args.slice(1).filter((a) => a !== "--auto").join(" ").trim();
+    if (!auto && !title) fail("bad_request", "nothing to name it: pass the title after the id, or --auto to clear it");
+    if (auto && title) fail("bad_request", "--auto clears the name; do not also pass a title");
+    let res;
+    try {
+      res = await fetch(`${ENDPOINT}/api/cockpit/rename`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-agentus-cockpit-token": TOKEN },
+        body: JSON.stringify(auto ? { id, auto: true } : { id, title }),
+      });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) fail(String(body?.error ?? `http_${res.status}`), String(body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    out({ success: true, data: body, meta: meta(body) });
   } else if (verb === "show") {
     if (!id) fail("bad_request", "usage: agentus session show <id>");
     // Nothing here ignores a stray argument: `show a b` is a typo, and a CLI that silently drops half

@@ -883,9 +883,12 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                     ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
                     className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
                     data-session={s.id}
-                    title={s.archivedAt
+                    title={(s.archivedAt
                       ? `${s.title} — 已归档${cold ? "（进程已停）" : ""}，点一下打开；菜单里可取消归档并恢复`
-                      : `${s.title}${cold ? " — 进程已停，点一下恢复" : ""}`}
+                      : `${s.title}${cold ? " — 进程已停，点一下恢复" : ""}`)
+                      // a name given by ANOTHER agent is a claim about what this session is; the
+                      // operator should be able to see who made it (titleBy = that session's id)
+                      + (s.titleBy ? `\n名字由会话 ${s.titleBy} 的 agent 改的` : "")}
                     onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
                     onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
                     onTouchEnd={pressClear}
