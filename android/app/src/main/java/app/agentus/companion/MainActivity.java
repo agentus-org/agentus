@@ -487,11 +487,15 @@ public final class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         String want = p.url.replaceAll("/+$", "");
         if (pendingOpen != null && !pendingOpen.isEmpty()) {
-            // a tap is waiting for a WebView to exist: it wins over the bare cockpit URL
+            // a tap is waiting to be honoured: it wins over the bare cockpit URL
             String target = pendingOpen;
             pendingOpen = null;
-            loadedUrl = want;
-            webView.loadUrl(target);
+            // …unless this very WebView is already on that cockpit, in which case the tap was a no-op
+            // and reloading would be the white-flash this whole path exists to avoid (issue #20).
+            if (!navigateInPage(target)) {
+                loadedUrl = want;
+                webView.loadUrl(target);
+            }
         } else if (!want.equals(loadedUrl)) {
             loadedUrl = want;
             webView.loadUrl(want);
@@ -1556,8 +1560,85 @@ public final class MainActivity extends Activity {
         String target = pendingOpen;
         pendingOpen = null;
         NotifyService.log("驾驶舱已在屏上 → " + target);
-        webView.loadUrl(target);
+        if (!navigateInPage(target)) webView.loadUrl(target);
         updateToolbar();
+    }
+
+    /** A tap on the session already on screen must not reload the page (issue #20).
+     *
+     *  `loadUrl()` tears the document down: the socket drops, the transcript repaints from scratch, the
+     *  operator loses their place mid-stream, and the WebView is white until the first frame (its own
+     *  comment says so). So ask the page to move instead — it owns the session list, the scroll and the
+     *  socket.
+     *
+     *  Returns true when the tap was handled inside the document: either that session is ALREADY the one
+     *  on screen (nothing to do but come to the front), or the page accepted the in-page jump. Returns
+     *  false when a real load is the honest answer — no page yet, another server, or an id this page has
+     *  never seen (a link to an archived slot has to go through the server).
+     */
+    private boolean navigateInPage(String target) {
+        String here = webView == null ? null : webView.getUrl();
+        if (here == null || here.isEmpty()) return false;
+        // another server (or not the cockpit at all): the document cannot answer for that session
+        if (!sameOrigin(here, target)) return false;
+        String want = sessionOf(target);
+        if (want == null) return false;
+        if (want.equals(sessionOf(here))) {
+            NotifyService.log("已经在看这个会话，不重载");
+            return true;
+        }
+        // evaluateJavascript cannot await: the page answers with a boolean, and a false one means its
+        // session list has no such id — then a load is right, not an error.
+        String js = "(function(){try{return !!(window.__agentusOpenSession && window.__agentusOpenSession("
+                + jsString(want) + "));}catch(e){return false;}})()";
+        webView.evaluateJavascript(js, value -> {
+            if (!"true".equals(value)) {
+                NotifyService.log("页内没有这个会话，改成真加载 → " + want);
+                webView.loadUrl(target);
+            }
+        });
+        return true;
+    }
+
+    /** `?session=<id>` out of a cockpit URL, or null when the URL does not name one. */
+    private static String sessionOf(String url) {
+        if (url == null) return null;
+        try {
+            String v = Uri.parse(url).getQueryParameter("session");
+            return v == null || v.isEmpty() ? null : v;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** scheme + host + port, so the same cockpit at the same address is recognised across paths. */
+    private static boolean sameOrigin(String a, String b) {
+        try {
+            Uri x = Uri.parse(a), y = Uri.parse(b);
+            String xs = x.getScheme(), ys = y.getScheme();
+            if (xs == null || ys == null || !xs.equalsIgnoreCase(ys)) return false;
+            String xh = x.getHost(), yh = y.getHost();
+            if (xh == null || yh == null || !xh.equalsIgnoreCase(yh)) return false;
+            return x.getPort() == y.getPort();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** A JS string literal for an id that came off the wire (ids are opaque: quote them properly). */
+    private static String jsString(String s) {
+        StringBuilder out = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"': out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '<': out.append("\\u003c"); break;
+                default: out.append(c);
+            }
+        }
+        return out.append('"').toString();
     }
 
     private void requestNotificationPermission() {

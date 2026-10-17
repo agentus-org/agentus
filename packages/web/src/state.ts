@@ -412,26 +412,54 @@ class Cockpit {
     }
   }
 
-  /** `?session=<id>` — the slot a notification tap (or a shared link) asked for.
+  /** `?session=<id>` — which slot this page is showing (issue #20).
    *
-   *  Read ONCE and then dropped from the URL: the parameter decides where we land, but the operator
-   *  switching slots afterwards must not be overridden by a stale query string on a later reconnect.
-   *  This is the other half of the tap-to-open contract — the app navigates here, the page picks it up. */
-  #openTarget(): string | null {
+   *  The URL is a LOCATOR now, not a one-shot instruction: it is read on load (a notification tap, a
+   *  shared link) and then kept in step with what is on screen, so 「把这条链接发给自己」 opens the same
+   *  conversation and a reload cannot land somewhere else. It used to be deleted on read, which fixed
+   *  the stale-query hijack by throwing away the address — the reconciliation below keeps that fix
+   *  without the amnesia: a URL that disagrees with the ACTIVE session is the only thing followed. */
+  #urlSession(): string | null {
     try {
-      const here = new URL(location.href);
-      const want = here.searchParams.get("session");
-      if (!want) return null;
-      here.searchParams.delete("session");
-      history.replaceState(null, "", here.toString());
-      return want;
+      return new URL(location.href).searchParams.get("session");
     } catch {
       return null;
     }
   }
 
+  /** Write the active slot into the address bar with `replaceState`.
+   *
+   *  `replaceState`, not `pushState`: switching slots inside the cockpit is one document changing
+   *  view, not navigation. A history entry per click would turn the browser's Back button into
+   *  「undo my last click」 and bury real navigations. The URL still becomes shareable and reloadable,
+   *  which is the whole point. */
+  #writeUrl(id: string | null): void {
+    try {
+      const here = new URL(location.href);
+      const want = id ?? null;
+      if ((here.searchParams.get("session") ?? null) === want) return; // already truthful: no churn
+      if (want) here.searchParams.set("session", want);
+      else here.searchParams.delete("session");
+      history.replaceState(history.state, "", here.toString());
+    } catch {
+      /* about:blank / sandboxed iframe — the cockpit still works, it just cannot be linked */
+    }
+  }
+
+  /** Follow the URL if (and only if) it disagrees with the active session.
+   *
+   *  This is the 「陈旧 query 劫持」 rule stated as code: on load the parameter decides (it outranks
+   *  localStorage, which stays as the fallback for a bare `/`), and afterwards the operator's clicks
+   *  win because they rewrite the URL themselves. Called on load, on `popstate`, and by the in-page
+   *  navigation hook the phone's notification tap uses. */
+  followUrl(): void {
+    const want = this.#urlSession();
+    if (!want || want === this.activeId) return;
+    if (this.byId.has(want)) this.setActive(want);
+  }
+
   #restoreActive(): string | null {
-    const target = this.#openTarget();
+    const target = this.#urlSession();
     if (target) {
       this.#rememberActive(target);
       return target;
@@ -1050,6 +1078,9 @@ class Cockpit {
   setActive(id: string): void {
     this.activeId = id;
     this.#rememberActive(id);
+    // …and the address bar says so (issue #20): a cockpit whose URL is always `/` cannot be shared,
+    // bookmarked or re-opened on the conversation you meant.
+    this.#writeUrl(id);
     // Looking at a session IS the acknowledgement of its completion dot (AionUi clears the same set on
     // open). Only the transient half: a mark the operator made BY HAND is their own statement and goes
     // away through the menu that made it, not because they glanced at the row.
@@ -2203,6 +2234,35 @@ function extractToolInput(p: Record<string, unknown>): string {
 }
 
 export const cockpit = new Cockpit();
+
+/**
+ * In-page navigation for anything that already has this document on screen (issue #20).
+ *
+ * The Android companion taps a notification: it used to `loadUrl()` the deep link no matter what, so a
+ * tap on the session you were READING reloaded the whole page — white flash, lost scroll, a socket
+ * teardown and reconnect. The phone now asks this instead. Returns true when it moved (or was already
+ * there), false when the id is unknown to this page — the caller then falls back to a real load, which
+ * is the honest answer for a link to something we have never heard of.
+ *
+ * Exposed as a global rather than a custom event because `evaluateJavascript` cannot await: the value
+ * has to be right there in the reply.
+ */
+if (typeof window !== "undefined") {
+  const w = window as unknown as { __agentusOpenSession?: (id: string) => boolean };
+  w.__agentusOpenSession = (id: string): boolean => {
+    const key = String(id ?? "").trim();
+    if (!key) return false;
+    if (!cockpit.byId.has(key)) return false;
+    cockpit.setActive(key); // also rewrites ?session= — the address bar stays truthful
+    // a cold slot needs its process back; setActive alone would paint an empty transcript
+    const view = cockpit.byId.get(key);
+    if (view && !view.loaded) void cockpit.resume(key).catch(() => undefined);
+    return true;
+  };
+  // Back/Forward cannot create a different session (we only replaceState), but a manually edited URL,
+  // a link pasted into the omnibox, or the App's fallback load all land here.
+  window.addEventListener("popstate", () => cockpit.followUrl());
+}
 
 /**
  * Is a turn running on this session?
