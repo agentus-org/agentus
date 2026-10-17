@@ -20,7 +20,7 @@ import { ToolPanel } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
-import { RAIL_RECENT, splitRecent } from "./rail";
+import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
@@ -779,10 +779,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   // what HE decided (see the archived flag) rather than about what happened to a process.
   const groups = useMemo(
     () => {
-      const rows = [
-        ...sessions.map((s) => ({ s, cold: Boolean(s.cold) })),
-        ...cold.map((s) => ({ s, cold: true })),
-      ].filter(({ s }) => match(s));
+      const rows = railRows(sessions, cold).filter(({ s }) => match(s));
       return groupSessions(rows);
     },
     [sessions, cold, needle]
@@ -3271,6 +3268,12 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   const [text, setText] = useState(() => draftsBySession.get(v.info.id) ?? "");
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
+  // 插话 (issue #14) is only discoverable where the operator is actually typing. While a turn runs,
+  // Enter FILES into the queue — the modifier is what puts those words on the floor — so the busy
+  // placeholder says so. Desktop only: a phone keyboard has no modifier, and there the queue row's ↑
+  // button is the way in.
+  const modKey = /Mac|iPhone|iPad/.test(navigator.platform ?? "") ? "⌘" : "Ctrl+";
+  const busyHint = window.innerWidth < 720 ? "排队中 — 回车排到本轮之后" : `插话直发 ${modKey}Enter · 回车排队`;
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
   // clicking outside hides the palette without eating the "/..." the operator typed
   const [paletteHidden, setPaletteHidden] = useState(false);
@@ -3349,14 +3352,18 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     setAttachErr(bad.join(" · "));
   };
 
+  /** What the box holds, in wire shape — shared by Enter and ⌘Enter so the two cannot disagree
+   *  about what a draft attachment becomes. */
+  const attachmentsOf = (): PromptAttachment[] => drafts.map((d) => (
+    d.kind === "image"
+      ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
+      : { kind: "text", name: d.name, text: d.payload }
+  ));
+
   const send = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
-    const attachments: PromptAttachment[] = drafts.map((d) => (
-      d.kind === "image"
-        ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
-        : { kind: "text", name: d.name, text: d.payload }
-    ));
+    const attachments = attachmentsOf();
     // A busy agent is not a dead composer any more (Studio's message queue): what he types now is
     // filed in the queue and goes out by itself when the running turn ends. The send button is still
     // a stop button while busy, so Enter is the way in — and the queue row is where it can be
@@ -3391,6 +3398,29 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     setPick(0);
     // Sending is an explicit "show me the answer": re-attach the stream even if the
     // operator had scrolled up to read something.
+    streamReattach.current();
+  };
+
+  /** ⌘/Ctrl+Enter — 插话: take the floor from the running turn instead of waiting in the queue
+   *  (issue #14). Two steps with the mouse (Enter, then the queue row's ↑) become one keystroke.
+   *
+   *  `cockpit.sendNow` is enqueue + `sendQueuedNow`, so the words still get a queue row (✕/✎), the
+   *  `#takingFloor` guard, and the server's `interrupt: true` hand-over. Idle is the same call:
+   *  interrupt with no turn running is a plain prompt. A COLD slot has nothing to interrupt — it goes
+   *  through `sendToCold` like Enter does (one wake, deduped, and its drain already interrupts). */
+  const sendNow = () => {
+    const t = text.trim();
+    if (!t && !drafts.length) return;
+    const attachments = attachmentsOf();
+    if (v.info.cold) {
+      cockpit.sendToCold(v.info.id, t, attachments);
+    } else {
+      cockpit.sendNow(v.info.id, t, attachments);
+    }
+    setText("");
+    setDrafts([]);
+    setAttachErr("");
+    setPick(0);
     streamReattach.current();
   };
 
@@ -3625,7 +3655,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             rows={1}
             value={text}
             onFocus={() => setPaletteHidden(false)}
-            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.info.status === "ready" ? placeholder : v.info.status}
+            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.busy ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
               setPaletteHidden(false);
@@ -3637,6 +3667,14 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               // Never act on a key that belongs to the IME: Enter/arrows are picking a
               // candidate, not sending or navigating.
               if (composing.current || e.nativeEvent.isComposing) return;
+              // ⌘/Ctrl+Enter = 插话 (issue #14): take the floor from the running turn NOW instead of
+              // filing into the queue. Checked BEFORE the slash palette on purpose — the modifier
+              // always means "take the floor", while picking a command is a plain Enter/Tab gesture.
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+                e.preventDefault();
+                sendNow();
+                return;
+              }
               if (paletteOpen && matches.length) {
                 if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
                 if (e.key === "ArrowUp") { e.preventDefault(); setPick((i) => (i - 1 + matches.length) % matches.length); return; }

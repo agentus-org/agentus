@@ -11,6 +11,31 @@
 export const RAIL_RECENT = 5;
 
 /**
+ * The rail's row list: every session ONCE, the live copy winning over a cold one.
+ *
+ * The rail renders two client-side buckets (`sessions` = has a process, `cold` = on disk only) by
+ * concatenating them, so it depends on "one session lives in one bucket". Server-side that invariant
+ * holds, but a SINGLE-ROW `t:"session"` frame does not touch the other bucket — and an ACP spawn is a
+ * storm of those frames (starting→ready, then modes/configOptions/usage each emit one). The previous
+ * copy of the row was therefore still in `cold` while the live copy arrived, and the rail drew the
+ * same session 2~3 rows deep, every copy highlighted because they share an id (operator, 2026-10-17).
+ *
+ * `state.ts` now keeps the buckets exclusive; this is the belt to that braces — dedupe where the two
+ * lists MEET, so a future single-frame producer cannot reopen the shape.
+ */
+export function railRows<T extends { id: string; cold?: boolean | null }>(
+  sessions: readonly T[],
+  cold: readonly T[],
+): { s: T; cold: boolean }[] {
+  const byId = new Map<string, { s: T; cold: boolean }>();
+  // cold first, live second: a live copy REPLACES the cold one in place (Map keeps the first
+  // insertion position), so a duplicate can cost a row its newest data but never a second row.
+  for (const s of cold) byId.set(s.id, { s, cold: true });
+  for (const s of sessions) byId.set(s.id, { s, cold: Boolean(s.cold) });
+  return [...byId.values()];
+}
+
+/**
  * Split one group into what is visible and how much is hidden.
  *
  * Rules, in order — and each one is a case where hiding a row costs the operator something real:

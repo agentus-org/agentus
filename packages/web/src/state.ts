@@ -956,6 +956,27 @@ class Cockpit {
     this.send({ t: "prompt", sessionId, text: item.text, attachments: item.attachments, interrupt: true });
   }
 
+  /** ⌘/Ctrl+Enter — 插话: put what is in the box on the floor NOW, interrupting the running turn.
+   *
+   *  Deliberately composed of the two verbs above rather than a third send path: file it
+   *  (`enqueuePrompt`), then force it through (`sendQueuedNow`). That way the operator's words get
+   *  exactly what a queued message gets — a ✕/✎ row in history, the `#takingFloor` guard against
+   *  two turns racing, and the same `interrupt: true` hand-over the queue's ↑ button and a spoken
+   *  call utterance both use. A separate "send with interrupt" call site would be a second place for
+   *  the queue and the wire to disagree.
+   *
+   *  Idle/ready is not a special case: `interrupt` on a session with no turn running is a plain
+   *  prompt (the server only cancels when there is something to cancel). A COLD slot has no turn to
+   *  interrupt either, so App routes it through `sendToCold` (one wake, deduped, interrupt on drain). */
+  sendNow(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
+    if (!text.trim() && !attachments.length) return;
+    this.#loadQueue(sessionId);
+    this.enqueuePrompt(sessionId, text, attachments);
+    const rows = this.#queues.get(sessionId) ?? [];
+    const filed = rows[rows.length - 1];
+    if (filed) this.sendQueuedNow(sessionId, filed.id);
+  }
+
   /** Hand the head of the line to the server. Called when a turn ends and when a session turns idle. */
   drainQueue(sessionId: string): void {
     const rows = this.#queues.get(sessionId) ?? this.#loadQueue(sessionId);
@@ -1672,8 +1693,22 @@ class Cockpit {
         break;
       }
       case "session": {
-        this.sessions = this.sessions.map((s) => (s.id === e.session.id ? e.session : s));
-        if (!this.sessions.some((s) => s.id === e.session.id)) this.sessions.push(e.session);
+        // ONE ROW LIVES IN ONE BUCKET (issue #13). This is the single-row update path, and an ACP spawn
+        // is a storm of these frames (starting→ready, then modes/configOptions/usage each emit one), so
+        // the row's previous copy was still in `cold` when the live copy landed — the rail drew the same
+        // session 2~3 rows deep, every copy lit up because they share an id. The full `sessions` snapshot
+        // used to be the only thing that repaired it, which is why the duplicates were transient.
+        // A live frame therefore DROPS the cold copy; a `cold:true` frame (a rename / auto-title of a
+        // resting slot) moves the row OUT of `sessions` instead of leaving a second copy behind.
+        if (e.session.cold === true) {
+          this.sessions = this.sessions.filter((s) => s.id !== e.session.id);
+          this.cold = this.cold.map((s) => (s.id === e.session.id ? e.session : s));
+          if (!this.cold.some((s) => s.id === e.session.id)) this.cold.push(e.session);
+        } else {
+          this.sessions = this.sessions.map((s) => (s.id === e.session.id ? e.session : s));
+          if (!this.sessions.some((s) => s.id === e.session.id)) this.sessions.push(e.session);
+          this.cold = this.cold.filter((s) => s.id !== e.session.id);
+        }
         this.#view(e.session.id).info = e.session;
         // A slot that just CAME UP may be holding a prompt filed before it could take one: the first
         // message of a session being created (filed into the queue the moment the row existed, when
