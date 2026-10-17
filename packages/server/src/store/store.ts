@@ -1069,6 +1069,23 @@ export class Store {
     return { hasMore: hasMore || page.length < capped.length, messages: page.reverse().map(rowToMessage) };
   }
 
+  /** The newest rows of the given KINDS, ignoring whatever sits in between.
+   *
+   *  A row window is the wrong unit when the question is "what did the humans say": one agentic
+   *  turn emits hundreds of `tool`/`thought` rows between two sentences, so `messagesTail(200)`
+   *  legitimately contains zero natural-language rows (measured on a live session: 275 rows, 153
+   *  tool + 106 thought, and every user/agent row older than the window). Filtering by kind in
+   *  SQL is the only way to ask for "the last 5 sentences" and actually get them.
+   */
+  messagesLastKinds(sessionId: string, kinds: string[], limit = 5): StoredMessage[] {
+    if (!kinds.length || limit <= 0) return [];
+    const marks = kinds.map(() => "?").join(",");
+    const rows = this.#db
+      .prepare(`select * from messages where session_id = ? and kind in (${marks}) order by seq desc limit ?`)
+      .all(sessionId, ...kinds, limit) as unknown as RawMessageRow[];
+    return rows.reverse().map(rowToMessage);
+  }
+
   messagesAfter(sessionId: string, afterSeq: number, limit = 500): StoredMessage[] {
     const rows = this.#db
       .prepare(

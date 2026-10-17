@@ -111,5 +111,44 @@ check("…roles alternate as user/assistant", ctx.some((c) => c.role === "user")
 check("…and the agent turns carry text, not [object Object]",
   ctx.filter((c) => c.role === "assistant").every((c) => c.text.includes("轮回答")), JSON.stringify(ctx));
 
+// ---- 5. the burst is INSIDE the current turn (how it actually fails on a live session) ----
+// The fixture above puts the turns last, so `tail(200)` still reached them. In reality the operator
+// dictates while the agent is working: the newest rows are the burst, and the human sentences are
+// far outside any fixed row window. Measured on a live session that answered `[]`: 275 rows,
+// 153 tool + 106 thought, 7 user + 7 agent — every user/agent row older than the window.
+const midTurn = "sess-voice-midturn";
+store.upsertSession({
+  id: midTurn, backend: "mock", acpSessionId: "a", cwd: "/tmp", title: midTurn, status: "idle",
+  pid: null, createdAt: 1, closedAt: null, home: null,
+} as never);
+add("user", { text: "这次先改热词，然后再说上下文", attachments: [] }, midTurn);
+add("agent", { content: { type: "text", text: "我先看热词表" }, messageId: "mt1", sessionUpdate: "agent_message_chunk" }, midTurn);
+for (let i = 0; i < 130; i++) {
+  add("thought", { content: { type: "text", text: `在想第 ${i} 件事` }, messageId: `mt${i}`, sessionUpdate: "agent_thought_chunk" }, midTurn);
+  add("tool", { toolCallId: `mc${i}`, kind: "execute", title: `terminal: grep -n hotword ${i}`, content: [], sessionUpdate: "tool_call" }, midTurn);
+}
+const midCtx = dictationContext(store, midTurn);
+check("context survives a burst that sits INSIDE the current turn (260 rows of tool/thought after the words)",
+  midCtx.length === 2, `${midCtx.length} turn(s)`);
+// newest-last is the AGENT here (it answered before the burst), so look at the user turns
+check("…and it holds the operator's actual sentence, not just the burst",
+  midCtx.some((c) => c.role === "user" && c.text.includes("这次先改热词")), JSON.stringify(midCtx));
+check("the pool sees the same session (dynamic hotwords too, not only `context`)",
+  contextTexts(store, midTurn).some((t) => t.includes("这次先改热词")), `${contextTexts(store, midTurn).length} text(s)`);
+
+// ---- 6. base16 fragments are not words ----
+const sha = "sess-voice-sha";
+store.upsertSession({
+  id: sha, backend: "mock", acpSessionId: "a", cwd: "/tmp", title: sha, status: "idle",
+  pid: null, createdAt: 1, closedAt: null, home: null,
+} as never);
+add("user", { text: "看 a551e 这个提交，还有 a551e 里面的改动；LITE 和 NVDA 也看一下", attachments: [] }, sha);
+add("user", { text: "a551e 再确认一次，LITE 和 NVDA 再核一遍", attachments: [] }, sha);
+const shaWords = hotwordsFor(store, sha).map((h) => h.word);
+check("a commit-sha fragment never becomes a hotword",
+  !shaWords.some((w) => /^(?=.*\d)[0-9a-f]{5,}$/i.test(w)), shaWords.join(","));
+check("…while tickers that merely look hex-ish still bias (LITE / NVDA)",
+  shaWords.some((w) => w === "LITE") && shaWords.some((w) => w === "NVDA"), shaWords.join(","));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -62,6 +62,10 @@ export function extractDynamicHotwords(texts: string[], limit = 20): Hotword[] {
       } else if (raw.length > 8) {
         continue;
       }
+      // Base16 fragments (`a551e`, `9f2c1ab`) pass every length/letters test but are never spoken:
+      // they are commit shas and ids the transcript cites. Require a digit so real hex-ish words
+      // (`LITE`, `NVDA`, `ACP`) survive.
+      if (/^(?=.*\d)[0-9a-f]{5,}$/i.test(raw)) continue;
       const prev = counts.get(raw);
       if (prev) prev.n += 1;
       else counts.set(raw, { n: 1, sample: raw });
@@ -130,10 +134,11 @@ export function contextTexts(store: Store, sessionId?: string, budgetChars = 24_
       }
     }
   };
-  if (sessionId) take(store.messagesTail(sessionId, 60).messages, 40);
+  // Ask the store for natural-language rows; a row window (`tail(60)`) is routinely all tool calls.
+  if (sessionId) take(store.messagesLastKinds(sessionId, ["user", "agent"], 40), 40);
   for (const s of store.listSessions(false)) {
     if (s.id === sessionId) continue;
-    take(store.messagesTail(s.id, 12).messages, 8);
+    take(store.messagesLastKinds(s.id, ["user", "agent"], 8), 8);
   }
   return out;
 }
@@ -148,9 +153,11 @@ export function contextTexts(store: Store, sessionId?: string, budgetChars = 24_
  *  SURVIVORS. Lives next to the pool because both answer the same question with the same row shapes. */
 export function dictationContext(store: Store, sessionId?: string, turns = 5): { role: "user" | "assistant"; text: string }[] {
   if (!sessionId) return [];
+  // Read MORE than `turns` natural-language rows (a fenced-only reply can filter out) but never
+  // by row count: 200 rows of a busy session is 0 sentences, which is how this returned `[]` for
+  // a session with seven user turns in it.
   const out: { role: "user" | "assistant"; text: string }[] = [];
-  for (const row of store.messagesTail(sessionId, 200).messages) {
-    if (row.kind !== "user" && row.kind !== "agent") continue;
+  for (const row of store.messagesLastKinds(sessionId, ["user", "agent"], turns + 5)) {
     const text = stripFencedCode(rowText(row)).slice(0, 200);
     if (text) out.push({ role: row.kind === "user" ? "user" : "assistant", text });
   }
