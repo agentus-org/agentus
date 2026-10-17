@@ -349,6 +349,14 @@ button { font: inherit; }
   color: var(--text-dim); font-size: 12.5px;
 }
 .stream-hint .elapsed { opacity: 0.75; font-variant-numeric: tabular-nums; }
+/* The agent's own one-line status beside the clock (issue #18): `👁️ Hindsight — recalled 8 memories`.
+   Quiet on purpose — it is an observation about the turn, not something the agent said — and it
+   truncates rather than wrapping, because a status that wraps pushes the transcript up every time the
+   memory system speaks. */
+.stream-hint .turn-status {
+  max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-left: 7px; border-left: 1px solid var(--line);
+}
 .stream-spin {
   flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%;
   border: 1.5px solid var(--line); border-top-color: var(--accent);

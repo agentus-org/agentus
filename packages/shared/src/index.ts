@@ -207,6 +207,13 @@ export type ServerEvent =
   /** per-turn trace: what model/effort/mode this turn is actually running with
    *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
   | { t: "turn-start"; sessionId: string; trace?: TurnTrace }
+  /** A one-line status from the AGENT itself (issue #18): `👁️ Hindsight — recalled 8 memories`,
+   *  a compaction countdown, a provider wait. Deliberately NOT a transcript row and not persisted —
+   *  it describes what the process is doing NOW, so the page shows the latest one beside the running
+   *  turn and forgets it at turn-end (stored, it would put 「recalled 8 memories」 above a
+   *  conversation from last week). Carrier on the ACP side: an empty thought chunk tagged
+   *  `_meta.hermes.kind = "status"`. */
+  | { t: "status"; sessionId: string; text: string; statusKind?: string }
   /** The session's plan object — the TRUTH the card renders, not the transcript's frames. Sent on
    *  every change, and the same object is available over GET /api/sessions/:id/plan, so a page that
    *  loads after the agent process died still renders the real plan instead of nothing. */

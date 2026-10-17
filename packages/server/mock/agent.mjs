@@ -416,6 +416,20 @@ const agent = () => ({
     // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
     const slow = /\[slow\]/.test(text) ? Math.max(SLOW, 900) : SLOW;
 
+    // `[status]` — the agent-status carrier from issue #18, exactly as hermes' `make_status_cb` sends
+    // it: an EMPTY thought chunk whose `_meta.hermes` holds the sentence. Sent mid-turn on purpose, so a
+    // sweep can prove the line appears while the turn runs and is gone when it ends, and that NOTHING
+    // of it reaches the stored transcript.
+    if (/\[status\]/.test(text)) {
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: "👁️ Hindsight — recalled 8 memories" } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, Math.min(slow * 2, 1200));
+    }
+
     // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).
     // Numeric AND text cells, deliberately NOT in any sorted order, and a local file link plus a
     // relative image, so "clicking a header reorders the rows" and "a relative path resolves" are

@@ -212,6 +212,11 @@ export interface SessionView {
    *  start (`durationMs` on turn-end) but does not put it on the wire, and a server change is a
    *  restart, so this stamp is client-side by design. */
   busySince: number | null;
+  /** The agent's most recent STATUS line for the running turn (issue #18) — `👁️ Hindsight — recalled 8
+   *  memories`, a compaction countdown, a provider wait. Set by the `status` frame and cleared when the
+   *  turn ends: it describes what the process is doing NOW, so it must never outlive that turn (and is
+   *  never persisted — the server does not store it either). */
+  status?: string | null;
   loaded: boolean; // history fetched
   /** The operator opened a cold slot and the agent process is still coming up (spawn + session/load
    *  takes seconds). The transcript is ALREADY on screen — it is our own rows — so this flag only
@@ -1831,9 +1836,19 @@ class Cockpit {
         this.lastSeq[e.message.sessionId] = Math.max(this.lastSeq[e.message.sessionId] ?? 0, e.message.seq);
         break;
       }
+      // The agent's own one-line status for the turn in flight (issue #18). Deliberately NOT a
+      // transcript row: it is replaced by the next one and dropped at turn-end, so it renders next to
+      // the running turn and never claims to be part of the conversation.
+      case "status": {
+        const v = this.#view(e.sessionId);
+        v.status = e.text;
+        v.lastAt = Date.now();
+        break;
+      }
       case "turn-start": {
         const v = this.#view(e.sessionId);
         v.busy = true;
+        v.status = null; // last turn's line belongs to that turn
         v.busySince = Date.now(); // the tail line's zero: the operator's send, not the first token
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
@@ -1878,6 +1893,7 @@ class Cockpit {
         // rail's timestamp still says what happened while they were away.
         if (e.sessionId !== this.activeId) this.markUnread(e.sessionId);
         v.busySince = null; // a finished turn has no elapsed time; a later frame must not inherit it
+        v.status = null;    // nor does the status line (it described the turn that just ended)
         // Close the block that was still arriving — a data change, so the transcript re-renders THAT
         // row and drops its `.live` marking. Relying on "the last row of the fold, while busy" used to
         // leave the window marked live FOREVER: the block carrying the marking is early in the turn

@@ -1539,7 +1539,7 @@ const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; las
  *
  *  The clock lives in HERE, for the reason the deleted `Busy` also owned its own: a ticking second
  *  must not drag the transcript's rows into a re-render. */
-const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since: number | null }): JSX.Element | null {
+const TurnLine = memo(function TurnLine({ busy, since, status }: { busy: boolean; since: number | null; status?: string | null }): JSX.Element | null {
   // Re-stamped on every (busy, since) change, so a SECOND message sent into a running turn restarts
   // the clock — the operator asked for the count from the send. A page that loaded MID-turn has no
   // `turn-start` for this turn: it anchors on first sight, which undercounts instead of inventing a
@@ -1560,6 +1560,10 @@ const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since:
       <span className="stream-spin" aria-hidden="true" />
       <span>处理中</span>
       {startedAt != null ? <span className="elapsed">({durationWords(now - startedAt)})</span> : null}
+      {/* The agent's own line about what it is doing (issue #18). One at a time, next to the clock it
+          belongs to: 「👁️ Hindsight — recalled 8 memories」 is the only place the operator can see the
+          memory system working, and a second line would be a log, not a status. */}
+      {status ? <span className="turn-status" title={status}>{status}</span> : null}
     </div>
   );
 });
@@ -1853,7 +1857,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
           <TranscriptRows msgs={v.msgs} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
-          <TurnLine busy={busyNow(v)} since={v.busySince} />
+          <TurnLine busy={busyNow(v)} since={v.busySince} status={v.status ?? null} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the

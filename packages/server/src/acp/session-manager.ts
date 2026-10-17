@@ -1770,6 +1770,16 @@ export class SessionManager {
     if (live.replaying && (isTextFrame || isToolFrame) && this.#store.maxSeq(live.info.id) > 0) {
       return;
     }
+    // A status line from the agent (issue #18). Hermes sends these on ACP as an EMPTY thought chunk
+    // whose `_meta.hermes` carries the sentence — the protocol has no status object, and `_meta` is the
+    // extension door it does leave open. Honoured here rather than in the web, because the decision that
+    // matters is 「do not persist」: a recall count belongs to the turn that is running, and writing it
+    // into the transcript would put 「recalled 8 memories」 above a conversation from last month.
+    const statusText = statusLineOf(u);
+    if (statusText) {
+      this.#emit({ t: "status", sessionId: live.info.id, text: statusText, statusKind: statusKindOf(u) });
+      return;
+    }
     let msg: Parameters<Store["appendMessage"]>[0] | null = null;
     switch (st) {
       case "agent_message_chunk":
@@ -2378,6 +2388,26 @@ function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image:
     load: Boolean(c.loadSession),
     image: c.promptCapabilities?.image === true,
   };
+}
+
+/** The sentence inside a status carrier, or null when the frame is an ordinary thought chunk.
+ *
+ *  Shape (hermes `acp_adapter/events.py:make_status_cb`): `agent_thought_chunk` with an empty content
+ *  block and `_meta.hermes = { kind: "status", statusKind, text }`. Read defensively — `_meta` is the
+ *  one part of an ACP frame a client may see from agents we have never run.
+ */
+function statusLineOf(u: Record<string, unknown>): string | null {
+  const meta = u?._meta as { hermes?: { kind?: unknown; text?: unknown } } | undefined;
+  const h = meta?.hermes;
+  if (!h || h.kind !== "status") return null;
+  const text = typeof h.text === "string" ? h.text.trim() : "";
+  return text || null;
+}
+
+function statusKindOf(u: Record<string, unknown>): string | undefined {
+  const meta = u?._meta as { hermes?: { statusKind?: unknown } } | undefined;
+  const kind = meta?.hermes?.statusKind;
+  return typeof kind === "string" && kind ? kind : undefined;
 }
 
 function buildPromptBlocks(text: string, attachments: PromptAttachment[]): unknown[] {
