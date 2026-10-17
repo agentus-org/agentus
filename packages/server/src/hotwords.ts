@@ -78,9 +78,42 @@ export function extractDynamicHotwords(texts: string[], limit = 20): Hotword[] {
   }));
 }
 
+/** The natural-language text of one stored message, wherever its kind puts it.
+ *
+ *  Each shape has already been read wrong once, so they are spelled out here instead of being
+ *  re-guessed at every call site:
+ *  * `user` rows carry `payload.text`;
+ *  * ACP rows (`agent`, `thought`) carry the frame as `payload.content = { text }` — reading
+ *    `payload.text` gives undefined, and `String(payload.content)` gives `"[object Object]"`
+ *    (which is how `object` ended up in the word pool);
+ *  * `tool` rows carry `payload.title`, and that title is the COMMAND (`execute_code: import
+ *    sqlite3 …`). A tool command is not something the operator is about to say, so this
+ *    returns "" for them — identifiers like `input_mouse`/`emulation`/`https` came in from here.
+ *
+ *  Callers still choose which kinds to feed (see `contextTexts`); this only answers "where is
+ *  this row's text", never "is this row worth reading". */
+export function rowText(row: { kind: string; payload: unknown }): string {
+  const p = row.payload as { text?: unknown; content?: { text?: unknown } | unknown } | null;
+  if (row.kind === "user") return typeof p?.text === "string" ? p.text : "";
+  if (row.kind === "agent" || row.kind === "thought") {
+    const c = p?.content as { text?: unknown } | undefined;
+    return typeof c?.text === "string" ? c.text : "";
+  }
+  return "";
+}
+
+/** Drop fenced code blocks before mining: a model pasting `input_mouse` into a snippet is not
+ *  the model about to SAY `input_mouse`. Inline `code spans` are deliberately kept — they are
+ *  usually the very terms worth biasing (`kasmvnc`, `betabox`). */
+export function stripFencedCode(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+}
+
 /** Recent transcript text to mine hotwords from: the given session first (its messages
  *  are the conversation the operator is dictating INTO), then the other sessions so a
- *  term used across the cockpit today also surfaces. */
+ *  term used across the cockpit today also surfaces. Only natural-language rows feed the
+ *  pool (`user` + `agent`): tool calls and reasoning carry identifiers the operator will
+ *  never pronounce, and they used to fill most of the dynamic slots. */
 export function contextTexts(store: Store, sessionId?: string, budgetChars = 24_000): string[] {
   const out: string[] = [];
   let used = 0;
@@ -88,8 +121,8 @@ export function contextTexts(store: Store, sessionId?: string, budgetChars = 24_
     let n = 0;
     for (const r of rows) {
       if (n >= cap || used > budgetChars) break;
-      const p = r.payload as { text?: string; title?: string; content?: string };
-      const t = String(p?.text ?? p?.title ?? p?.content ?? "");
+      if (r.kind !== "user" && r.kind !== "agent") continue;
+      const t = stripFencedCode(rowText(r));
       if (t.length > 1 && t.length < 4000) {
         out.push(t);
         used += t.length;
@@ -103,6 +136,25 @@ export function contextTexts(store: Store, sessionId?: string, budgetChars = 24_
     take(store.messagesTail(s.id, 12).messages, 8);
   }
   return out;
+}
+
+/** The tail of a session for DashScope's context enhancement ("根据上下文"): user/assistant turns
+ *  only, capped at 5 by the API.
+ *
+ *  The window used to be measured on ROWS and then filtered by KIND (`tail(8)`, then skip everything
+ *  that is not user/agent), which is empty almost always: dictation happens right after the agent
+ *  finished a burst of work, and 40+ consecutive `tool`/`thought` rows are normal here (measured on a
+ *  live session: zero natural-language rows in its last 40). So read a wide tail and take the last 5
+ *  SURVIVORS. Lives next to the pool because both answer the same question with the same row shapes. */
+export function dictationContext(store: Store, sessionId?: string, turns = 5): { role: "user" | "assistant"; text: string }[] {
+  if (!sessionId) return [];
+  const out: { role: "user" | "assistant"; text: string }[] = [];
+  for (const row of store.messagesTail(sessionId, 200).messages) {
+    if (row.kind !== "user" && row.kind !== "agent") continue;
+    const text = stripFencedCode(rowText(row)).slice(0, 200);
+    if (text) out.push({ role: row.kind === "user" ? "user" : "assistant", text });
+  }
+  return out.slice(-turns);
 }
 
 /** The full list an ASR request should carry: fixed first (they may use =50), dynamic

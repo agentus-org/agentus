@@ -17,7 +17,7 @@ import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnin
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
-import { hotwordsFor, vocabularyOf } from "./hotwords.js";
+import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
 import {
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
@@ -372,19 +372,6 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
     watched: (id) => notify.operatorWatching(id),
     intervalMs: sweepMs,
   });
-}
-
-/** The tail of the session being dictated into, for DashScope's context enhancement
- *  ("根据上下文"): user/assistant turns only, capped at 5 by the API. */
-function dictationContext(sessionId?: string): { role: "user" | "assistant"; text: string }[] {
-  if (!sessionId) return [];
-  const out: { role: "user" | "assistant"; text: string }[] = [];
-  for (const row of store.messagesTail(sessionId, 8).messages) {
-    if (row.kind !== "user" && row.kind !== "agent") continue;
-    const text = String((row.payload as { text?: string })?.text ?? "").trim().slice(0, 200);
-    if (text) out.push({ role: row.kind === "user" ? "user" : "assistant", text });
-  }
-  return out.slice(-5);
 }
 
 /**
@@ -1199,10 +1186,16 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     if (url.pathname === "/api/voice/hotwords" && req.method === "GET") {
       const sid = url.searchParams.get("sessionId") || undefined;
       const words = hotwordsFor(store, sid);
+      // contextTurns is the half of the request the settings page could not see: it is the
+      // count of natural-language turns the next recognition would carry, and it used to be
+      // 0 forever because the window was applied before the kind filter (issue #21).
+      const context = dictationContext(store, sid);
       return send(res, 200, {
         words: words.map((h) => ({ word: h.word, weight: h.weight, origin: h.origin })),
         fixed: words.filter((h) => h.origin === "fixed").length,
         dynamic: words.filter((h) => h.origin === "dynamic").length,
+        contextTurns: context.length,
+        context: context.map((c) => ({ role: c.role, text: c.text.slice(0, 80) })),
       });
     }
     // What the browser should offer: it can always speak/read text itself, and the
@@ -1790,7 +1783,7 @@ asrWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
   try {
     live = openDashscopeStream({
       vocabulary: vocabularyOf(words),
-      context: dictationContext(sessionId),
+      context: dictationContext(store, sessionId),
       onPartial: (text) => reply({ t: "asr-partial", text }),
       onFinal: (text) => reply({ t: "asr-final", text }),
       onError: (error) => reply({ t: "asr-error", error }),

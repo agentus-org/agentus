@@ -118,6 +118,9 @@ interface HotwordList {
   words: { word: string; weight: number; origin: "fixed" | "dynamic" }[];
   fixed: number;
   dynamic: number;
+  /** Natural-language turns the next recognition would carry as `input.context` — the other
+   *  half of the request, which used to be 0 forever (issue #21). */
+  contextTurns?: number;
 }
 
 /** The editable slice of the voice settings (hotwords as text, because that is how an
@@ -1062,7 +1065,12 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             </div>
           </div>
           <div className="set-hot">
-            <span className="set-hot-title">{hot ? `下次识别携带 ${hot.words.length} 个热词（固定 ${hot.fixed} / 动态 ${hot.dynamic}）` : "…"}</span>
+            <span className="set-hot-title">
+              {hot
+                ? `下次识别携带 ${hot.words.length} 个热词（固定 ${hot.fixed} / 动态 ${hot.dynamic}）` +
+                  `，上下文 ${hot.contextTurns ?? 0} 轮`
+                : "…"}
+            </span>
             <div className="set-hot-list">
               {(hot?.words ?? []).slice(0, 40).map((w) => (
                 <span key={`${w.origin}-${w.word}`} className={`set-chip ${w.origin}`} title={`${w.origin} · 权重 ${w.weight}`}>
