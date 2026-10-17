@@ -350,6 +350,25 @@ export function playbackLevel(): number {
   return Math.min(1, Math.sqrt(sum / buf.length) * 4);
 }
 
+/** The same output frame in its OWN units: RMS 0..1, no ×4 boost.
+ *
+ *  This is the reference signal of the barge gate. It must stay on the playback side's own scale:
+ *  the gate compares it to `dictation.levelRms()`, and that comparison is only honest when neither
+ *  side has been boosted or clamped (a loud reply clamped both meters at 1.0, which is why the
+ *  first version of the gate could never fire). */
+export function playbackRms(): number {
+  const a = PLAYBACK.analyser;
+  if (!a) return -1;
+  const buf: Float32Array<ArrayBuffer> = playbackBuf && playbackBuf.length === a.fftSize
+    ? playbackBuf
+    : new Float32Array(new ArrayBuffer(a.fftSize * 4));
+  playbackBuf = buf;
+  a.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+  return Math.min(1, Math.sqrt(sum / buf.length));
+}
+
 /** Copy the newest time-domain samples into `out` (for a waveform). False = nothing playing. */
 export function playbackWave(out: Float32Array): boolean {
   const a = PLAYBACK.analyser;
@@ -861,6 +880,14 @@ class Dictation {
   /** Live amplitude 0..1 with a fast attack / slow release, plus a rolling snapshot of the
    *  newest samples. The voice-mode orb reads both every frame (never through React). */
   #level = 0;
+  /** The SAME measurement in its own units: RMS of the input, 0..1, no ×6 boost.
+   *
+   *  Two scales exist on purpose and must not be mixed: `#level` is the orb's animation value
+   *  (boosted and clamped so a normal voice fills the ring), while the barge gate has to compare
+   *  the microphone to what we are PLAYING (`playbackRms`) — that comparison only means anything
+   *  in real amplitude. Comparing the boosted, clamped values is how the gate ended up unable to
+   *  fire at all: a loud reply clamped BOTH meters at 1.0, and 0.45 × 1.0 stayed above any voice. */
+  #rms = 0;
   #wave = new Float32Array(256);
   #relay = true;
   /** The streaming path's own coordinates, kept so a dead socket can be REPLACED without
@@ -885,9 +912,9 @@ class Dictation {
    *  `window.__asFeed = { level, text, interim }` makes start() succeed with no device and
    *  makes level()/getSnapshot() report exactly that. The product never sets it, and with
    *  nothing set every branch below is the plain microphone path. */
-  #feed = (): { level?: number; text?: string; interim?: string } | null => {
+  #feed = (): { level?: number; rms?: number; text?: string; interim?: string } | null => {
     const f = (globalThis as { __asFeed?: unknown }).__asFeed;
-    return f && typeof f === "object" ? (f as { level?: number; text?: string; interim?: string }) : null;
+    return f && typeof f === "object" ? (f as { level?: number; rms?: number; text?: string; interim?: string }) : null;
   };
   /** Live microphone amplitude 0..1 — read per animation frame. */
   level = (): number => {
@@ -895,6 +922,13 @@ class Dictation {
     if (!f) return this.#level;
     const n = Number(f.level);
     return Number.isFinite(n) ? n : 0;
+  };
+  /** Live microphone RMS 0..1 — the same frame, in real amplitude (see `#rms`). */
+  levelRms = (): number => {
+    const f = this.#feed();
+    if (!f) return this.#rms;
+    const n = Number(f.rms ?? (Number.isFinite(Number(f.level)) ? Number(f.level) / 6 : NaN));
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
   };
   /** Newest input snapshot for the waveform (a flat line while not capturing). */
   wave = (): Float32Array => this.#wave;
@@ -944,13 +978,16 @@ class Dictation {
   #measure(chan: Float32Array): void {
     let sum = 0;
     for (let i = 0; i < chan.length; i++) sum += chan[i] * chan[i];
+    const rms = Math.sqrt(sum / chan.length);
     // speech sits around 0.02–0.2 RMS; ×6 + clamp puts normal speech near the top
-    const target = Math.min(1, Math.sqrt(sum / chan.length) * 6);
+    const target = Math.min(1, rms * 6);
     // fast attack, slow release: snap to a syllable, settle gently — a symmetric filter
     // makes the orb look like a level meter instead of something alive
     this.#level = target > this.#level
       ? this.#level + (target - this.#level) * 0.6
       : this.#level * 0.72 + target * 0.28;
+    // …and the same frame in real units, smoothed the same way, for the barge gate
+    this.#rms = rms > this.#rms ? this.#rms + (rms - this.#rms) * 0.6 : this.#rms * 0.72 + rms * 0.28;
     const step = Math.max(1, Math.floor(chan.length / this.#wave.length));
     for (let j = 0, i = 0; j < this.#wave.length && i < chan.length; j++, i += step) this.#wave[j] = chan[i];
   }

@@ -27,7 +27,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
-import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import {
@@ -35,7 +35,7 @@ import {
   IconSettings, IconStop, IconSubtitles,
 } from "./Icons";
 import {
-  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES,
+  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, bargeFloorRms, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES,
   isBargeEvidence, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
@@ -60,10 +60,11 @@ const PHASE_LABEL: Record<CallPhase, string> = {
   error: "出错了",
 };
 
-/** Speech threshold for "the operator is talking" (mic RMS is already ×6 + clamped).
- *  Not a knob: this only answers "was there a voice at all", and both the utterance end and
- *  the minimum length are operator-tunable on top of it. */
-const VOICE_LEVEL = 0.06;
+/** Speech threshold for "the operator is talking", in real microphone RMS (0..1). Not a knob:
+ *  this only answers "was there a voice at all", and both the utterance end and the minimum length
+ *  are operator-tunable on top of it. Room noise sits around 0.002–0.006, normal speech 0.02–0.10;
+ *  0.010 therefore separates a voice from a fan without demanding a raised one. */
+const VOICE_RMS = 0.010;
 /** How often the loop samples the mic. The knobs are quantised by this, so it is a
  *  120 ms tick rather than a lazy 250 ms one — "说完停顿 1.2 秒" has to mean 1.2 s. */
 const LOOP_MS = 120;
@@ -143,6 +144,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const [muted, setMuted] = useState(false);
   const [err, setErr] = useState("");
   const [heard, setHeard] = useState("");     // what the recogniser has so far
+  const [holding, setHolding] = useState(false);   // push-to-talk is down (the label follows it)
   const [reply, setReply] = useState("");     // what the agent is saying right now
   // The tunables (callSettings.ts) live in the call, not in a settings page: a threshold
   // only means anything while you are on the call that is misbehaving.
@@ -195,6 +197,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   /** When the floor last changed hands by voice — the cooldown that keeps the tail of an
    *  interruption (and the recogniser catching up with it) from firing a second one. */
   const lastBargeRef = useRef(0);
+  /** The echo's OWN level: a slow average of the microphone while our reply is playing and the
+   *  operator is still silent. A voice is then a STEP over this line, which is the second (and on
+   *  a device without echo cancellation, the only reliable) proof of a barge-in. */
+  const echoBaseRef = useRef(0);
+  /** Push-to-talk: while true nothing auto-sends. The operator is holding the button and decides
+   *  when the sentence is finished — the silence timer is exactly what cut him off mid-sentence
+   *  (「我这句话还没说完，他就显示录入完成了」). */
+  const pttRef = useRef(false);
   const sentRef = useRef(false);       // a turn is in flight (do not send twice)
   const queueRef = useRef<string[]>([]);
   const queueRunRef = useRef(false);
@@ -295,12 +305,16 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     const iv = window.setInterval(() => {
       const c = cfgRef.current;
       const st = dictation.getSnapshot();
-      const lvl = dictation.level();
+      // TWO SCALES, both in real amplitude (0..1 RMS): the microphone and our own output. The
+      // gate must never compare boosted/clamped display values — that is exactly what made
+      // 语音打断 unable to fire on a real call (see `ECHO` in callSettings.ts).
+      const mic = dictation.levelRms();
       // OUR OWN OUTPUT, sampled every tick. This is the reference signal of the barge gate: echo
       // scales with it, a human voice does not (see `isBargeEvidence`). -1 = not measurable
-      // (the browser voice cannot be tapped), which the gate treats as "no echo model".
-      const play = playbackLevel();
-      if (play > 0.02 && quietRef.current <= 0.02) playAtRef.current = Date.now();
+      // (<audio> fallback / the browser voice cannot be tapped): no echo model, so the gate falls
+      // back to the echo baseline it learns from the microphone itself.
+      const play = playbackRms();
+      if (play > 0.004 && quietRef.current <= 0.004) playAtRef.current = Date.now();
       quietRef.current = play;
       // A relay that could not be replaced AT ALL is a real failure, and the call is the one surface
       // where the transcript's own error line is invisible (it renders in the composer, behind the
@@ -311,14 +325,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         setPhase("error");
         return;
       }
-      if (phaseRef.current === "listening" && lvl > VOICE_LEVEL) voiceAtRef.current = Date.now();
+      if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
         const quietFor = Date.now() - voiceAtRef.current;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
-        if (text && !mutedRef.current && charCount(text) >= c.minChars
+        if (text && !mutedRef.current && !pttRef.current && charCount(text) >= c.minChars
           && quietFor > c.silenceMs && !sentRef.current) {
           sentRef.current = true;
           setPhase("thinking");
@@ -352,8 +366,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         const now = Date.now();
         const armed = Math.max(clipAtRef.current, playAtRef.current);
         const open = now - armed > BARGE_GRACE_MS && now - lastBargeRef.current > BARGE_COOLDOWN_MS;
+        // The echo's own level: a slow average of what the room (i.e. our own speaker) sends back
+        // while the reply plays and nobody has spoken yet. It is only learned while the gate is
+        // closed — feeding it the operator's voice would teach it to ignore them.
         const over = c.interruptMode === "voice" && !mutedRef.current && open
-          && isBargeEvidence(lvl, play, c.bargeSensitivity, micEchoCancelled());
+          && isBargeEvidence(mic, play, echoBaseRef.current, c.bargeSensitivity, micEchoCancelled());
+        if (open && !over) echoBaseRef.current = echoBaseRef.current * 0.88 + mic * 0.12;
         bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
         if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
@@ -453,6 +471,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
         warmQueue();
         clipAtRef.current = Date.now();       // arms the grace window for THIS clip
+        echoBaseRef.current = 0;              // this clip's echo is not the last one's
         await speaker.speak(sentence, "call", prefs);
         // barged in, hung up, or the call is gone: never hand another sentence to the speaker
         if (!aliveRef.current || phaseRef.current !== "speaking") break;
@@ -549,6 +568,67 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (p === "speaking") { await bargeIn(); return; }
     if (p === "thinking") { await bargeIn(); return; }   // stop the turn, take the floor back
     if (p === "error") await backToListening(false);
+  };
+
+  /** PUSH-TO-TALK: hold to talk, release to send.
+   *
+   *  Why it exists (the operator's words): 「有的时候打断他，我这句话还没说完，他就显示录入完成了」。
+   *  The automatic end-of-utterance is a guess — it listens for a pause — and a caller who stops to
+   *  think, or whose recogniser finalises a segment early, gets cut off mid-sentence. Holding a
+   *  button replaces the guess with a decision: while it is down nothing auto-sends (the loop checks
+   *  `pttRef`), and letting go sends exactly what was said.
+   *
+   *  It also takes the floor: playback stops and a running turn is cancelled, so "hold to answer"
+   *  works while the agent is still talking. That is the same contract as `bargeIn`. */
+  const pttStart = async (): Promise<void> => {
+    if (pttRef.current || !aliveRef.current) return;
+    pttRef.current = true;
+    setHolding(true);
+    speaker.stop();
+    const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
+    if (running) cockpit.send({ t: "cancel", sessionId });
+    queueRef.current = [];
+    queuedRef.current = 0;
+    queueRunRef.current = false;
+    sentRef.current = false;
+    setPhase("listening");
+    setReply("");
+    setHeard("");
+    voiceAtRef.current = Date.now();
+    try {
+      const st = dictation.getSnapshot();
+      if (st.status === "idle" || st.status === "error" || st.status === "transcribing") {
+        await dictation.start(prefs, sessionId);
+      } else {
+        dictation.resetText();
+      }
+      dictation.setRelay(true);
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+      setPhase("error");
+    }
+  };
+
+  const pttEnd = (): void => {
+    if (!pttRef.current) return;
+    pttRef.current = false;
+    setHolding(false);
+    const st = dictation.getSnapshot();
+    const text = (st.text || st.interim).trim();
+    if (!text) {
+      // Nothing was said: hand the floor back to the automatic path rather than leaving a dead mic.
+      dictation.resetText();
+      dictation.setRelay(true);
+      setPhase("listening");
+      return;
+    }
+    sentRef.current = true;
+    setPhase("thinking");
+    setHeard(text);
+    setErr("");
+    baselineKeyRef.current = rawAgentKeyRef.current;
+    dictation.setRelay(false);
+    cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
   };
 
   // ---- the animation -------------------------------------------------------------------
@@ -862,28 +942,16 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
       : phase === "thinking" ? "点一下停止它" : "";
 
-  /** The floor button in the transcript view: FOUR faces, one button.
+  /** The transcript view's two floor controls.
    *
    *  In that view the orb is behind the frosted panel (`pointer-events: none`) — the operator's
-   *  words were 「这个按键打断都没地方摁啊」. The label always states what the tap does right now,
-   *  because "who has the floor" is the only question a call ever asks. */
-  const floor = ((): {
-    kind: "take" | "send" | "wait" | "retry";
-    label: string;
-    hint: string;
-    icon: JSX.Element;
-    disabled: boolean;
-  } => {
-    if (phase === "speaking") return { kind: "take", label: "打断它", hint: "停下它，接着说你的", icon: <IconStop size={17} />, disabled: false };
-    if (phase === "thinking") return { kind: "take", label: "停止", hint: "让它别想了，回到我这边", icon: <IconStop size={17} />, disabled: false };
-    if (phase === "error") return { kind: "retry", label: "重新开始", hint: "重新打开麦克风，接着聊", icon: <IconRefresh size={17} />, disabled: false };
-    if (heard) {
-      const chars = [...heard];
-      const tail = chars.length > 10 ? `${chars.slice(0, 10).join("")}…` : heard;
-      return { kind: "send", label: `发送「${tail}」`, hint: "不用等它判断你说完，现在就发", icon: <IconSend size={17} />, disabled: false };
-    }
-    return { kind: "wait", label: "说完了会自动发送", hint: "麦克风在听；说完停顿一下就会发出去", icon: <IconMic size={17} />, disabled: true };
-  })();
+   *  words were 「这个按键打断都没地方摁啊」, and then 「有的时候打断他，我这句话还没说完，他就显示
+   *  录入完成了……能不能改成按住说话那种？两个按钮，左边打断，右边按住说话」.
+   *
+   *  So there are two of them, and they answer the two different questions a call asks:
+   *   · 打断  — stop it now, the floor is mine (enabled only while there IS something to stop);
+   *   · 按住说话 — nobody guesses when my sentence ends: I let go when it ends. */
+  const canTake = phase === "speaking" || phase === "thinking";
 
   /* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It belongs
      on the call because it is the one setting that changes with the ROOM (a phone on a table, a
@@ -1011,23 +1079,38 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
           {!ccAtBottom ? (
             <button type="button" className="call-cc-latest" onClick={toLatestCc}>回到最新 ↓</button>
           ) : null}
-          {/* THE FLOOR BUTTON — the operator's complaint, verbatim: 「这个按键打断都没地方摁啊，
-              就是字幕模式下」. In this view the orb is behind the frosted panel and cannot be
-              pressed, and the small phase chip was the only thing left: too easy to miss, and it
-              says nothing about what pressing it will do. So the one action that changes hands gets
-              a thumb-sized target of its own, and its label states the action for the CURRENT
-              phase — 打断它 / 停止 / 发送 / 重新开始. Never an icon the operator has to decode. */}
-          <button
-            type="button"
-            className={`call-floor is-${floor.kind}`}
-            onClick={() => void tapOrb()}
-            disabled={floor.disabled}
-            title={floor.hint}
-            aria-label={floor.label}
-          >
-            {floor.icon}
-            <span>{floor.label}</span>
-          </button>
+          {/* TWO BUTTONS, not one: 打断 on the left (stop it, the floor is mine) and 按住说话 on the
+              right (hold to talk, release to send — my sentence ends when I say it does, not when a
+              silence timer guesses). Both are thumb-sized (48px) and both say what they do without
+              an icon to decode. Pressing either one takes the floor from a talking agent. */}
+          <div className="call-floor-row">
+            <button
+              type="button"
+              className="call-floor is-take"
+              onClick={() => void bargeIn()}
+              disabled={!canTake}
+              title={canTake ? "停下它，接着说你的" : "它没在说话，直接按住说话就行"}
+              aria-label="打断"
+            >
+              <IconStop size={17} />
+              <span>打断</span>
+            </button>
+            <button
+              type="button"
+              className={`call-floor is-ptt${holding ? " on" : ""}`}
+              onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ } void pttStart(); }}
+              onPointerUp={(e) => { e.preventDefault(); pttEnd(); }}
+              onPointerCancel={() => pttEnd()}
+              onLostPointerCapture={() => pttEnd()}
+              onContextMenu={(e) => e.preventDefault()}
+              aria-pressed={holding}
+              title="按住说话，松开就发出去；按住的时候不会自动发送"
+              aria-label={holding ? "松开发送" : "按住说话"}
+            >
+              <IconMic size={17} />
+              <span>{holding ? "松开发送" : "按住说话"}</span>
+            </button>
+          </div>
         </div>
       ) : (
         <>

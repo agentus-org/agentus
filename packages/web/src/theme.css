@@ -2400,13 +2400,21 @@ body.pane-dragging * { cursor: col-resize !important; }
    The orb is behind the frosted panel in this view (`pointer-events: none`), so the one action
    that changes hands gets its own full-width, thumb-sized target at the bottom of the sheet. The
    label states the action, never an icon alone: 打断它 / 停止 / 发送 / 重新开始. */
+/* Two floor controls, side by side: 打断 | 按住说话 (the operator asked for exactly this pair).
+   The row owns the top border; the buttons own their own surfaces, so the left one can be
+   "armed" (it only means something while the agent is talking) without looking broken. */
+.call-floor-row {
+  flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.09);
+}
 .call-floor {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; min-height: 46px; margin: 0; padding: 0 14px;
-  border: 0; border-top: 1px solid rgba(255,255,255,0.09);
+  width: 100%; min-height: 46px; margin: 0; padding: 0 12px;
+  border: 0; border-radius: 12px;
   background: rgba(255,255,255,0.05); color: var(--text);
   font-size: 14px; font-weight: 650; letter-spacing: 0.01em; cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
 }
 .call-floor:hover:not(:disabled) { background: rgba(255,255,255,0.09); }
 /* taking the floor is the destructive-of-the-reply action: give it the phase's own colour, so it
@@ -2416,7 +2424,14 @@ body.pane-dragging * { cursor: col-resize !important; }
 .call-floor.is-send { background: color-mix(in srgb, var(--call-tone, #38bdf8) 88%, #000); color: #0b1220; }
 .call-floor.is-send:hover { background: var(--call-tone, #38bdf8); }
 .call-floor.is-retry { background: rgba(255,255,255,0.10); }
-.call-floor:disabled { color: var(--text-dim); background: transparent; cursor: default; }
+.call-floor:disabled { color: var(--text-dim); background: rgba(255,255,255,0.03); cursor: default; }
+/* held: the button is being pressed for as long as it is down, so it must LOOK held — a call
+   where "hold to talk" has no visual state is a call where nobody trusts it */
+.call-floor.is-ptt { background: rgba(255,255,255,0.09); }
+.call-floor.is-ptt.on {
+  background: color-mix(in srgb, var(--call-tone, #38bdf8) 82%, #000);
+  color: #0b1220; box-shadow: 0 0 0 2px color-mix(in srgb, var(--call-tone, #38bdf8) 45%, transparent);
+}
 .call-cc-list .call-hint, .call-cc-list .call-err, .call-cc-list .call-note { margin: 0; }
 /* the record is the page now, so it reads at body size instead of the history window's 12.5px */
 .call-cc-list .call-hm { font-size: 13.5px; line-height: 1.62; }

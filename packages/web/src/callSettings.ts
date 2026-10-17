@@ -86,7 +86,7 @@ export const CALL_KNOBS: CallKnob[] = [
     label: "说完停顿",
     show: (v) => `${(v / 1000).toFixed(1)} 秒`,
     ends: ["快", "慢"],
-    hint: "静音这么久就算你说完了，自动把话发出去",
+    hint: "静音这么久就算你说完了，自动把话发出去；怕被提前截断就用「按住说话」",
   },
   {
     key: "minChars",
@@ -97,47 +97,60 @@ export const CALL_KNOBS: CallKnob[] = [
   },
 ];
 
-/** The panel's sensitivity → the mic level the loop compares against. 0 % = you have to
- *  raise your voice over the reply (0.5); 100 % = a normal voice takes the floor (0.05).
- *  Deliberately linear: it is a control, not an instrument. */
-export function bargeLevelOf(sensitivity: number): number {
+/** The panel's sensitivity → the quietest microphone RMS that can count as speech at all.
+ *  It is a FLOOR (is anybody there), never the whole test: whether a voice is allowed to take the
+ *  floor from a talking agent is decided by comparing it to what we are playing (`isBargeEvidence`).
+ *  0 % → 0.030 (a raised voice), 100 % → 0.006 (a murmur). Deliberately linear: a control, not an
+ *  instrument. */
+export function bargeFloorRms(sensitivity: number): number {
   const s = Math.min(100, Math.max(0, Number(sensitivity)));
-  return 0.5 - 0.45 * (s / 100);
+  // 0 % → 0.083 RMS (a raised voice), 60 % → ≈0.033 (speech aimed at the device),
+  // 100 % → 0.008 (a murmur). Curved rather than linear because the ear is: the top of the
+  // slider has to reach room-level speech, the bottom has to keep out a passing conversation.
+  return 0.008 + 0.075 * Math.pow(1 - s / 100, 1.2);
 }
 
-/** How our own loudspeaker shows up in the microphone, in mic-level units.
+/** How loud our own loudspeaker can be in the microphone, as a MULTIPLE of the playback RMS.
  *
- *  Both numbers are LEVELS from `voice.ts`, and they are NOT on the same scale: the microphone
- *  level is `rms × 6`, the playback level is `rms × 4`, both clamped at 1. So a byte-for-byte echo
- *  — raw capture, speaker at the same rms — reads **1.5× louder** on the microphone side.
+ *  Both sides of this ratio are now measured in their own units (`levelRms` / `playbackRms`), so
+ *  the numbers mean what they say — which they did not before: the old pair were ×6 and ×4 boosted
+ *  and clamped at 1, so a loud reply pinned BOTH meters to 1.0 and the gate's bar (0.45 × 1.0)
+ *  could never be cleared by a human voice. That is why 语音打断 "never fired" on a real call
+ *  while the QA sweep, which drives a level straight through the seam, always passed.
  *
- *   · `raw` is therefore just above that 1.5: with the cancellation off, the operator has to be
- *     audibly louder than the reply for the floor to change hands (and if the reply is loud enough
- *     to clamp the meter, the voice barge simply cannot fire — that is the honest answer, and the
- *     reason the call now says "回声消除没生效，用按键打断或戴耳机" instead of pretending).
- *   · `aec` is a small fraction, because the canceller has already removed most of it; what is
- *     left is the residual plus the room. The sensitivity floor dominates here, which is exactly
- *     what a working echo canceller should give you: a normal voice takes the floor back. */
-export const ECHO = { aec: 0.45, raw: 1.55 } as const;
+ *   · `raw` (no echo cancellation): the speaker is louder in the microphone than it is in the mix,
+ *     so the operator has to be audibly above the reply — 1.4×.
+ *   · `aec` (cancellation on): most of the echo is gone; what is left is residual + the room. */
+export const ECHO = { aec: 0.55, raw: 1.4 } as const;
+
+/** …and the primary proof: a voice is a STEP over the echo's own level.
+ *
+ *  Echo is steady — it is a copy of what we are playing — while a person speaking over it adds on
+ *  top, so the microphone jumps well above the level the echo alone was producing. `baseRms` is
+ *  that level, learned by the call while the gate is closed (see the loop in CallMode). This is
+ *  the double-talk test, done with the reference signal we already have, and it is the ONLY proof
+ *  that survives an echo canceller that reports success without cancelling anything (a vendor
+ *  WebView does exactly that — and there the "louder than the reply" comparison is a lie). */
+export const ECHO_RISE = 1.6;
 
 /** One frame of evidence for "the operator is talking over the reply".
  *
- *  The first version compared the microphone to an ABSOLUTE level, and on a phone lying on a table
- *  that made the call interrupt itself: its own loudspeaker goes straight back into its own
- *  microphone, so the echo's level follows the reply's level and any fixed bar is crossed by the
- *  reply. The operator heard it as 「它刚输出一段话就自己打断自己，我都没说话」.
- *
- *  The gate is therefore RELATIVE to what we are playing at this instant: echo scales with the
- *  playback, a human voice does not. That is the double-talk test every voice stack runs
- *  (AEC + reference signal); ours is one line, because the reference — our own output level — is
- *  already in the page.
- *
- *  `playback < 0` means "cannot measure" (the browser voice is not tappable): no echo model, so
- *  fall back to the plain absolute bar — the sentence-start grace and the hold time still apply. */
-export function isBargeEvidence(mic: number, playback: number, sensitivity: number, aecOn: boolean): boolean {
-  const floor = bargeLevelOf(sensitivity);
-  if (playback < 0) return mic > floor;
-  return mic > Math.max(floor, playback * (aecOn ? ECHO.aec : ECHO.raw));
+ *  `baseRms` = the echo's own level from earlier in THIS clip (0 = not learned yet). Until it is
+ *  learned, the only available test is the absolute one against the playback; once it is, a rise
+ *  over the echo is what counts, because that number is measured in this room, on this speaker,
+ *  through this microphone — no assumption about an echo canceller at all. */
+export function isBargeEvidence(
+  micRms: number,
+  playRms: number,
+  baseRms: number,
+  sensitivity: number,
+  aecOn: boolean,
+): boolean {
+  if (!(micRms > bargeFloorRms(sensitivity))) return false;
+  // Nothing of ours is playing: no echo can explain a voice, so the floor is the whole test.
+  if (!(playRms > 0.002)) return true;
+  if (baseRms > 0.002) return micRms > baseRms * ECHO_RISE;
+  return micRms > playRms * (aecOn ? ECHO.aec : ECHO.raw);
 }
 
 /** Ignore the microphone for this long after a sentence STARTS. Two things live here: the attack

@@ -1119,8 +1119,15 @@ try {
     const btns = [...mode.querySelectorAll('.call-btn')].map((b) => { const r = b.getBoundingClientRect();
       return { inside: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, w: Math.round(r.width) }; });
     const controls = document.querySelector('.call-controls').getBoundingClientRect();
-    const floorBtn = document.querySelector('.call-floor');
-    const fr = floorBtn?.getBoundingClientRect();
+    const pick = (sel) => { const b = document.querySelector(sel); if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { label: (b.textContent ?? '').trim(), disabled: b.disabled,
+        w: Math.round(r.width), h: Math.round(r.height),
+        inPanel: r.top >= pr.top - 1 && r.bottom <= pr.bottom + 1 && r.left >= pr.left - 1 && r.right <= pr.right + 1,
+        hit: (() => { const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return !!e && (e === b || b.contains(e)); })() }; };
+    const takeBtn = pick('.call-floor.is-take');
+    const pttBtn = pick('.call-floor.is-ptt');
     return { panel: true, caption: mode.dataset.caption, phase: mode.dataset.phase,
       w: Math.round(pr.width), h: Math.round(pr.height), listH: Math.round(lr.height),
       rows: rows.length, legacy,
@@ -1129,13 +1136,7 @@ try {
       agentRoles: [...new Set(rows.filter((r) => r.classList.contains('agent')).map((r) => (r.querySelector('.role')?.textContent ?? '').trim()))],
       folded: { tool: list.querySelectorAll('.tool-card, .tool-run').length, thought: list.querySelectorAll('.thought').length },
       text: rows.map((r) => r.textContent).join(' ').slice(0, 400),
-      floor: floorBtn ? {
-        label: (floorBtn.textContent ?? '').trim(), disabled: floorBtn.disabled,
-        w: Math.round(fr.width), h: Math.round(fr.height),
-        inPanel: fr.top >= pr.top - 1 && fr.bottom <= pr.bottom + 1 && fr.left >= pr.left - 1 && fr.right <= pr.right + 1,
-        hit: (() => { const e = document.elementFromPoint(fr.left + fr.width / 2, fr.top + fr.height / 2);
-          return !!e && (e === floorBtn || floorBtn.contains(e)); })(),
-      } : null,
+      floor: takeBtn, ptt: pttBtn,
       orbPosition: os.position, orbPointer: os.pointerEvents,
       canvasFilter: cs.filter, backdrop: ps.backdropFilter || ps.webkitBackdropFilter || "",
       overflowY: ls.overflowY, overscroll: ls.overscrollBehaviorY,
@@ -1160,17 +1161,21 @@ try {
     ccv.legacy === 0 && ccv.userRoles.includes("YOU")
     && ccv.agentRoles.length > 0 && !ccv.agentRoles.includes("YOU"),
     JSON.stringify({ legacy: ccv.legacy, userRoles: ccv.userRoles, agentRoles: ccv.agentRoles }));
-  check("…the floor control of this view is a real, thumb-sized button with words on it",
-    Boolean(ccv.floor) && ccv.floor.inPanel && ccv.floor.hit && ccv.floor.h >= 44 && ccv.floor.w >= 200
-    && ccv.floor.label.length > 0,
-    JSON.stringify(ccv.floor));
-  check("…and its label states what the tap does in THIS phase (打断它 / 停止 / 发送 / 重新开始)",
-    Boolean(ccv.floor) && (ccv.phase === "speaking"
-      ? ccv.floor.label.startsWith("打断它") && ccv.floor.disabled === false
-      : ccv.phase === "thinking"
-        ? ccv.floor.label.startsWith("停止") && ccv.floor.disabled === false
-        : ccv.floor.label.startsWith("说完了会自动发送") || ccv.floor.label.startsWith("发送")),
-    JSON.stringify({ phase: ccv.phase, floor: ccv.floor }));
+  // 「两个按钮嘛，比如说左边是打断，右边是按住说话」 — both must be real, reachable, and say
+  // exactly what they do; no icon the operator has to decode.
+  check("…TWO floor controls, both thumb-sized and reachable: 打断 | 按住说话",
+    Boolean(ccv.floor) && Boolean(ccv.ptt)
+    && ccv.floor.inPanel && ccv.ptt.inPanel && ccv.floor.hit && ccv.ptt.hit
+    && ccv.floor.h >= 44 && ccv.ptt.h >= 44 && ccv.floor.w >= 100 && ccv.ptt.w >= 100,
+    JSON.stringify({ take: ccv.floor, ptt: ccv.ptt }));
+  check("…labelled 打断 on the left and 按住说话 on the right (verbatim, nothing to decode)",
+    ccv.floor?.label === "打断" && ccv.ptt?.label === "按住说话",
+    JSON.stringify({ take: ccv.floor?.label, ptt: ccv.ptt?.label }));
+  check("…and 打断 is only armed while there is something to interrupt",
+    ccv.phase === "speaking" || ccv.phase === "thinking"
+      ? ccv.floor?.disabled === false
+      : ccv.floor?.disabled === true,
+    JSON.stringify({ phase: ccv.phase, disabled: ccv.floor?.disabled }));
   check("…the ball became BACKGROUND: out of the layout, untappable, and blurred",
     ccv.orbPosition === "absolute" && ccv.orbPointer === "none"
     && /blur/.test(ccv.canvasFilter) && /blur/.test(ccv.backdrop),
@@ -1214,20 +1219,64 @@ try {
   const ccState = await ev2(`document.querySelector('.call-mode')?.dataset.caption`);
   if (ccState !== "true") await ev2(`document.querySelector('.call-cc-btn').click(); true`);
   const spokeFloor = await waitPhase2("speaking", 30000);
-  const floorBefore = await ev2(`(() => { const b = document.querySelector('.call-floor');
+  const floorBefore = await ev2(`(() => { const b = document.querySelector('.call-floor.is-take');
     return b ? { label: (b.textContent || "").trim(), disabled: b.disabled,
       h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
   const cancelsPreFloor = await frameCount("cancel");
-  await ev2(`document.querySelector('.call-floor').click(); true`);
+  await ev2(`document.querySelector('.call-floor.is-take').click(); true`);
   const floorTaken = await waitPhase2("listening", 4000);
   const cancelsPostFloor = await frameCount("cancel");
-  check("the captions view's floor button says 打断它 while it talks (a real button, not a hint)",
-    spokeFloor === true && Boolean(floorBefore) && floorBefore.label.startsWith("打断它")
+  check("the captions view's 打断 button is armed while it talks (a real button, not a hint)",
+    spokeFloor === true && Boolean(floorBefore) && floorBefore.label === "打断"
     && floorBefore.disabled === false && floorBefore.h >= 44,
     JSON.stringify({ spokeFloor, floorBefore, phase: await phase2() }));
   check("…and pressing it IS 按键打断: the floor comes back and the running turn is cancelled",
     floorTaken === true && cancelsPostFloor > cancelsPreFloor,
     JSON.stringify({ floorTaken, cancelsPreFloor, cancelsPostFloor }));
+
+  // ---- 按住说话 (PTT): the operator's OTHER complaint, made into a test ---------------------
+  // 「有的时候打断他，我这句话还没说完，他就显示录入完成了……能不能改成可以按住说话那种？」
+  // While the button is DOWN nothing may auto-send — not after silenceMs, not after minChars — and
+  // letting go must send exactly what the recogniser had. Both halves are asserted: the OLD code
+  // sent the sentence during the hold (that is the bug), so "no prompt while held" is the check
+  // that would have failed before this round.
+  const promptsBeforePtt = await frameCount("prompt");
+  await ev2(`(() => { const b = document.querySelector('.call-floor.is-ptt');
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, isPrimary: true }));
+    return true; })()`);
+  await sleep(300);
+  const pttHeld = await ev2(`(() => { const b = document.querySelector('.call-floor.is-ptt');
+    return { label: (b.textContent || '').trim(), pressed: b.getAttribute('aria-pressed'),
+      phase: document.querySelector('.call-mode').dataset.phase,
+      h: Math.round(b.getBoundingClientRect().height) }; })()`);
+  await feed(0.35, "按住说话的这句话", "");
+  await sleep(2400);                       // silenceMs is 1500: the auto-send window is wide open
+  const promptsWhileHeld = await frameCount("prompt");
+  const heardWhileHeld = await ev2(`document.querySelector('.call-cc-list')?.textContent?.includes('按住说话的这句话') === true`);
+  await ev2(`(() => { const b = document.querySelector('.call-floor.is-ptt');
+    b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, isPrimary: true }));
+    return true; })()`);
+  await sleep(700);
+  const promptsAfterPtt = await frameCount("prompt");
+  const pttSent = await (async () => {
+    for (let i = 0; i < 25; i++) {
+      const t = await ev2(`document.querySelector('.call-cc-list')?.textContent || ''`);
+      if (String(t).includes("按住说话的这句话")) return true;
+      await sleep(200);
+    }
+    return false;
+  })();
+  check("按住说话 shows a held state (the label changes, so a hold is not invisible)",
+    pttHeld.label === "松开发送" && pttHeld.pressed === "true" && pttHeld.h >= 44,
+    JSON.stringify(pttHeld));
+  check("…while it is HELD nothing is auto-sent, even long past 说完停顿",
+    promptsWhileHeld === promptsBeforePtt && heardWhileHeld === true,
+    JSON.stringify({ promptsBeforePtt, promptsWhileHeld, heardWhileHeld }));
+  check("…and letting go sends that sentence (the operator decides where it ends)",
+    promptsAfterPtt > promptsWhileHeld && pttSent === true,
+    JSON.stringify({ promptsAfterPtt, pttSent }));
+  await sleep(400);
+  if (await busyOf(slow2.id)) await api("POST", `/api/sessions/${slow2.id}/cancel`, {});
   await ev2(`document.querySelector('.call-cc-btn').click(); true`);
   await sleep(600);
   const backToStage = await ev2(`(() => { const el = document.querySelector('.call-mode');
