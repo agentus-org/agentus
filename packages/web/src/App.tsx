@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
 import { ModelList } from "./ModelList";
 import { modelProvider, shortModelName } from "./modelNames";
-import { cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
+import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
@@ -1372,7 +1372,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     <div className="chat-head">
       <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
       <span className="title" title={info.title}>{info.title}</span>
-      <TurnPulse busy={v.busy} lastAt={v.lastAt} />
+      <TurnPulse busy={busyNow(v)} lastAt={v.lastAt} />
       {v.perms.length > 0 ? (
         <button
           type="button"
@@ -1852,8 +1852,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           ) : pagedOnce && v.msgs.length ? (
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
-          <TranscriptRows msgs={v.msgs} sid={v.info.id} backend={v.info.backend} busy={v.busy} base={v.info.workspace || v.info.cwd} />
-          <TurnLine busy={v.busy} since={v.busySince} />
+          <TranscriptRows msgs={v.msgs} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
+          <TurnLine busy={busyNow(v)} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
@@ -3450,7 +3450,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
       streamReattach.current();
       return;
     }
-    if (v.busy || v.info.status !== "ready") {
+    if (busyNow(v) || v.info.status !== "ready") {
       if (!t && !attachments.length) return;
       cockpit.enqueuePrompt(v.info.id, t, attachments);
     } else {
@@ -3719,7 +3719,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             rows={1}
             value={text}
             onFocus={() => setPaletteHidden(false)}
-            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : v.busy ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
+            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : busyNow(v) ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
               setPaletteHidden(false);
@@ -3891,7 +3891,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 renderTranscript={(p) => <TranscriptRows {...p} />}
               />
             ) : null}
-            {v.busy ? (
+            {busyNow(v) ? (
               <button
                 className="send-btn stop"
                 title="stop this turn"

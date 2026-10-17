@@ -395,8 +395,13 @@ function runPrompt(
     const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
     console.error(`[agentus] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
+    // `rejectedPrompt` is the operator's own sentence, handed back with the refusal so the client can
+    // put it back in line instead of losing it with the red bubble (see state.ts, case "message").
+    // Only for the one refusal that means 「你的话我还没收到，不是它失败了」.
     emit({ t: "message", message: {
-      seq: -1, sessionId, kind: "meta", payload: { text: `turn failed: ${msg}` }, createdAt: Date.now(),
+      seq: -1, sessionId, kind: "meta",
+      payload: { text: `turn failed: ${msg}`, ...(msg === "turn already running" ? { rejectedPrompt: text } : {}) },
+      createdAt: Date.now(),
     } });
     emit({ t: "turn-end", sessionId, error: msg });
   });

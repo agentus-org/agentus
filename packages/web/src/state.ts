@@ -828,7 +828,16 @@ class Cockpit {
     // Phone reality: iOS/Android suspend sockets when the app backgrounds, so a
     // tap can land while we're offline. Dropping it silently would look like the
     // cockpit ate the instruction — hold it and flush on reconnect (QA#14).
-    if (cmd.t === "prompt" || cmd.t === "respond-permission") {
+    if (cmd.t === "prompt") {
+      // A prompt is not a wire-level command we may replay later: the replay knows nothing about what
+      // the agent did in the meantime, so a message pressed during a blip can land on a busy turn and
+      // be refused. File it in the queue instead — the queue is the operator's, it survives a reload,
+      // and it hands over at the next turn-end with `interrupt: true`, which is safe either way.
+      this.enqueuePrompt(cmd.sessionId, cmd.text, cmd.attachments ?? []);
+      this.#setNet(false, "连接已断开 — 消息已排队，重连后自动发送");
+      return false;
+    }
+    if (cmd.t === "respond-permission") {
       this.#outbox.push(cmd);
       if (this.#outbox.length > 20) this.#outbox.shift();
       this.#setNet(false, "连接已断开 — 指令已排队，重连后自动发送");
@@ -943,6 +952,16 @@ class Cockpit {
     void this.resume(sessionId);
   }
 
+  /** Is a turn running on this session?
+   *
+   *  `v.busy` is set by the `turn-start` FRAME, so it is only true for turns this page watched begin.
+   *  A page that connected (or reconnected) after the turn had already started — the operator typing
+   *  through a server restart is the everyday case — has `busy: false` while the agent is mid-turn and
+   *  the server's own state says `status: "running"`. Believing `busy` alone is how the composer came
+   *  to offer a send button for a busy agent: the bare prompt then met "turn already running", and the
+   *  operator's sentence died in a red bubble (2026-10-17). `status` is the server's word and rides
+   *  every `sessions` snapshot, so it survives reconnects; `busy` still wins for the first instant
+   *  after our own send, before the status frame lands. */
   /** The ✕: drop it. (Nothing was sent, so there is nothing to undo server-side.) */
   dropQueued(sessionId: string, id: string): void {
     const rows = this.#queues.get(sessionId) ?? [];
@@ -997,8 +1016,11 @@ class Cockpit {
     if (!head || head.inflight) return;
     // Someone is taking the floor by hand: the next item waits for that turn to start (see #takingFloor).
     if (this.#takingFloor.has(sessionId)) return;
-    const busy = this.byId.get(sessionId)?.busy
-      ?? this.sessions.find((s) => s.id === sessionId)?.status === "running";
+    // `busy` is FALSE (not unknown) on a page that missed the turn-start, so `?? status` never fired
+    // and a reload could hand a prompt to a running turn with `interrupt: true` — i.e. quietly cancel
+    // the operator's own long turn. Ask the same question the send button asks.
+    const busy = busyNow(this.byId.get(sessionId))
+      || this.sessions.find((s) => s.id === sessionId)?.status === "running";
     if (busy) return;
     // Interrupt is what makes this safe: the server clears its own `busy` flag in the `finally`
     // right after emitting turn-end, so a plain prompt can still meet "turn already running" — and
@@ -1763,6 +1785,13 @@ class Cockpit {
       }
       case "message": {
         const v = this.#view(e.message.sessionId);
+        // A prompt refused with "turn already running" never became a message, and the red bubble is
+        // not a place to keep the operator's sentence: file it again so the queue hands it over at
+        // turn-end. A race costs a delay; it must not cost the words.
+        const rejected = (e.message as { payload?: { rejectedPrompt?: unknown } }).payload?.rejectedPrompt;
+        if (e.message.kind === "meta" && typeof rejected === "string" && rejected.trim()) {
+          this.enqueuePrompt(e.message.sessionId, rejected);
+        }
         // `delta` is present when this frame GREW a block we already hold (the store accumulates one
         // row per message now); without it the row is the whole truth and replaces the block's text.
         // `n` is that block's total length — the frame's version, since a grown row keeps its seq.
@@ -2174,6 +2203,22 @@ function extractToolInput(p: Record<string, unknown>): string {
 }
 
 export const cockpit = new Cockpit();
+
+/**
+ * Is a turn running on this session?
+ *
+ * `v.busy` is set by the `turn-start` FRAME, so it is only true for turns this page watched begin. A
+ * page that connected (or reconnected) after the turn had already started — the operator typing across
+ * a cockpit restart is the everyday case — holds `busy: false` while the agent is mid-turn and the
+ * server's own state says `status: "running"`. Trusting `busy` alone is how the composer came to offer
+ * a SEND button for a busy agent; the bare prompt it then sent met "turn already running" and the
+ * operator's sentence died in a red bubble (2026-10-17). `status` is the server's word and rides every
+ * `sessions` snapshot, so it survives reconnects; `busy` still wins for the instant between our own
+ * send and the status frame that confirms it.
+ */
+export function busyNow(v: { busy: boolean; info: { status: string } } | null | undefined): boolean {
+  return Boolean(v && (v.busy || v.info.status === "running"));
+}
 
 /** The URL that serves a local file's raw bytes (auth rides on the session cookie, same as
  *  every other /api call). Used by the panel's image/PDF/audio viewers AND by the markdown
