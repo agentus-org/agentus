@@ -240,6 +240,29 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 `hindsight/config.json` 保持默认 profile 名 `"hermes"` 的话，会接上你的生产记忆守护进程，所以这种
 情况下那一行会给出警告。
 
+## 驾驶舱 CLI（给里面的 agent 用）
+
+槽位里的 agent 是瞎子：别的会话在干什么、你让它改什么，都在驾驶舱里，不在它的 prompt 里。
+`agentus cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
+
+```bash
+"$AGENTUS_COCKPIT_BIN" capabilities   # 契约本身，自述（先跑这个）
+"$AGENTUS_COCKPIT_BIN" context        # 我是谁 + 权限内所有会话
+"$AGENTUS_COCKPIT_BIN" messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" plan <id>
+"$AGENTUS_COCKPIT_BIN" skill          # 这份 CLI 的说明书，直接从包里取
+```
+
+身份由驾驶舱在 spawn 时注入（`AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
+不要参数、不要端口、不要配置，token 也不会出现在命令行上。互发消息（**设置 → 驾驶舱互发消息**，
+默认关闭）里的「已送达」只意味着对方 agent **收到**并开始一轮，绝不等于它读懂了或同意了；
+对方正在跑回合时会拒绝并回 `target_busy`，那条消息哪里都没进。
+
+说明书就是 `skills/cockpit-cli/SKILL.md`，随包发布。有原生技能目录的后端（Hermes：
+`$HERMES_HOME/skills`）在 spawn 时装进去 —— 按内容幂等，所以新版本会刷新、重复 spawn 不产生写盘；
+没有原生目录的后端（Qoder）只在计划提示里拿一行，需要时用 `agentus cockpit skill` 读同一份文件，
+这也正是它永远不被塞进 prompt 的原因。
+
 ## 目前能做什么（M0 → M4）
 
 - 多会话侧栏，**按工作目录分组** —— 运行中的会话和**已关闭的案例**（进程已退出的 transcript；

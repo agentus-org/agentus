@@ -271,6 +271,11 @@ export function rowToSpec(row: BackendRow): BackendSpec {
     needsLoginHint: row.kind === "qoder" ? "qodercli login" : undefined,
     env: { ...(row.env ?? {}) },
     profile: row.profile,
+    // `skillsDir` is a property of the AGENT KIND, not of the operator's row: where a vendor looks
+    // for skills is not something a settings page should have to know. Taken from the builtin of the
+    // same kind, so a stored row inherits it and a new hermes row needs no migration (this is the bug
+    // that made the first install silently skip every real row — stored rows never reach BACKENDS).
+    skillsDir: BACKENDS[row.kind as keyof typeof BACKENDS]?.skillsDir,
   };
   if (row.kind === "hermes") {
     spec.isolation = {

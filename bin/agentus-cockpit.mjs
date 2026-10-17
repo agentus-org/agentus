@@ -24,7 +24,14 @@
  * refusal is `{ success: false, error: { code, message } }` on stdout plus a non-zero exit; the code
  * is a STABLE string (`target_busy`, `sends_disabled`, …) that a model can branch on.
  */
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+/** This package's root — `bin/` is one level down. Resolved from the FILE, never from cwd: the CLI is
+ *  run from inside an agent's session, whose cwd is the operator's project. */
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const ENDPOINT = (process.env.AGENTUS_COCKPIT_ENDPOINT ?? "").replace(/\/+$/, "");
 const TOKEN = process.env.AGENTUS_COCKPIT_TOKEN ?? "";
@@ -37,6 +44,7 @@ const USAGE = `agentus cockpit — read the cockpit, and (if the operator allowe
   cockpit session <id>              one session in detail, with any approval it is waiting on
   cockpit messages <id> [--tail N]  the last N messages, each cut to the documented size
   cockpit plan <id>                 the plan object the operator's card renders
+  cockpit skill [--path]            this CLI's own skill document, straight from the package
   cockpit send <<'JSON'             {"to": "<session id>", "message": "…"} on stdin
 
 Run "capabilities" first: it is self-describing, so no doc can drift from the code.
@@ -88,6 +96,21 @@ const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
   process.stderr.write(USAGE);
   process.exit(cmd ? 0 : 2);
+}
+
+// `skill` answers from the package, with no cockpit involved: the document ships next to this file
+// (`skills/cockpit-cli/SKILL.md`), so an agent whose backend has no native skill discovery can still
+// read it on demand instead of having it pasted into every prompt. Keep it OUTSIDE the auth gate —
+// needing a token to learn how to use the token would be a locked door with the key behind it.
+if (cmd === "skill") {
+  const doc = path.join(PKG_ROOT, "skills/cockpit-cli/SKILL.md");
+  if (rest.includes("--path")) {
+    process.stdout.write(`${doc}\n`);
+    process.exit(0);
+  }
+  if (!existsSync(doc)) fail("no_skill", `the skill document is missing from this install (expected ${doc})`);
+  process.stdout.write(readFileSync(doc, "utf8"));
+  process.exit(0);
 }
 
 needAuth();

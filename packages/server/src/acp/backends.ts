@@ -54,6 +54,15 @@ export interface BackendSpec {
   env?: Record<string, string>;
   /** hermes profile, composed into argv by registry.effectiveArgs (`hermes -p <profile> acp`) */
   profile?: string | null;
+  /**
+   * Where this agent looks for skills, if it has such a place. `{home}` is the home we hand the child.
+   *
+   * ACP defines no skill object, so discovery is per-vendor (AionCore keys it off a per-agent
+   * `native_skills_dirs`; see docs/refs/aionui-acp-rules.md). A row that names a dir gets this
+   * package's skills installed there at spawn; a row that does not gets the one-line prompt hint and
+   * can still read the same document on demand (`agentus cockpit skill`). Absent ≠ broken.
+   */
+  skillsDir?: string;
   /** free-form note shown next to the row in the UI */
   notes?: string;
 }
@@ -78,6 +87,9 @@ export const BACKENDS: Record<string, BackendSpec> = {
       homeVar: "HERMES_HOME",
       homeDefault: defaultHermesHome,
     },
+    // `hermes skill_view` scans <HERMES_HOME>/skills/<name>/SKILL.md at session start, and we spawn
+    // a session per slot — so the install below lands before the agent looks.
+    skillsDir: "{home}/skills",
   },
   qoder: {
     label: "Qoder",

@@ -277,6 +277,32 @@ A row that points at its own home needs no permission — only a name. One trap 
 a row points elsewhere: a fresh home whose `hindsight/config.json` keeps the default profile
 name `"hermes"` would attach to your production memory daemon, so the row warns when it would.
 
+## The cockpit CLI (for the agents inside it)
+
+An agent in a slot is blind: the other sessions, what they are doing, and what the operator
+asked them all live in the cockpit, not in the agent's prompt. `agentus cockpit` is the one
+channel that lets an agent read that — and, if you allow it, hand a message to another session:
+
+```bash
+"$AGENTUS_COCKPIT_BIN" capabilities   # the contract, self-describing (start here)
+"$AGENTUS_COCKPIT_BIN" context        # who am I + every session in scope
+"$AGENTUS_COCKPIT_BIN" messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" plan <id>
+"$AGENTUS_COCKPIT_BIN" skill          # this CLI's own manual, from the package
+```
+
+The cockpit hands `AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
+the CLI needs no arguments, no port and no config — and the token never appears on a command
+line. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
+*received* it, never that it read or agreed; a busy target refuses with `target_busy` and saw
+nothing.
+
+The manual is `skills/cockpit-cli/SKILL.md`, shipped in the package. Backends with a native
+skills directory (Hermes: `$HERMES_HOME/skills`) get it installed at spawn — idempotently, by
+content, so a release that changes it refreshes it and a spawn that would not costs nothing.
+Backends without one (Qoder) get a single line in the plan reminder and can read the same file
+with `agentus cockpit skill`, which is also why the document is never pasted into a prompt.
+
 ## What it does today (M0 → M4)
 
 - multi-session rail, **grouped by working directory** — running sessions and **closed

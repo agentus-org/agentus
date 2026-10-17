@@ -16,6 +16,7 @@
    "agentus-cockpit": "bin/agentus-cockpit.mjs"
  },
  "files": [
+   "skills/",
   "bin/",
   "packages/server/src/",
   "packages/server/mock/",

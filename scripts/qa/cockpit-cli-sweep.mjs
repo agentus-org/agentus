@@ -97,7 +97,7 @@ try {
 
   // ---- capabilities: self-describing, and it tells the truth about `send` ----
   const caps = cli(env, ["capabilities"]).doc?.data;
-  check("capabilities lists every command", ["capabilities", "context", "session", "messages", "plan", "send"]
+  check("capabilities lists every command", ["capabilities", "context", "session", "messages", "plan", "send", "skill"]
     .every((c) => (caps?.commands ?? []).some((x) => x.name === c)), JSON.stringify((caps?.commands ?? []).map((c) => c.name)));
   check("…documents the truncation it actually applies (600 chars / 40 max)",
     String(caps?.truncation?.messages ?? "").includes("600") && String(caps?.truncation?.tail ?? "").includes("40"),
@@ -105,6 +105,13 @@ try {
   check("…and states the send gate the operator's setting currently has",
     String(caps?.scope?.send ?? "").startsWith(before ? "ENABLED" : "DISABLED"), String(caps?.scope?.send));
 
+  // ---- the skill document: the manual an agent reads on demand, not in every prompt ----
+  const skillDoc = execFileSync(process.execPath, [CLI, "skill"], { cwd: REPO, encoding: "utf8" });
+  check("`skill` serves the bundled document (issue: agents need the manual, not a paste)",
+    /^---\nname: agentus-cockpit\n/.test(skillDoc) && skillDoc.includes("delivered"), `${skillDoc.length} bytes`);
+  const skillPath = execFileSync(process.execPath, [CLI, "skill", "--path"], { cwd: REPO, encoding: "utf8" }).trim();
+  check("…from a path inside this install, which is what a native-skill backend reads",
+    fs.existsSync(skillPath) && fs.readFileSync(skillPath, "utf8") === skillDoc, skillPath);
   // ---- context: who am I, and what else is there ----
   const ctx = cli(env, ["context"]).doc;
   check("context identifies the CALLER (not the first row in the list)", ctx?.data?.self?.id === SID, String(ctx?.data?.self?.id));

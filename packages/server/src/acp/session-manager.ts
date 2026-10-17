@@ -14,6 +14,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
+import { installSkills, resolveSkillsDir } from "../skills/install.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
@@ -431,6 +432,8 @@ export class SessionManager {
 
     // isolation: never let a child inherit its way back into the live runtime home
     const plan = buildSpawnEnv(spec);
+    // before the handshake, because Hermes scans its skills dir when the session starts — not later
+    this.#installSkills(spec, plan.home);
     // the cockpit CLI's identity for THIS process (issue #15) — minted before the spawn because it
     // travels in the child's own environment
     const cockpitToken = randomUUID();
@@ -607,6 +610,9 @@ export class SessionManager {
     // point of the workspace being a separate field (see shared/index.ts).
     const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
+    // A resumed slot is a fresh agent process and re-reads its skills dir, so a release that changed
+    // the skill lands here too — not only on first create.
+    this.#installSkills(spec, plan.home);
     // a resumed slot is a NEW process: its cockpit identity is minted here, like create()'s. The old
     // child's token died with the old child.
     const cockpitToken = randomUUID();
@@ -1180,6 +1186,29 @@ export class SessionManager {
     };
   }
 
+  /**
+   * Install this package's skills into the agent's own skills directory, when its backend has one.
+   *
+   * Failures are WARNINGS, never session failures: a slot whose skill could not be written still runs
+   * — it just learns about the CLI from the one-line reminder and `agentus cockpit skill` instead of
+   * native discovery. Turning a read-only-to-us directory (a home owned by root, a read-only mount)
+   * into a dead slot would be a much worse trade than a missing manual.
+   */
+  #installSkills(spec: BackendSpec, home: string | null): void {
+    if (!spec.skillsDir || !home) return;
+    try {
+      const r = installSkills(resolveSkillsDir(spec.skillsDir, home));
+      if (r.installed.length || r.updated.length) {
+        console.log(
+          `[agentus] skills → ${r.dir}: ` +
+            [...r.installed.map((n) => `${n} (new)`), ...r.updated.map((n) => `${n} (updated)`)].join(", "),
+        );
+      }
+    } catch (err) {
+      console.warn(`[agentus] could not install skills into ${spec.skillsDir} (${home}): ${errMessage(err)}`);
+    }
+  }
+
   /** Resolve a cockpit-channel token to the session it was minted for (issue #15). One token, one
    *  session: a copied env var reads that session's scope and nothing wider. */
   cockpitCaller(token: string): string | null {
@@ -1404,7 +1433,10 @@ export class SessionManager {
     // The cockpit channel (issue #15) rides the same block: ONE line, because its whole job is to say
     // that a readable panel exists. The contract itself lives on the other end (`capabilities` is
     // self-describing), so nothing here needs to be kept in sync with the CLI.
-    body.push("", "`$AGENTUS_COCKPIT_BIN context` 可查本驾驶舱其他会话的状态/消息/计划（只读）。");
+    body.push(
+      "",
+      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN`（其它会话的状态/消息/计划；先跑 capabilities，用法全文 `… skill`）。",
+    );
 
     return {
       type: "resource",
