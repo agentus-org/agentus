@@ -82,7 +82,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       { name: "session", args: ["<id>"], returns: "one session in detail, including any approval it is waiting on" },
       { name: "messages", args: ["<id>", "--tail N"], returns: `the last N messages (default ${MESSAGES_TAIL_DEFAULT}, max ${MESSAGES_TAIL_MAX}), each cut to ${MESSAGE_CHARS} chars` },
       { name: "plan", args: ["<id>"], returns: "the plan object the operator's card renders (title/items/explanation/terminal)" },
-      { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/cockpit-cli/SKILL.md), served from the package with no auth" },
+      { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/agentus-cockpit/SKILL.md), served from the package with no auth" },
       { name: "send", args: ["<<'JSON'"], returns: "deliver a message into another session: {\"to\": \"<id>\", \"message\": \"…\"}" },
     ],
     truncation: {

@@ -297,7 +297,7 @@ line. Delivering a message (**设置 → 驾驶舱互发消息**, off by default
 *received* it, never that it read or agreed; a busy target refuses with `target_busy` and saw
 nothing.
 
-The manual is `skills/cockpit-cli/SKILL.md`, shipped in the package. Backends with a native
+The manual is `skills/agentus-cockpit/SKILL.md`, shipped in the package. Backends with a native
 skills directory (Hermes: `$HERMES_HOME/skills`) get it installed at spawn — idempotently, by
 content, so a release that changes it refreshes it and a spawn that would not costs nothing.
 Backends without one (Qoder) get a single line in the plan reminder and can read the same file

@@ -258,7 +258,7 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 默认关闭）里的「已送达」只意味着对方 agent **收到**并开始一轮，绝不等于它读懂了或同意了；
 对方正在跑回合时会拒绝并回 `target_busy`，那条消息哪里都没进。
 
-说明书就是 `skills/cockpit-cli/SKILL.md`，随包发布。有原生技能目录的后端（Hermes：
+说明书就是 `skills/agentus-cockpit/SKILL.md`，随包发布。有原生技能目录的后端（Hermes：
 `$HERMES_HOME/skills`）在 spawn 时装进去 —— 按内容幂等，所以新版本会刷新、重复 spawn 不产生写盘；
 没有原生目录的后端（Qoder）只在计划提示里拿一行，需要时用 `agentus cockpit skill` 读同一份文件，
 这也正是它永远不被塞进 prompt 的原因。

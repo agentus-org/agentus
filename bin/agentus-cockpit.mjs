@@ -99,11 +99,11 @@ if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
 }
 
 // `skill` answers from the package, with no cockpit involved: the document ships next to this file
-// (`skills/cockpit-cli/SKILL.md`), so an agent whose backend has no native skill discovery can still
+// (`skills/agentus-cockpit/SKILL.md`), so an agent whose backend has no native skill discovery can still
 // read it on demand instead of having it pasted into every prompt. Keep it OUTSIDE the auth gate —
 // needing a token to learn how to use the token would be a locked door with the key behind it.
 if (cmd === "skill") {
-  const doc = path.join(PKG_ROOT, "skills/cockpit-cli/SKILL.md");
+  const doc = path.join(PKG_ROOT, "skills/agentus-cockpit/SKILL.md");
   if (rest.includes("--path")) {
     process.stdout.write(`${doc}\n`);
     process.exit(0);
