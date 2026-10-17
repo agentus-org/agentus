@@ -91,7 +91,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       plan_items: "not truncated — a plan is short by construction (it is a step list)",
     },
     auth: {
-      how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you",
+      how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the agentus launcher, so every call is `\"$AGENTUS_COCKPIT_BIN\" cockpit <command>`",
       rule: "never print, echo, export or pass those variables anywhere — they identify your session",
     },
     scope: {

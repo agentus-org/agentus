@@ -246,15 +246,16 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 `agentus cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" capabilities   # 契约本身，自述（先跑这个）
-"$AGENTUS_COCKPIT_BIN" context        # 我是谁 + 权限内所有会话
-"$AGENTUS_COCKPIT_BIN" messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" plan <id>
-"$AGENTUS_COCKPIT_BIN" skill          # 这份 CLI 的说明书，直接从包里取
+"$AGENTUS_COCKPIT_BIN" cockpit capabilities   # 契约本身，自述（先跑这个）
+"$AGENTUS_COCKPIT_BIN" cockpit context        # 我是谁 + 权限内所有会话
+"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" cockpit plan <id>
+"$AGENTUS_COCKPIT_BIN" cockpit skill          # 这份 CLI 的说明书，直接从包里取
 ```
 
 身份由驾驶舱在 spawn 时注入（`AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
-不要参数、不要端口、不要配置，token 也不会出现在命令行上。互发消息（**设置 → 驾驶舱互发消息**，
+不要参数、不要端口、不要配置，token 也不会出现在命令行上。`AGENTUS_COCKPIT_BIN` 就是同一个
+`agentus` 启动器 —— 命令只有一个、名字也只有一个，你在自己 shell 里敲 `agentus cockpit …` 是同一件事。互发消息（**设置 → 驾驶舱互发消息**，
 默认关闭）里的「已送达」只意味着对方 agent **收到**并开始一轮，绝不等于它读懂了或同意了；
 对方正在跑回合时会拒绝并回 `target_busy`，那条消息哪里都没进。
 

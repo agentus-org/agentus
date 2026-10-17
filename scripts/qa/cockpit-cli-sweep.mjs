@@ -14,7 +14,9 @@ import path from "node:path";
 const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8901";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
-const CLI = path.join(REPO, "bin/agentus-cockpit.mjs");
+// ONE command: the launcher. Everything goes through `agentus cockpit …`, exactly what an agent gets
+// in `$AGENTUS_COCKPIT_BIN` — there is no second binary to keep in sync (or to explain).
+const BIN = path.join(REPO, "bin/agentus.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();
@@ -36,7 +38,7 @@ const check = (name, ok, detail = "") => {
 /** Run the CLI the way an agent would, with the target session's own identity in the environment. */
 const cli = (env, args, stdin) => {
   try {
-    const out = execFileSync(process.execPath, [CLI, ...args], {
+    const out = execFileSync(process.execPath, [BIN, "cockpit", ...args], {
       cwd: REPO, env: { ...process.env, ...env }, input: stdin, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
     });
     return { code: 0, doc: JSON.parse(out), stderr: "" };
@@ -85,8 +87,8 @@ try {
   // ---- identity: the cockpit hands it to the child, and only to the child ----
   check("the spawned agent carries AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION",
     Boolean(env.AGENTUS_COCKPIT_ENDPOINT && env.AGENTUS_COCKPIT_TOKEN && SID), JSON.stringify(Object.keys(env)));
-  check("…and the path of this very CLI (so `$AGENTUS_COCKPIT_BIN` works in bash)",
-    env.AGENTUS_COCKPIT_BIN === CLI, String(env.AGENTUS_COCKPIT_BIN));
+  check("…and it is THE LAUNCHER, so `\"$AGENTUS_COCKPIT_BIN\" cockpit <cmd>` is the only spelling",
+    env.AGENTUS_COCKPIT_BIN === BIN && /bin\/agentus\.mjs$/.test(env.AGENTUS_COCKPIT_BIN), String(env.AGENTUS_COCKPIT_BIN));
   check("…with a token minted per process (not a shared secret)",
     env.AGENTUS_COCKPIT_TOKEN !== token, "it equals the operator's machine token");
 
@@ -106,10 +108,10 @@ try {
     String(caps?.scope?.send ?? "").startsWith(before ? "ENABLED" : "DISABLED"), String(caps?.scope?.send));
 
   // ---- the skill document: the manual an agent reads on demand, not in every prompt ----
-  const skillDoc = execFileSync(process.execPath, [CLI, "skill"], { cwd: REPO, encoding: "utf8" });
+  const skillDoc = execFileSync(process.execPath, [BIN, "cockpit", "skill"], { cwd: REPO, encoding: "utf8" });
   check("`skill` serves the bundled document (issue: agents need the manual, not a paste)",
     /^---\nname: agentus-cockpit\n/.test(skillDoc) && skillDoc.includes("delivered"), `${skillDoc.length} bytes`);
-  const skillPath = execFileSync(process.execPath, [CLI, "skill", "--path"], { cwd: REPO, encoding: "utf8" }).trim();
+  const skillPath = execFileSync(process.execPath, [BIN, "cockpit", "skill", "--path"], { cwd: REPO, encoding: "utf8" }).trim();
   check("…from a path inside this install, which is what a native-skill backend reads",
     fs.existsSync(skillPath) && fs.readFileSync(skillPath, "utf8") === skillDoc, skillPath);
   // ---- context: who am I, and what else is there ----

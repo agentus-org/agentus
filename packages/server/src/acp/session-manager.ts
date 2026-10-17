@@ -43,7 +43,11 @@ import { PREFS_DEFAULT, type PlanHintSettings } from "../settings.js";
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
 // package's `files`).
-const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/agentus-cockpit.mjs");
+// The path we hand agents as `AGENTUS_COCKPIT_BIN` is the `agentus` launcher itself — there is no
+// second command to install, and `agentus cockpit <command>` is the only spelling anywhere. (The
+// implementation is `bin/cockpit.mjs`, but that file is the subcommand, not a product name: agents
+// never see it, so it must not become a second thing users have to learn.)
+const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/agentus.mjs");
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -1435,7 +1439,7 @@ export class SessionManager {
     // self-describing), so nothing here needs to be kept in sync with the CLI.
     body.push(
       "",
-      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN`（其它会话的状态/消息/计划；先跑 capabilities，用法全文 `… skill`）。",
+      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN cockpit`（其它会话的状态/消息/计划；先 capabilities，全文 `… cockpit skill`）。",
     );
 
     return {

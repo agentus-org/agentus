@@ -45,10 +45,10 @@ Options
   -v, --version      print the version
 
 Subcommands
-  agentus cockpit <command>   the agent-facing data plane (context / session / messages / plan /
-                              send / capabilities). Inside a session, run it through
-                              "$AGENTUS_COCKPIT_BIN <command>" — the cockpit hands that path and
-                              the credentials to the agent it spawns.
+  agentus cockpit <command>   the agent-facing data plane (capabilities / context / session /
+                              messages / plan / skill / send). One command, one name: the cockpit
+                              hands each agent "$AGENTUS_COCKPIT_BIN" — the path of THIS file — so
+                              an agent runs "$AGENTUS_COCKPIT_BIN cockpit <command>".
 
 The server reads more environment variables than these (agent backends, auth,
 speech). They are listed in the README, and the boot log prints the ones in play.
@@ -77,7 +77,7 @@ function fail(message) {
 // CLI in its own process, so this file keeps holding no product logic (issue #15). Top-level await
 // keeps the dispatch from indenting the whole launcher into an `else` block.
 if (process.argv[2] === "cockpit") {
-  const child = spawn(process.execPath, [path.join(PKG_ROOT, "bin/agentus-cockpit.mjs"), ...process.argv.slice(3)], {
+  const child = spawn(process.execPath, [path.join(PKG_ROOT, "bin/cockpit.mjs"), ...process.argv.slice(3)], {
     stdio: "inherit",
   });
   const code = await new Promise((resolve) => child.on("exit", (c, signal) => resolve(signal ? 130 : c ?? 0)));

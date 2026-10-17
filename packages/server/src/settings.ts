@@ -233,7 +233,7 @@ export const OBSERVER_THROTTLE_RANGE: [number, number] = [0, 3600];
  *  it is watching and how to find out (the cockpit CLI — never trust the trigger line for facts), and
  *  fix the output shape (one sentence, ≤60 characters, spoken aloud by a TTS voice). */
 export const OBSERVER_PROMPT_DEFAULT = [
-  "你是这个驾驶舱里某个会话的观察员。用 `$AGENTUS_COCKPIT_BIN context` 看全景，",
+  "你是这个驾驶舱里某个会话的观察员。用 `$AGENTUS_COCKPIT_BIN cockpit context` 看全景，",
   "用 `session <id>` / `messages <id> --tail 20` / `plan <id>` 核实它正在做什么、卡在哪。",
   "只陈述这些工具读到的事实，不猜、不补、不评价；工具没说的就当不知道。",
   "输出一句中文播报，不超过 60 字，会被语音念出来：不要 Markdown、不要列表、不要引号、不要解释你在做什么。",

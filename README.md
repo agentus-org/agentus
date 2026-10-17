@@ -284,16 +284,17 @@ asked them all live in the cockpit, not in the agent's prompt. `agentus cockpit`
 channel that lets an agent read that — and, if you allow it, hand a message to another session:
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" capabilities   # the contract, self-describing (start here)
-"$AGENTUS_COCKPIT_BIN" context        # who am I + every session in scope
-"$AGENTUS_COCKPIT_BIN" messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" plan <id>
-"$AGENTUS_COCKPIT_BIN" skill          # this CLI's own manual, from the package
+"$AGENTUS_COCKPIT_BIN" cockpit capabilities   # the contract, self-describing (start here)
+"$AGENTUS_COCKPIT_BIN" cockpit context        # who am I + every session in scope
+"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" cockpit plan <id>
+"$AGENTUS_COCKPIT_BIN" cockpit skill          # this CLI's own manual, from the package
 ```
 
 The cockpit hands `AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
 the CLI needs no arguments, no port and no config — and the token never appears on a command
-line. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
+line. `AGENTUS_COCKPIT_BIN` is this same `agentus` launcher, so there is one command with one
+name; `agentus cockpit …` at your own shell is the identical thing. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
 *received* it, never that it read or agreed; a busy target refuses with `target_busy` and saw
 nothing.
 

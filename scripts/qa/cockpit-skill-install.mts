@@ -40,7 +40,11 @@ const packed = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scr
 const files = (JSON.parse(packed)[0]?.files ?? []).map((f: { path: string }) => f.path);
 check("…verified against npm's own file list (skills/agentus-cockpit/SKILL.md is packed)",
   files.includes("skills/agentus-cockpit/SKILL.md"), `${files.length} files packed`);
-check("…and the CLI binary that serves the doc is packed too", files.includes("bin/agentus-cockpit.mjs"), "");
+check("…and the launcher that serves the doc is packed too", files.includes("bin/agentus.mjs"), "");
+check("…and the subcommand's implementation came along (bin/cockpit.mjs, not a second command)",
+  files.includes("bin/cockpit.mjs"), "");
+check("ONE command in the package: `agentus` (no second `agentus-cockpit` bin to explain)",
+  JSON.stringify(Object.keys(pkg.bin ?? {})) === '["agentus"]', JSON.stringify(pkg.bin));
 
 // ---- the installer ----
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-skills-"));
@@ -94,12 +98,13 @@ check("…and a row of a kind with no native dir gets none",
     undefined, "");
 
 // ---- and the CLI can hand out the same document with no cockpit, no token ----
-const cliPath = execFileSync(process.execPath, [path.join(REPO, "bin/agentus-cockpit.mjs"), "skill"], {
+const LAUNCHER = path.join(REPO, "bin/agentus.mjs");
+const cliPath = execFileSync(process.execPath, [LAUNCHER, "cockpit", "skill"], {
   cwd: "/tmp", encoding: "utf8", env: { ...process.env, AGENTUS_COCKPIT_BIN: "", AGENTUS_COCKPIT_TOKEN: "", AGENTUS_COCKPIT_SESSION: "" },
 });
 check("`agentus-cockpit skill` prints the document with NO identity in the environment", cliPath === doc,
   `${cliPath.length} bytes vs ${doc.length}`);
-const cliFile = execFileSync(process.execPath, [path.join(REPO, "bin/agentus-cockpit.mjs"), "skill", "--path"], {
+const cliFile = execFileSync(process.execPath, [LAUNCHER, "cockpit", "skill", "--path"], {
   cwd: "/tmp", encoding: "utf8",
 });
 check("`skill --path` prints the installed path, so an agent can read it with its own file tools",

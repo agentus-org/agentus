@@ -27,20 +27,27 @@ is right.
 [ -n "$AGENTUS_COCKPIT_BIN" ] && echo "yes: $AGENTUS_COCKPIT_BIN"
 ```
 
-If it is empty you are not in a cockpit session (a plain terminal, a cron job, another agent's
-sub-shell). Then this skill does not apply — keep your own notes and carry on. Do not guess at a
-path or try to find the cockpit's port: the endpoint and token exist only inside a session.
+It is the `agentus` launcher itself, so the subcommand is never optional: `cockpit` comes right after
+it. If the variable is empty you are not in a cockpit session (a plain terminal, a cron job, another
+agent's sub-shell) — then this skill does not apply, keep your own notes and carry on. Do not guess at
+a path or hunt for the cockpit's port: the endpoint and token exist only inside a session.
+
+A human at a shell types the same thing without the environment:
+
+```bash
+agentus cockpit context
+```
 
 ## Commands
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" capabilities            # the contract: commands, fields, sizes, whether send is on
-"$AGENTUS_COCKPIT_BIN" context                 # who you are (self) + every session in scope
-"$AGENTUS_COCKPIT_BIN" session <id>            # one session in detail, plus any approval it waits on
-"$AGENTUS_COCKPIT_BIN" messages <id> --tail 20 # recent transcript, each message cut to the documented size
-"$AGENTUS_COCKPIT_BIN" plan <id>               # the plan object the operator's card renders
-"$AGENTUS_COCKPIT_BIN" skill [--path]          # this document, straight from the package
-"$AGENTUS_COCKPIT_BIN" send <<'JSON'
+"$AGENTUS_COCKPIT_BIN" cockpit capabilities            # the contract: commands, fields, sizes, whether send is on
+"$AGENTUS_COCKPIT_BIN" cockpit context                 # who you are (self) + every session in scope
+"$AGENTUS_COCKPIT_BIN" cockpit session <id>            # one session in detail, plus any approval it waits on
+"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20 # recent transcript, each message cut to the documented size
+"$AGENTUS_COCKPIT_BIN" cockpit plan <id>               # the plan object the operator's card renders
+"$AGENTUS_COCKPIT_BIN" cockpit skill [--path]          # this document, straight from the package
+"$AGENTUS_COCKPIT_BIN" cockpit send <<'JSON'
 {"to": "<session id>", "message": "…"}
 JSON
 ```
@@ -100,13 +107,13 @@ clean stdout is not an accident.
 ## Worked example: what is the operator doing right now?
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" context | jq -r '.data.sessions[] | "\(.id)  \(.status)  \(.title)"'
+"$AGENTUS_COCKPIT_BIN" cockpit context | jq -r '.data.sessions[] | "\(.id)  \(.status)  \(.title)"'
 ```
 
 Then, if one of them is the thing being discussed:
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" messages <id> --tail 10 | jq -r '.data.messages[] | "\(.role): \(.text)"'
+"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 10 | jq -r '.data.messages[] | "\(.role): \(.text)"'
 ```
 
 `meta.returned` / `meta.capped` on that answer tell you whether the tail you asked for was itself
