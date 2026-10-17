@@ -501,7 +501,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const ip = clientIp(req);
       if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the cockpit channel is loopback-only" });
       const caller = mgr.cockpitCaller(String(req.headers["x-agentus-cockpit-token"] ?? ""));
-      if (!caller) return send(res, 403, { error: COCKPIT_ERRORS.badToken });
+      // Operator mode: the machine token in <DATA>/auth.token is already the credential that lets
+      // scripts act as the operator, so a human at a shell can use the same CLI. `caller` stays the
+      // empty string — there is no agent to attribute to, so `self` is null and a rename this way
+      // records no author (NULL title_by = the operator), which is exactly right.
+      const isOperator = !caller && auth.verifyMachineToken(/^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ""))?.[1] ?? undefined);
+      if (!caller && !isOperator) return send(res, 403, { error: COCKPIT_ERRORS.badToken });
       // Scope: what the operator can see. 已归档 is out, on purpose — see `cockpitRows`.
       const rows = mgr.cockpitRows();
       const rowOf = (id: string): SessionInfo | null => rows.find((s) => s.id === id) ?? null;
@@ -516,7 +521,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (url.pathname === "/api/cockpit/context" && req.method === "GET") {
         const sp = url.searchParams;
-        const self = rowOf(caller);
+        const self = caller ? rowOf(caller) : null; // operator mode: no session, so no `self`
         // `--all` is the ONE way archived rows enter this channel, and it is opt-in per call: the
         // product rule (an archive is a statement that the work is closed) still holds by default.
         const pool = sp.get("all") === "1" || sp.get("all") === "true"
@@ -525,6 +530,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // `--here`: the CALLER's own workspace, resolved here because only the server knows the
         // canonical path the rail groups by.
         const here = sp.get("here") === "1" || sp.get("here") === "true";
+        const by = sp.get("by") ?? undefined;
+        if (by && by !== "workspace") {
+          return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: `--by wants workspace, got "${by}"` });
+        }
         const query: ListQuery = {
           workspace: here ? (self ? self.workspace || self.cwd : undefined) : sp.get("workspace") ?? undefined,
           status: sp.get("status") ?? undefined,
@@ -536,6 +545,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           limit: sp.get("limit") ? Number(sp.get("limit")) : undefined,
           all: sp.get("all") === "1" || sp.get("all") === "true",
           includeSelf: sp.get("include_self") === "1" || sp.get("include_self") === "true",
+          by: by as ListQuery["by"],
         };
         if (query.sort && !["last", "created", "name"].includes(query.sort)) {
           return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: `--sort wants last|created|name, got "${query.sort}"` });
@@ -555,6 +565,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           schema_version: COCKPIT_SCHEMA_VERSION,
           self: self ? summarize(self) : null,
           sessions: listed.rows,
+          ...(listed.groups ? { groups: listed.groups } : {}),
           meta: {
             ...listed.meta,
             scope: query.all ? "live+cold+archived (--all)" : "live+cold, archived excluded",
@@ -627,7 +638,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           // OPERATOR typed. With it the bubble says which session it came from.
           await mgr.prompt(to, message, [], {
             interrupt: false,
-            origin: { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null },
+            origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
           });
         } catch (e) {
           const why = String((e as Error)?.message ?? e);

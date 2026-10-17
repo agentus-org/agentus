@@ -2031,7 +2031,7 @@ export class SessionManager {
     const clean = title == null ? null : title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 120).trim();
     // A cleared name has no author: after `--auto` the session carries the GENERATED title again, so
     // keeping "an agent named this" would describe a name that no longer exists.
-    const attributed = clean && clean.length ? by : null;
+    const attributed = clean && clean.length && by ? by : null;
     if (!this.#store.renameSession(id, clean && clean.length ? clean : null, attributed)) {
       throw new Error(`no such session: ${id}`);
     }

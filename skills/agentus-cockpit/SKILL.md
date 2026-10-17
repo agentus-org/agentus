@@ -55,6 +55,11 @@ commands that are *not* about a session sit at the top level.
 `session list` is the cheap one: one call, one row per session, enough to answer "what is the
 operator working on besides me". Reach for `messages` only when a specific session matters.
 
+The operator can run these exact commands from a shell: point `AGENTUS_DATA` (and `AGENTUS_PORT`) at
+the cockpit and the CLI authenticates with `<data>/auth.token`, the machine credential scripts already
+use — no `self` in that mode, since there is no agent to attribute to. Which means anything you report
+here can be reproduced by hand.
+
 ### Narrowing `session list`
 
 | flag | what it does |
@@ -70,6 +75,8 @@ operator working on besides me". Reach for `messages` only when a specific sessi
 | `--limit N` | default 20, max 200; `meta.total`/`capped` tell you what you did not see |
 | `--all` | include 已归档 (off by default — an archive means that work is closed) |
 | `--include-self` | add your own row (marked `self`); it is excluded by default |
+| `--by workspace` | bucket the page: `data.groups[]` in the same order, every row in exactly one bucket |
+| `--table` | print a HUMAN table on stdout instead of JSON — for the operator's eyes, not for your parsing |
 
 **Two clocks, and they are not interchangeable.** `lastAt` is when someone last *said* something;
 `createdAt` is when the slot was made. Every row carries both. `--since` filters activity,
@@ -166,11 +173,10 @@ Two different windows onto conversations, and mixing them up produces confident 
 | knows about | live/cold state, plans, pending approvals, workspaces | full transcripts + FTS search |
 | search | title substring only (`--grep`) | full text over message history |
 
-So: "what is happening in the cockpit right now" → this CLI. "What did I do last week" → your own
-memory/session search. A Hermes session that was never opened through the cockpit has **no** row
-here, and an archived cockpit session is invisible to you by design. The bridge between the two is
-the cockpit row's `acpSessionId` (the Hermes-side id) — ask the operator if you need it; do not go
-reading their `state.db` on your own.
+A Hermes session that was never opened through the cockpit has **no** row here, and an archived
+cockpit session is invisible to you by design. The bridge between the two is the cockpit row's
+`acpSessionId` (the Hermes-side id) — ask the operator if you need it; do not go reading their
+`state.db` on your own.
 
 Renaming is the same story in miniature: `agentus session rename` changes the name the RAIL shows and
 records that you did it (`titleBy`), while `hermes sessions rename` changes the name in `state.db`.
