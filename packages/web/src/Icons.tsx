@@ -214,3 +214,9 @@ export const IconLock = (p: IconProps = {}): JSX.Element =>
 /** history — a clock face with a turn-back arrow, used by the call's history window */
 export const IconHistory = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" /><path d="M3 4v4h4" /><path d="M12 8v4.4l3 1.8" /></>, p);
+
+/** subtitles — the call's transcript toggle (the CC box). Two lines of "text" inside a frame,
+ *  which is what every caption affordance looks like; a speech-bubble would read as "chat with
+ *  the agent", and this button shows the TRANSCRIPT, not a new conversation. */
+export const IconSubtitles = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="2.5" y="5" width="19" height="14" rx="3.5" /><path d="M6.5 10.5h4.5M13.5 10.5h4M6.5 14h7" /></>, p);

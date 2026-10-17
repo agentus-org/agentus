@@ -2298,6 +2298,92 @@ body.pane-dragging * { cursor: col-resize !important; }
 }
 .call-gear:hover { color: var(--text); background: var(--bg-raised); }
 
+/* ---- 字幕（聊天记录）视图 ---------------------------------------------------------------
+   默认仍是球 —— 电话打进来先看见「它在听」。右上角的字幕键把页面翻成记录：球退到磨砂玻璃后面
+   当背景光（同一个 canvas、同一套阶段色，只是挪到页面底下并模糊），文字占满布局。参考的是
+   Gemini Live（右上角字幕键、开了就一直开着）与 ChatGPT 2025-11 把语音并入聊天那一路。 */
+.call-cc-btn {
+  position: absolute; z-index: 3;
+  top: max(14px, env(safe-area-inset-top)); right: 60px;
+  width: 38px; height: 38px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--bg-panel); color: var(--text-dim); cursor: pointer;
+}
+.call-cc-btn:hover { color: var(--text); background: var(--bg-raised); }
+/* on = 「记录已经打开」：用阶段色点亮，和页头的阶段文案同一个语言 */
+.call-cc-btn.on { color: #0b1220; background: var(--call-tone, #38bdf8); border-color: transparent; }
+
+.call-mode[data-caption="true"] {
+  gap: 10px;
+  /* the two corner buttons live at the top-right; the record starts below them instead of
+     sliding under a floating button */
+  padding-top: calc(max(14px, env(safe-area-inset-top)) + 44px);
+}
+.call-mode[data-caption="true"] .call-gear { z-index: 3; }
+/* the ball becomes the room light: full-bleed, out of the layout, and blurred */
+.call-mode[data-caption="true"] .call-orb {
+  position: absolute; inset: 0; z-index: 0;
+  width: auto; height: auto; aspect-ratio: auto;
+  pointer-events: none; cursor: default;
+}
+.call-mode[data-caption="true"] .call-orb-canvas {
+  width: 100%; height: 100%;
+  filter: blur(34px) saturate(1.3) brightness(1.35);
+  transform: scale(1.08);           /* let the blur eat the edge instead of showing a seam */
+}
+.call-mode[data-caption="true"]::before { z-index: 1; }
+/* no stage header here: the panel's own toolbar carries the phase and the interrupt switch */
+.call-mode[data-caption="true"] .call-wave { display: none; }
+
+.call-cc {
+  position: relative; z-index: 2;
+  width: min(560px, 94vw); flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.14); border-radius: 18px;
+  /* the frosted sheet: a translucent film over the blurred ball. Deliberately thin so the phase
+     colour still reads through it (a 0.6-alpha card over a dim ball looked like a flat black panel
+     measured on the phone) — the gradient only thickens at the bottom, where the text is longest. */
+  background: linear-gradient(180deg, rgba(18,24,38,0.30) 0%, rgba(9,12,20,0.58) 100%);
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+  backdrop-filter: blur(22px) saturate(1.35);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 20px 60px rgba(0,0,0,0.42);
+}
+.call-cc-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+/* the switch lives in a toolbar here, not under a title: no stacking margin */
+.call-cc-head .call-modes { margin-top: 0; }
+/* the phase chip is also the floor control here: the ball itself is behind glass and out of reach */
+.call-cc-state {
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 30px; padding: 0 4px; border: 0; background: transparent; cursor: pointer;
+  color: var(--call-tone, #38bdf8); font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em;
+}
+.call-cc-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 10px currentColor; animation: cc-pulse 2.4s ease-in-out infinite;
+}
+@keyframes cc-pulse { 0%, 100% { opacity: 0.5; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
+.call-cc-n { margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.call-cc-latest {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 3;
+  min-height: 28px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: rgba(20,26,40,0.82); color: var(--text);
+  font-size: 11.5px; cursor: pointer; backdrop-filter: blur(8px);
+}
+.call-cc-latest:hover { background: var(--bg-raised); }
+.call-cc-list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px;
+}
+/* the record is the page now, so it reads at body size instead of the history window's 12.5px */
+.call-cc-list .call-hm { font-size: 13.5px; line-height: 1.62; }
+.call-cc-list .call-hm.meta, .call-cc-list .call-hm.tool { font-size: 12px; }
+.call-cc-list .call-hint, .call-cc-list .call-err, .call-cc-list .call-note { margin: 0; }
+.call-hm.live .call-hm-who::after { content: " · 在说"; color: var(--call-tone, #38bdf8); }
+
 .call-sheet {
   position: absolute; inset: 0; z-index: 3;
   display: flex; align-items: center; justify-content: center;
@@ -2353,6 +2439,16 @@ body.pane-dragging * { cursor: col-resize !important; }
     padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
   .call-gear { width: 42px; height: 42px; }
+  /* the captions button keeps the same thumb size and sits left of the gear; the transcript view's
+     header row reserves their width so the two never overlap on a 360px screen */
+  .call-cc-btn { width: 42px; height: 42px; right: 64px; }
+  .call-mode[data-caption="true"] { padding-top: calc(max(14px, env(safe-area-inset-top)) + 48px); }
+  .call-cc-head .call-mode-btn { min-height: 26px; padding: 0 9px; font-size: 11.5px; }
+  .call-cc-head .call-cc-state { font-size: 12px; gap: 6px; }
+  .call-cc { width: 94vw; border-radius: 16px; }
+  .call-cc-head { padding: 5px 10px; gap: 8px; }
+  .call-cc-list { padding: 10px 12px 14px; gap: 11px; }
+  .call-cc-list .call-hm { font-size: 13px; }
   .call-knob input[type="range"] { height: 34px; }
   .call-orb { height: min(42vh, 72vw, 300px); }
   .call-lines { min-height: 88px; }
@@ -2367,6 +2463,8 @@ body.pane-dragging * { cursor: col-resize !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .call-mode { animation: none; }
+  /* the transcript view's state dot is the one thing still moving there — a pulse, not a strobe */
+  .call-cc-dot { animation: none; }
 }
 
 /* ---- backend registry panel (M6): "which command / which home / which profile" ---------- */

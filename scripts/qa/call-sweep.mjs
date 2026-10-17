@@ -369,11 +369,32 @@ try {
     const row = [...(d?.live ?? []), ...(d?.archived ?? [])].find((r) => r.id === sid);
     return row?.status === "running";
   };
+  /** Wait for the server to report a turn in flight. The flag LAGS an accepted prompt: the turn is
+   *  queued until the agent process is up, so a short window measures a slow spawn, not a missing
+   *  turn (measured: `busy=false` while the server was refusing a second prompt with "turn already
+   *  running" — the admission control knew, the row did not yet). */
+  const waitBusy = async (sid, ms = 25000) => {
+    for (let t = 0; t < ms; t += 250) { if (await busyOf(sid)) return true; await sleep(250); }
+    return false;
+  };
 
   const slow = (await api("POST", "/api/sessions", { backend: "mock", cwd: "/tmp" })).body;
-  await api("POST", `/api/sessions/${slow.id}/prompt`, { text: "[slow] 这是一段很长的回答，会慢慢地说下去" });
-  let sawBusy = false;
-  for (let i = 0; i < 40 && !sawBusy; i++) { await sleep(150); sawBusy = await busyOf(slow.id); }
+  /** A brand-new session has no agent process yet, and REST `/prompt` does NOT wake a cold slot:
+   *  it answers "session not ready" and no turn ever runs — which then fails the two checks that
+   *  assume one (measured: `busy=false`, cancels=0 on a run where every other check was green).
+   *  Resume first, then require the prompt to be ACCEPTED before asserting anything about a turn. */
+  const startTurn = async (sid, text) => {
+    await api("POST", `/api/sessions/${sid}/resume`).catch(() => null);
+    for (let i = 0; i < 60; i++) {
+      const r = await api("POST", `/api/sessions/${sid}/prompt`, { text });
+      if (r.status === 202) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+  const slowStarted = await startTurn(slow.id, "[slow] 这是一段很长的回答，会慢慢地说下去");
+  check("the fixture really started a turn on the slow session", slowStarted === true, `accepted=${slowStarted}`);
+  const sawBusy = await waitBusy(slow.id);
   check("a turn really is running (the barge-in has something to interrupt)", sawBusy === true, `busy=${sawBusy}`);
 
   // The refusal bubble ("turn failed: turn already running") is emitted over WS and never
@@ -459,14 +480,23 @@ try {
   await sleep(3200);
   // a slow turn, then open the call so it joins it (the mic is not available in automation)
   const slow2 = (await api("POST", "/api/sessions", { backend: "mock", cwd: "/tmp" })).body;
-  await api("POST", `/api/sessions/${slow2.id}/prompt`, { text: "[slow] 慢慢说，我要在你说的时候抢话" });
-  await sleep(700);
+  const slow2Started = await startTurn(slow2.id, "[slow] 慢慢说，我要在你说的时候抢话");
+  check("…and the same fixture turn started on the second slow session", slow2Started === true, `accepted=${slow2Started}`);
+  const slow2Busy = await waitBusy(slow2.id);
+  check("…and that turn is really in flight before the call tries to join it", slow2Busy === true, `busy=${slow2Busy}`);
+  await sleep(300);
   await ev2(`(() => { const rows = [...document.querySelectorAll('.session-item')];
     const row = rows.find((r) => r.dataset.session === ${JSON.stringify(slow2.id)}) ?? rows[0];
     row?.click(); return true; })()`);
   await sleep(500);
   await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click()`);
-  await sleep(1500);
+  // the call JOINS a running turn (that is the path under test): wait for it to get there instead
+  // of sampling once and hoping — a 1.5 s sample measured `listening` and the tap then did nothing.
+  for (let i = 0; i < 80; i++) {
+    const p = await ev2(`document.querySelector('.call-mode')?.dataset.phase ?? null`);
+    if (p === "thinking" || p === "speaking") break;
+    await sleep(250);
+  }
   const beforeTap2 = await ev2(`(() => { const el = document.querySelector('.call-mode');
     return { open: !!el, phase: el?.dataset.phase ?? null }; })()`);
   const orbBox = await ev2(`(() => { const el = document.querySelector('.call-orb-canvas'); if (!el) return null;
@@ -481,7 +511,8 @@ try {
   const afterTap2 = await ev2(`(() => { const el = document.querySelector('.call-mode');
     return { phase: el?.dataset.phase ?? null, open: !!el }; })()`);
   check("the call was showing the agent's turn when the orb was tapped",
-    beforeTap2.open === true, JSON.stringify(beforeTap2));
+    beforeTap2.open === true && (beforeTap2.phase === "speaking" || beforeTap2.phase === "thinking"),
+    JSON.stringify(beforeTap2));
   check("taking the floor back in the call CANCELS the agent's turn (not just our playback)",
     cancels >= 1, JSON.stringify({ cancels, before: beforeTap2.phase, after: afterTap2.phase }));
   check("…and the call goes back to listening for the operator", afterTap2.phase === "listening",
@@ -548,10 +579,10 @@ try {
     return { knobs, card: { l: Math.round(card.left), t: Math.round(card.top), r: Math.round(card.right), b: Math.round(card.bottom) },
       inside: card.left >= -1 && card.right <= innerWidth + 1 && card.top >= -1 && card.bottom <= innerHeight + 1 }; })()`);
   const LABELS = ["抢话灵敏度", "抢话持续时间", "说完停顿", "最少字数"];
-  check("the panel offers exactly the four thresholds, at their defaults (灵敏度 60% / 最少字数 3)",
+  check("the panel offers exactly the four thresholds, at their defaults (灵敏度 60% / 说完停顿 1.5s / 最少字数 3)",
     Boolean(sheet) && sheet.knobs.length === 4
     && sheet.knobs.every((k, i) => k.label === LABELS[i])
-    && sheet.knobs[0].value === 60 && sheet.knobs[1].value === 300 && sheet.knobs[2].value === 1200 && sheet.knobs[3].value === 3,
+    && sheet.knobs[0].value === 60 && sheet.knobs[1].value === 300 && sheet.knobs[2].value === 1500 && sheet.knobs[3].value === 3,
     JSON.stringify(sheet?.knobs));
   check("the default 最少字数 (3) is readable in the panel, and it is the default the server holds",
     (await knobsNow()).find((k) => k.label === "最少字数")?.shown === "3 字"
@@ -1041,6 +1072,93 @@ try {
   await sleep(300);
   check("collapsing it puts the call back to the way it was (no list, no reserved space)",
     (await ev2(`!document.querySelector('.call-hist-list')`)) === true, "");
+
+  // ---- 字幕视图: the record takes the page, the ball becomes background light --------------
+  // Operator (2026-10-17): 「球默认；右上角一个字幕键，点开就是完整聊天记录，球只当背景，磨砂玻璃质感」。
+  // Measured on the PHONE viewport, with a transcript that already holds both sides.
+  const ccBtn = await ev2(`(() => { const b = document.querySelector('.call-cc-btn');
+    if (!b) return null; const r = b.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { w: Math.round(r.width), h: Math.round(r.height),
+      inside: r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
+      pressed: b.getAttribute('aria-pressed'), hit: !!hit && (hit === b || b.contains(hit)),
+      at: hit ? (hit.className || hit.tagName) : null }; })()`);
+  check("the call carries a captions button in its corner (thumb-sized and reachable)",
+    Boolean(ccBtn) && ccBtn.inside && ccBtn.hit && ccBtn.w >= 36 && ccBtn.h >= 36 && ccBtn.pressed === "false",
+    JSON.stringify(ccBtn));
+  await ev2(`document.querySelector('.call-cc-btn').click(); true`);
+  await sleep(800);
+  const ccv = await ev2(`(() => {
+    const mode = document.querySelector('.call-mode');
+    const panel = document.querySelector('.call-cc'); if (!panel) return { panel: false };
+    const pr = panel.getBoundingClientRect(), list = document.querySelector('.call-cc-list');
+    const lr = list.getBoundingClientRect(), orb = document.querySelector('.call-orb');
+    const cv = document.querySelector('.call-orb-canvas');
+    const cs = getComputedStyle(cv), os = getComputedStyle(orb), ps = getComputedStyle(panel), ls = getComputedStyle(list);
+    const rows = [...list.querySelectorAll('.call-hm')];
+    const btns = [...mode.querySelectorAll('.call-btn')].map((b) => { const r = b.getBoundingClientRect();
+      return { inside: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, w: Math.round(r.width) }; });
+    const controls = document.querySelector('.call-controls').getBoundingClientRect();
+    return { panel: true, caption: mode.dataset.caption, phase: mode.dataset.phase,
+      w: Math.round(pr.width), h: Math.round(pr.height), listH: Math.round(lr.height),
+      rows: rows.length,
+      kinds: [...new Set(rows.map((r) => r.className.replace('call-hm ', '').replace(' current', '').replace(' live', '').trim()))],
+      text: rows.map((r) => r.textContent).join(' ').slice(0, 400),
+      orbPosition: os.position, orbPointer: os.pointerEvents,
+      canvasFilter: cs.filter, backdrop: ps.backdropFilter || ps.webkitBackdropFilter || "",
+      overflowY: ls.overflowY, overscroll: ls.overscrollBehaviorY,
+      atBottom: list.scrollHeight - list.scrollTop - list.clientHeight < 28,
+      stageLines: !!document.querySelector('.call-lines'), stageHist: !!document.querySelector('.call-hist'),
+      waveShown: (() => { const w = document.querySelector('.call-wave'); return !!w && getComputedStyle(w).display !== 'none'; })(),
+      controlsIn: controls.bottom <= innerHeight + 1 && controls.top >= -1,
+      btnsIn: btns.every((b) => b.inside && b.w >= 44),
+      stateText: (document.querySelector('.call-cc-state')?.textContent ?? '').trim(),
+      corpus: document.documentElement.scrollWidth - innerWidth }; })()`);
+  check("the captions view is a full transcript panel, not a toast",
+    ccv.panel === true && ccv.caption === "true" && ccv.h >= 380 && ccv.w >= 340,
+    JSON.stringify({ h: ccv.h, w: ccv.w, caption: ccv.caption }));
+  check("…the record IS the page now (both sides of the conversation, newest line in view)",
+    ccv.rows >= 6 && ccv.kinds.includes("user") && ccv.kinds.includes("agent") && ccv.atBottom === true,
+    JSON.stringify({ rows: ccv.rows, kinds: ccv.kinds, atBottom: ccv.atBottom, head: ccv.text.slice(0, 80) }));
+  check("…the ball became BACKGROUND: out of the layout, untappable, and blurred",
+    ccv.orbPosition === "absolute" && ccv.orbPointer === "none"
+    && /blur/.test(ccv.canvasFilter) && /blur/.test(ccv.backdrop),
+    JSON.stringify({ pos: ccv.orbPosition, pointer: ccv.orbPointer, filter: ccv.canvasFilter, backdrop: ccv.backdrop }));
+  check("…the stage furniture is gone (no duplicate lines, fake wave or history bar)",
+    ccv.stageLines === false && ccv.stageHist === false && ccv.waveShown === false,
+    JSON.stringify({ lines: ccv.stageLines, hist: ccv.stageHist, wave: ccv.waveShown }));
+  check("…it scrolls inside itself and the call's controls stay on the phone's screen",
+    ccv.overflowY === "auto" && ccv.overscroll === "contain" && ccv.controlsIn && ccv.btnsIn && ccv.corpus <= 0,
+    JSON.stringify({ overflowY: ccv.overflowY, controlsIn: ccv.controlsIn, btnsIn: ccv.btnsIn, corpus: ccv.corpus }));
+  fs.writeFileSync(`${SHOTS}/call-captions.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await ev2(`(() => { const l = document.querySelector('.call-cc-list'); l.scrollTop = 0; l.dispatchEvent(new Event('scroll')); return true; })()`);
+  await sleep(400);
+  const ccUp = await ev2(`({ top: Math.round(document.querySelector('.call-cc-list').scrollTop),
+    back: !!document.querySelector('.call-cc-latest') })`);
+  check("scrolling back in the transcript offers 回到最新", ccUp.top === 0 && ccUp.back === true, JSON.stringify(ccUp));
+  await ev2(`document.querySelector('.call-cc-latest')?.click(); true`);
+  await sleep(400);
+  check("…and one tap goes back to the newest line",
+    (await ev2(`(() => { const l = document.querySelector('.call-cc-list');
+      return l.scrollHeight - l.scrollTop - l.clientHeight < 28; })()`)) === true, "");
+  await ev2(`document.querySelector('.call-cc-btn').click(); true`);
+  await sleep(600);
+  const backToStage = await ev2(`(() => { const el = document.querySelector('.call-mode');
+    const orb = document.querySelector('.call-orb'); const r = orb.getBoundingClientRect();
+    return { caption: el.dataset.caption, lines: !!document.querySelector('.call-lines'),
+      hist: !!document.querySelector('.call-hist'), pos: getComputedStyle(orb).position,
+      inside: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight }; })()`);
+  check("toggling it off puts the ball back on the page (the stage view is intact)",
+    backToStage.caption === "false" && backToStage.lines === true && backToStage.hist === true
+    && backToStage.pos !== "absolute" && backToStage.inside === true, JSON.stringify(backToStage));
+  // a desktop capture for the record: the same view, not squeezed
+  await send2("Emulation.setDeviceMetricsOverride", { width: 1180, height: 820, deviceScaleFactor: 1, mobile: false });
+  await sleep(500);
+  await ev2(`document.querySelector('.call-cc-btn').click(); true`);
+  await sleep(700);
+  fs.writeFileSync(`${SHOTS}/call-captions-desktop.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  await ev2(`document.querySelector('.call-cc-btn').click(); true`);
+  await sleep(300);
 
   try { await fetch(`${CDP}/json/close/${tab2.id}`); } catch { /* gone */ }
 

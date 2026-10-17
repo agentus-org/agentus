@@ -34,7 +34,7 @@ export interface CallSettings {
 }
 
 export const CALL_DEFAULT: CallSettings = {
-  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3,
+  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
 };
 
 /** The switch's two ends, in the operator's words. */
