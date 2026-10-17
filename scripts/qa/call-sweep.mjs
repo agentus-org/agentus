@@ -1128,6 +1128,8 @@ try {
           return !!e && (e === b || b.contains(e)); })() }; };
     const takeBtn = pick('.call-floor.is-take');
     const pttBtn = pick('.call-floor.is-ptt');
+    const doneBtn = pick('.call-floor.is-done');
+    const floorBtns = [...document.querySelectorAll('.call-floor')].map((b) => (b.textContent || '').trim());
     return { panel: true, caption: mode.dataset.caption, phase: mode.dataset.phase,
       w: Math.round(pr.width), h: Math.round(pr.height), listH: Math.round(lr.height),
       rows: rows.length, legacy,
@@ -1136,7 +1138,7 @@ try {
       agentRoles: [...new Set(rows.filter((r) => r.classList.contains('agent')).map((r) => (r.querySelector('.role')?.textContent ?? '').trim()))],
       folded: { tool: list.querySelectorAll('.tool-card, .tool-run').length, thought: list.querySelectorAll('.thought').length },
       text: rows.map((r) => r.textContent).join(' ').slice(0, 400),
-      floor: takeBtn, ptt: pttBtn,
+      floor: takeBtn, ptt: pttBtn, done: doneBtn, floorLabels: floorBtns,
       orbPosition: os.position, orbPointer: os.pointerEvents,
       canvasFilter: cs.filter, backdrop: ps.backdropFilter || ps.webkitBackdropFilter || "",
       overflowY: ls.overflowY, overscroll: ls.overscrollBehaviorY,
@@ -1163,19 +1165,15 @@ try {
     JSON.stringify({ legacy: ccv.legacy, userRoles: ccv.userRoles, agentRoles: ccv.agentRoles }));
   // 「两个按钮嘛，比如说左边是打断，右边是按住说话」 — both must be real, reachable, and say
   // exactly what they do; no icon the operator has to decode.
-  check("…TWO floor controls, both thumb-sized and reachable: 打断 | 按住说话",
-    Boolean(ccv.floor) && Boolean(ccv.ptt)
-    && ccv.floor.inPanel && ccv.ptt.inPanel && ccv.floor.hit && ccv.ptt.hit
-    && ccv.floor.h >= 44 && ccv.ptt.h >= 44 && ccv.floor.w >= 100 && ccv.ptt.w >= 100,
-    JSON.stringify({ take: ccv.floor, ptt: ccv.ptt }));
-  check("…labelled 打断 on the left and 按住说话 on the right (verbatim, nothing to decode)",
-    ccv.floor?.label === "打断" && ccv.ptt?.label === "按住说话",
-    JSON.stringify({ take: ccv.floor?.label, ptt: ccv.ptt?.label }));
-  check("…and 打断 is only armed while there is something to interrupt",
-    ccv.phase === "speaking" || ccv.phase === "thinking"
-      ? ccv.floor?.disabled === false
-      : ccv.floor?.disabled === true,
-    JSON.stringify({ phase: ccv.phase, disabled: ccv.floor?.disabled }));
+  // 「为什么一直显示打断啊，不是应该根据状态变吗」 — the row states the ONE action that is
+  // useful right now. Idle: 按住说话 only. Dictating: 说完了 only. Agent talking: 打断 | 按住说话.
+  check("…idle: ONE button (按住说话), because there is nothing to interrupt",
+    ccv.floorLabels.length === 1 && ccv.floorLabels[0] === "按住说话"
+    && Boolean(ccv.ptt) && ccv.ptt.inPanel && ccv.ptt.hit && ccv.ptt.h >= 44 && ccv.ptt.w >= 240,
+    JSON.stringify({ phase: ccv.phase, labels: ccv.floorLabels, ptt: ccv.ptt }));
+  check("…no dead 打断 button sits next to it (that was the complaint)",
+    ccv.floor === null && ccv.done === null,
+    JSON.stringify({ take: ccv.floor, done: ccv.done }));
   check("…the ball became BACKGROUND: out of the layout, untappable, and blurred",
     ccv.orbPosition === "absolute" && ccv.orbPointer === "none"
     && /blur/.test(ccv.canvasFilter) && /blur/.test(ccv.backdrop),
@@ -1197,6 +1195,39 @@ try {
   check("…and one tap goes back to the newest line",
     (await ev2(`(() => { const l = document.querySelector('.call-cc-list');
       return l.scrollHeight - l.scrollTop - l.clientHeight < 28; })()`)) === true, "");
+
+  // ---- 说完了: ending MY OWN input ---------------------------------------------------------
+  // 「语音打断的时候，如果我说完了应该也要支持结束语音输入吧……识别到正在说话时是不是两个按钮
+  //  合二为一成一个按钮，文案和功能变成结束」. So while the recogniser has words, the row is ONE
+  // button, and it must send NOW — not after 说完停顿 elapses (we deliberately tap well before it).
+  await feed(0.35, "这句话我想自己决定说到哪儿", "");
+  await sleep(400);
+  const dictRow = await ev2(`(() => { const d = document.querySelector('.call-floor.is-done');
+    return { labels: [...document.querySelectorAll('.call-floor')].map((b) => (b.textContent || '').trim()),
+      doneH: Math.round(d?.getBoundingClientRect().height || 0), doneW: Math.round(d?.getBoundingClientRect().width || 0),
+      phase: document.querySelector('.call-mode').dataset.phase }; })()`);
+  fs.writeFileSync(`${SHOTS}/call-floor-done.png`, Buffer.from((await send2("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  const promptsBeforeDone = await frameCount("prompt");
+  await ev2(`document.querySelector('.call-floor.is-done')?.click(); true`);
+  await sleep(900);
+  const promptsAfterDone = await frameCount("prompt");
+  const doneSent = await (async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await ev2(`document.querySelector('.call-cc-list')?.textContent || ''`);
+      if (String(t).includes("这句话我想自己决定说到哪儿")) return true;
+      await sleep(200);
+    }
+    return false;
+  })();
+  check("while I am dictating the row collapses to ONE button: 说完了",
+    dictRow.phase === "listening" && dictRow.labels.length === 1 && dictRow.labels[0] === "说完了"
+    && dictRow.doneH >= 44 && dictRow.doneW >= 240,
+    JSON.stringify(dictRow));
+  check("…and tapping it ends my input immediately (no waiting for 说完停顿)",
+    promptsAfterDone > promptsBeforeDone && doneSent === true,
+    JSON.stringify({ promptsBeforeDone, promptsAfterDone, doneSent }));
+  await feed(0, "", "");
+  if (await busyOf(slow2.id)) { await api("POST", `/api/sessions/${slow2.id}/cancel`, {}); await sleep(600); }
 
   // ---- 按键打断 IN THE CAPTIONS VIEW — the operator's complaint, made into a test -----------
   // 「这个按键打断都没地方摁啊……就是字幕模式下」. The orb is behind the frosted panel here, so the
@@ -1221,15 +1252,19 @@ try {
   const spokeFloor = await waitPhase2("speaking", 30000);
   const floorBefore = await ev2(`(() => { const b = document.querySelector('.call-floor.is-take');
     return b ? { label: (b.textContent || "").trim(), disabled: b.disabled,
-      h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
+      h: Math.round(b.getBoundingClientRect().height),
+      labels: [...document.querySelectorAll('.call-floor')].map((x) => (x.textContent || '').trim()) } : null; })()`);
   const cancelsPreFloor = await frameCount("cancel");
   await ev2(`document.querySelector('.call-floor.is-take').click(); true`);
   const floorTaken = await waitPhase2("listening", 4000);
   const cancelsPostFloor = await frameCount("cancel");
-  check("the captions view's 打断 button is armed while it talks (a real button, not a hint)",
-    spokeFloor === true && Boolean(floorBefore) && floorBefore.label === "打断"
-    && floorBefore.disabled === false && floorBefore.h >= 44,
+  check("while the agent talks the row is TWO buttons: 打断 | 按住说话",
+    spokeFloor === true && Boolean(floorBefore) && floorBefore.labels.length === 2
+    && floorBefore.labels[0] === "打断" && floorBefore.labels[1] === "按住说话",
     JSON.stringify({ spokeFloor, floorBefore, phase: await phase2() }));
+  check("…and 打断 is armed then (a real button, not a hint)",
+    floorBefore?.label === "打断" && floorBefore?.disabled === false && floorBefore?.h >= 44,
+    JSON.stringify(floorBefore));
   check("…and pressing it IS 按键打断: the floor comes back and the running turn is cancelled",
     floorTaken === true && cancelsPostFloor > cancelsPreFloor,
     JSON.stringify({ floorTaken, cancelsPreFloor, cancelsPostFloor }));

@@ -2407,6 +2407,9 @@ body.pane-dragging * { cursor: col-resize !important; }
   flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   padding: 8px 10px; border-top: 1px solid rgba(255,255,255,0.09);
 }
+/* one button when only one action makes sense: the row is never half empty, and the single
+   button is never a 1fr-wide button stranded in a 2fr grid */
+.call-floor-row.single { grid-template-columns: 1fr; }
 .call-floor {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; min-height: 46px; margin: 0; padding: 0 12px;
@@ -2427,6 +2430,13 @@ body.pane-dragging * { cursor: col-resize !important; }
 .call-floor:disabled { color: var(--text-dim); background: rgba(255,255,255,0.03); cursor: default; }
 /* held: the button is being pressed for as long as it is down, so it must LOOK held — a call
    where "hold to talk" has no visual state is a call where nobody trusts it */
+/* 「说完了」: the operator ending their own input — same weight as sending, so it carries the
+   accent instead of the neutral surface the hold button uses */
+.call-floor.is-done {
+  background: color-mix(in srgb, var(--call-tone, #38bdf8) 80%, #000);
+  color: #0b1220;
+}
+.call-floor.is-done:hover { background: var(--call-tone, #38bdf8); }
 .call-floor.is-ptt { background: rgba(255,255,255,0.09); }
 .call-floor.is-ptt.on {
   background: color-mix(in srgb, var(--call-tone, #38bdf8) 82%, #000);

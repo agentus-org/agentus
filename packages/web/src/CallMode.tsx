@@ -609,6 +609,22 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     }
   };
 
+  /** "I have said what I wanted" — the ONE thing both endings need: PTT release, and the
+   *  说完了 button while dictating in voice mode. Sending is the same act either way: stop feeding
+   *  our own audio to the recogniser, take what it has, and hand it over as the turn. */
+  const sendHeard = (): void => {
+    const st = dictation.getSnapshot();
+    const text = (st.text || st.interim).trim();
+    if (!text) return;
+    sentRef.current = true;
+    setPhase("thinking");
+    setHeard(text);
+    setErr("");
+    baselineKeyRef.current = rawAgentKeyRef.current;
+    dictation.setRelay(false);
+    cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+  };
+
   const pttEnd = (): void => {
     if (!pttRef.current) return;
     pttRef.current = false;
@@ -622,13 +638,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       setPhase("listening");
       return;
     }
-    sentRef.current = true;
-    setPhase("thinking");
-    setHeard(text);
-    setErr("");
-    baselineKeyRef.current = rawAgentKeyRef.current;
-    dictation.setRelay(false);
-    cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+    sendHeard();
   };
 
   // ---- the animation -------------------------------------------------------------------
@@ -952,6 +962,34 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *   · 打断  — stop it now, the floor is mine (enabled only while there IS something to stop);
    *   · 按住说话 — nobody guesses when my sentence ends: I let go when it ends. */
   const canTake = phase === "speaking" || phase === "thinking";
+  /** WHO holds the floor decides what the row says — one question, three answers:
+   *   · the AGENT is talking  → 打断 | 按住说话      (two ways to take it back)
+   *   · I am dictating        → 说完了               (one button, and its only job is to end it)
+   *   · nobody is talking yet → 按住说话             (the only useful thing here)
+   *  The operator's words: 「为什么一直显示打断啊，不是应该根据状态变吗」 and 「识别到正在说话时是不是
+   *  两个按钮合二为一成一个按钮吧，文案和功能变成结束」. A dead 打断 next to a live row was the whole
+   *  complaint, so when there is nothing to interrupt it is not rendered at all.
+   *  NOT collapsed while PTT is held: replacing a button mid-press would drop the pointer and lose
+   *  the hold — the held button keeps its own label (松开发送) instead. */
+  const dictating = phase === "listening" && !holding && heard.trim().length > 0;
+  /** One definition, two states: the same DOM node must survive a press (see above). */
+  const pttButton = (
+    <button
+      type="button"
+      className={`call-floor is-ptt${holding ? " on" : ""}`}
+      onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ } void pttStart(); }}
+      onPointerUp={(e) => { e.preventDefault(); pttEnd(); }}
+      onPointerCancel={() => pttEnd()}
+      onLostPointerCapture={() => pttEnd()}
+      onContextMenu={(e) => e.preventDefault()}
+      aria-pressed={holding}
+      title="按住说话，松开就发出去；按住的时候不会自动发送"
+      aria-label={holding ? "松开发送" : "按住说话"}
+    >
+      <IconMic size={17} />
+      <span>{holding ? "松开发送" : "按住说话"}</span>
+    </button>
+  );
 
   /* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It belongs
      on the call because it is the one setting that changes with the ROOM (a phone on a table, a
@@ -1083,33 +1121,37 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
               right (hold to talk, release to send — my sentence ends when I say it does, not when a
               silence timer guesses). Both are thumb-sized (48px) and both say what they do without
               an icon to decode. Pressing either one takes the floor from a talking agent. */}
-          <div className="call-floor-row">
-            <button
-              type="button"
-              className="call-floor is-take"
-              onClick={() => void bargeIn()}
-              disabled={!canTake}
-              title={canTake ? "停下它，接着说你的" : "它没在说话，直接按住说话就行"}
-              aria-label="打断"
-            >
-              <IconStop size={17} />
-              <span>打断</span>
-            </button>
-            <button
-              type="button"
-              className={`call-floor is-ptt${holding ? " on" : ""}`}
-              onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ } void pttStart(); }}
-              onPointerUp={(e) => { e.preventDefault(); pttEnd(); }}
-              onPointerCancel={() => pttEnd()}
-              onLostPointerCapture={() => pttEnd()}
-              onContextMenu={(e) => e.preventDefault()}
-              aria-pressed={holding}
-              title="按住说话，松开就发出去；按住的时候不会自动发送"
-              aria-label={holding ? "松开发送" : "按住说话"}
-            >
-              <IconMic size={17} />
-              <span>{holding ? "松开发送" : "按住说话"}</span>
-            </button>
+          <div className={`call-floor-row${canTake ? "" : " single"}`}>
+            {!canTake ? (
+              dictating ? (
+                <button
+                  type="button"
+                  className="call-floor is-done"
+                  onClick={() => sendHeard()}
+                  title="说完了就把这句发出去，不用等它判断停顿"
+                  aria-label="说完了"
+                >
+                  <IconSend size={17} />
+                  <span>说完了</span>
+                </button>
+              ) : (
+                pttButton
+              )
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="call-floor is-take"
+                  onClick={() => void bargeIn()}
+                  title="停下它，接着说你的"
+                  aria-label="打断"
+                >
+                  <IconStop size={17} />
+                  <span>打断</span>
+                </button>
+                {pttButton}
+              </>
+            )}
           </div>
         </div>
       ) : (
