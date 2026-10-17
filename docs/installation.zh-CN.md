@@ -31,8 +31,10 @@ brew install node                 # 或者 https://nodejs.org/en/download
 ### 该跑哪份 Hermes
 
 裸装的 Hermes 足够跑会话。但驾驶舱自己依赖的那几项能力**不在发布版里** —— 按会话切换的**思考深度**
-（ACP `reasoning_effort`）、**跨重启 / `session/load` 存活的权限模式**，以及可自由填写的**上下文预算**
-（带 256K/512K/768K/1M 预设）。它们在 fork
+（ACP `reasoning_effort`）、**跨重启 / `session/load` 存活的权限模式**、可自由填写的**上下文预算**
+（带 256K/512K/768K/1M 预设）、把记忆召回 / 存记忆提示送进驾驶舱消息流的 **status 通道**，以及
+**按进程指定的技能根**（`HERMES_EXTERNAL_SKILLS_DIRS` —— 驾驶舱靠它让槽位看见自己的 skill，
+不往你的 `~/.hermes` 写任何东西）。它们在 fork
 [`LiangYang666/hermes-agent`](https://github.com/LiangYang666/hermes-agent) 的 ACP 分支上，
 按基座版本各有一个**集成构建的 tag**，自成命名空间：
 
@@ -44,7 +46,7 @@ agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.22.0`、`v0.22.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.22.0/merge-20261015-0014`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`agentus/v0.22.0/merge-20261017-2152`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.22.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 

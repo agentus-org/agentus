@@ -49,10 +49,11 @@ first, else `newSession` fails with `-32000`). Without one the cockpit still run
 logs in — you just have no backend to start a session on.
 
 A plain Hermes install drives sessions; the cockpit's own extras — per-session **thinking
-depth**, a permission mode that survives a restart, the **context-budget** field — come from the
-fork's integration build instead. That is a five-line install:
+depth**, a permission mode that survives a restart, the **context-budget** field, the **status
+channel** (memory recall/save hints in the message stream) — come from the fork's integration
+build instead. That is a five-line install:
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
-`agentus/v0.22.0/merge-20261015-0014`, on Hermes `v0.22.0`.
+`agentus/v0.22.0/merge-20261017-2152`, on Hermes `v0.22.0`.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
