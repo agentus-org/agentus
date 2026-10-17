@@ -48,6 +48,21 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  — ${detail}` : ""}`);
 };
 
+/** Run the CLI with a copy of the environment that has NO cockpit identity — i.e. as the operator at a
+ *  shell — and return the raw stdout (that mode can legitimately print a table instead of JSON). */
+const rawCli = (env, args) => {
+  const clean = { ...process.env };
+  for (const k of ["AGENTUS_COCKPIT_ENDPOINT", "AGENTUS_COCKPIT_TOKEN", "AGENTUS_COCKPIT_SESSION", "AGENTUS_COCKPIT_BIN"]) delete clean[k];
+  try {
+    const out = execFileSync(process.execPath, [BIN, ...args], {
+      cwd: REPO, env: { ...clean, ...env }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+    });
+    return { code: 0, out, stderr: "" };
+  } catch (e) {
+    return { code: e.status ?? -1, out: String(e.stdout ?? ""), stderr: String(e.stderr ?? "") };
+  }
+};
+
 /** Run the CLI the way an agent would, with the target session's own identity in the environment. */
 const cli = (env, args, stdin) => {
   try {
@@ -196,6 +211,42 @@ try {
   const empty = cli(env, ["session", "rename", dst.id]);
   check("rename with no title and no --auto is refused", empty.code !== 0 && empty.doc?.error?.code === "bad_request",
     JSON.stringify(empty.doc?.error));
+
+  // ---- grouping: the page, bucketed, without losing or inventing a row ----
+  const grouped = cli(env, ["session", "list", "--include-self", "--by", "workspace", "--limit", "50"]).doc;
+  const flat = cli(env, ["session", "list", "--include-self", "--limit", "50"]).doc;
+  const flatIds = (flat?.data?.sessions ?? []).map((s) => s.id).sort().join(",");
+  const groupIds = (grouped?.data?.groups ?? []).flatMap((g) => g.sessions.map((s) => s.id)).sort().join(",");
+  check("--by workspace buckets the SAME page (no row lost, none duplicated)",
+    Boolean(grouped?.data?.groups?.length) && groupIds === flatIds, `${grouped?.data?.groups?.length} group(s)`);
+  check("…each bucket names its workspace, and every row sits in its own",
+    (grouped?.data?.groups ?? []).every((g) => typeof g.key === "string" && g.sessions.every((s) => (s.workspace || "(no workspace)") === g.key)),
+    JSON.stringify((grouped?.data?.groups ?? []).map((g) => [g.key, g.sessions.length])));
+  const badBy = cli(env, ["session", "list", "--by", "mood"]);
+  check("an unknown --by dimension is REFUSED (no invented taxonomies)",
+    badBy.code !== 0 && badBy.doc?.error?.code === "bad_request", JSON.stringify(badBy.doc?.error));
+
+  // ---- --table: for eyes, not for pipes ----
+  const table = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "list", "--limit", "3", "--table"]);
+  check("--table prints a HUMAN table on stdout, not the JSON envelope",
+    table.code === 0 && !table.out.trimStart().startsWith("{") && /live/.test(table.out),
+    table.out.split("\n").slice(0, 2).join(" | "));
+
+  // ---- operator mode: a human at a shell, using the machine token already on disk ----
+  const asOperator = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "list", "--limit", "2"]);
+  const opDoc = (() => { try { return JSON.parse(asOperator.out); } catch { return null; } })();
+  check("with no cockpit identity the CLI falls back to the operator (auth.token)", asOperator.code === 0 && opDoc?.success === true,
+    opDoc?.error ? JSON.stringify(opDoc.error) : `code ${asOperator.code}`);
+  check("…and the operator has NO self row (there is no agent to attribute to)", opDoc?.data?.self === null,
+    JSON.stringify(opDoc?.data?.self ?? null));
+  const opRename = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "rename", dst.id, "操作者改的"]);
+  const opRenamed = (() => { try { return JSON.parse(opRename.out); } catch { return null; } })();
+  check("…so a rename made by the operator records NO author (NULL title_by)",
+    opRenamed?.data?.titleBy == null && opRenamed?.data?.name === "操作者改的", JSON.stringify(opRenamed?.data ?? opRenamed?.error));
+  const noToken = rawCli({ AGENTUS_DATA: "/tmp/does-not-exist-agentus", AGENTUS_PORT: "8901" }, ["session", "list"]);
+  const noTokenDoc = (() => { try { return JSON.parse(noToken.out); } catch { return null; } })();
+  check("with neither identity nor token it refuses with no_identity (never a silent empty list)",
+    noToken.code !== 0 && noTokenDoc?.error?.code === "no_identity", JSON.stringify(noTokenDoc?.error));
 
   // ---- messages: the tail, bounded, with a per-message cap ----
   await api(`/api/sessions/${SID}/prompt`, { method: "POST", body: JSON.stringify({ text: "你好，CLI 转录测试" }) });

@@ -286,6 +286,7 @@ channel that lets an agent read that — and, if you allow it, hand a message to
 ```bash
 "$AGENTUS_COCKPIT_BIN" capabilities                    # the contract, self-describing (start here)
 "$AGENTUS_COCKPIT_BIN" session list --here             # …narrowed: my workspace, newest activity first
+"$AGENTUS_COCKPIT_BIN" session list --waiting --table  # …the operator's approval queue, as a table
 "$AGENTUS_COCKPIT_BIN" session rename <id> "…name…"    # name a session (the row records who did it)
 "$AGENTUS_COCKPIT_BIN" session show <id>               # one session, + what it is waiting on
 "$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20

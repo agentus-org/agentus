@@ -90,8 +90,8 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/agentus-cockpit/SKILL.md), served from the package with no auth" },
       {
         name: "session list",
-        args: ["--here", "--workspace <path>", "--status <s>", "--waiting", "--since <when>", "--created-since <when>", "--grep <text>", "--sort last|created|name", "--limit N", "--all", "--include-self"],
-        returns: "who you are + the sessions in scope that match (id/name/workspace/status/cold/createdAt/lastAt/plan/permissions/self)",
+        args: ["--here", "--workspace <path>", "--status <s>", "--waiting", "--since <when>", "--created-since <when>", "--grep <text>", "--sort last|created|name", "--limit N", "--all", "--include-self", "--by workspace", "--table"],
+        returns: "who you are + the sessions in scope that match (id/name/workspace/status/cold/createdAt/lastAt/plan/permissions/self/titleBy); --by workspace adds `groups` to data, --table prints a human table INSTEAD of JSON",
       },
       { name: "session rename", args: ["<id>", "<title…>", "--auto"], returns: "name a session (--auto clears back to the generated name)" },
       { name: "session show", args: ["<id>"], returns: "one session in detail, including any approval it is waiting on" },
@@ -106,6 +106,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
     },
     auth: {
       how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the agentus launcher itself, so every call is \"$AGENTUS_COCKPIT_BIN\" session <verb>",
+      operator: "outside a session the CLI also works for the operator: it reads <DATA_DIR>/auth.token (the machine token scripts already use) and talks to AGENTUS_ENDPOINT or 127.0.0.1:AGENTUS_PORT. In that mode there is no `self`, and a rename records no author (NULL title_by = the operator).",
       rule: "never print, echo, export or pass those variables anywhere — they identify your session",
     },
     session_list: {
@@ -191,12 +192,18 @@ export interface ListQuery {
   all?: boolean;
   /** include the caller's own row (marked `self`) — off shows only sessions it could talk to */
   includeSelf?: boolean;
+  /** bucket the page instead of returning it flat. `workspace` is the only dimension today because it
+   *  is the one the operator's rail groups by — anything else would be an invented taxonomy. */
+  by?: "workspace";
   /** fixed clock for tests; never set by a caller over the wire */
   now?: number;
 }
 
 export interface ListResult {
   rows: CockpitSessionRow[];
+  /** present only when `by` was asked for: the SAME rows, bucketed, in the same order. A caller that
+   *  does not want buckets keeps reading `rows`; nothing is duplicated in the JSON. */
+  groups?: { key: string; label: string; sessions: CockpitSessionRow[] }[];
   meta: {
     total: number;
     returned: number;
@@ -302,7 +309,29 @@ export function listSessions(rows: CockpitSessionRow[], q: ListQuery = {}): List
   applied.limit = limit;
   const total = out.length;
   const capped = total > limit;
-  return { rows: out.slice(0, limit), meta: { total, returned: Math.min(total, limit), capped, applied } };
+  const page = out.slice(0, limit);
+
+  let groups: ListResult["groups"];
+  if (q.by === "workspace") {
+    applied.by = "workspace";
+    // Buckets keep the order the rows already have, so the first group is the one that was active
+    // most recently — the rail's own reading. Empty/unset workspace is its own bucket rather than
+    // being folded into a neighbour: "somewhere I cannot name" is information.
+    const byKey = new Map<string, CockpitSessionRow[]>();
+    for (const row of page) {
+      const key = normPath(row.workspace || "");
+      const bucket = byKey.get(key);
+      if (bucket) bucket.push(row);
+      else byKey.set(key, [row]);
+    }
+    groups = [...byKey.entries()].map(([key, sessions]) => ({
+      key: key || "(no workspace)",
+      label: key ? (key.split("/").pop() || key) : "(no workspace)",
+      sessions,
+    }));
+  }
+
+  return { rows: page, ...(groups ? { groups } : {}), meta: { total, returned: Math.min(total, limit), capped, applied } };
 }
 
 function normPath(p: string): string {

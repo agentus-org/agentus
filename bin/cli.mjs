@@ -47,17 +47,21 @@ another one
         --created-since <when>   same grammar, measured against CREATION
         --grep <text>     title substring        --sort last|created|name
         --limit N         default 20, max 200    --all include 已归档   --include-self
+        --by workspace    bucket the page by workspace (groups + sessions)
+        --table           print a HUMAN table instead of JSON (for people, not for pipes)
   agentus session rename <id> <title…> | --auto    name it (attributed to you)
   agentus session show <id>           one session in detail, with any approval it is waiting on
   agentus session messages <id> [--tail N]
                                       the last N messages, each cut to the documented size
   agentus session plan <id>           the plan object the operator's card renders
-  agentus session rename <id> <title…> | --auto
-                                      name a session (the row records that YOU named it)
   agentus session send <id> <text…>   deliver a message into another session (stdin if no text)
 
   agentus capabilities                the contract: commands, fields, truncation, scope, send state
   agentus skill [--path]              this CLI's manual, as shipped in the package
+
+Operator mode: run outside a session with AGENTUS_DATA (data dir) and AGENTUS_PORT (or
+AGENTUS_ENDPOINT) pointing at your cockpit — the CLI then authenticates with <data>/auth.token, the
+same credential scripts already use. Inside a session it always prefers the cockpit's own variables.
 
 Read "capabilities" first: it is self-describing, so no doc can drift from the code.
 "send" is OFF unless the operator turned 驾驶舱互发消息 on. A busy target answers target_busy and saw
@@ -74,11 +78,39 @@ function fail(code, message, extra = {}) {
   process.exit(1);
 }
 
+/** Operator mode — a human at a shell, not an agent inside a session.
+ *
+ *  The cockpit already trusts `<DATA_DIR>/auth.token` as the operator credential (it is what scripts
+ *  and CI use), so the same CLI works from a terminal without inventing a second door. Read from the
+ *  FILE, never from argv: the token identifies the operator. Returns null when this is an agent (its
+ *  own variables win) or when there is nothing to authenticate with. */
+function resolveOperator() {
+  if (ENDPOINT && TOKEN && SELF) return null; // an agent: its identity is the cockpit's to give
+  const dataDir = process.env.AGENTUS_DATA || path.join(process.env.HOME ?? "", ".agentus");
+  const file = path.join(dataDir, "auth.token");
+  if (!existsSync(file)) return null;
+  const port = process.env.AGENTUS_PORT || "8788";
+  const endpoint = (process.env.AGENTUS_ENDPOINT || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+  const token = readFileSync(file, "utf8").trim();
+  return token ? { endpoint, token } : null;
+}
+
+const OPERATOR = resolveOperator();
+const EP = ENDPOINT || OPERATOR?.endpoint || "";
+
+function headers(json = false) {
+  const h = {};
+  if (json) h["content-type"] = "application/json";
+  if (TOKEN) h["x-agentus-cockpit-token"] = TOKEN;
+  else if (OPERATOR) h.authorization = `Bearer ${OPERATOR.token}`;
+  return h;
+}
+
 function needAuth() {
-  if (!ENDPOINT || !TOKEN || !SELF) {
+  if (!EP || (!TOKEN && !OPERATOR)) {
     fail(
       "no_identity",
-      "this command only works inside an Agentus session: the cockpit hands AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION to the agent it spawns. Keep your own notes instead.",
+      "no cockpit to talk to: either run this inside an Agentus session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
     );
   }
 }
@@ -86,7 +118,7 @@ function needAuth() {
 async function call(pathname) {
   let res;
   try {
-    res = await fetch(`${ENDPOINT}${pathname}`, { headers: { "x-agentus-cockpit-token": TOKEN } });
+    res = await fetch(`${EP}${pathname}`, { headers: headers() });
   } catch (e) {
     fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
   }
@@ -99,6 +131,51 @@ async function readStdin() {
   const chunks = [];
   for await (const c of process.stdin) chunks.push(c);
   return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+/** Age in the smallest unit that still reads: 12s / 7m / 3h / 5d. Stale-but-live is the case this is
+ *  for — a session waiting on an approval shows an old age and that is the signal, not a bug. */
+function age(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) return `${Math.round(s / 3600)}h`;
+  return `${Math.round(s / 86400)}d`;
+}
+
+function tableRow(s, now) {
+  const dot = s.cold ? "○" : "●";
+  const flags = [s.permissions ? `⏸${s.permissions}` : "", s.plan ? `▶${s.plan.done ?? ""}` : "", s.self ? "self" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const name = String(s.name ?? "").slice(0, 44);
+  return `${dot} ${age(now - (s.lastAt ?? now)).padStart(4)}  ${flags.padEnd(8)} ${s.id}  ${name}`;
+}
+
+/** Grouped when the answer has groups, flat otherwise — one renderer, so `--table` never disagrees with
+ *  `--by workspace` about what the shape of the answer is. */
+function renderTable(data) {
+  const now = Date.now();
+  const self = data?.self;
+  const head = [
+    self ? `you: ${self.id}  ${self.name ?? ""}` : "you: (operator — no session identity)",
+    `${data?.meta?.returned ?? 0}/${data?.meta?.total ?? 0} session(s)${data?.meta?.capped ? ", capped" : ""}`,
+    data?.meta?.applied ? `filters: ${JSON.stringify(data.meta.applied)}` : "",
+  ].filter(Boolean).join("   ·   ");
+  const lines = [head, ""];
+  const groups = data?.groups;
+  if (groups) {
+    for (const g of groups) {
+      lines.push(`${g.key}   (${g.sessions.length})`);
+      for (const s of g.sessions) lines.push(`  ${tableRow(s, now)}`);
+      lines.push("");
+    }
+  } else {
+    for (const s of data?.sessions ?? []) lines.push(tableRow(s, now));
+    lines.push("");
+  }
+  lines.push("● live  ○ cold  ⏸ waiting on approval  ▶ plan");
+  return `${lines.join("\n")}\n`;
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -137,8 +214,10 @@ if (cmd === "capabilities") {
     // Flags only after the verb, and the id-less list is the one command where that is the whole
     // surface: everything here narrows WHICH sessions answer, nothing changes them.
     const params = new URLSearchParams();
-    const VALUE_FLAGS = ["workspace", "status", "since", "created-since", "grep", "sort", "limit"];
-    const BOOL_FLAGS = ["here", "waiting", "all", "include-self"];
+    // `by` and `table` are display choices: `by` changes the JSON shape (the server buckets), `table`
+    // only changes what this process prints — it never travels as a query the server could act on.
+    const VALUE_FLAGS = ["workspace", "status", "since", "created-since", "grep", "sort", "limit", "by"];
+    const BOOL_FLAGS = ["here", "waiting", "all", "include-self", "table"];
     // flags start at 0 here: `session list` takes no positional id (unlike show/messages/plan)
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -150,14 +229,23 @@ if (cmd === "capabilities") {
         const v = args[++i];
         if (v === undefined) fail("bad_request", `--${name} needs a value`);
         if (name === "limit" && !/^\d+$/.test(v)) fail("bad_request", `--limit wants a number, got "${v}"`);
+        if (name === "by" && v !== "workspace") fail("bad_request", `--by wants workspace, got "${v}"`);
         params.set(name.replaceAll("-", "_"), v);
       } else {
         fail("bad_request", `unknown flag --${name} (see agentus capabilities)`);
       }
     }
+    const wantTable = params.get("table") === "1";
+    params.delete("table");
     const qs = params.toString();
     const data = await call(`/api/cockpit/context${qs ? `?${qs}` : ""}`);
-    out({ success: true, data, meta: meta(data) });
+    if (wantTable) {
+      // Human output REPLACES the JSON document on stdout (documented in `capabilities`). Mixing the
+      // two would break both readers: a pipe wants one JSON document, an eye wants columns.
+      process.stdout.write(renderTable(data));
+    } else {
+      out({ success: true, data, meta: meta(data) });
+    }
   } else if (verb === "rename") {
     if (!id) fail("bad_request", "usage: agentus session rename <id> <new title…> | --auto");
     const auto = args.includes("--auto");
@@ -166,9 +254,9 @@ if (cmd === "capabilities") {
     if (auto && title) fail("bad_request", "--auto clears the name; do not also pass a title");
     let res;
     try {
-      res = await fetch(`${ENDPOINT}/api/cockpit/rename`, {
+      res = await fetch(`${EP}/api/cockpit/rename`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-agentus-cockpit-token": TOKEN },
+        headers: headers(true),
         body: JSON.stringify(auto ? { id, auto: true } : { id, title }),
       });
     } catch (e) {
@@ -219,9 +307,9 @@ if (cmd === "capabilities") {
     if (!message) fail("bad_request", "nothing to send: pass the text after the id, or pipe it on stdin");
     let res;
     try {
-      res = await fetch(`${ENDPOINT}/api/cockpit/send`, {
+      res = await fetch(`${EP}/api/cockpit/send`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-agentus-cockpit-token": TOKEN },
+        headers: headers(true),
         body: JSON.stringify({ to: id, message }),
       });
     } catch (e) {
