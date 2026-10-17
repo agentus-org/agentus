@@ -1,6 +1,6 @@
 {
  "name": "agentus",
- "version": "0.3.9",
+ "version": "0.4.0",
  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
  "license": "Apache-2.0",
  "repository": {
@@ -12,10 +12,10 @@
   "url": "https://github.com/agentus-org/agentus/issues"
  },
  "bin": {
-   "agentus": "bin/agentus.mjs"
+  "agentus": "bin/agentus.mjs"
  },
  "files": [
-   "skills/",
+  "skills/",
   "bin/",
   "packages/server/src/",
   "packages/server/mock/",
@@ -53,7 +53,7 @@
   "workspace-smoke": "node scripts/workspace-smoke.mjs",
   "voice-smoke": "node scripts/voice-smoke.mjs",
   "sentence-units": "tsx scripts/qa/sentence-units.mts",
-    "barge-gate": "tsx scripts/qa/barge-gate.mts",
+  "barge-gate": "tsx scripts/qa/barge-gate.mts",
   "token-format": "tsx scripts/qa/token-format.mts",
   "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
   "android-trust-merge": "node scripts/qa/android-trust-merge.mjs",
