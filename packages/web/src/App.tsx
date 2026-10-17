@@ -24,7 +24,8 @@ import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
-  browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead, useDictation,
+  browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
+  useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
@@ -1198,6 +1199,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // the answer arrives.
   useEffect(() => { void loadVoiceCaps(); }, []);
   useAutoRead(lastFinishedReply(active), Boolean(active && !active.busy && active.loaded));
+  // 工作播报: the cockpit's own one-line briefs about this session (issue #16). Same speaker, a
+  // different source — and the SERVER owns the policy (throttle, what is worth saying, the fallback
+  // when no observer can speak), so this side never has to decide.
+  useBriefSpeak(lastBrief(active), Boolean(active));
 
   if (settingsOpen) {
     return <SettingsPage onClose={onCloseSettings} sessionId={active?.info.id} />;
@@ -1266,6 +1271,13 @@ function lastFinishedReply(v: SessionView | undefined): { key: string; text: str
   return null;
 }
 
+/** The newest 工作播报 line for this session, as a speaker target. Keyed by the line's own id so
+ *  the same brief is never spoken twice (the ring buffer survives re-renders). */
+function lastBrief(v: SessionView | undefined): { key: string; text: string } | null {
+  const line = v?.speaks?.[v.speaks.length - 1];
+  return line ? { key: `brief:${line.id}`, text: line.text } : null;
+}
+
 /** Point the current slot at another directory. Same picker as "new slot" — the
  *  difference is the consequence, and that is spelled out in the modal. */
 function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void }): JSX.Element {
@@ -1329,11 +1341,26 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   // as the settings switch — one store, so the two can never disagree.
   const canSpeak = caps.tts.server
     || (typeof window !== "undefined" && "speechSynthesis" in window);
+  // 三档 (issue #16): 关 / 自动朗读（念整条回复）/ 工作播报（念驾驶舱的一句话播报）。 One position on
+  // the header, three states — a fourth switch in 设置 would be a second place to look for the same
+  // decision. `speakMode` is the server's word; `autoRead` is only the pre-#16 alias for "reply".
+  const mode: "off" | "reply" | "brief" =
+    prefs.speakMode ?? (prefs.autoRead ? "reply" : "off");
+  const [speakMenu, setSpeakMenu] = useState(false);
+  const speakRef = useRef<HTMLSpanElement | null>(null);
+  useDismiss(speakMenu, [speakRef], () => setSpeakMenu(false));
+  const setMode = (next: "off" | "reply" | "brief"): void => {
+    setSpeakMenu(false);
+    setPrefs({ speakMode: next, autoRead: next === "reply" });
+  };
+  const SPEAK_LABEL: Record<"off" | "reply" | "brief", string> = {
+    off: "关",
+    reply: "自动朗读（念整条回复）",
+    brief: "工作播报（念驾驶舱的一句话）",
+  };
   const autoReadTitle = !canSpeak
-    ? "自动朗读：这台设备没有可用语音（浏览器无 speechSynthesis，服务端也没配）"
-    : prefs.autoRead
-      ? "自动朗读：开 —— 每条回复结束后自动念出来（点一下关闭）"
-      : "自动朗读：关 —— 点一下开启，之后每条回复结束都会自动念出来";
+    ? "朗读：这台设备没有可用语音（浏览器无 speechSynthesis，服务端也没配）"
+    : `朗读：${SPEAK_LABEL[mode]} —— 点一下换档`;
   // The head keeps identity and session controls: where this slot works, the panel that
   // shows it, and the two ways of TALKING to it (call, auto-read) — the operator's call
   // list. Mode, thinking depth and context stay in the composer, where the prompt is
@@ -1368,16 +1395,45 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
         >
           <IconPhone />
         </button>
-        <button
-          className={`icon-btn auto-read ${prefs.autoRead ? "on" : ""}`}
-          title={autoReadTitle}
-          aria-label="自动朗读新回复"
-          aria-pressed={prefs.autoRead}
-          disabled={!canSpeak}
-          onClick={() => setPrefs({ autoRead: !prefs.autoRead })}
-        >
-          {prefs.autoRead ? <IconVolume /> : <IconVolumeOff />}
-        </button>
+        <span className="speak-wrap" ref={speakRef}>
+          <button
+            className={`icon-btn auto-read ${mode !== "off" ? "on" : ""}`}
+            title={autoReadTitle}
+            aria-label="朗读方式"
+            aria-pressed={mode !== "off"}
+            data-speak-mode={mode}
+            disabled={!canSpeak}
+            onClick={() => setSpeakMenu((o) => !o)}
+          >
+            {mode === "off" ? <IconVolumeOff /> : <IconVolume />}
+            {mode === "brief" ? <span className="speak-dot" aria-hidden /> : null}
+          </button>
+          {speakMenu ? (
+            <div className="speak-menu" role="menu">
+              {(["off", "reply", "brief"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={mode === m}
+                  className={`speak-menu-item ${mode === m ? "on" : ""}`}
+                  data-speak-option={m}
+                  onClick={() => setMode(m)}
+                >
+                  <span className="speak-check">{mode === m ? "✓" : ""}</span>
+                  <span className="speak-name">{SPEAK_LABEL[m]}</span>
+                </button>
+              ))}
+              <p className="speak-hint">
+                {mode === "brief"
+                  ? "回合结束时由一个观察智能体念一句进展（设置 → 观察智能体）"
+                  : mode === "reply"
+                    ? "每条回复结束后念全文 —— 长回复会被截断"
+                    : "不自动出声；点消息旁的喇叭可以按需念"}
+              </p>
+            </div>
+          ) : null}
+        </span>
         <button
           className="icon-btn"
           title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}

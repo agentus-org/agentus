@@ -18,6 +18,7 @@
 // masked value round-trips as null and keeps the stored secret.
 import fs from "node:fs";
 import path from "node:path";
+import type { BackendId } from "../../shared/src/index.js";
 import type { Store } from "./store/store.js";
 
 export interface VoiceSettings {
@@ -91,8 +92,13 @@ export interface CallSettings {
  *  the speed have to be the same on the phone as on the laptop, and a second tab disagreeing
  *  with the first is a bug, not a feature. */
 export interface PrefsSettings {
-  /** read a finished reply aloud without being asked */
+  /** read a finished reply aloud without being asked. Kept as a DERIVED mirror of `speakMode`:
+   *  the two used to be one switch, and a client that only knows this name must keep working. */
   autoRead: boolean;
+  /** WHAT gets read aloud (issue #16). "off" = nothing; "reply" = the finished reply, full text
+   *  (the old autoRead); "brief" = the cockpit's own one-line briefs (`t:"speak"`), which is what
+   *  a long answer needs — reading a whole reply aloud was the thing operators turned off. */
+  speakMode: SpeakMode;
   /** browser voiceURI ("" = pick the best for the language) */
   voiceURI: string;
   rate: number;
@@ -133,8 +139,11 @@ export interface PlanHintSettings {
   instruction: string;
 }
 
+export const SPEAK_MODES = ["off", "reply", "brief"] as const;
+export type SpeakMode = (typeof SPEAK_MODES)[number];
+
 export const PREFS_DEFAULT: PrefsSettings = {
-  autoRead: false, voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
+  autoRead: false, speakMode: "off", voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
   // On + every turn by default: the feature exists because the tool was there and nobody used it,
   // and 对齐 Studio means the block rides on every turn (see everyTurn's note). Both are visible
   // and switchable in 设置 — this is a default, not a lock.
@@ -192,6 +201,48 @@ export const AGENT_WARM_RANGE: [number, number] = [0, 20];
 /** 0 = 不过期; a week is the longest span worth offering on the page. */
 export const AGENT_WARM_TTL_RANGE: [number, number] = [0, 168];
 
+/** 观察智能体 (`工作播报`, issue #16): ONE long-lived ACP session per observed session, spawned by the
+ *  cockpit, in its own scratch directory, read-only, out of the rail. It is the thing that turns
+ *  「回合结束了」 into one sentence a person can listen to — it reads the cockpit through the CLI
+ *  (issue #15) instead of being handed a summary, because a summariser that is told what happened
+ *  cannot notice what the operator actually cares about.
+ *
+ *  Everything here is the operator's: the switch, which backend/model runs it (a cheap fast model is
+ *  the right answer), the wording it answers in, and the throttle. */
+export interface ObserverSettings {
+  /** 工作播报 on/off. Off = no observer is spawned at all and the speaker falls back to #11's
+   *  plan title (zero cost), then to nothing. */
+  enabled: boolean;
+  /** Which backend the observer runs on. null = same backend as the observed session (the default:
+   *  an install that only configured one agent should not have to configure a second one). */
+  backend: BackendId | null;
+  /** The observer's own wording. "" = the built-in template (which is also what the settings page
+   *  shows as the thing it will actually send). Sized like the plan hint's instruction: a few
+   *  sentences of house style, not a document — it rides on ONE turn per brief. */
+  systemPrompt: string;
+  /** Shortest gap between two MODEL-backed briefs for the same session, in seconds. Zero-cost
+   *  events (an approval is waiting, a step completed) never wait on it. Default 120: a brief per
+   *  turn is fine, a brief per token is a phone that never stops talking. */
+  throttleSec: number;
+}
+
+export const OBSERVER_PROMPT_MAX = 2000;
+export const OBSERVER_THROTTLE_RANGE: [number, number] = [0, 3600];
+
+/** What the observer is told, when the operator writes nothing. Two jobs in one paragraph: say who
+ *  it is watching and how to find out (the cockpit CLI — never trust the trigger line for facts), and
+ *  fix the output shape (one sentence, ≤60 characters, spoken aloud by a TTS voice). */
+export const OBSERVER_PROMPT_DEFAULT = [
+  "你是这个驾驶舱里某个会话的观察员。用 `$AGENTUS_COCKPIT_BIN context` 看全景，",
+  "用 `session <id>` / `messages <id> --tail 20` / `plan <id>` 核实它正在做什么、卡在哪。",
+  "只陈述这些工具读到的事实，不猜、不补、不评价；工具没说的就当不知道。",
+  "输出一句中文播报，不超过 60 字，会被语音念出来：不要 Markdown、不要列表、不要引号、不要解释你在做什么。",
+].join("\n");
+
+export const OBSERVER_DEFAULT: ObserverSettings = {
+  enabled: false, backend: null, systemPrompt: "", throttleSec: 120,
+};
+
 /** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
  *  outside both the range table and the loops that validate numbers. */
 export const CALL_NUMERIC = ["bargeSensitivity", "bargeMs", "silenceMs", "minChars"] as const;
@@ -226,6 +277,7 @@ export interface Settings {
   call: CallSettings;
   prefs: PrefsSettings;
   agent: AgentSettings;
+  observer: ObserverSettings;
   updatedAt: number;
 }
 
@@ -252,7 +304,8 @@ let db: Store | null = null;
 let legacyFile = "";
 let cache: Settings = {
   voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT },
-  prefs: { ...PREFS_DEFAULT }, agent: { ...AGENT_DEFAULT }, updatedAt: 0,
+  prefs: { ...PREFS_DEFAULT }, agent: { ...AGENT_DEFAULT },
+  observer: { ...OBSERVER_DEFAULT }, updatedAt: 0,
 };
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
@@ -317,6 +370,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
     call: pickCall(stored.call),
     prefs: pickPrefs(stored.prefs),
     agent: pickAgent(stored.agent),
+    observer: pickObserver(stored.observer),
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -369,11 +423,36 @@ function pickAgent(raw: unknown): AgentSettings {
   return out;
 }
 
+/** The observer's own section. Untrusted like the rest: an unknown backend id, a prompt over the
+ *  cap or a throttle outside the range falls back to the shipped default rather than throwing —
+ *  this section decides whether the cockpit spawns an agent to talk about another agent, and a
+ *  corrupt row must leave it in the SHIPPED state (off), not in a half-configured one. */
+function pickObserver(raw: unknown): ObserverSettings {
+  const out = { ...OBSERVER_DEFAULT };
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    if (typeof r.enabled === "boolean") out.enabled = r.enabled;
+    if (typeof r.backend === "string" && r.backend) out.backend = r.backend as BackendId;
+    if (typeof r.systemPrompt === "string" && r.systemPrompt.length <= OBSERVER_PROMPT_MAX) {
+      out.systemPrompt = r.systemPrompt;
+    }
+    const n = Number(r.throttleSec);
+    const [lo, hi] = OBSERVER_THROTTLE_RANGE;
+    if (Number.isFinite(n) && n >= lo && n <= hi) out.throttleSec = n;
+  }
+  return out;
+}
+
 function pickPrefs(raw: unknown): PrefsSettings {
   const out = { ...PREFS_DEFAULT };
   if (raw && typeof raw === "object") {
     const r = raw as Record<string, unknown>;
-    if (typeof r.autoRead === "boolean") out.autoRead = r.autoRead;
+    // `speakMode` is the source of truth; `autoRead` is the pre-#16 name for its "reply" value. A
+    // stored section carries one or the other depending on which build wrote it last, so accept
+    // both and let the newer name win when both are present.
+    if (r.speakMode === "off" || r.speakMode === "reply" || r.speakMode === "brief") out.speakMode = r.speakMode;
+    else if (typeof r.autoRead === "boolean") out.speakMode = r.autoRead ? "reply" : "off";
+    out.autoRead = out.speakMode === "reply";
     if (typeof r.serverTts === "boolean") out.serverTts = r.serverTts;
     if (typeof r.voiceURI === "string" && r.voiceURI.length <= 200) out.voiceURI = r.voiceURI;
     if (typeof r.lang === "string" && (!r.lang || /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(r.lang))) out.lang = r.lang;
@@ -402,6 +481,7 @@ function persist(): void {
     db.setSetting("call", cache.call);
     db.setSetting("prefs", cache.prefs);
     db.setSetting("agent", cache.agent);
+    db.setSetting("observer", cache.observer);
   } catch (e) {
     console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
   }
@@ -449,6 +529,11 @@ export function publicSettings(): Record<string, unknown> {
     agentIdleRange: AGENT_IDLE_RANGE,
     agentWarmRange: AGENT_WARM_RANGE,
     agentWarmTtlRange: AGENT_WARM_TTL_RANGE,
+    observer: cache.observer,
+    observerDefaults: OBSERVER_DEFAULT,
+    observerPromptDefault: OBSERVER_PROMPT_DEFAULT,
+    observerPromptMax: OBSERVER_PROMPT_MAX,
+    observerThrottleRange: OBSERVER_THROTTLE_RANGE,
     // the defaults, so the UI can offer "reset to Bailian defaults"
     defaults: { ...DEFAULTS, apiKey: undefined, baseUrl: undefined },
     updatedAt: cache.updatedAt,
@@ -569,6 +654,18 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
     if (!["auto", "browser", "stream", "server"].includes(v)) throw new Error(`invalid stt: ${JSON.stringify(patch.stt)}`);
     next.stt = v as PrefsSettings["stt"];
   }
+  // 三档（关 / 自动朗读 / 工作播报）. The old boolean still writes, so a cached page from before this
+  // change does something sensible instead of failing: autoRead:true = "reply", false = "off".
+  if ("speakMode" in patch) {
+    const v = String(patch.speakMode ?? "");
+    if (!SPEAK_MODES.includes(v as SpeakMode)) throw new Error(`invalid speakMode: ${JSON.stringify(patch.speakMode)}`);
+    next.speakMode = v as SpeakMode;
+    next.autoRead = v === "reply";
+  } else if ("autoRead" in patch) {
+    if (typeof patch.autoRead !== "boolean") throw new Error("invalid autoRead: expected true/false");
+    next.speakMode = patch.autoRead ? "reply" : "off";
+    next.autoRead = patch.autoRead;
+  }
   if ("planHint" in patch) {
     const h = patch.planHint;
     if (!h || typeof h !== "object") throw new Error("invalid planHint: expected an object");
@@ -631,6 +728,47 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
  *  no business holding this one. */
 export function agentSettings(): AgentSettings {
   return cache.agent;
+}
+
+/** 观察智能体 knobs (issue #16). Read per event, like the plan hint: 工作播报 must be switchable
+ *  without restarting anything. */
+export function observerSettings(): ObserverSettings {
+  return cache.observer;
+}
+
+/** Save 观察智能体. Its own update, like the agent knobs, so a bad value in this section cannot
+ *  lock the operator out of the page that fixes it. */
+export function saveObserver(patch: Record<string, unknown>): Settings {
+  const o = { ...cache.observer };
+  if ("enabled" in patch) {
+    if (typeof patch.enabled !== "boolean") throw new Error("invalid enabled: expected true/false");
+    o.enabled = patch.enabled;
+  }
+  if ("backend" in patch) {
+    const v = patch.backend;
+    if (v === null || v === "") o.backend = null;
+    else if (typeof v === "string" && v.length <= 40) o.backend = v as BackendId;
+    else throw new Error(`invalid backend: ${JSON.stringify(v).slice(0, 40)}`);
+  }
+  if ("systemPrompt" in patch) {
+    const v = String(patch.systemPrompt ?? "");
+    if (v.length > OBSERVER_PROMPT_MAX) {
+      throw new Error(`invalid systemPrompt: longer than ${OBSERVER_PROMPT_MAX} characters`);
+    }
+    // Whitespace-only means "use the built-in template", the same rule the plan hint uses.
+    o.systemPrompt = v.trim() ? v : "";
+  }
+  if ("throttleSec" in patch) {
+    const n = Number(patch.throttleSec);
+    const [lo, hi] = OBSERVER_THROTTLE_RANGE;
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      throw new Error(`invalid throttleSec: ${JSON.stringify(patch.throttleSec)} (expected ${lo}…${hi} seconds)`);
+    }
+    o.throttleSec = Math.round(n);
+  }
+  cache = { ...cache, observer: o, updatedAt: Date.now() };
+  persist();
+  return cache;
 }
 
 /** The plan-hint knobs. Read on EVERY prompt (not cached here), so the switch in 设置 takes effect

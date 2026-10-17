@@ -19,7 +19,11 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream } from "./dashscope.js";
-import { agentSettings, initSettings, planHintSettings, publicSettings, saveAgent, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
+import {
+  agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
+  saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveTheme,
+} from "./settings.js";
+import { ObserverHub } from "./observer/hub.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
@@ -141,6 +145,9 @@ function sessionRoot(sessionId: string): { path: string; workspace: string | nul
 }
 
 function emit(evt: ServerEvent): void {
+  // Older builds below get the plain fan-out. The hub reads the SAME frames the page reads, and may
+  // emit a `speak` of its own — which lands back here one level deep and is then broadcast normally.
+  if (evt.t !== "speak") hub?.onEvent(evt);
   const wire = JSON.stringify(evt);
   for (const { ws } of clients.values()) {
     if (ws.readyState === WebSocket.OPEN) ws.send(wire);
@@ -152,6 +159,11 @@ function emit(evt: ServerEvent): void {
 }
 
 const mgr = new SessionManager(store, emit);
+
+/** 工作播报 (issue #16). Constructed AFTER the manager so it can spawn observers through it, and
+ *  wired into `emit` above through this mutable handle — the hub itself is not in the broadcast
+ *  path, it only OBSERVES the same event stream the browser sees (one source of truth). */
+let hub: ObserverHub | null = null;
 
 /** The session list every client stays current with: the rows PLUS what is already waiting for
  *  an answer. Pending approvals are STATE, not just an event — a page that connects or refreshes
@@ -168,6 +180,43 @@ const sessionsEvent = (): ServerEvent => ({
   cold: mgr.cold(),
   archived: mgr.archived(),
   pending: mgr.pendingPermissions(),
+});
+
+// 工作播报 (issue #16): one long-lived observer per watched session, in its own scratch home under
+// `~/.hermes/agentus/observers/<sid>` — never the observed session's cwd (an observer that can write
+// into the project is an observer that changes what it is watching, and the rail groups by cwd: the
+// ghost row next to the real one is issue #13 all over again).
+hub = new ObserverHub({
+  home: path.join(homedir(), ".hermes", "agentus"),
+  settings: observerSettings,
+  // 工作播报 is the operator's third speaker position; in the other two the cockpit says nothing, so
+  // no observer is spawned and no tokens are spent.
+  speakEnabled: () => getSettings().prefs.speakMode === "brief",
+  createSession: async (backend, cwd, title) => (await mgr.create(backend, cwd, title, { system: true })).id,
+  prompt: (id, text) => mgr.prompt(id, text, []),
+  waitReady: (id, ms) => mgr.awaitReady(id, ms).then(() => undefined),
+  titleOf: (id) => store.getSession(id)?.title ?? null,
+  backendOf: (id) => store.getSession(id)?.backend ?? null,
+  planTitleOf: (id) => store.getPlan(id)?.title?.trim() || null,
+  // Read-only is a SECOND line of defence behind the scratch directory: a runtime that offers a
+  // read-only (or plan) mode should not be able to accept a write from an observer at all. Modes
+  // arrive with the handshake, so this is a bounded poll; if the backend offers nothing matching,
+  // the observer simply runs in its default mode — inside a directory that holds nothing.
+  preferReadonly: (id) => {
+    const started = Date.now();
+    const pick = (): void => {
+      const modes = mgr.modesOf(id);
+      const options = modes?.availableModes ?? [];
+      if (!options.length && Date.now() - started < 20_000) {
+        setTimeout(pick, 500).unref?.();
+        return;
+      }
+      const wanted = options.find((m) => /read[-_ ]?only|readonly|plan/i.test(m.id) || /只读|规划/.test(m.name));
+      if (wanted) void mgr.setMode(id, wanted.id).catch(() => {});
+    };
+    pick();
+  },
+  emit,
 });
 
 // ---- notify channel (docs/android-notify-contract.md) ----------------------------
@@ -978,7 +1027,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (body.call && typeof body.call === "object") saveCall(body.call as Record<string, unknown>);
         if (body.prefs && typeof body.prefs === "object") savePrefs(body.prefs as Record<string, unknown>);
         if (body.agent && typeof body.agent === "object") saveAgent(body.agent as Record<string, unknown>);
-        if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent) saveSettings(body);
+        if (body.observer && typeof body.observer === "object") saveObserver(body.observer as Record<string, unknown>);
+        if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
         return send(res, 400, { error: String((e as Error)?.message ?? e) });

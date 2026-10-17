@@ -21,8 +21,13 @@ import { useEffect, useSyncExternalStore } from "react";
 // ---------------------------------------------------------------- preferences
 
 export interface VoicePrefs {
-  /** read a finished reply aloud without being asked */
+  /** read a finished reply aloud without being asked. DERIVED from `speakMode` on the server and
+   *  kept here so a pre-#16 page still works; new code reads `speakMode`. */
   autoRead: boolean;
+  /** WHAT gets read aloud (issue #16): "off", "reply" (the old auto-read) or "brief" (the cockpit's
+   *  own one-line 工作播报 from the observer agent). The server decides what a brief SAYS; this side
+   *  only decides whether to speak. */
+  speakMode?: "off" | "reply" | "brief";
   /** browser voiceURI, "" = pick the best one for the language */
   voiceURI: string;
   rate: number;
@@ -39,6 +44,7 @@ const PREFS_KEY = "agentus.voice";
 
 const DEFAULT_PREFS: VoicePrefs = {
   autoRead: false,
+  speakMode: "off",
   voiceURI: "",
   rate: 1,
   // Default to the browser's own language: an operator dictating Chinese should not
@@ -1595,6 +1601,11 @@ export function normalizePrefs(raw: unknown): VoicePrefs {
   const r = raw as Partial<VoicePrefs>;
   return {
     autoRead: typeof r.autoRead === "boolean" ? r.autoRead : base.autoRead,
+    // `speakMode` is the new name for what `autoRead` used to mean. Accept either, prefer the new
+    // one, and keep `autoRead` consistent so an old component reading it is not lied to.
+    speakMode: r.speakMode === "off" || r.speakMode === "reply" || r.speakMode === "brief"
+      ? r.speakMode
+      : (typeof r.autoRead === "boolean" && r.autoRead ? "reply" : "off"),
     voiceURI: typeof r.voiceURI === "string" ? r.voiceURI : base.voiceURI,
     rate: Number.isFinite(Number(r.rate)) ? Math.min(2, Math.max(0.5, Number(r.rate))) : base.rate,
     lang: typeof r.lang === "string" && r.lang ? r.lang : base.lang,
@@ -1629,7 +1640,9 @@ export async function loadServerVoicePrefs(): Promise<void> {
   }
 }
 
-const PREFS_FIELDS: (keyof VoicePrefs)[] = ["autoRead", "voiceURI", "rate", "lang", "serverTts", "stt"];
+// `autoRead` is deliberately NOT in this list: it is a derived mirror of `speakMode`, and comparing
+// both would make an untouched store look touched the moment one of them is normalised.
+const PREFS_FIELDS: (keyof VoicePrefs)[] = ["speakMode", "voiceURI", "rate", "lang", "serverTts", "stt"];
 
 export function updateVoicePrefs(patch: Partial<VoicePrefs>): void {
   const next = { ...prefsState, ...patch };
@@ -1660,9 +1673,24 @@ export function useVoicePrefs(): [VoicePrefs, (patch: Partial<VoicePrefs>) => vo
  *  turn is still streaming, and never for history that was merely loaded. */
 export function useAutoRead(target: { key: string; text: string } | null, ready: boolean): void {
   const [prefs] = useVoicePrefs();
+  // `speakMode` is the truth; a pre-#16 stored pref has only `autoRead`, which the loader maps onto
+  // it, so this single test covers both.
+  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "reply";
   useEffect(() => {
-    if (!prefs.autoRead || !ready || !target || !target.text.trim()) return;
+    if (!on || !ready || !target || !target.text.trim()) return;
     if (!shouldAutoRead(target.key, prefs, true)) return;
     void speaker.speak(target.text, target.key, prefs);
-  }, [target?.key, ready, prefs.autoRead]);
+  }, [target?.key, ready, on]);
+}
+
+/** 工作播报 (issue #16): speak the cockpit's own one-line briefs. The server throttles, decides what
+ *  is worth saying and falls back on its own when no observer can speak — so this hook is only the
+ *  last mile: a line arrived, the operator asked for briefs, say it. */
+export function useBriefSpeak(target: { key: string; text: string } | null, ready: boolean): void {
+  const [prefs] = useVoicePrefs();
+  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "brief";
+  useEffect(() => {
+    if (!on || !ready || !target || !target.text.trim()) return;
+    void speaker.speak(target.text, target.key, prefs);
+  }, [target?.key, ready, on]);
 }

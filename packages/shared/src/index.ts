@@ -84,6 +84,12 @@ export interface SessionInfo {
    *  Derived server-side and sent with the row, so the client never infers liveness from which
    *  list a row arrived in (that inference is what merged 已归档 with 死了). */
   cold?: boolean;
+  /** A SYSTEM session: the cockpit spawned it for itself, not for the operator (issue #16 — the
+   *  工作播报 observer is the first one). It is a real ACP session with a real transcript, but it
+   *  is NOT work in flight: the rail never draws it, the cockpit CLI never lists it, and it never
+   *  occupies a warm-slot seat. Kept in the same table (and filtered at the emit boundary) so the
+   *  idle reaper, close and resume keep working on it unchanged. */
+  system?: boolean;
 }
 
 export interface AvailableCommandView {
@@ -180,6 +186,14 @@ export type ServerEvent =
    *  `actual` is what the session really runs with, so the cockpit can put the control back and say
    *  so instead of pretending the pick landed. */
   | { t: "config-rejected"; sessionId: string; configId: string; value: string; actual: string; name?: string }
+  /** ONE line the cockpit wants spoken (issue #16). The server owns every decision behind it —
+   *  which events are worth a voice, the per-session throttle, the observer agent's wording — so
+   *  the page only has to hand `text` to the speaker in 工作播报 mode. Zero-cost events (an
+   *  approval is waiting, a step just completed) arrive here too, with no model call behind them. */
+  | { t: "speak"; id: string; sessionId: string; text: string;
+      kind: "approval" | "plan-step" | "brief" | "fallback";
+      /** Higher wins when two lines compete for the speaker. An approval (2) interrupts a brief (1). */
+      priority: 1 | 2 }
   | { t: "turn-end"; sessionId: string; stopReason?: string; error?: string;
       /** Wall time from the moment the turn was announced to the moment the agent answered (ms).
        *  Exists so a notification can say "用时 1m12s" instead of a protocol token like `end_turn`,

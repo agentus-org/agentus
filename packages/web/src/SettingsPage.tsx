@@ -46,6 +46,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
       { anchor: "set-lifecycle", label: "回收与热备" },
       { anchor: "set-plan", label: "计划提示" },
       { anchor: "set-cockpit", label: "驾驶舱互发" },
+      { anchor: "set-observer", label: "观察智能体" },
     ],
   },
   {
@@ -90,6 +91,12 @@ interface SettingsView {
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
   agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
+  /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
+  observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
+  observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
+  observerPromptDefault?: string;
+  observerPromptMax?: number;
+  observerThrottleRange?: [number, number];
   agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
@@ -185,6 +192,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
   const [cockpitSend, setCockpitSend] = useState<boolean | null>(null);
   const [cockpitMsg, setCockpitMsg] = useState("");
+  // 观察智能体 — the agent behind 工作播报 (issue #16). Every field saves on its own, like the
+  // cockpit switch: this section's whole point is that the next brief sounds different.
+  const [observer, setObserver] = useState<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number } | null>(null);
+  const [observerMsg, setObserverMsg] = useState("");
+  const [backendOptions, setBackendOptions] = useState<{ id: string; label: string }[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
     setErr("");
@@ -207,6 +219,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
+      if (data.observer) setObserver(data.observer);
+      const be = await fetch("/api/backends", { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []);
+      setBackendOptions((Array.isArray(be) ? be : []).map((b: { id: string; label?: string }) => ({ id: b.id, label: b.label ?? b.id })));
       await loadVoiceCaps(true);
       setCaps(voiceCaps());
       const [m, h] = await Promise.all([
@@ -285,6 +302,36 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       );
     } catch (e) {
       setWarmMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 观察智能体 saves on its own. The backend list is fetched here rather than through the backends
+   *  page's store: the card only needs id + label, and a select that lags behind a deleted backend is
+   *  worse than a select that knows less. */
+  const saveObserver = async (patch: Partial<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number }>): Promise<void> => {
+    const next = {
+      enabled: observer?.enabled ?? false,
+      backend: observer?.backend ?? null,
+      systemPrompt: observer?.systemPrompt ?? "",
+      throttleSec: observer?.throttleSec ?? 120,
+      ...patch,
+    };
+    setObserver(next);
+    setObserverMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ observer: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      if (data.observer) setObserver(data.observer);
+      setObserverMsg("已保存：下一次播报就是新设置。");
+    } catch (e) {
+      setObserverMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -778,6 +825,99 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           {planHintMsg ? <p className="set-hint">{planHintMsg}</p> : null}
         </section>
 
+        <section className="set-card" id="set-observer" data-setgroup="agent">
+          <h3>观察智能体（工作播报）</h3>
+          <p className="set-hint">
+            「工作播报」不是把长回复念一遍，而是由一个<b>观察员</b>念一句进展。它就是一个普通的 ACP 会话，
+            每个被观察的会话配一个，<b>常驻、上下文连续</b>：第一次看完之后它就记得这个会话在做什么，
+            之后每次只收到一行触发语（「这一轮结束了，看看进展」）。
+          </p>
+          <p className="set-hint">
+            事实<b>全靠它自己查</b>：它用 <code>$AGENTUS_COCKPIT_BIN</code> 读会话、消息尾部、计划、待审批，
+            驾驶舱<b>不塞任何现成数据</b>进去 —— 这样播报不会跟着我们的模板一起说错。
+            它跑在自己的<b>草稿目录</b>里（<code>~/.hermes/agentus/observers/&lt;会话 id&gt;</code>），
+            不看你的项目目录，也不出现在会话列表里。
+          </p>
+          <p className="set-hint">
+            花钱的地方只有一处：<b>回合结束</b>时让它写一句。待审批、计划里完成一步这类事件是现成的事实，
+            驾驶舱直接念，<b>不花 token</b>。观察员起不来时，会降级成 #11 的那句「会话名 · 任务名」。
+          </p>
+          <div className="set-row">
+            <label>启用观察员</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={observer?.enabled ?? false}
+                onChange={(e) => void saveObserver({ enabled: e.target.checked })}
+              />
+              <span className="set-hint">
+                {observer?.enabled
+                  ? "已启用：回合结束时由它念一句进展"
+                  : "已关闭：播报降级成「会话名 · 任务名」，不起任何模型"}
+              </span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>用哪个后端跑它</label>
+            <div className="set-pair">
+              <select
+                className="set-select"
+                value={observer?.backend ?? ""}
+                disabled={!(observer?.enabled ?? false)}
+                onChange={(e) => void saveObserver({ backend: e.target.value || null })}
+              >
+                <option value="">跟被观察的会话同一个后端（默认）</option>
+                {backendOptions.map((b) => (
+                  <option key={b.id} value={b.id}>{b.label}</option>
+                ))}
+              </select>
+              <span className="set-hint">建议挑一个便宜、快的模型 —— 它只做「看一眼、说一句」。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>同一会话最短间隔（秒）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.observerThrottleRange?.[0] ?? 0}
+                max={view?.observerThrottleRange?.[1] ?? 3600}
+                step={30}
+                value={observer?.throttleSec ?? 120}
+                onChange={(e) => setObserver((o) => (o ? { ...o, throttleSec: Number(e.target.value) } : o))}
+                onBlur={(e) => void saveObserver({ throttleSec: Number(e.target.value) })}
+              />
+              <span className="set-hint">0 = 每回合都播报；待审批这类零成本事件不受它限制。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>它的设定（system prompt）</label>
+          </div>
+          <textarea
+            className="set-textarea"
+            rows={6}
+            spellCheck={false}
+            disabled={!(observer?.enabled ?? false)}
+            value={observer?.systemPrompt ?? ""}
+            placeholder="留空即用内置模板 —— 原文就在下面，能直接看、能照着改。"
+            onChange={(e) => setObserver((o) => (o ? { ...o, systemPrompt: e.target.value } : o))}
+            onBlur={(e) => void saveObserver({ systemPrompt: e.target.value })}
+          />
+          <details className="set-builtin" open={!(observer?.systemPrompt ?? "").trim()}>
+            <summary>
+              {(observer?.systemPrompt ?? "").trim()
+                ? "内置模板（你写了自定义的，它不再生效；清空即可恢复）"
+                : "内置模板（留空时生效的就是它）"}
+            </summary>
+            <pre className="set-builtin-text">{view?.observerPromptDefault ?? ""}</pre>
+          </details>
+          <p className="set-hint">
+            你写的设定之后会自动补上一句「你负责的会话 id 是 …」，那一句不能改 —— 观察员靠它才知道看哪一个。
+            改完立刻对下一次播报生效，不用重启会话。
+          </p>
+          {observerMsg ? <p className="set-hint">{observerMsg}</p> : null}
+        </section>
+
         <section className="set-card" id="set-cockpit" data-setgroup="agent">
           <h3>驾驶舱互发消息（cockpit CLI）</h3>
           <p className="set-hint">
@@ -1015,10 +1155,20 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           <div className="set-row">
             <label>朗读</label>
             <div className="set-pair">
-              <label className="set-check">
-                <input type="checkbox" checked={prefs.autoRead} onChange={(e) => setPrefs({ autoRead: e.target.checked })} />
-                回复完成自动朗读
-              </label>
+              {/* 三档 (issue #16): 关 / 自动朗读 / 工作播报. Same value the header's speaker button
+                  writes — one pref, two doors, so they can never disagree. */}
+              <select
+                className="set-select"
+                value={prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")}
+                onChange={(e) => {
+                  const m = e.target.value as "off" | "reply" | "brief";
+                  setPrefs({ speakMode: m, autoRead: m === "reply" });
+                }}
+              >
+                <option value="off">关（不自动出声）</option>
+                <option value="reply">自动朗读（念整条回复）</option>
+                <option value="brief">工作播报（念驾驶舱的一句话）</option>
+              </select>
               <label className="set-check">
                 <input type="checkbox" checked={prefs.serverTts} onChange={(e) => setPrefs({ serverTts: e.target.checked })} />
                 用服务端声音（否则用系统声音）

@@ -209,6 +209,10 @@ export interface SessionView {
    *  tells the composer not to offer a send that has nothing to send into yet, and tells the rail
    *  that the row is being woken rather than dead. */
   resuming?: boolean;
+  /** 工作播报 lines the cockpit has produced for this session (issue #16), newest last, bounded.
+   *  They are NOT transcript rows: a brief is a thing SAID about the work, not part of it, and
+   *  putting it in `msgs` would have it replayed as history and re-read on every load. */
+  speaks?: { id: string; text: string; kind: string; priority: number; at: number }[];
   /** The LIVE plan: it is not in `msgs` at all — the composer pins it above the input. The
    *  transcript only ever shows ARCHIVED plans (previous turns), placed at the end of the turn
    *  they belonged to. `turn` is the user-turn it was born in: a plan frame arriving in a LATER
@@ -1779,6 +1783,15 @@ class Cockpit {
         const v = this.#view(e.sessionId);
         this.#applyServerPlan(v, e.plan);
         v.lastAt = Date.now();
+        break;
+      }
+      case "speak": {
+        // The cockpit's own line about this session (工作播报, issue #16). Kept as a bounded ring on
+        // the view: the speaker reads the newest entry, and a page that reconnects must not replay
+        // the last ten briefs aloud (the ring is empty on a fresh view).
+        const v = this.#view(e.sessionId);
+        const line = { id: e.id, text: e.text, kind: e.kind, priority: e.priority, at: Date.now() };
+        v.speaks = [...(v.speaks ?? []), line].slice(-10);
         break;
       }
       case "usage": {

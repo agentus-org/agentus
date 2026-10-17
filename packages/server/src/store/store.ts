@@ -78,6 +78,10 @@ export interface SessionRow {
   /** When the OPERATOR put this session away (已归档). Null = it belongs in 工作空间. A storage
    *  state: it says nothing about whether a process is running (see SessionInfo.archivedAt). */
   archivedAt: number | null;
+  /** A session the COCKPIT owns rather than the operator (issue #16's observer): a real ACP
+   *  session, kept out of the rail and out of the cockpit CLI's scope. Written on insert only —
+   *  like `home`, it is a fact about how the row was born, not something a rename can change. */
+  system?: boolean;
   /** JSON round-trip of the ACP mode state + config options, so a resumed
    *  session (M4-lite) comes back with the operator's mode/effort intact. */
   modes?: unknown;
@@ -114,6 +118,7 @@ interface RawSessionRow {
   workspace?: string | null;
   home?: string | null;
   models?: string | null; context_limit?: number | null;
+  system?: number | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -177,6 +182,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
     workspace: r.workspace ?? null,
     home: r.home ?? null,
+    system: Boolean(r.system),
     models: parseJson(r.models),
     contextLimit: r.context_limit ?? null,
   };
@@ -287,7 +293,10 @@ export class Store {
       create table if not exists sessions (
         id text primary key, backend text not null, acp_session_id text,
         cwd text not null, title text not null, status text not null,
-        pid integer, created_at integer not null, closed_at integer, home text
+        pid integer, created_at integer not null, closed_at integer, home text,
+        -- 1 = a session the COCKPIT spawned for itself (the 工作播报 observer), never the operator's
+        -- work: filtered out of the rail and out of the cockpit CLI's scope. See SessionRow.system.
+        system integer not null default 0
       );
       create table if not exists messages (
         seq integer not null, session_id text not null, kind text not null,
@@ -348,6 +357,11 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // WHICH SESSIONS THE COCKPIT OWNS (issue #16): 1 = the 工作播报 observer, 0 = the operator's work.
+    // Its own column rather than a title convention, because this flag decides whether a row is
+    // allowed into the rail, the warm-slot ranking and the cockpit CLI's scope — a rename must not be
+    // able to move a session between those worlds.
+    if (!cols.has("system")) this.#db.exec("alter table sessions add column system integer not null default 0");
     // WHEN THE OPERATOR PUT THE SESSION AWAY (已归档 — a STORAGE state). Before this column the rail
     // inferred "archived" from "has no process", so a slot that merely crashed (or was killed by an
     // idle reap) filed itself under 已归档 next to the ones the operator really put away, and
@@ -714,13 +728,13 @@ export class Store {
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null), s.title, s.home ?? null);
+          JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0);
     }
   }
 

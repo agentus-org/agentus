@@ -262,6 +262,11 @@ export class SessionManager {
       // flag alone, so a restored-then-archived slot can be live). It is listed by `archived()`
       // instead — one row in one bucket, or the rail shows the same slot twice.
       .filter((s) => this.#store.getSession(s.info.id)?.archivedAt == null)
+      // A SYSTEM session (the 工作播报 observer, issue #16) is the cockpit's own machinery: it has a
+      // transcript and a process like any other slot, but it is not WORK IN FLIGHT. Filtering here —
+      // the one gate the rail, the cockpit CLI and the warm-slot ranking all read through — is what
+      // keeps an observer from showing up as a ghost row beside the session it watches.
+      .filter((s) => !s.info.system)
       .map((s) => ({
         ...s.info,
         lastSeq: this.#store.maxSeq(s.info.id),
@@ -271,6 +276,33 @@ export class SessionManager {
         cold: false,
       }))
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt);
+  }
+
+  /** Wait until a slot can accept a prompt (its handshake finished), or explain why it never will.
+   *  `create()` deliberately returns BEFORE the handshake, so a caller that spawns and prompts in the
+   *  same breath (the 工作播报 observer, issue #16) has to wait for the one thing only the agent can
+   *  tell us. Throws on a slot that died while we waited — silence would leave the observer looking
+   *  alive forever. */
+  async awaitReady(id: string, timeoutMs = 30_000): Promise<SessionInfo> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const s = this.#sessions.get(id);
+      if (!s) throw new Error(`no such session: ${id}`);
+      if (s.conn && s.info.acpSessionId) return s.info;
+      if (s.info.status === "error" || s.info.status === "closed") {
+        throw new Error(`session ${id} is ${s.info.status}${s.info.lastError ? `: ${s.info.lastError}` : ""}`);
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`session ${id} did not become ready within ${Math.round(timeoutMs / 1000)}s`);
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  /** The ACP mode state of a live slot, for callers that must not go through the rail's lists
+   *  (issue #16's observer picks a read-only mode as soon as the handshake announces one). */
+  modesOf(id: string): SessionModeState | null {
+    return this.#sessions.get(id)?.info.modes ?? null;
   }
 
   isBusy(id: string): boolean {
@@ -387,7 +419,10 @@ export class SessionManager {
     } catch { /* the row is evidence, not control flow */ }
   }
 
-  async create(backend: BackendId, cwd: string, title?: string): Promise<SessionInfo> {
+  /** `opts.system` marks a session the COCKPIT is spawning for itself (issue #16's observer). It
+   *  is a real ACP session and behaves like one everywhere below (close, idle-reap, resume), but it
+   *  is born out of the rail's scope and stays out of it. */
+  async create(backend: BackendId, cwd: string, title?: string, opts: { system?: boolean } = {}): Promise<SessionInfo> {
     const shape = this.#spawnShape(backend);
     if (!shape) throw new Error(`unknown backend: ${backend}`);
     const { spec, args } = shape;
@@ -434,6 +469,7 @@ export class SessionManager {
         pid: child.pid ?? null,
         title: title || `${spec.label} @ ${shortCwd(cwd)}`,
         autoTitle: title || `${spec.label} @ ${shortCwd(cwd)}`,
+        ...(opts.system ? { system: true } : {}),
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
@@ -613,6 +649,9 @@ export class SessionManager {
         workspace: row.workspace ?? null,
         contextLimit: row.contextLimit ?? null,
         status: "starting", pid: child.pid ?? null, title: row.title,
+        // a resumed system session is still a system session (issue #16): the observer is reaped and
+        // resumed like any slot, and must come back out of the rail's scope, not into it
+        ...(row.system ? { system: true } : {}),
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
         configOptions: (row.configOptions ?? []) as ConfigOptionView[],
@@ -833,7 +872,7 @@ export class SessionManager {
     const lastAtAll = this.#store.lastActivityAt();
     return this.#store
       .listSessions(true)
-      .filter((r) => r.archivedAt != null)
+      .filter((r) => r.archivedAt != null && !r.system)
       .map((r) => {
         const live = this.#sessions.get(r.id);
         // An archived row can still have a process — resume does not touch the flag — and then it is
@@ -862,7 +901,8 @@ export class SessionManager {
   cold(limit = 20): SessionInfo[] {
     return this.#store
       .listSessions(true)
-      .filter((r) => r.archivedAt == null && !this.#sessions.has(r.id))
+      // system rows are the cockpit's own (see list()): never offered as a slot to wake
+      .filter((r) => r.archivedAt == null && !r.system && !this.#sessions.has(r.id))
       .map((r) => this.#infoFromRow(r))
       // cold rows by the same rule as live ones (recent chat first), THEN take the page
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt)
@@ -884,6 +924,7 @@ export class SessionManager {
       lastSeq: this.#store.maxSeq(r.id),
       lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       archivedAt: r.archivedAt ?? null,
+      ...(r.system ? { system: true } : {}),
       // no process by construction: this path only ever runs for a row that is not in the map
       cold: true,
     };
@@ -1855,7 +1896,10 @@ export class SessionManager {
     // The remembered window follows the model, so it has to be refreshed whenever the
     // model (or anything else) changes — this is the one place every mutation passes.
     s.info.modelContextLimit = this.#store.getModelLimit(s.info.models?.currentModelId ?? null);
-    this.#emit({ t: "session", session: s.info });
+    // A system session never appears in a `session` frame: the rail would add it to a bucket that
+    // list()/cold() deliberately do not contain, and #13 is precisely the bug where the two
+    // disagree. The page learns about observers through `speak` lines, not through the rail.
+    if (!s.info.system) this.#emit({ t: "session", session: s.info });
     const row = this.#store.getSession(s.info.id);
     if (row) {
       // Persist the LIVE metadata too, not just status/pid: without modes/configOptions/
@@ -2271,6 +2315,7 @@ function sessionRow(i: SessionInfo, home: string | null = null) {
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
     models: i.models ?? null,
+    system: Boolean(i.system),
     // only ever written by the insert (creation); see Store.upsertSession
     home,
   };

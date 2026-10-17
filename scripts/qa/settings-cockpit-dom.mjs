@@ -57,8 +57,13 @@ try {
   const navItem = await ev(`[...document.querySelectorAll('.set-nav-item')].some(b => b.textContent.trim() === '驾驶舱互发')`);
   check("…reachable from the settings nav (智能体 → 驾驶舱互发)", navItem);
   await ev(`[...document.querySelectorAll('.set-nav-item')].find(b => b.textContent.trim() === '驾驶舱互发')?.click()`);
-  await sleep(500);
-  const inView = await ev(`(() => { const s = document.getElementById('set-cockpit'); if (!s) return false; const r = s.getBoundingClientRect(); return r.top > 0 && r.top < window.innerHeight; })()`);
+  // Smooth scrolling: the entry has to bring the card into view, which takes a moment (and the
+  // section list keeps growing as cards are added, so never assume a fixed offset).
+  let inView = false;
+  for (let i = 0; i < 20 && !inView; i++) {
+    await sleep(200);
+    inView = await ev(`(() => { const s = document.getElementById('set-cockpit'); if (!s) return false; const r = s.getBoundingClientRect(); return r.top > -20 && r.top < window.innerHeight * 0.6; })()`);
+  }
   check("…and that entry actually scrolls the section into view", inView);
   const words = await ev(`document.querySelector('#set-cockpit')?.innerText ?? ''`);
   check("…and says what turning it on costs (two agents talking = tokens)", /烧 token|循环/.test(words));
