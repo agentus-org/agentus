@@ -23,6 +23,11 @@ export interface PlanStep { content: string; status: string; priority?: string }
 export interface LivePlan {
   key: string;
   items: PlanStep[];
+  /** The plan's own NAME (`update_plan`'s `title`, ≤40 chars, issue #11). It was already stored and
+   *  consumed by the completion notification; the card now shows it too, because 「任务计划」 says
+   *  nothing about WHICH plan you are looking at when several sessions are open. Absent on plans the
+   *  agent never named (older agents, or a plan that only ever sent items). */
+  title?: string;
   /** set by the server's turn lifecycle when the run ended with unfinished steps */
   terminal?: string;
   /** the plan's own remark, Studio-style: why this update / what the scope is now (≤1000 chars) */
@@ -55,6 +60,8 @@ export type MsgView =
     }
   | {
       key: string; kind: "plan"; items: { content: string; status: string; priority?: string }[];
+      /** the plan's name, when the agent gave one (issue #11) */
+      title?: string;
       /** set by the server's turn lifecycle when the run ended with unfinished steps */
       terminal?: string;
       /** the plan's own remark (why this update / what changed) */
@@ -1628,28 +1635,36 @@ class Cockpit {
     terminal: string | undefined,
     at: number | undefined,
     explanation?: string,
+    /** `undefined` = this frame carries no name (an ACP plan frame never does) ⇒ keep what is on the
+     *  card; `null` = the server's plan OBJECT says there is no name ⇒ CLEAR it. The object is the
+     *  whole truth about the title, a frame is silent about it — collapsing the two would make a
+     *  cleared name immortal on the card. */
+    title?: string | null,
   ): void {
     const live = v.plan;
     if (!live) {
-      v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn };
+      v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn, title: title ?? undefined };
       return;
     }
     if (live.turn === v.turn) {
-      // same turn: the snapshot replaces the list in place (the agent rewriting its own plan)
+      // same turn: the snapshot replaces the list in place (the agent rewriting its own plan).
+      // `title: undefined` means "this frame has none", NOT "clear it": an ACP plan frame carries no
+      // title at all (it is cockpit-side, #11), so the object's name must survive every frame.
       live.items = items;
       live.terminal = terminal;
       live.explanation = explanation;
+      if (title !== undefined) live.title = title ?? undefined;
       return;
     }
     // a new turn produced a plan: retire the old one to the END of ITS turn
     const at2 = v.turnStart > 0 && v.turnStart <= v.msgs.length ? v.turnStart : v.msgs.length;
     v.msgs.splice(at2, 0, {
       key: live.key, kind: "plan", items: live.items, terminal: live.terminal,
-      explanation: live.explanation, at: live.at,
+      explanation: live.explanation, at: live.at, title: live.title,
     });
     v.blocks = reindexBlocks(v.msgs);
     v.turnStart = Math.min(v.turnStart + 1, v.msgs.length);
-    v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn };
+    v.plan = { key: `plan-${v.turn}`, items, terminal, explanation, at, turn: v.turn, title: title ?? undefined };
   }
 
   /** The server's plan object, as an event. Same folding as a frame — but this one also arrives in
@@ -1661,6 +1676,7 @@ class Cockpit {
       plan.terminal ?? undefined,
       plan.updatedAt,
       plan.explanation ?? undefined,
+      plan.title?.trim() || null,
     );
   }
 
