@@ -142,7 +142,10 @@ export const PREFS_DEFAULT: PrefsSettings = {
 };
 
 export const CALL_DEFAULT: CallSettings = {
-  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1200, minChars: 3,
+  /* 说完停顿 1.5s (was 1.2): the operator reads a pause as "it stopped listening" before 1.2 s,
+     and a long sentence with a breath in the middle got cut. Both ends of the range still let
+     the room decide — this is only where a fresh install starts. */
+  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
 };
 
 export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button"];
