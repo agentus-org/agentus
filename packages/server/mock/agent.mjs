@@ -430,6 +430,19 @@ const agent = () => ({
       }, Math.min(slow * 2, 1200));
     }
 
+    // `[blank]` — the SAME carrier with its `_meta` stripped, i.e. the shape a status line takes when
+    // the sentence is lost before us (measured 2026-10-17: hermes set `update._meta` while the ACP
+    // model's field is `field_meta`, so every status shipped as a bare empty thought). The cockpit must
+    // store nothing and draw nothing for it — an unreadable carrier is not 「思考 0 字」.
+    if (/\[blank\]/.test(text)) {
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, Math.min(slow * 2, 1000));
+    }
+
     // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).
     // Numeric AND text cells, deliberately NOT in any sorted order, and a local file link plus a
     // relative image, so "clicking a header reorders the rows" and "a relative path resolves" are

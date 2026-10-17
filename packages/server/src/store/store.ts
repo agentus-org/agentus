@@ -62,6 +62,11 @@ function reemissionTarget(blockText: string, incoming: string): "same" | "grew" 
 /** A page also stops on bytes, so one 30 KB message cannot overflow a phone-sized fetch. */
 const PAGE_BYTES = 256 * 1024;
 
+/** Provenance of a session's name, ranked: a name may only be overwritten by a BETTER source
+ *  (or by the operator asking for a new one). See `setAutoTitle`. */
+export type TitleSrc = "derived" | "agent" | "operator";
+const TITLE_RANK: Record<TitleSrc, number> = { derived: 1, agent: 2, operator: 3 };
+
 export interface SessionRow {
   id: string;
   backend: BackendId;
@@ -73,6 +78,9 @@ export interface SessionRow {
   autoTitle?: string | null;
   /** session id of whoever renamed it through the cockpit CLI; null = the operator's own name */
   titleBy?: string | null;
+  /** Where the CURRENT name came from — see the `title_src` migration below. Not part of SessionInfo:
+   *  it is bookkeeping that decides who may overwrite the row, not something the page draws. */
+  titleSrc?: TitleSrc | null;
   status: SessionStatus;
   pid: number | null;
   createdAt: number;
@@ -113,7 +121,8 @@ export interface SessionRow {
 
 interface RawSessionRow {
   id: string; backend: BackendId; acp_session_id: string | null; cwd: string;
-  title: string; auto_title?: string | null; title_by?: string | null; status: SessionStatus; pid: number | null;
+  title: string; auto_title?: string | null; title_by?: string | null; title_src?: string | null;
+  status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null; archived_at?: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
@@ -178,7 +187,8 @@ function blockKeyOf(kind: string, payload: unknown): string | null {
 function rowToSession(r: RawSessionRow): SessionRow {
   return {
     id: r.id, backend: r.backend, acpSessionId: r.acp_session_id, cwd: r.cwd,
-    title: r.title, autoTitle: r.auto_title ?? null, titleBy: r.title_by ?? null, status: r.status, pid: r.pid,
+    title: r.title, autoTitle: r.auto_title ?? null, titleBy: r.title_by ?? null,
+    titleSrc: (r.title_src as TitleSrc | null) ?? null, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at, archivedAt: r.archived_at ?? null,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
@@ -376,6 +386,19 @@ export class Store {
     // rail would show it as fact. NULL = the operator (every existing row), a session id = that
     // session's agent renamed it through the cockpit CLI.
     if (!cols.has("title_by")) this.#db.exec("alter table sessions add column title_by text");
+    // WHERE THE CURRENT NAME CAME FROM, which `title_by` cannot answer: a generated name has no author
+    // (title_by is NULL) — exactly like a name the operator typed. Without this column the store cannot
+    // tell 「the operator named this」 from 「we generated this」, so every later generated name looked
+    // like the first one and moved the display title. Measured 2026-10-17: Hermes regenerates a title
+    // on EVERY turn (auxiliary `title_generation`), so a running conversation was renamed each time.
+    //   'derived'  — truncated from the operator's first prompt (no model, instant)
+    //   'agent'    — the agent announced a name (session_info_update / the 重新生成 fork)
+    //   'operator' — the operator typed it; nothing generated may move it
+    // NULL on existing rows = generated before this column existed; treated as 'agent'.
+    if (!cols.has("title_src")) this.#db.exec("alter table sessions add column title_src text");
+    // Existing rows get NULL here, i.e. "no generated name was ever recorded" — harmless: a legacy row
+    // that already wears a generated name is protected by `#autoTitleFrom`'s placeholder test, which
+    // only ever re-derives a name for a row still showing "Hermes @ tmp".
     // The session's own ACTIVITY clock — when the operator or the agent last really said something
     // in it. A COLUMN, not a derived `max(messages.created_at)` (AionUi's model: `modified_at` on
     // the conversation row, indexed, which is what its sidebar sorts by): every ingestion path
@@ -1116,10 +1139,15 @@ export class Store {
       | { title: string; auto_title: string | null }
       | undefined;
     if (!row) return false;
-    const next = title == null || !title.length ? (row.auto_title ?? row.title) : title;
+    const named = title != null && title.length > 0;
+    const next = named ? title : (row.auto_title ?? row.title);
     // `by` rides along on every write, including a reset: after `--auto` the name is generated again,
     // and the note that an agent once renamed it would be a lie about the CURRENT name.
-    const info = this.#db.prepare("update sessions set title = ?, title_by = ? where id = ?").run(next, by, id);
+    // `title_src` is what PINS the row: a hand-written name must survive every later generated one,
+    // while a reset hands the name back to whichever generator wrote `auto_title`.
+    const src = named ? "operator" : (row.auto_title ? "agent" : null);
+    const info = this.#db.prepare("update sessions set title = ?, title_by = ?, title_src = ? where id = ?")
+      .run(next, by, src, id);
     return Number(info.changes ?? 0) > 0;
   }
 
@@ -1132,18 +1160,30 @@ export class Store {
    *  the fallback and leaves the visible row alone. `force` is for the operator asking for a
    *  new name on purpose (the rail's 重新生成), where the new title is the point.
    *  Returns the row it ended up with, so callers can broadcast exactly what changed. */
-  setAutoTitle(id: string, title: string, { force = false }: { force?: boolean } = {}): SessionRow | null {
-    const row = this.#db.prepare("select title, auto_title from sessions where id = ?").get(id) as
-      | { title: string; auto_title: string | null }
+  setAutoTitle(
+    id: string, title: string, { force = false, src = "agent" }: { force?: boolean; src?: TitleSrc } = {},
+  ): SessionRow | null {
+    const row = this.#db.prepare("select title, auto_title, title_src from sessions where id = ?").get(id) as
+      | { title: string; auto_title: string | null; title_src: string | null }
       | undefined;
     if (!row) return null;
     const clean = title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim();
     if (!clean) return null;
-    const wasAuto = row.auto_title == null || row.auto_title === "" || row.title === row.auto_title;
-    const nextTitle = force || wasAuto ? clean : row.title;
+    // WHO WINS, by rank — derived < agent < operator. A name only moves the row when it comes from a
+    // BETTER source than the one already on it (or when there is nothing yet, or the operator asked
+    // for a new one). This is what stops 「跑着跑着标题就变了」: Hermes regenerates a title every turn,
+    // and every one of those is an `agent` name arriving over an `agent` name — the same generator
+    // saying the same thing again, not news. A `derived` guess still yields to the first real one.
+    // `null` = nothing has NAMED this row yet. That is not the same as "the operator named it": every
+    // row is INSERTED with `auto_title = title` (the placeholder "Hermes @ tmp"), so the column alone
+    // cannot say whether a name was ever generated — only `title_src` can.
+    const current = row.title_src as TitleSrc | null;
+    const named = current != null && row.auto_title != null && row.auto_title !== "";
+    const wins = force || !named || TITLE_RANK[src] > TITLE_RANK[current];
+    if (!wins) return this.getSession(id) ?? null;
     this.#db
-      .prepare("update sessions set auto_title = ?, title = ? where id = ?")
-      .run(clean, nextTitle, id);
+      .prepare("update sessions set auto_title = ?, title = ?, title_src = ? where id = ?")
+      .run(clean, clean, src, id);
     return this.getSession(id) ?? null;
   }
 

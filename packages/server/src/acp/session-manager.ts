@@ -20,7 +20,7 @@ import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
   cleanAgentTitle, deriveTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
-import type { Store, SessionRow } from "../store/store.js";
+import type { Store, SessionRow, TitleSrc } from "../store/store.js";
 import { textOf, withText } from "../store/store.js";
 import type {
   AttachmentSummary,
@@ -1786,6 +1786,12 @@ export class SessionManager {
         msg = { sessionId: live.info.id, kind: "agent", payload: u, createdAt: Date.now() };
         break;
       case "agent_thought_chunk":
+        // An EMPTY thought is not a thought. A status carrier we cannot read (its `_meta` lost on the
+        // way out, an agent using a carrier we do not know) lands here as "" — persisting it drew a
+        // 「思考 0 字」 bubble that never filled, and a row in the store that says the agent thought
+        // nothing. The honest degradation for an unknown extension is to render NOTHING (that is what
+        // hermes' own carrier docstring promises a client), so the frame is dropped rather than stored.
+        if (!textOf(u).trim()) return;
         msg = { sessionId: live.info.id, kind: "thought", payload: u, createdAt: Date.now() };
         break;
       case "tool_call": {
@@ -1861,7 +1867,10 @@ export class SessionManager {
         // provenance updates where the title is unchanged — a no-op here). This is why the
         // cockpit shows generated names at all: the intelligence stays in the CLI.
         const t = cleanAgentTitle((u as { title?: string | null }).title ?? null);
-        if (t) this.#applyAutoTitle(live.info.id, t, false);
+        // ONE name per session. Hermes re-generates a title on every turn (auxiliary `title_generation`
+        // in `agent/turn_context.py`), and this frame is how it arrives — subscribing to all of them was
+        // the churn: the rail kept renaming a conversation the operator was reading.
+        if (t) this.#applyAutoTitle(live.info.id, t, false, "agent");
         return;
       }
       case "usage_update": {
@@ -2115,12 +2124,16 @@ export class SessionManager {
     if (row.autoTitle && row.autoTitle !== placeholder) return;
     const t = deriveTitle(text);
     if (!t || t === row.autoTitle) return;
-    this.#applyAutoTitle(s.info.id, t, false);
+    this.#applyAutoTitle(s.info.id, t, false, "derived");
   }
 
-  /** Write a generated title and tell everyone who renders a row about it. */
-  #applyAutoTitle(id: string, title: string, force: boolean): SessionRow | null {
-    const row = this.#store.setAutoTitle(id, title, { force });
+  /** Write a generated title and tell everyone who renders a row about it.
+   *
+   *  `src` is the provenance the store ranks on (derived < agent < operator): a name only moves the
+   *  row when it comes from a better source, which is what keeps Hermes' per-turn regeneration from
+   *  renaming a running conversation. */
+  #applyAutoTitle(id: string, title: string, force: boolean, src: TitleSrc = "agent"): SessionRow | null {
+    const row = this.#store.setAutoTitle(id, title, { force, src });
     if (!row) return null;
     const live = this.#sessions.get(id);
     if (live) {
@@ -2165,7 +2178,7 @@ export class SessionManager {
     }
     if (!title) title = titleFromLatestPrompt(msgs);
     if (!title) throw new Error("这个会话还没有可以用来生成标题的对话内容");
-    if (!this.#applyAutoTitle(id, title, true)) throw new Error(`no such session: ${id}`);
+    if (!this.#applyAutoTitle(id, title, true, via)) throw new Error(`no such session: ${id}`);
     this.lastTitleVia = via;
     const info = this.#sessions.get(id)?.info ?? this.#coldInfo(id);
     this.#emit({ t: "session", session: info });

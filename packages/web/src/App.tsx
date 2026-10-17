@@ -1965,7 +1965,10 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
         </div>
       );
     case "thought":
-      return <MemoThought m={m} live={Boolean(live)} />;
+      // An empty thought is not drawn (and the server no longer stores one): it is the shape an
+      // unreadable status carrier takes, and a 「思考 0 字」 row reads as a bug to the operator rather
+      // than as the nothing it is.
+      return m.text.trim() ? <MemoThought m={m} live={Boolean(live)} /> : null;
     case "tool":
       return <MemoToolCard m={m} />;
     case "plan":
