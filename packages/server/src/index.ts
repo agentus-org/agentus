@@ -560,7 +560,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Deliberately NOT `interrupt`: a cross-session message must never take the floor from a turn
         // the OPERATOR started. A busy target answers `target_busy` and the caller reports it as such.
         try {
-          await mgr.prompt(to, message, [], { interrupt: false });
+          // `origin` is not decoration: without it the target's page shows this as a message the
+          // OPERATOR typed. With it the bubble says which session it came from.
+          await mgr.prompt(to, message, [], {
+            interrupt: false,
+            origin: { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null },
+          });
         } catch (e) {
           const why = String((e as Error)?.message ?? e);
           return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });

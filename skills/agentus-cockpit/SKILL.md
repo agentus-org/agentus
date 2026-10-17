@@ -27,33 +27,35 @@ is right.
 [ -n "$AGENTUS_COCKPIT_BIN" ] && echo "yes: $AGENTUS_COCKPIT_BIN"
 ```
 
-It is the `agentus` launcher itself, so the subcommand is never optional: `cockpit` comes right after
-it. If the variable is empty you are not in a cockpit session (a plain terminal, a cron job, another
-agent's sub-shell) — then this skill does not apply, keep your own notes and carry on. Do not guess at
-a path or hunt for the cockpit's port: the endpoint and token exist only inside a session.
-
-A human at a shell types the same thing without the environment:
-
-```bash
-agentus cockpit context
-```
+It points at the `agentus` launcher itself, so a call always reads `"$AGENTUS_COCKPIT_BIN" session
+<verb>`. If the variable is empty you are not in a cockpit session (a plain terminal, a cron job,
+another agent's sub-shell) — then this skill does not apply: keep your own notes and carry on. Do not
+guess at a path or hunt for the cockpit's port, and do not try to assemble the endpoint/token by hand;
+the cockpit issues them to the agents it spawns, and `no_identity` is the honest answer to "I am
+somewhere else right now".
 
 ## Commands
 
+The shape is **noun, then verb** — everything here is about one object, a session, so `session` is
+the noun and the id is a plain positional argument (`docker logs <id>`, `git show <rev>`). The two
+commands that are *not* about a session sit at the top level.
+
 ```bash
-"$AGENTUS_COCKPIT_BIN" cockpit capabilities            # the contract: commands, fields, sizes, whether send is on
-"$AGENTUS_COCKPIT_BIN" cockpit context                 # who you are (self) + every session in scope
-"$AGENTUS_COCKPIT_BIN" cockpit session <id>            # one session in detail, plus any approval it waits on
-"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20 # recent transcript, each message cut to the documented size
-"$AGENTUS_COCKPIT_BIN" cockpit plan <id>               # the plan object the operator's card renders
-"$AGENTUS_COCKPIT_BIN" cockpit skill [--path]          # this document, straight from the package
-"$AGENTUS_COCKPIT_BIN" cockpit send <<'JSON'
-{"to": "<session id>", "message": "…"}
-JSON
+"$AGENTUS_COCKPIT_BIN" capabilities                          # the contract: commands, fields, sizes, is send on?
+"$AGENTUS_COCKPIT_BIN" skill [--path]                        # this document, straight from the package
+
+"$AGENTUS_COCKPIT_BIN" session list                          # who you are (self) + every session in scope
+"$AGENTUS_COCKPIT_BIN" session show <id>                     # one session in detail, plus any approval it waits on
+"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20       # recent transcript, each message cut to the documented size
+"$AGENTUS_COCKPIT_BIN" session plan <id>                     # the plan object the operator's card renders
+"$AGENTUS_COCKPIT_BIN" session send <id> "…the message…"     # hand a message to another session
 ```
 
-`context` is the cheap one: one call, one row per session, enough to answer "what is the operator
-working on besides me". Reach for `messages` only when a specific session matters.
+`session list` is the cheap one: one call, one row per session, enough to answer "what is the
+operator working on besides me". Reach for `messages` only when a specific session matters.
+
+Stray arguments are refused rather than ignored (`session show a b` → `bad_request`), so a typo
+never turns into a quietly different answer.
 
 ## Output shape
 
@@ -107,13 +109,13 @@ clean stdout is not an accident.
 ## Worked example: what is the operator doing right now?
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" cockpit context | jq -r '.data.sessions[] | "\(.id)  \(.status)  \(.title)"'
+"$AGENTUS_COCKPIT_BIN" session list | jq -r '.data.sessions[] | "\(.id)  \(.status)  \(.title)"'
 ```
 
 Then, if one of them is the thing being discussed:
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 10 | jq -r '.data.messages[] | "\(.role): \(.text)"'
+"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 10 | jq -r '.data.messages[] | "\(.role): \(.text)"'
 ```
 
 `meta.returned` / `meta.capped` on that answer tell you whether the tail you asked for was itself

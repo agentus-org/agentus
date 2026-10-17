@@ -41,8 +41,8 @@ const files = (JSON.parse(packed)[0]?.files ?? []).map((f: { path: string }) => 
 check("…verified against npm's own file list (skills/agentus-cockpit/SKILL.md is packed)",
   files.includes("skills/agentus-cockpit/SKILL.md"), `${files.length} files packed`);
 check("…and the launcher that serves the doc is packed too", files.includes("bin/agentus.mjs"), "");
-check("…and the subcommand's implementation came along (bin/cockpit.mjs, not a second command)",
-  files.includes("bin/cockpit.mjs"), "");
+check("…and the client implementation came along (bin/cli.mjs, not a second command)",
+  files.includes("bin/cli.mjs"), "");
 check("ONE command in the package: `agentus` (no second `agentus-cockpit` bin to explain)",
   JSON.stringify(Object.keys(pkg.bin ?? {})) === '["agentus"]', JSON.stringify(pkg.bin));
 
@@ -99,12 +99,12 @@ check("…and a row of a kind with no native dir gets none",
 
 // ---- and the CLI can hand out the same document with no cockpit, no token ----
 const LAUNCHER = path.join(REPO, "bin/agentus.mjs");
-const cliPath = execFileSync(process.execPath, [LAUNCHER, "cockpit", "skill"], {
+const cliPath = execFileSync(process.execPath, [LAUNCHER, "skill"], {
   cwd: "/tmp", encoding: "utf8", env: { ...process.env, AGENTUS_COCKPIT_BIN: "", AGENTUS_COCKPIT_TOKEN: "", AGENTUS_COCKPIT_SESSION: "" },
 });
 check("`agentus-cockpit skill` prints the document with NO identity in the environment", cliPath === doc,
   `${cliPath.length} bytes vs ${doc.length}`);
-const cliFile = execFileSync(process.execPath, [LAUNCHER, "cockpit", "skill", "--path"], {
+const cliFile = execFileSync(process.execPath, [LAUNCHER, "skill", "--path"], {
   cwd: "/tmp", encoding: "utf8",
 });
 check("`skill --path` prints the installed path, so an agent can read it with its own file tools",

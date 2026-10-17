@@ -112,7 +112,7 @@ const HistRow = memo(function HistRow({ kind, who, text, current }: { kind: stri
  *  in there" is visible instead of a silent gap; thoughts and plans collapse to one dim line. */
 function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: string; text: string } {
   switch (m.kind) {
-    case "user": return { kind: "user", who: "你", text: m.text };
+    case "user": return { kind: "user", who: m.from ? `来自「${m.from.title}」` : "你", text: m.text };
     case "agent": return { kind: "agent", who: "它", text: m.text };
     case "meta": return { kind: "meta", who: "", text: m.text };
     case "tool": return { kind: "tool", who: "", text: `${m.title || m.kind2 || "工具"}${m.status ? ` · ${m.status}` : ""}` };

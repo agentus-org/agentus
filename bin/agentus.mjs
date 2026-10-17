@@ -44,11 +44,17 @@ Options
   -h, --help         this text
   -v, --version      print the version
 
-Subcommands
-  agentus cockpit <command>   the agent-facing data plane (capabilities / context / session /
-                              messages / plan / skill / send). One command, one name: the cockpit
-                              hands each agent "$AGENTUS_COCKPIT_BIN" — the path of THIS file — so
-                              an agent runs "$AGENTUS_COCKPIT_BIN cockpit <command>".
+Commands (client side — they need the identity the cockpit gives an agent it spawns)
+  agentus session list                 who you are + every session in scope
+  agentus session show <id>            one session in detail + any approval it waits on
+  agentus session messages <id> [--tail N]
+  agentus session plan <id>
+  agentus session send <id> <text…>    deliver a message into another session (operator-gated)
+  agentus capabilities                 the CLI's contract, self-describing
+  agentus skill [--path]               the CLI's manual, as shipped in the package
+
+  Inside a session they are called as:  "$AGENTUS_COCKPIT_BIN" session list
+  The cockpit hands that path (this very file) plus endpoint/token/session in the environment.
 
 The server reads more environment variables than these (agent backends, auth,
 speech). They are listed in the README, and the boot log prints the ones in play.
@@ -73,11 +79,15 @@ function fail(message) {
   }
 }
 
-// `agentus cockpit …` is a subcommand, not a flag: hand the rest of the argv to the agent-facing
-// CLI in its own process, so this file keeps holding no product logic (issue #15). Top-level await
-// keeps the dispatch from indenting the whole launcher into an `else` block.
-if (process.argv[2] === "cockpit") {
-  const child = spawn(process.execPath, [path.join(PKG_ROOT, "bin/cockpit.mjs"), ...process.argv.slice(3)], {
+// Client subcommands, not flags: hand the rest of the argv to the CLI in its own process, so this file
+// keeps holding no product logic. Top-level await keeps the dispatch from indenting the whole launcher
+// into an `else` block.
+//
+// `session` is the noun the five session-scoped verbs hang off; `capabilities` and `skill` sit at the
+// top level because they describe the CLI itself, not a session.
+const CLIENT_NOUNS = new Set(["session", "capabilities", "skill"]);
+if (CLIENT_NOUNS.has(process.argv[2])) {
+  const child = spawn(process.execPath, [path.join(PKG_ROOT, "bin/cli.mjs"), ...process.argv.slice(2)], {
     stdio: "inherit",
   });
   const code = await new Promise((resolve) => child.on("exit", (c, signal) => resolve(signal ? 130 : c ?? 0)));

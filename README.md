@@ -284,12 +284,17 @@ asked them all live in the cockpit, not in the agent's prompt. `agentus cockpit`
 channel that lets an agent read that — and, if you allow it, hand a message to another session:
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" cockpit capabilities   # the contract, self-describing (start here)
-"$AGENTUS_COCKPIT_BIN" cockpit context        # who am I + every session in scope
-"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" cockpit plan <id>
-"$AGENTUS_COCKPIT_BIN" cockpit skill          # this CLI's own manual, from the package
+"$AGENTUS_COCKPIT_BIN" capabilities                    # the contract, self-describing (start here)
+"$AGENTUS_COCKPIT_BIN" session list                    # who am I + every session in scope
+"$AGENTUS_COCKPIT_BIN" session show <id>               # one session, + what it is waiting on
+"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" session plan <id>
+"$AGENTUS_COCKPIT_BIN" session send <id> "…a message…"  # operator-gated, off by default
+"$AGENTUS_COCKPIT_BIN" skill                           # this CLI's own manual, from the package
 ```
+
+The shape is noun-then-verb (`agentus session send <id> …`) because every one of these acts on the
+same object; the session id is a positional argument, options stay options.
 
 The cockpit hands `AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
 the CLI needs no arguments, no port and no config — and the token never appears on a command

@@ -944,7 +944,16 @@ export class SessionManager {
     sessionId: string,
     text: string,
     attachments: PromptAttachment[] = [],
-    opts: { interrupt?: boolean } = {},
+    opts: {
+      interrupt?: boolean;
+      /**
+       * Who SAID this, when it was not the operator at the keyboard — today only the cockpit's
+       * cross-session `send`. It rides the stored payload so the page can label the bubble instead of
+       * presenting another agent's words as the operator's own (which is what it did before: a user
+       * message, no attribution, indistinguishable from something they typed).
+       */
+      origin?: { sessionId: string; title?: string | null };
+    } = {},
   ): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
@@ -1004,7 +1013,14 @@ export class SessionManager {
     const turnStartedAt = Date.now();
     this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s) });
     const msg = this.#store.appendMessage({
-      sessionId, kind: "user", payload: { text, attachments: summarize(attachments) }, createdAt: Date.now(),
+      sessionId,
+      kind: "user",
+      payload: {
+        text,
+        attachments: summarize(attachments),
+        ...(opts.origin ? { origin: { sessionId: opts.origin.sessionId, title: opts.origin.title ?? null } } : {}),
+      },
+      createdAt: Date.now(),
     });
     this.#touch(s, msg.createdAt);
     this.#emit({ t: "message", message: msg });
@@ -1439,7 +1455,7 @@ export class SessionManager {
     // self-describing), so nothing here needs to be kept in sync with the CLI.
     body.push(
       "",
-      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN cockpit`（其它会话的状态/消息/计划；先 capabilities，全文 `… cockpit skill`）。",
+      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN session list`（其它会话状态/消息/计划；先 capabilities，全文 skill）。",
     );
 
     return {

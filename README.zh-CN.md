@@ -246,12 +246,17 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 `agentus cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" cockpit capabilities   # 契约本身，自述（先跑这个）
-"$AGENTUS_COCKPIT_BIN" cockpit context        # 我是谁 + 权限内所有会话
-"$AGENTUS_COCKPIT_BIN" cockpit messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" cockpit plan <id>
-"$AGENTUS_COCKPIT_BIN" cockpit skill          # 这份 CLI 的说明书，直接从包里取
+"$AGENTUS_COCKPIT_BIN" capabilities                     # 契约本身，自述（先跑这个）
+"$AGENTUS_COCKPIT_BIN" session list                     # 我是谁 + 权限内所有会话
+"$AGENTUS_COCKPIT_BIN" session show <id>                # 单个会话，外加它此刻在等什么
+"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
+"$AGENTUS_COCKPIT_BIN" session plan <id>
+"$AGENTUS_COCKPIT_BIN" session send <id> "…一句话…"      # 需要操作者开启，默认关闭
+"$AGENTUS_COCKPIT_BIN" skill                            # 这份 CLI 的说明书，直接从包里取
 ```
+
+形状是「名词 + 动词」（`agentus session send <id> …`），因为这些动作都作用在同一个对象上；
+会话 id 是位置参数，选项才用 `--`。
 
 身份由驾驶舱在 spawn 时注入（`AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
 不要参数、不要端口、不要配置，token 也不会出现在命令行上。`AGENTUS_COCKPIT_BIN` 就是同一个

@@ -33,7 +33,16 @@ export interface LivePlan {
 }
 
 export type MsgView =
-  | { key: string; kind: "user"; text: string; files: { kind: string; name: string }[]; at?: number }
+  | {
+      key: string;
+      kind: "user";
+      text: string;
+      files: { kind: string; name: string }[];
+      at?: number;
+      /** the message was NOT typed by the operator: another session's agent sent it through the
+       *  cockpit channel. Present only for those, so the page can say who is talking. */
+      from?: { id: string; title: string };
+    }
   | { key: string; kind: "agent"; text: string; open: boolean; at?: number }
   | { key: string; kind: "thought"; text: string; open: boolean; at?: number }
   | {
@@ -1969,8 +1978,17 @@ class Cockpit {
         // A re-delivered frame must not become a second bubble (see `reapply` above): the row's key IS
         // its identity, and a user row is a turn boundary, so the counter advances only for a new one.
         if (list.some((x) => x.key === `m${m.seq}`)) break;
+        // An agent-to-agent message is stored as a `user` row (it IS a turn boundary), but it must not
+        // be drawn as the operator's own words — hence the `from` marker the bubble reads.
+        const raw = (p.origin ?? null) as { sessionId?: unknown; title?: unknown } | null;
         list.push({
-          key: `m${m.seq}`, kind: "user", text: String(p.text ?? ""), at,
+          key: `m${m.seq}`,
+          kind: "user",
+          text: String(p.text ?? ""),
+          at,
+          ...(raw && typeof raw.sessionId === "string"
+            ? { from: { id: raw.sessionId, title: String(raw.title ?? "").trim() || "另一个会话" } }
+            : {}),
           // names only — the bytes were never persisted (AttachmentSummary)
           files: Array.isArray(p.attachments)
             ? (p.attachments as { kind?: unknown; name?: unknown }[])

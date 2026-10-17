@@ -393,6 +393,10 @@ button { font: inherit; }
 .msg { margin-bottom: 14px; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 .msg > * { max-width: 100%; }
 .msg.user { align-items: flex-end; } /* the operator's turns — and the YOU label above them — hug the right */
+/* A cross-session message keeps the operator's right-hand placement (it IS a turn boundary) but must
+   not pass for their own typing: accented label, dashed border, so one glance separates the two. */
+.msg.user.from-agent .role { color: var(--accent, #6ea8fe); letter-spacing: 0.2px; }
+.msg.user.from-agent .bubble { border-style: dashed; border-color: var(--accent, #6ea8fe); }
 .msg.plan, .msg.meta { align-items: stretch; } /* a plan/error block is a panel, not a bubble: it keeps the column */
 .msg .role { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; letter-spacing: 0.4px; }
 /* WHO is speaking, on the message: the agent's own face + name, instead of the word "AGENT" (which

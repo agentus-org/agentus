@@ -1913,8 +1913,13 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
   switch (m.kind) {
     case "user":
       return (
-        <div className="msg user">
-          <div className="role">YOU</div>
+        <div className={`msg user${m.from ? " from-agent" : ""}`}>
+          {/* «YOU» is only true when the operator typed it. A cross-session message is a turn
+              boundary too, but presenting another agent's words as the operator's own is exactly the
+              kind of quiet lie this cockpit must not tell. */}
+          <div className="role" title={m.from ? `会话 ${m.from.id}` : undefined}>
+            {m.from ? `来自「${m.from.title}」` : "YOU"}
+          </div>
           <div className="bubble">
             {m.files.length > 0 ? (
               <div className="bubble-files">
