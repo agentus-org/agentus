@@ -385,10 +385,25 @@ try {
    *  Resume first, then require the prompt to be ACCEPTED before asserting anything about a turn. */
   const startTurn = async (sid, text) => {
     await api("POST", `/api/sessions/${sid}/resume`).catch(() => null);
-    for (let i = 0; i < 60; i++) {
-      const r = await api("POST", `/api/sessions/${sid}/prompt`, { text });
-      if (r.status === 202) return true;
+    // Wait for `ready`, not merely for the row to exist: a prompt that lands while the slot is
+    // still `starting` is answered 202 and then DIES in the log ("prompt failed … session not
+    // ready"), so 202 is "accepted", never "delivered" (measured on :8901).
+    for (let i = 0; i < 80; i++) {
+      const d = (await api("GET", "/api/sessions")).body;
+      const row = [...(d?.live ?? []), ...(d?.pending ?? []), ...(d?.archived ?? [])].find((r) => r.id === sid);
+      if (row?.status === "ready") break;
       await sleep(250);
+    }
+    for (let i = 0; i < 40; i++) {
+      const r = await api("POST", `/api/sessions/${sid}/prompt`, { text });
+      if (r.status !== 202) { await sleep(250); continue; }
+      // …and the proof the turn really began is the operator's own row in the transcript.
+      for (let j = 0; j < 12; j++) {
+        if ((await msgsOf(sid)).some((m) => m.kind === "user"
+          && String((m.payload ?? {}).text ?? "").includes(text.slice(0, 8)))) return true;
+        await sleep(250);
+      }
+      return false;
     }
     return false;
   };
@@ -400,7 +415,10 @@ try {
   // The refusal bubble ("turn failed: turn already running") is emitted over WS and never
   // persisted, so the durable evidence is the server's own log line. This is also the direct
   // reproduction of the operator's report: this is exactly what barge-in used to send.
-  const refusals = () => (log.match(new RegExp(`prompt failed for ${slow.id}`, "g")) ?? []).length;
+  /** Only the ADMISSION refusal counts. A bare `prompt failed for <id>` also matches "session not
+   *  ready" — a fixture that never ran a turn would then read as "the refusal contract holds",
+   *  which is the exact shape of a green check with no teeth. */
+  const refusals = () => (log.match(new RegExp(`prompt failed for ${slow.id}: turn already running`, "g")) ?? []).length;
   await api("POST", `/api/sessions/${slow.id}/prompt`, { text: "普通发送" });
   await sleep(700);
   check("…and a plain prompt during a turn IS still refused (the button-as-stop contract)",
