@@ -35,9 +35,14 @@ import type {
   SessionModeState,
   TurnTrace,
 } from "../../../shared/src/index.js";
-import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
+import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { PREFS_DEFAULT, type PlanHintSettings } from "../settings.js";
+
+// The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
+// at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
+// package's `files`).
+const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/agentus-cockpit.mjs");
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
@@ -212,6 +217,11 @@ interface LiveSession {
    *  what keeps the tool's writes scoped to this one session even if the spawn command is copied
    *  out of `ps`. Lives and dies with the process that received it. */
   planToken: string;
+  /** Minted per agent process and handed to the CHILD's ENVIRONMENT (issue #15): the cockpit CLI
+   *  (`$AGENTUS_COCKPIT_BIN`) reads it, so an agent can look at the rest of the cockpit without ever
+   *  touching a port or a token itself. Scoped to this one session, like `planToken` — and dies with
+   *  the process that received it, so a copied `ps` line is worth nothing later. */
+  cockpitToken: string;
   /** ACP v2 lets a session carry several plans (`planId`); the card renders one. Whichever planId
    *  shows up first is adopted and the rest are left alone — see the `plan_update` case. */
   planId?: string;
@@ -386,6 +396,10 @@ export class SessionManager {
 
     // isolation: never let a child inherit its way back into the live runtime home
     const plan = buildSpawnEnv(spec);
+    // the cockpit CLI's identity for THIS process (issue #15) — minted before the spawn because it
+    // travels in the child's own environment
+    const cockpitToken = randomUUID();
+    plan.env = this.#cockpitEnv(plan.env, id, cockpitToken);
     // measured once per spawn: how long the row took to reach `ready` (or to die trying)
     const spawnStarted = Date.now();
 
@@ -425,6 +439,7 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
       // activity. Without this the slot inherits the store's message clock — yesterday's — and the
       // reaper's first tick after the spawn kills the process the operator just asked for.
@@ -556,6 +571,10 @@ export class SessionManager {
     // point of the workspace being a separate field (see shared/index.ts).
     const resumeCwd = row.workspace || row.cwd;
     const plan = buildSpawnEnv(spec);
+    // a resumed slot is a NEW process: its cockpit identity is minted here, like create()'s. The old
+    // child's token died with the old child.
+    const cockpitToken = randomUUID();
+    plan.env = this.#cockpitEnv(plan.env, id, cockpitToken);
     // ── Can this slot come back AT ALL? ──────────────────────────────────────────────────────
     // A session's agent-side state lives in the home it was CREATED under; a resume hands the
     // agent whatever home the row names TODAY. If those differ, the agent is being asked about a
@@ -605,6 +624,7 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
       caps: { fork: false, load: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
+      cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
       // activity. Without this the slot inherits the store's message clock — yesterday's — and the
       // reaper's first tick after the spawn kills the process the operator just asked for.
@@ -1103,6 +1123,30 @@ export class SessionManager {
    *  is driving the session and vanishes for an agent started from the CLI, cron or Studio — which
    *  is the whole difference from a `config.yaml` entry like the `ekko_studio_*` ones (§4).
    *  The token in `env` is minted for THIS session, so a copied-out command writes only its own. */
+  /** The cockpit CLI's identity, in the CHILD's environment (issue #15).
+   *
+   *  Handed over the same way the plan token is — per process, per session, nowhere else — so the
+   *  agent never handles a port or a secret: it runs `$AGENTUS_COCKPIT_BIN context` and the CLI reads
+   *  these three. Rendering it into a prompt, an `echo`, or a `ps` line is the one thing the CLI's own
+   *  `capabilities` forbids, and the token is worth nothing once this process is gone. */
+  #cockpitEnv(env: NodeJS.ProcessEnv, sessionId: string, token: string): NodeJS.ProcessEnv {
+    return {
+      ...env,
+      AGENTUS_COCKPIT_ENDPOINT: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}`,
+      AGENTUS_COCKPIT_TOKEN: token,
+      AGENTUS_COCKPIT_SESSION: sessionId,
+      AGENTUS_COCKPIT_BIN: COCKPIT_BIN,
+    };
+  }
+
+  /** Resolve a cockpit-channel token to the session it was minted for (issue #15). One token, one
+   *  session: a copied env var reads that session's scope and nothing wider. */
+  cockpitCaller(token: string): string | null {
+    if (!token) return null;
+    for (const s of this.#sessions.values()) if (s.cockpitToken === token) return s.info.id;
+    return null;
+  }
+
   #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
     if (nativePlanSourceOf(spec) !== "none") return [];
     return [
@@ -1219,7 +1263,7 @@ export class SessionManager {
    *  truth (it does not own this list) or the model will keep believing it does. On an MCP-driven row
    *  the tool is the session's ONLY writer, so it takes the card over even when an older build had
    *  written it from frames (`acceptsToolWrite`). */
-  writePlanFromMcp(sessionId: string, token: string, input: { items: unknown; explanation?: unknown }):
+  writePlanFromMcp(sessionId: string, token: string, input: { items: unknown; title?: unknown; explanation?: unknown }):
     | { ok: true; accepted: boolean; reason?: string; plan: PlanSnapshot | null }
     | { ok: false; error: string } {
     const live = this.#sessions.get(sessionId);
@@ -1243,6 +1287,10 @@ export class SessionManager {
     }
     const plan = this.#store.upsertPlan(sessionId, {
       items,
+      // `undefined` = keep whatever title is on the card (same rule as the remark): most writes are
+      // a status flip and carry no title, and those must not erase the phrase the completion card
+      // reads. `null`/empty clears it (clampTitle answers null).
+      ...(input.title !== undefined ? { title: clampTitle(input.title) } : {}),
       ...(input.explanation !== undefined ? { explanation: clampExplanation(input.explanation) } : {}),
       source: "mcp",
       // A write means work is happening again: the previous turn's terminal stamp no longer
@@ -1311,6 +1359,11 @@ export class SessionManager {
       // A native-frames backend with nothing to hand over: nothing worth saying.
       return null;
     }
+
+    // The cockpit channel (issue #15) rides the same block: ONE line, because its whole job is to say
+    // that a readable panel exists. The contract itself lives on the other end (`capabilities` is
+    // self-describing), so nothing here needs to be kept in sync with the CLI.
+    body.push("", "`$AGENTUS_COCKPIT_BIN context` 可查本驾驶舱其他会话的状态/消息/计划（只读）。");
 
     return {
       type: "resource",
@@ -1831,6 +1884,22 @@ export class SessionManager {
 
   messages(sessionId: string, afterSeq = -1, limit = 500) {
     return this.#store.messagesAfter(sessionId, afterSeq, limit);
+  }
+
+  /** The cockpit CLI's read view (issue #15): the sessions the OPERATOR can see, in one list —
+   *  live and cold, never 已归档 (that is the operator's shelf, not work in flight).
+   *
+   *  Cold rows are capped by `cold()`'s own page size on purpose: an agent asking "what is going on"
+   *  gets the recent cockpit, not a scrollback of every session this install ever made. */
+  cockpitRows(): SessionInfo[] {
+    return [...this.list(), ...this.cold(50)];
+  }
+
+  /** Approvals a session is WAITING on right now — the one fact worth waking another agent for. */
+  pendingFor(sessionId: string): PermissionRequestView[] {
+    // The map holds `{view, resolve, timer}`; only the VIEW is safe to hand out (the other two are
+    // the waiter itself).
+    return [...(this.#sessions.get(sessionId)?.pendingPermissions.values() ?? [])].map((p) => p.view);
   }
 
   /** Re-point a slot's workspace. Live slot: panels + the *next* resume move; the

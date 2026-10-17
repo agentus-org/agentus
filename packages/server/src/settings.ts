@@ -170,9 +170,18 @@ export interface AgentSettings {
    *  is a permanent memory floor (5 × ~137 MB RSS measured); with it, a cockpit left alone for a day
    *  comes back to nothing running. 0 = 不过期. */
   warmTtlHours: number;
+  /** 驾驶舱互发消息 (issue #15): may an agent hand a message to ANOTHER session through the cockpit
+   *  CLI (`agentus cockpit send`)? Off by default — two agents that can talk to each other without
+   *  being asked are a loop generator, and the operator pays for those tokens. Reading the cockpit
+   *  (`context`/`messages`/`plan`) is NOT gated: it cannot change anything, and it is what the
+   *  工作播报 observer runs on. */
+  cockpitSend: boolean;
 }
 
-export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5, warmSlots: 5, warmTtlHours: 24 };
+export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false };
+
+/** The numeric half of `AgentSettings` — the keys the range-checked helpers may write. */
+type AgentNumberKey = "idleKillMin" | "warmSlots" | "warmTtlHours";
 
 /** What the settings page may offer: the ends of the number field. Server-side enforcement uses
  *  the same pair, so a hand-written request cannot store a nonsense value. */
@@ -345,7 +354,9 @@ function pickAgent(raw: unknown): AgentSettings {
   const out = { ...AGENT_DEFAULT };
   if (raw && typeof raw === "object") {
     const r = raw as Record<string, unknown>;
-    const take = (key: keyof AgentSettings, range: [number, number]): void => {
+    // Explicitly the NUMERIC keys: `AgentSettings` also carries `cockpitSend: boolean`, and a
+    // `keyof` assignment would have to satisfy both sides of the union.
+    const take = (key: AgentNumberKey, range: [number, number]): void => {
       const v = Number(r[key]);
       const [lo, hi] = range;
       if (Number.isFinite(v) && v >= lo && v <= hi) out[key] = v;
@@ -353,6 +364,7 @@ function pickAgent(raw: unknown): AgentSettings {
     take("idleKillMin", AGENT_IDLE_RANGE);
     take("warmSlots", AGENT_WARM_RANGE);
     take("warmTtlHours", AGENT_WARM_TTL_RANGE);
+    if (typeof r.cockpitSend === "boolean") out.cockpitSend = r.cockpitSend;
   }
   return out;
 }
@@ -592,7 +604,7 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
  *  text fields. */
 export function saveAgent(patch: Record<string, unknown>): Settings {
   const a = { ...cache.agent };
-  const set = (key: keyof AgentSettings, range: [number, number], unit: string, off: string): void => {
+  const set = (key: AgentNumberKey, range: [number, number], unit: string, off: string): void => {
     if (!(key in patch)) return;
     const raw = typeof patch[key] === "number" ? (patch[key] as number) : Number(patch[key]);
     const [lo, hi] = range;
@@ -604,6 +616,11 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
   set("idleKillMin", AGENT_IDLE_RANGE, "minutes", "0 = off");
   set("warmSlots", AGENT_WARM_RANGE, "slots", "0 = off");
   set("warmTtlHours", AGENT_WARM_TTL_RANGE, "hours", "0 = never expires");
+  // A boolean next to three numbers: spelled out rather than forced through the numeric `set`.
+  if ("cockpitSend" in patch) {
+    if (typeof patch.cockpitSend !== "boolean") throw new Error("invalid cockpitSend: expected true or false");
+    a.cockpitSend = patch.cockpitSend;
+  }
   cache = { ...cache, agent: a, updatedAt: Date.now() };
   persist();
   return cache;

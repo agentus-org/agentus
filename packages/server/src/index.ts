@@ -22,7 +22,8 @@ import { openDashscopeStream } from "./dashscope.js";
 import { agentSettings, initSettings, planHintSettings, publicSettings, saveAgent, saveCall, savePrefs, saveSettings, saveTheme } from "./settings.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
-import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent } from "../../shared/src/index.js";
+import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
+import { COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, capabilities, sendAllowed, sessionRow, tailMessages } from "./cockpit/api.js";
 
 const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
@@ -177,6 +178,9 @@ const notify = new NotifyCenter({
   dataDir: DATA_DIR,
   log: (line: string) => console.log(line),
   sessionTitle: (id: string) => mgr.list().find((s) => s.id === id)?.title ?? store.getSession(id)?.title ?? null,
+  // The completion card's task line (#11). Read straight from the plan OBJECT — the same row the
+  // card renders — so the notification and the screen can never disagree about what finished.
+  sessionPlan: (id: string) => store.getPlan(id),
   // Operator credential = whatever already unlocks the cockpit (session cookie or machine token).
   operator: (req, url) => Boolean(auth.authenticate(req.headers, url)),
   // The companion artifact, so the phone panel in 设置 can show its size without a second request.
@@ -437,6 +441,86 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // minted per agent process and delivered through the ACP handshake (§4) — plus a loopback-only
     // rule, so the token never crosses a network. The blast radius of a leaked token is one session's
     // plan, which is the object the operator is already looking at.
+    // The cockpit CLI's data plane (issue #15). AHEAD of the operator gate for the same reason the
+    // plan tool is: its caller is an AGENT CHILD process with no browser session, and handing it
+    // operator credentials would put them in every agent's environment. It carries a token minted per
+    // agent process (env, never argv) plus the same loopback rule, so the token cannot cross a network.
+    if (url.pathname.startsWith("/api/cockpit/")) {
+      const ip = clientIp(req);
+      if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the cockpit channel is loopback-only" });
+      const caller = mgr.cockpitCaller(String(req.headers["x-agentus-cockpit-token"] ?? ""));
+      if (!caller) return send(res, 403, { error: COCKPIT_ERRORS.badToken });
+      // Scope: what the operator can see. 已归档 is out, on purpose — see `cockpitRows`.
+      const rows = mgr.cockpitRows();
+      const rowOf = (id: string): SessionInfo | null => rows.find((s) => s.id === id) ?? null;
+      const summarize = (s: SessionInfo) => sessionRow(s, {
+        plan: store.getPlan(s.id),
+        permissions: mgr.pendingFor(s.id).length,
+      });
+      const sendOk = sendAllowed(agentSettings().cockpitSend);
+
+      if (url.pathname === "/api/cockpit/capabilities" && req.method === "GET") {
+        return send(res, 200, capabilities(sendOk));
+      }
+      if (url.pathname === "/api/cockpit/context" && req.method === "GET") {
+        const self = rowOf(caller);
+        return send(res, 200, {
+          schema_version: COCKPIT_SCHEMA_VERSION,
+          self: self ? summarize(self) : null,
+          sessions: rows.map(summarize),
+          meta: { count: rows.length, scope: "live+cold, archived excluded" },
+        });
+      }
+      if (url.pathname === "/api/cockpit/session" && req.method === "GET") {
+        const id = url.searchParams.get("id") ?? "";
+        const info = rowOf(id);
+        if (!info) return send(res, 404, { error: COCKPIT_ERRORS.noSuchSession });
+        const waiting = mgr.pendingFor(id).map((p) => ({
+          requestId: p.requestId, title: p.toolCallTitle ?? p.kind ?? "请求",
+          options: (p.options ?? []).map((o) => ({ id: o.optionId, name: o.name, kind: o.kind })),
+        }));
+        return send(res, 200, {
+          schema_version: COCKPIT_SCHEMA_VERSION,
+          session: summarize(info),
+          plan: store.getPlan(id),
+          pending: waiting,
+          messages: tailMessages(mgr.messages(id, -1, 500), 0).meta,
+        });
+      }
+      if (url.pathname === "/api/cockpit/messages" && req.method === "GET") {
+        const id = url.searchParams.get("id") ?? "";
+        if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.noSuchSession });
+        const tail = Number(url.searchParams.get("tail") ?? MESSAGES_TAIL_DEFAULT);
+        const out = tailMessages(mgr.messages(id, -1, 2000), tail);
+        return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, messages: out.rows, meta: out.meta });
+      }
+      if (url.pathname === "/api/cockpit/plan" && req.method === "GET") {
+        const id = url.searchParams.get("id") ?? "";
+        if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.noSuchSession });
+        return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, plan: store.getPlan(id) });
+      }
+      if (url.pathname === "/api/cockpit/send" && req.method === "POST") {
+        const body = await readJson(req);
+        const to = String(body.to ?? "");
+        const message = String(body.message ?? "").trim();
+        if (!to || !message) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        const target = rowOf(to);
+        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (target.cold) return send(res, 409, { error: COCKPIT_ERRORS.targetCold });
+        // Deliberately NOT `interrupt`: a cross-session message must never take the floor from a turn
+        // the OPERATOR started. A busy target answers `target_busy` and the caller reports it as such.
+        try {
+          await mgr.prompt(to, message, [], { interrupt: false });
+        } catch (e) {
+          const why = String((e as Error)?.message ?? e);
+          return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
+        }
+        return send(res, 200, { delivered: true, to, code: "delivered" });
+      }
+      return send(res, 404, { error: "unknown cockpit command" });
+    }
+
     if (url.pathname === "/api/plan/mcp" && req.method === "POST") {
       const ip = clientIp(req);
       if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the plan tool is loopback-only" });
@@ -448,7 +532,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return out.ok ? send(res, 200, { plan: out.plan }) : send(res, 403, { error: out.error });
       }
       if (body.op === "update") {
-        const out = mgr.writePlanFromMcp(sessionId, token, { items: body.items, explanation: body.explanation });
+        const out = mgr.writePlanFromMcp(sessionId, token, {
+          items: body.items, title: body.title, explanation: body.explanation,
+        });
         if (!out.ok) return send(res, 403, { error: out.error });
         return send(res, 200, { accepted: out.accepted, reason: out.reason, plan: out.plan });
       }

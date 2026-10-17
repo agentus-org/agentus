@@ -235,7 +235,24 @@ public final class NotifyService extends Service {
                 JSONObject activity = frame.optJSONObject("activity");
                 if (activity == null) return;
                 if (seq > 0 && p != null && seq <= p.cursor) return; // already applied before a reconnect
-                Notifier.apply(this, p != null ? p.url : null, activity);
+                // A REPLAYED frame is catch-up, not news (issue #12). What a reconnecting phone must
+                // rebuild is STATE — a turn that is still running, an approval still waiting — so those
+                // are applied like any frame. A turn that FINISHED while the phone was away is history:
+                // applying it pops a 「已完成」 banner with a sound per turn, and after a re-login that
+                // arrived as a stack of them. The cursor still advances either way, so nothing is
+                // re-sent; only the announcement is dropped. Dismissals are never skipped: a stale
+                // 「running」 card left on screen is worse than a missing banner.
+                boolean catchUp = frame.optBoolean("replayed", false);
+                boolean ongoing = activity.optBoolean("ongoing", false);
+                String op = activity.optString("op", "upsert");
+                String kind = activity.optString("kind");
+                boolean finishedTurn = "upsert".equals(op)
+                        && ("agent_done".equals(kind) || "error".equals(kind)) && !ongoing;
+                if (catchUp && finishedTurn) {
+                    log("回放的历史事件（不弹通知）：" + kind + " " + activity.optString("activityId"));
+                } else {
+                    Notifier.apply(this, p != null ? p.url : null, activity);
+                }
                 if (seq > 0 && p != null) {
                     profiles.setCursor(p.id, seq);
                     sendAck(ws, seq);

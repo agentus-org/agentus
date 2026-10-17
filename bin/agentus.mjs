@@ -44,6 +44,12 @@ Options
   -h, --help         this text
   -v, --version      print the version
 
+Subcommands
+  agentus cockpit <command>   the agent-facing data plane (context / session / messages / plan /
+                              send / capabilities). Inside a session, run it through
+                              "$AGENTUS_COCKPIT_BIN <command>" — the cockpit hands that path and
+                              the credentials to the agent it spawns.
+
 The server reads more environment variables than these (agent backends, auth,
 speech). They are listed in the README, and the boot log prints the ones in play.
 
@@ -65,6 +71,17 @@ function fail(message) {
     fail(`needs Node >= 22.5 (node:sqlite); this is ${process.versions.node}.\n`
       + `  nvm: nvm install 22 && nvm use 22   ·   homebrew: brew install node`);
   }
+}
+
+// `agentus cockpit …` is a subcommand, not a flag: hand the rest of the argv to the agent-facing
+// CLI in its own process, so this file keeps holding no product logic (issue #15). Top-level await
+// keeps the dispatch from indenting the whole launcher into an `else` block.
+if (process.argv[2] === "cockpit") {
+  const child = spawn(process.execPath, [path.join(PKG_ROOT, "bin/agentus-cockpit.mjs"), ...process.argv.slice(3)], {
+    stdio: "inherit",
+  });
+  const code = await new Promise((resolve) => child.on("exit", (c, signal) => resolve(signal ? 130 : c ?? 0)));
+  process.exit(code);
 }
 
 const opts = { port: undefined, data: undefined, open: false, where: false };

@@ -12,7 +12,8 @@
   "url": "https://github.com/agentus-org/agentus/issues"
  },
  "bin": {
-  "agentus": "bin/agentus.mjs"
+   "agentus": "bin/agentus.mjs",
+   "agentus-cockpit": "bin/agentus-cockpit.mjs"
  },
  "files": [
   "bin/",

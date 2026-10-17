@@ -174,7 +174,12 @@ export interface ActionCallback {
 /** Server -> device WS frames. */
 export type NotifyFrame =
   | { t: "hello"; deviceId: string; serverTime: number; cursor: number; live: boolean }
-  | { t: "activity"; seq: number; activity: ActivityObject }
+  /** `replayed: true` = this frame is CATCH-UP sent on attach (the device's cursor was behind), not
+   *  news that just happened. The two need different treatment on the far side: a reconnecting phone
+   *  must rebuild STATE (a turn still running, an approval still waiting) but must not fire a banner
+   *  and a sound for every turn that finished while it was away (issue #12). The flag is additive and
+   *  optional — an older app simply ignores it and behaves as it does today. */
+  | { t: "activity"; seq: number; activity: ActivityObject; replayed?: boolean }
   | { t: "bye"; reason: string };
 
 /** Server-side record: what was published + how to interpret its actions. */

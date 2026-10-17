@@ -242,6 +242,7 @@ interface RawPlanRow {
   session_id: string;
   revision: number;
   items: string;
+  title: string | null;
   explanation: string | null;
   source: string;
   terminal: string | null;
@@ -252,6 +253,9 @@ interface RawPlanRow {
  *  (only an agent writes one, and most plan updates carry none) — see `upsertPlan`. */
 export interface PlanPatch {
   items: unknown;
+  /** `undefined` keeps the title that is there — the same rule as `explanation`, and the reason a
+   *  routine `items`-only update does not erase the one phrase the completion card reads. */
+  title?: string | null;
   explanation?: string | null;
   source: PlanSnapshot["source"];
   terminal?: string | null;
@@ -262,6 +266,7 @@ function rowToPlan(r: RawPlanRow): PlanSnapshot {
     sessionId: r.session_id,
     revision: r.revision,
     items: normalizeItems(parseJson(r.items)),
+    title: r.title,
     explanation: r.explanation,
     source: r.source === "acp" || r.source === "mcp" ? r.source : "server",
     terminal: r.terminal,
@@ -322,7 +327,7 @@ export class Store {
       -- its process and the frames on screen are stale (design-plan-service.md §1).
       create table if not exists plans (
         session_id text primary key, revision integer not null default 0,
-        items text not null, explanation text, source text not null,
+        items text not null, title text, explanation text, source text not null,
         terminal text, updated_at integer not null
       );
     `);
@@ -365,6 +370,13 @@ export class Store {
     );
     if (!mcols.has("block_key")) this.#db.exec("alter table messages add column block_key text");
     this.#db.exec("create index if not exists idx_messages_block on messages (session_id, block_key)");
+    // plans: the one-line TITLE a completion notification reads (issue #11). Additive, and null for
+    // every existing plan — a card that has never been given a title falls back to its remark, and
+    // then to the last step it closed, so an old store keeps behaving exactly as before.
+    const pcols = new Set(
+      (this.#db.prepare("pragma table_info(plans)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!pcols.has("title")) this.#db.exec("alter table plans add column title text");
     // additive migration (M6.1): the health snapshot + cached handshake on a backend row. Kept
     // as its own column block so a row insert/update never has to carry them (they are written
     // by recordBackendCheck alone, and by nothing else).
@@ -819,7 +831,7 @@ export class Store {
   getPlan(sessionId: string): PlanSnapshot | null {
     const row = this.#db
       .prepare(
-        `select session_id, revision, items, explanation, source, terminal, updated_at
+        `select session_id, revision, items, title, explanation, source, terminal, updated_at
          from plans where session_id = ?`,
       )
       .get(sessionId) as RawPlanRow | undefined;
@@ -834,18 +846,21 @@ export class Store {
     const prev = this.getPlan(sessionId);
     const explanation =
       patch.explanation === undefined ? (prev?.explanation ?? null) : patch.explanation;
+    const title = patch.title === undefined ? (prev?.title ?? null) : patch.title;
     this.#db
       .prepare(
-        `insert into plans (session_id, revision, items, explanation, source, terminal, updated_at)
-         values (?, ?, ?, ?, ?, ?, ?)
+        `insert into plans (session_id, revision, items, title, explanation, source, terminal, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(session_id) do update set
-           revision = excluded.revision, items = excluded.items, explanation = excluded.explanation,
+           revision = excluded.revision, items = excluded.items, title = excluded.title,
+           explanation = excluded.explanation,
            source = excluded.source, terminal = excluded.terminal, updated_at = excluded.updated_at`,
       )
       .run(
         sessionId,
         (prev?.revision ?? 0) + 1,
         JSON.stringify(normalizeItems(patch.items)),
+        title,
         explanation,
         patch.source,
         patch.terminal ?? null,

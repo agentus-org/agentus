@@ -15,7 +15,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
-import type { PermissionRequestView, ServerEvent } from "../../../shared/src/index.js";
+import type { PermissionRequestView, PlanSnapshot, ServerEvent } from "../../../shared/src/index.js";
 import { DEFAULT_NOTIFY_RULES } from "./types.js";
 import type {
   ActionCallback,
@@ -41,6 +41,9 @@ export interface NotifyCenterOptions {
   credentials?: (username: string, password: string, ip: string) => { ok: boolean; reason?: string };
   /** Session title lookup, for activity subtitles. */
   sessionTitle?: (sessionId: string) => string | null;
+  /** The session's plan OBJECT (`Store.getPlan`), for the one line that says WHAT finished. Read-only
+   *  and optional: a center built without it produces exactly the pre-#11 cards. */
+  sessionPlan?: (sessionId: string) => PlanSnapshot | null;
   /** The companion APK, so the web panel can report its size (optional). */
   apkPath?: string;
   /** Called when the cockpit reports WHICH session it is showing (the presence route) — the one
@@ -121,6 +124,12 @@ function nameAndDetail(name: string, ...detail: Array<string | undefined | null>
   return [name, ...detail.filter((d): d is string => Boolean(d && d.trim()))].join(" · ");
 }
 
+/** Trim a fallback line to the body's budget. The `…` is the honest part: it says the sentence was
+ *  longer, where a silent cut reads as the writer having written exactly that. */
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /** The agent's own tool title, split at its first ": ".
  *
  *  The head goes on the state line (short — the Xiaomi island clips a title at 20 chars), and the
@@ -141,6 +150,7 @@ export class NotifyCenter {
   private readonly operator: ((req: IncomingMessage, url: URL) => boolean) | null;
   private readonly credentials: ((username: string, password: string, ip: string) => { ok: boolean; reason?: string }) | null;
   private readonly sessionTitle: ((sessionId: string) => string | null) | null;
+  private readonly sessionPlan: ((sessionId: string) => PlanSnapshot | null) | null;
   /** The APK the phone installs (optional): the web panel reports its size from here. */
   private readonly apkPath: string | null = null;
   /** "The operator is on this session right now" — the idle reaper's use-activity clock. */
@@ -265,6 +275,7 @@ export class NotifyCenter {
     this.operator = opts.operator ?? null;
     this.credentials = opts.credentials ?? null;
     this.sessionTitle = opts.sessionTitle ?? null;
+    this.sessionPlan = opts.sessionPlan ?? null;
     this.apkPath = opts.apkPath ?? null;
     this.onFocus = opts.onFocus ?? null;
     this.state = this.loadState();
@@ -386,6 +397,12 @@ export class NotifyCenter {
     const name = String(body.deviceName ?? "device").slice(0, 60);
     const prior = this.state.devices.find((d) => d.name === name);
     if (prior) this.revoke(prior.deviceId);
+    // A re-pair is the SAME phone logging in again, not a new device: it inherits the old row's read
+    // position. Starting at 0 made `attach` replay the whole stored window as brand-new notifications
+    // — a re-pair (or the app's own 401 self-heal) put on a stack of 「已完成」 banners with a sound
+    // each (issue #12). A genuinely new phone has no prior row and still starts at 0, so a reinstall
+    // keeps getting the full STATE rebuild it needs.
+    const inheritCursor = prior?.cursor ?? 0;
     const device: NotifyDevice = {
       deviceId: `dev_${randomBytes(4).toString("hex")}`,
       token: randomBytes(24).toString("hex"),
@@ -397,7 +414,7 @@ export class NotifyCenter {
       capabilities: Array.isArray(caps) ? caps.map(String) : [],
       createdAt: Date.now(),
       lastSeenAt: null,
-      cursor: 0,
+      cursor: inheritCursor,
     };
     this.state.devices.push(device);
     this.save();
@@ -797,8 +814,11 @@ export class NotifyCenter {
     // passes since=0 and must get everything, one that already saw seq N passes N.
     const cursor = since >= 0 ? Math.max(since, row.cursor) : row.cursor;
     this.send(ws, { t: "hello", deviceId: row.deviceId, serverTime: Date.now(), cursor, live: since < 0 });
+    // `replayed: true` marks catch-up (issue #12): the phone applies the same activity object — it
+    // has to, or a turn that is still running and an approval that is still open would never reach
+    // the screen — but it knows not to announce a FINISHED turn as news again.
     for (const rec of this.replaySince(cursor)) {
-      this.send(ws, { t: "activity", seq: rec.seq, activity: this.degrade(rec.activity, row) });
+      this.send(ws, { t: "activity", seq: rec.seq, activity: this.degrade(rec.activity, row), replayed: true });
     }
     this.log(`[notify] ${row.name} connected (cursor ${cursor} -> replay ${this.replaySince(cursor).length})`);
 
@@ -1037,7 +1057,8 @@ export class NotifyCenter {
           kind: failed ? "error" : "agent_done", priority: "high", ongoing: false, promotable: false,
           title: failed ? "执行失败" : "已完成",
           body: nameAndDetail(title(evt.sessionId),
-            failed ? String(evt.error).slice(0, 140) : durationText(evt.durationMs)),
+            failed ? String(evt.error).slice(0, 140) : this.taskLine(evt.sessionId),
+            failed ? null : durationText(evt.durationMs)),
           channel: {
             id: failed ? "agent_error" : "agent_done",
             name: failed ? "任务出错" : "任务完成",
@@ -1073,6 +1094,36 @@ export class NotifyCenter {
       default:
         return;
     }
+  }
+
+  /** WHAT this turn was about, for the completion card's body (issue #11).
+   *
+   *  The card reads `会话名 · <这句> · 用时 1m12s`. The session name is a PLACE, not a task — on a
+   *  phone 「已完成 · hello」 says nothing about what finished, and the operator's own complaint was
+   *  exactly that. The plan already knows, in three descending levels of quality, and every one of
+   *  them is a string a WRITER put there (nothing is invented or summarised here — the server holds
+   *  no intelligence):
+   *
+   *    1. `title` — the action phrase the writer set for this job (≤40 chars, its own budget);
+   *    2. the first sentence of `explanation` — the writer's remark about scope or why it changed;
+   *    3. the last step this plan shows as completed — the thing it just got done.
+   *
+   *  No plan, or nothing usable in it → null, and the card degrades to the pre-#11 shape
+   *  (`会话名 · 用时`). A one-step turn has no task line to give, and a fabricated one would be worse
+   *  than the silence. */
+  private taskLine(sessionId: string): string | null {
+    const plan = this.sessionPlan?.(sessionId) ?? null;
+    const title = plan?.title?.trim();
+    if (title) return title;
+    const remark = plan?.explanation?.trim();
+    if (remark) {
+      // first sentence only: a remark is prose, and the body line has one line to spend
+      const first = remark.split(/[。.!?！？;；\n]/).map((s) => s.trim()).find(Boolean);
+      if (first) return clip(first, 24);
+    }
+    const closed = [...(plan?.items ?? [])].reverse().find((i) => i.status === "completed");
+    const content = closed?.content?.trim();
+    return content ? clip(content, 24) : null;
   }
 
   /** The approval card, built but not published: the phone's activity and the page's notice are two

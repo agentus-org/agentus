@@ -43,10 +43,19 @@ const TOOLS = [
       "multi-step task, and again each time a step's status changes — a plan that is not updated is a " +
       "plan that lies. `items` is the WHOLE list as it stands now (a snapshot, not a delta): include " +
       "every step, finished or not, in order. Statuses: pending, in_progress (at most one at a time), " +
-      "completed, cancelled.",
+      "completed, cancelled. Give `title` on your first call for a multi-step task — a short action " +
+      "phrase (max 40 characters) naming the job, because that is the line the operator's completion " +
+      "notification shows on their phone. Without it the notification can only say the session's name.",
     inputSchema: {
       type: "object",
       properties: {
+        title: {
+          type: "string",
+          description:
+            "What this job IS, in one short action phrase (max 40 characters, e.g. 「修复登录超时」). " +
+            "Shown on the completion notification in place of the session name, so make it say the thing " +
+            "the operator would say. Written once; later calls without `title` keep the one stored.",
+        },
         items: {
           type: "array",
           description: "The full plan, in order. Replaces the previous list.",
@@ -104,7 +113,10 @@ function renderPlan(plan) {
   }
   const lines = plan.items.map((i) => `- [${i.status}] ${i.content}`);
   const head = `Plan (revision ${plan.revision ?? 0}${plan.source ? `, source ${plan.source}` : ""}${plan.terminal ? `, ${plan.terminal}` : ""}):`;
-  return [head, ...lines, plan.explanation ? `\nRemark: ${plan.explanation}` : ""].filter(Boolean).join("\n");
+  return [
+    plan.title ? `Title: ${plan.title}` : "",
+    head, ...lines, plan.explanation ? `\nRemark: ${plan.explanation}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 async function callTool(name, args) {
@@ -117,6 +129,9 @@ async function callTool(name, args) {
     if (!items) throw new Error("`items` must be an array of steps");
     const body = await callCockpit("update", {
       items,
+      // Both slots are optional and independent: absent = "keep what is stored", which is what makes a
+      // routine status flip unable to erase the title the completion card reads.
+      ...(args?.title !== undefined ? { title: args.title } : {}),
       ...(args?.explanation !== undefined ? { explanation: args.explanation } : {}),
     });
     const plan = body?.plan;
@@ -128,7 +143,7 @@ async function callTool(name, args) {
     if (body?.accepted === false) {
       return `${body.reason ?? "ignored: this session's plan comes from the agent's own frames"}. The plan on screen is unchanged (${done}/${total} done).`;
     }
-    return `Plan saved (${done}/${total} done${plan?.explanation ? `; remark kept` : ""}). It survives your restarts.`;
+    return `Plan saved (${done}/${total} done${plan?.title ? `; title «${plan.title}»` : ""}${plan?.explanation ? `; remark kept` : ""}). It survives your restarts.`;
   }
   throw new Error(`unknown tool: ${name}`);
 }

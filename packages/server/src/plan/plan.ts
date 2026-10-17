@@ -19,6 +19,22 @@ import type { PlanItem } from "../../../shared/src/index.js";
 /** Studio caps its plan remark at 1000 chars; take the same bound rather than invent one. */
 export const MAX_EXPLANATION = 1000;
 
+/** How long the plan's `title` may be.
+ *
+ *  Forty is a NOTIFICATION's budget, not a document's: the body line it lands on already carries the
+ *  session name and the duration (`nameAndDetail`), and the collapsed row of a phone card is one
+ *  line. A writer that wants to say more writes a remark — `explanation` is the place for prose. */
+export const MAX_TITLE = 40;
+
+/** Coerce a writer's `title`. Collapsed whitespace, and `null` for anything that is not a real
+ *  string: an empty title must land as "no title", never as an empty line on the card. */
+export function clampTitle(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  return s.length > MAX_TITLE ? s.slice(0, MAX_TITLE) : s;
+}
+
 export type PlanTerminal = "ended" | "interrupted" | "failed";
 export type PlanSource = "acp" | "mcp" | "server";
 

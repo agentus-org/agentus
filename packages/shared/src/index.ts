@@ -264,6 +264,11 @@ export interface PlanSnapshot {
   sessionId: string;
   revision: number;
   items: PlanItem[];
+  /** WHAT this piece of work is, in one action phrase (≤40 chars) — the slot a completion
+   *  notification reads. A step list answers "how far", a remark answers "why it changed"; neither
+   *  answers "what finished", which is the only question a phone card asks (issue #11). Written by
+   *  the plan writer, carried as `undefined` when not given so a later `items`-only write keeps it. */
+  title?: string | null;
   /** plan-level remark, Studio-style ("brief reason for the update or scope change"), ≤1000 chars */
   explanation?: string | null;
   /** who wrote it: a native ACP frame, the plan MCP tool, or the server's own turn lifecycle */
@@ -302,7 +307,9 @@ export const PLAN_GUIDANCE_INTRO = [
   "`update_plan` and update it as you go: mark a step completed only once its work is actually",
   "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
   "tool list it is deferred — search for `agentus_plan update_plan` to find it, then call it by",
-  "that exact name. A one-step request needs no plan.",
+  "that exact name. On that first call also give a `title`: one short action phrase (≤40 chars)",
+  "naming the job — it is the line the operator's completion notification shows, so the phone says",
+  "what finished instead of just which conversation ended. A one-step request needs no plan.",
 ].join("\n");
 
 /** Injected when the session HAS an open plan and the backend is MCP-driven. */

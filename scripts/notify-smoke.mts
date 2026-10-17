@@ -207,6 +207,62 @@ try {
   await mid.wait(2, 1500);
   check("reconnect with a later cursor skips what was already seen", !mid.activities().some((a) => a.activityId === "t:off1"));
 
+  // ---- issue #12: replay is CATCH-UP, and a re-pair is the SAME phone ----------------
+  // (a) the phone has to be able to tell the two apart, or it re-announces a finished turn as news.
+  const replayFrames = again.frames.filter((f) => f.t === "activity");
+  const liveFrames = mid.frames.filter((f) => f.t === "activity");
+  check("every REPLAYED activity is marked `replayed: true`",
+    replayFrames.length > 0 && replayFrames.every((f) => f.replayed === true),
+    JSON.stringify(replayFrames.map((f) => ({ id: (f.activity as { activityId?: string } | undefined)?.activityId, replayed: f.replayed }))));
+  check("…and frames that were pushed LIVE are not marked (the flag says how it arrived, not what it is)",
+    liveFrames.every((f) => f.replayed === undefined), JSON.stringify(liveFrames.map((f) => f.replayed)));
+
+  // (b) a re-login pair under the same device name (the app's 401 self-heal) inherits the read
+  // position. Starting at 0 made the attach replay `REPLAY_LIMIT` activities — a stack of 「已完成」
+  // banners, one sound each, which is exactly what the operator reported after re-pairing.
+  //
+  // A device that never ACKs has cursor 0 and deserves the replay, so this fixture behaves like the
+  // app: it acks every activity it receives (the server keeps the device's read position in `cursor`
+  // and only an ack moves it).
+  const ACK_BODY = { deviceName: "smoke-ack", platform: "android", sdkInt: 36, schema: 1, capabilities: FULL_CAPS };
+  const ackPair = await pair(token, ACK_BODY);
+  const ackDev = await ackPair.json() as PairResult;
+  const acked = listen(ackDev.deviceToken);
+  await acked.wait(1, 2500);
+  await sleep(400);
+  for (const f of acked.frames.filter((x) => x.t === "activity")) {
+    acked.ws.send(JSON.stringify({ t: "ack", cursor: f.seq }));
+  }
+  await sleep(500); // the ack is a separate frame; give the server a beat to store it
+  const ackedIds = acked.activities().map((a) => a.activityId);
+  acked.close();
+  const rePaired = await pair(token, ACK_BODY);
+  check("re-pairing the same device name is accepted", rePaired.status === 200, `HTTP ${rePaired.status}`);
+  const rePair = await rePaired.json() as PairResult;
+  check("…and it is a NEW row / token (the old one is revoked)", rePair.deviceToken !== ackDev.deviceToken);
+  const fresh = listen(rePair.deviceToken);
+  await fresh.wait(1, 2500);
+  await sleep(300);
+  const freshIds = fresh.activities().map((a) => a.activityId);
+  check("a re-paired phone does NOT get the history it had already read as new notifications (issue #12)",
+    !freshIds.some((id) => ackedIds.includes(id)), `replayed=${freshIds.join(",")} already-read=${ackedIds.join(",")}`);
+  // …and the row still WORKS: a new activity reaches the re-paired device (inheriting a cursor must
+  // not mean "deaf from now on").
+  const seqAfter = await pub({ op: "upsert", activityId: "t:after-repair", revision: 1, title: "配对之后", ongoing: false });
+  await fresh.wait(fresh.frames.length + 1, 3000);
+  check("the re-paired row still receives NEW activities", fresh.activities().some((a) => a.activityId === "t:after-repair"),
+    `seq=${seqAfter} ids=${fresh.activities().map((a) => a.activityId).join(",")}`);
+  fresh.close();
+  // a genuinely NEW phone (no prior row) still gets the full STATE rebuild
+  const newPhone = await pair(token, { deviceName: "smoke-brand-new", platform: "android", sdkInt: 36, schema: 1, capabilities: FULL_CAPS });
+  const np = await newPhone.json() as PairResult;
+  const npDev = listen(np.deviceToken);
+  await npDev.wait(1, 2500);
+  await sleep(300);
+  check("a genuinely new phone still replays everything (nothing to inherit)",
+    npDev.activities().map((a) => a.activityId).includes("t:off1"), `ids=${npDev.activities().map((a) => a.activityId).join(",")}`);
+  npDev.close();
+
   // ---- the button round trip ---------------------------------------------
   const seqBtn = await pub({ op: "upsert", activityId: "t:btn", revision: 1, title: "等你批准", ongoing: true, promotable: true, actions: [{ id: "allow_once", label: "允许" }] });
   await sleep(150);

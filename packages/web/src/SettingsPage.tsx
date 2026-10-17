@@ -45,6 +45,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
       { anchor: "set-backends", label: "后端" },
       { anchor: "set-lifecycle", label: "回收与热备" },
       { anchor: "set-plan", label: "计划提示" },
+      { anchor: "set-cockpit", label: "驾驶舱互发" },
     ],
   },
   {
@@ -88,8 +89,8 @@ interface SettingsView {
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
-  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number };
-  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number };
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
@@ -181,6 +182,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [warmMsg, setWarmMsg] = useState("");
   const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean; instruction: string } | null>(null);
   const [planHintMsg, setPlanHintMsg] = useState("");
+  // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
+  const [cockpitSend, setCockpitSend] = useState<boolean | null>(null);
+  const [cockpitMsg, setCockpitMsg] = useState("");
 
   const load = useCallback(async (): Promise<void> => {
     setErr("");
@@ -202,6 +206,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.warmSlots === "number") setWarmSlots(data.agent.warmSlots);
       if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
+      if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
       await loadVoiceCaps(true);
       setCaps(voiceCaps());
       const [m, h] = await Promise.all([
@@ -280,6 +285,29 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       );
     } catch (e) {
       setWarmMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 驾驶舱互发消息 saves on its own too — and it is the ONE switch here whose subject is an agent
+   *  talking to another agent, so the copy has to be blunt about what turning it on means. */
+  const saveCockpitSend = async (next: boolean): Promise<void> => {
+    setCockpitSend(next);
+    setCockpitMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { cockpitSend: next } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setCockpitSend(Boolean(data.agent?.cockpitSend));
+      setCockpitMsg(next ? "已保存：会话之间可以互发消息了（仅限空闲的会话）。" : "已保存：agent 只能读，不能给别的会话发消息。");
+    } catch (e) {
+      setCockpitSend(!next);
+      setCockpitMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -748,6 +776,41 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             一步就能做完的请求不受影响。没注入过的那次不会作废，打开开关或从「仅首条」切回来的那一回合会补上。
           </p>
           {planHintMsg ? <p className="set-hint">{planHintMsg}</p> : null}
+        </section>
+
+        <section className="set-card" id="set-cockpit" data-setgroup="agent">
+          <h3>驾驶舱互发消息（cockpit CLI）</h3>
+          <p className="set-hint">
+            每个会话里的 agent 都拿到了一个本机命令 <code>$AGENTUS_COCKPIT_BIN</code>，可以用它
+            <b>读</b> 这个驾驶舱：有哪些会话、谁在跑、各自的消息尾部、计划、正在等哪个审批。
+            数据面只做选择和截断，不做摘要、不改写 —— 会转述驾驶舱的机器就会说错驾驶舱。
+          </p>
+          <p className="set-hint">
+            下面这个开关管的是另一半：<b>往别的会话里发消息</b>。默认关，因为两个 agent 互相回话
+            会变成一台烧 token 的循环生成器。打开后也只对<b>空闲</b>会话生效 —— 正在跑回合的会话会
+            直接拒绝（<code>target_busy</code>），<b>绝不抢占你开的那一轮</b>；已回收/归档的会话也拒绝
+            （<code>target_cold</code> / <code>out_of_scope</code>），驾驶舱不会替你把它唤醒。
+          </p>
+          <div className="set-row">
+            <label>允许会话之间互发消息</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={cockpitSend ?? false}
+                onChange={(e) => void saveCockpitSend(e.target.checked)}
+              />
+              <span className="set-hint">
+                {cockpitSend
+                  ? "已开启：agent 可以给空闲会话留话（对方不一定读、也不一定回）"
+                  : "已关闭：agent 只能读驾驶舱，不能往里写"}
+              </span>
+            </div>
+          </div>
+          <p className="set-hint">
+            这个通道的身份是<b>随进程发的一次性令牌</b>（放在环境变量里，不进命令行、不进 <code>ps</code>），
+            进程一死就失效；也只听本机回环地址。改动立刻对下一轮生效，不用重启会话。
+          </p>
+          {cockpitMsg ? <p className="set-hint">{cockpitMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-asr" data-setgroup="voice">
