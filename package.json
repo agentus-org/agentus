@@ -52,6 +52,7 @@
   "workspace-smoke": "node scripts/workspace-smoke.mjs",
   "voice-smoke": "node scripts/voice-smoke.mjs",
   "sentence-units": "tsx scripts/qa/sentence-units.mts",
+    "barge-gate": "tsx scripts/qa/barge-gate.mts",
   "token-format": "tsx scripts/qa/token-format.mts",
   "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
   "android-trust-merge": "node scripts/qa/android-trust-merge.mjs",

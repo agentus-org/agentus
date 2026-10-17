@@ -1113,15 +1113,29 @@ try {
     const lr = list.getBoundingClientRect(), orb = document.querySelector('.call-orb');
     const cv = document.querySelector('.call-orb-canvas');
     const cs = getComputedStyle(cv), os = getComputedStyle(orb), ps = getComputedStyle(panel), ls = getComputedStyle(list);
-    const rows = [...list.querySelectorAll('.call-hm')];
+    const rows = [...list.querySelectorAll('.call-cc-inner .msg')];
+    const legacy = list.querySelectorAll('.call-hm').length;
+    const kindOf = (r) => [...r.classList].find((c) => c !== 'msg' && c !== 'live') || 'unknown';
     const btns = [...mode.querySelectorAll('.call-btn')].map((b) => { const r = b.getBoundingClientRect();
       return { inside: r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, w: Math.round(r.width) }; });
     const controls = document.querySelector('.call-controls').getBoundingClientRect();
+    const floorBtn = document.querySelector('.call-floor');
+    const fr = floorBtn?.getBoundingClientRect();
     return { panel: true, caption: mode.dataset.caption, phase: mode.dataset.phase,
       w: Math.round(pr.width), h: Math.round(pr.height), listH: Math.round(lr.height),
-      rows: rows.length,
-      kinds: [...new Set(rows.map((r) => r.className.replace('call-hm ', '').replace(' current', '').replace(' live', '').trim()))],
+      rows: rows.length, legacy,
+      kinds: [...new Set(rows.map(kindOf))],
+      userRoles: [...new Set(rows.filter((r) => r.classList.contains('user')).map((r) => (r.querySelector('.role')?.textContent ?? '').trim()))],
+      agentRoles: [...new Set(rows.filter((r) => r.classList.contains('agent')).map((r) => (r.querySelector('.role')?.textContent ?? '').trim()))],
+      folded: { tool: list.querySelectorAll('.tool-card, .tool-run').length, thought: list.querySelectorAll('.thought').length },
       text: rows.map((r) => r.textContent).join(' ').slice(0, 400),
+      floor: floorBtn ? {
+        label: (floorBtn.textContent ?? '').trim(), disabled: floorBtn.disabled,
+        w: Math.round(fr.width), h: Math.round(fr.height),
+        inPanel: fr.top >= pr.top - 1 && fr.bottom <= pr.bottom + 1 && fr.left >= pr.left - 1 && fr.right <= pr.right + 1,
+        hit: (() => { const e = document.elementFromPoint(fr.left + fr.width / 2, fr.top + fr.height / 2);
+          return !!e && (e === floorBtn || floorBtn.contains(e)); })(),
+      } : null,
       orbPosition: os.position, orbPointer: os.pointerEvents,
       canvasFilter: cs.filter, backdrop: ps.backdropFilter || ps.webkitBackdropFilter || "",
       overflowY: ls.overflowY, overscroll: ls.overscrollBehaviorY,
@@ -1138,6 +1152,25 @@ try {
   check("…the record IS the page now (both sides of the conversation, newest line in view)",
     ccv.rows >= 6 && ccv.kinds.includes("user") && ccv.kinds.includes("agent") && ccv.atBottom === true,
     JSON.stringify({ rows: ccv.rows, kinds: ccv.kinds, atBottom: ccv.atBottom, head: ccv.text.slice(0, 80) }));
+  // The operator's correction, 2026-10-17: 「就用我们现在的这个聊天页面……UI 不要变」 and
+  // 「不要写什么你他这种的，就写 hermes……我的话你就写 you，跟聊天页面一样」. So the panel must
+  // carry the CHAT PAGE's rows (same component), the operator's row labelled YOU, the agent's row
+  // labelled with its own name — and none of the old summarised `.call-hm` rows may survive.
+  check("…drawn with the CHAT page's own rows: YOU on mine, the agent's own name on its",
+    ccv.legacy === 0 && ccv.userRoles.includes("YOU")
+    && ccv.agentRoles.length > 0 && !ccv.agentRoles.includes("YOU"),
+    JSON.stringify({ legacy: ccv.legacy, userRoles: ccv.userRoles, agentRoles: ccv.agentRoles }));
+  check("…the floor control of this view is a real, thumb-sized button with words on it",
+    Boolean(ccv.floor) && ccv.floor.inPanel && ccv.floor.hit && ccv.floor.h >= 44 && ccv.floor.w >= 200
+    && ccv.floor.label.length > 0,
+    JSON.stringify(ccv.floor));
+  check("…and its label states what the tap does in THIS phase (打断它 / 停止 / 发送 / 重新开始)",
+    Boolean(ccv.floor) && (ccv.phase === "speaking"
+      ? ccv.floor.label.startsWith("打断它") && ccv.floor.disabled === false
+      : ccv.phase === "thinking"
+        ? ccv.floor.label.startsWith("停止") && ccv.floor.disabled === false
+        : ccv.floor.label.startsWith("说完了会自动发送") || ccv.floor.label.startsWith("发送")),
+    JSON.stringify({ phase: ccv.phase, floor: ccv.floor }));
   check("…the ball became BACKGROUND: out of the layout, untappable, and blurred",
     ccv.orbPosition === "absolute" && ccv.orbPointer === "none"
     && /blur/.test(ccv.canvasFilter) && /blur/.test(ccv.backdrop),
@@ -1159,6 +1192,42 @@ try {
   check("…and one tap goes back to the newest line",
     (await ev2(`(() => { const l = document.querySelector('.call-cc-list');
       return l.scrollHeight - l.scrollTop - l.clientHeight < 28; })()`)) === true, "");
+
+  // ---- 按键打断 IN THE CAPTIONS VIEW — the operator's complaint, made into a test -----------
+  // 「这个按键打断都没地方摁啊……就是字幕模式下」. The orb is behind the frosted panel here, so the
+  // floor button IS the 按键打断 control of this view. Prove the whole contract: a running turn,
+  // the label saying 打断它, and the press actually taking the floor (and cancelling the turn).
+  //
+  // The turn has to arrive the only way a REST prompt can reach the call's own state machine:
+  // the call is reopened WHILE the turn runs (its join path). A prompt sent under a mounted,
+  // listening call never moves its phase — that is the call's design, not a test detail.
+  await ev2(`document.querySelector('.call-btn.hangup').click(); true`);
+  await sleep(400);
+  if (await busyOf(slow2.id)) { await api("POST", `/api/sessions/${slow2.id}/cancel`, {}); await sleep(600); }
+  await api("POST", `/api/sessions/${slow2.id}/prompt`, {
+    text: "第一句在这里。第二句在这里。第三句在这里。第四句也在这里。第五句在这里。",
+  });
+  for (let i = 0; i < 30; i++) { await sleep(200); if (await busyOf(slow2.id)) break; }
+  await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click(); true`);
+  await sleep(700);
+  // captions are a sticky local preference: the reopened call is already in this view
+  const ccState = await ev2(`document.querySelector('.call-mode')?.dataset.caption`);
+  if (ccState !== "true") await ev2(`document.querySelector('.call-cc-btn').click(); true`);
+  const spokeFloor = await waitPhase2("speaking", 30000);
+  const floorBefore = await ev2(`(() => { const b = document.querySelector('.call-floor');
+    return b ? { label: (b.textContent || "").trim(), disabled: b.disabled,
+      h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
+  const cancelsPreFloor = await frameCount("cancel");
+  await ev2(`document.querySelector('.call-floor').click(); true`);
+  const floorTaken = await waitPhase2("listening", 4000);
+  const cancelsPostFloor = await frameCount("cancel");
+  check("the captions view's floor button says 打断它 while it talks (a real button, not a hint)",
+    spokeFloor === true && Boolean(floorBefore) && floorBefore.label.startsWith("打断它")
+    && floorBefore.disabled === false && floorBefore.h >= 44,
+    JSON.stringify({ spokeFloor, floorBefore, phase: await phase2() }));
+  check("…and pressing it IS 按键打断: the floor comes back and the running turn is cancelled",
+    floorTaken === true && cancelsPostFloor > cancelsPreFloor,
+    JSON.stringify({ floorTaken, cancelsPreFloor, cancelsPostFloor }));
   await ev2(`document.querySelector('.call-cc-btn').click(); true`);
   await sleep(600);
   const backToStage = await ev2(`(() => { const el = document.querySelector('.call-mode');

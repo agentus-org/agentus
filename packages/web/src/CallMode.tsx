@@ -27,14 +27,16 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
-import { dictation, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import {
-  IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconSettings, IconSubtitles,
+  IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconRefresh, IconSend,
+  IconSettings, IconStop, IconSubtitles,
 } from "./Icons";
 import {
-  bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES, patchCallSettings, useCallSettings,
+  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, bargeLevelOf, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES,
+  isBargeEvidence, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
 
@@ -119,10 +121,18 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
 }
 
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
-export function CallMode({ sessionId, onClose, onKeyboard }: {
+export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   sessionId: string;
   onClose: () => void;
   onKeyboard: () => void;
+  /** The CHAT PAGE's own transcript renderer, handed down by `App`.
+   *
+   *  Why a prop and not an import: `App` already imports this file, so importing `Bubble`/`WorkRun`
+   *  from it back would close a cycle between the two modules. Passing the function keeps ONE
+   *  implementation of the rows — the operator's requirement was literally 「那一套UI不要变」:
+   *  the agent's mark and name, YOU, collapsible thinking, tool cards, plan cards, streaming
+   *  markdown — and the call gets all of it without a second renderer drifting away from it. */
+  renderTranscript?: (p: { msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string }) => JSX.Element | null;
 }): JSX.Element {
   const [prefs] = useVoicePrefs();
   // Why the voice changed: the speaker records a note when the server voice fails for a sentence and
@@ -175,6 +185,16 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
   const lastPeakRef = useRef(0);
   const voiceAtRef = useRef(0);        // last moment the operator was audible
   const bargeRef = useRef(0);          // how long we have been above the barge threshold
+  /** When the sentence now being read was handed to the speaker, and when our own output was
+   *  last seen to rise from silence. Both arm the grace window in the loop: the first frames of
+   *  a clip are its attack transient plus the echo canceller converging, and counting those as
+   *  "the operator is talking" is how a call interrupts itself. */
+  const clipAtRef = useRef(0);
+  const playAtRef = useRef(0);
+  const quietRef = useRef(0);          // last tick's playback level, to notice the rise
+  /** When the floor last changed hands by voice — the cooldown that keeps the tail of an
+   *  interruption (and the recogniser catching up with it) from firing a second one. */
+  const lastBargeRef = useRef(0);
   const sentRef = useRef(false);       // a turn is in flight (do not send twice)
   const queueRef = useRef<string[]>([]);
   const queueRunRef = useRef(false);
@@ -276,6 +296,12 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
       const c = cfgRef.current;
       const st = dictation.getSnapshot();
       const lvl = dictation.level();
+      // OUR OWN OUTPUT, sampled every tick. This is the reference signal of the barge gate: echo
+      // scales with it, a human voice does not (see `isBargeEvidence`). -1 = not measurable
+      // (the browser voice cannot be tapped), which the gate treats as "no echo model".
+      const play = playbackLevel();
+      if (play > 0.02 && quietRef.current <= 0.02) playAtRef.current = Date.now();
+      quietRef.current = play;
       // A relay that could not be replaced AT ALL is a real failure, and the call is the one surface
       // where the transcript's own error line is invisible (it renders in the composer, behind the
       // full-screen call). Say it on the call instead of sitting in `listening` with a microphone
@@ -285,7 +311,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         setPhase("error");
         return;
       }
-      if (lvl > VOICE_LEVEL) voiceAtRef.current = Date.now();
+      if (phaseRef.current === "listening" && lvl > VOICE_LEVEL) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
@@ -314,13 +340,24 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         // said next was refused with "turn already running": barge-in that doesn't hand the
         // floor over isn't barge-in.
         // The voice barge exists only in 语音打断 mode. In 按键打断 the floor changes hands on a
-        // deliberate press and nothing else — that is the whole point of the mode (a phone on a
-        // table hears its own loudspeaker and would otherwise interrupt itself forever).
-        // the panel's sensitivity, mapped to a mic level here (callSettings.bargeLevelOf)
-        const over = c.interruptMode === "voice" && lvl > bargeLevelOf(c.bargeSensitivity);
+        // deliberate press and nothing else — that is the whole point of the mode.
+        //
+        // EVIDENCE, not just level: the microphone is compared against what WE are playing this
+        // instant (see `isBargeEvidence`). An absolute bar was crossed by the call's own
+        // loudspeaker on a phone lying on a table, and the call interrupted ITSELF mid-answer —
+        // the operator's report was 「它刚输出一段话就自己打断自己，我都没说话」. Two timing
+        // guards sit on top: nothing counts for the first `BARGE_GRACE_MS` of a clip (attack
+        // transient + the echo canceller converging), and nothing counts for
+        // `BARGE_COOLDOWN_MS` after a barge lands (its own tail).
+        const now = Date.now();
+        const armed = Math.max(clipAtRef.current, playAtRef.current);
+        const open = now - armed > BARGE_GRACE_MS && now - lastBargeRef.current > BARGE_COOLDOWN_MS;
+        const over = c.interruptMode === "voice" && !mutedRef.current && open
+          && isBargeEvidence(lvl, play, c.bargeSensitivity, micEchoCancelled());
         bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
         if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
+          lastBargeRef.current = now;
           void bargeIn();
         }
       } else {
@@ -415,6 +452,7 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
         // between sentences for as long as the next one took to synthesise and arrive
         // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
         warmQueue();
+        clipAtRef.current = Date.now();       // arms the grace window for THIS clip
         await speaker.speak(sentence, "call", prefs);
         // barged in, hung up, or the call is gone: never hand another sentence to the speaker
         if (!aliveRef.current || phaseRef.current !== "speaking") break;
@@ -824,6 +862,29 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
     : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
       : phase === "thinking" ? "点一下停止它" : "";
 
+  /** The floor button in the transcript view: FOUR faces, one button.
+   *
+   *  In that view the orb is behind the frosted panel (`pointer-events: none`) — the operator's
+   *  words were 「这个按键打断都没地方摁啊」. The label always states what the tap does right now,
+   *  because "who has the floor" is the only question a call ever asks. */
+  const floor = ((): {
+    kind: "take" | "send" | "wait" | "retry";
+    label: string;
+    hint: string;
+    icon: JSX.Element;
+    disabled: boolean;
+  } => {
+    if (phase === "speaking") return { kind: "take", label: "打断它", hint: "停下它，接着说你的", icon: <IconStop size={17} />, disabled: false };
+    if (phase === "thinking") return { kind: "take", label: "停止", hint: "让它别想了，回到我这边", icon: <IconStop size={17} />, disabled: false };
+    if (phase === "error") return { kind: "retry", label: "重新开始", hint: "重新打开麦克风，接着聊", icon: <IconRefresh size={17} />, disabled: false };
+    if (heard) {
+      const chars = [...heard];
+      const tail = chars.length > 10 ? `${chars.slice(0, 10).join("")}…` : heard;
+      return { kind: "send", label: `发送「${tail}」`, hint: "不用等它判断你说完，现在就发", icon: <IconSend size={17} />, disabled: false };
+    }
+    return { kind: "wait", label: "说完了会自动发送", hint: "麦克风在听；说完停顿一下就会发出去", icon: <IconMic size={17} />, disabled: true };
+  })();
+
   /* WHO interrupts: a two-ended switch on the call, not a knob in the settings sheet. It belongs
      on the call because it is the one setting that changes with the ROOM (a phone on a table, a
      headset, a noisy cafe) — flipping it has to be one tap while the call is misbehaving, and both
@@ -916,28 +977,57 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
             <span className="call-cc-n">{msgs.length} 条</span>
           </div>
           <div className="call-cc-list" ref={ccRef} onScroll={onCcScroll} role="log" aria-live="polite">
-            {msgs.map((m, i) => {
-              const l = histLine(m);
-              const current = i === msgs.length - 1 && (phase === "speaking" || phase === "thinking");
-              return <HistRow key={m.key} kind={l.kind} who={l.who} text={l.text} current={current} />;
-            })}
-            {/* What the recogniser has so far is not a message yet (it has not been sent), but in
-                this view it is the row the operator is watching — so it takes the user's shape. */}
-            {phase === "listening" && heard ? (
-              <div className="call-hm user live">
-                <span className="call-hm-who">你</span>
-                <span>{heard}</span>
-              </div>
-            ) : null}
-            {err ? <p className="call-err">{err}</p> : null}
-            {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
-            {(!heard && !msgs.length) || tooShort ? <p className="call-hint">{hint}</p> : null}
+            {/* THE CHAT PAGE'S ROWS, not a summary of them. The operator's instruction was
+                「就用我们现在的这个聊天页面……UI 不要变」: same agent mark and name, same YOU,
+                same collapsible thinking, tool cards and plan cards, same streaming markdown.
+                `renderTranscript` is `App`'s own renderer (see the prop's comment) so there is
+                exactly one implementation of these rows in the app. */}
+            <div className="call-cc-inner">
+              {renderTranscript && active
+                ? renderTranscript({
+                  msgs,
+                  sid: sessionId,
+                  backend: active.info.backend,
+                  busy: Boolean(active.busy),
+                  base: active.info.workspace || active.info.cwd,
+                })
+                : null}
+              {/* What the recogniser has so far is not a message yet (it has not been sent), but in
+                  this view it is the row the operator is watching — so it takes the user's shape,
+                  down to the same YOU label. */}
+              {phase === "listening" && heard ? (
+                <div className="msg user live">
+                  <div className="role">YOU</div>
+                  <div className="bubble">{heard}</div>
+                </div>
+              ) : null}
+              {err ? <p className="call-err">{err}</p> : null}
+              {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
+              {(!heard && !msgs.length) || tooShort ? <p className="call-hint">{hint}</p> : null}
+            </div>
           </div>
           {/* Floating, not in the toolbar: it only exists while the operator is reading back, and
               the toolbar already carries phase + interrupt mode + the count. */}
           {!ccAtBottom ? (
             <button type="button" className="call-cc-latest" onClick={toLatestCc}>回到最新 ↓</button>
           ) : null}
+          {/* THE FLOOR BUTTON — the operator's complaint, verbatim: 「这个按键打断都没地方摁啊，
+              就是字幕模式下」. In this view the orb is behind the frosted panel and cannot be
+              pressed, and the small phase chip was the only thing left: too easy to miss, and it
+              says nothing about what pressing it will do. So the one action that changes hands gets
+              a thumb-sized target of its own, and its label states the action for the CURRENT
+              phase — 打断它 / 停止 / 发送 / 重新开始. Never an icon the operator has to decode. */}
+          <button
+            type="button"
+            className={`call-floor is-${floor.kind}`}
+            onClick={() => void tapOrb()}
+            disabled={floor.disabled}
+            title={floor.hint}
+            aria-label={floor.label}
+          >
+            {floor.icon}
+            <span>{floor.label}</span>
+          </button>
         </div>
       ) : (
         <>
@@ -1026,6 +1116,18 @@ export function CallMode({ sessionId, onClose, onKeyboard }: {
                 现在是「按键打断」：语音抢话已关闭，所以灵敏度和持续时间当前不起作用（切回「语音打断」，在通话页上一下就行）
               </p>
             ) : null}
+            {/* What the capture ACTUALLY turned on — read from the live track, not from the
+                constraint we asked for. When echo cancellation is not running, the reply leaves the
+                loudspeaker and comes straight back into the microphone, which is how a call ends up
+                interrupting itself; the operator was tuning 抢话灵敏度 against that. Saying it out
+                loud is cheaper than a bug report nobody can reproduce. */}
+            <p className={`call-sheet-echo ${micInfo().echoCancellation === false ? "bad" : ""}`}>
+              {micInfo().echoCancellation === false
+                ? "回声消除没生效：这台设备只给了原始麦克风。外放时它容易把自己当成你——用「按键打断」，或者戴耳机"
+                : micInfo().echoCancellation === true
+                  ? "回声消除：已生效（抢话要盖过你听到的那个声音，不会自己打断自己）"
+                  : "回声消除：这台设备没报告（浏览器语音路径）——抢话按「比回复更响」判断"}
+            </p>
             {CALL_KNOBS.map((k) => (
               <label className={`call-knob ${cfg.interruptMode === "button" && k.key.startsWith("barge") ? "off" : ""}`} key={k.key}>
                 <span className="call-knob-top">

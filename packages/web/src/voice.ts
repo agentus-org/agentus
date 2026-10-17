@@ -244,6 +244,42 @@ function audioContextCtor(): typeof AudioContext | null {
   return (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) ?? null;
 }
 
+/** What the microphone ACTUALLY opened with.
+ *
+ *  Why this is tracked: echo cancellation is the ONLY thing standing between a phone on a table
+ *  and a call that interrupts itself (its loudspeaker goes straight back into its own microphone).
+ *  Chromium is allowed to ignore the constraint — and `openMic` below deliberately retries with
+ *  the processing OFF when a vendor WebView refuses the processed pipeline. After that fallback the
+ *  capture is raw: the echo is real, and any absolute "loud enough to interrupt" threshold will be
+ *  crossed by the reply itself. The call shows this line so the operator stops tuning a slider
+ *  against a device that quietly turned the cancellation off.
+ *
+ *  `null` = unknown (the browser-voice path never opens a stream through here). */
+const MIC: { echoCancellation: boolean | null; noiseSuppression: boolean | null } = {
+  echoCancellation: null,
+  noiseSuppression: null,
+};
+
+function noteMic(stream: MediaStream, attempt: number): void {
+  const track = stream.getAudioTracks()[0];
+  const s = typeof track?.getSettings === "function" ? track.getSettings() : undefined;
+  MIC.echoCancellation = typeof s?.echoCancellation === "boolean" ? s.echoCancellation : attempt > 0 ? false : null;
+  MIC.noiseSuppression = typeof s?.noiseSuppression === "boolean" ? s.noiseSuppression : attempt > 0 ? false : null;
+  if (MIC.echoCancellation === false) {
+    console.warn("[voice] microphone opened WITHOUT echo cancellation — the call may hear itself");
+  }
+}
+
+/** Did the capture we ended up with cancel its own echo? Unknown counts as yes: the gate then
+ *  behaves as it did before this existed, instead of over-correcting on platforms that are fine. */
+export function micEchoCancelled(): boolean {
+  return MIC.echoCancellation !== false;
+}
+
+export function micInfo(): { echoCancellation: boolean | null; noiseSuppression: boolean | null } {
+  return { ...MIC };
+}
+
 /** Ask for the microphone, degrading the constraints when the platform cannot honour them.
  *
  * Why this exists: on some Android vendor WebViews (seen on HyperOS 3 / Android 16) `getUserMedia`
@@ -252,7 +288,10 @@ function audioContextCtor(): typeof AudioContext | null {
  * The app's own native `AudioRecord` probe records fine there, so the permission and the device are
  * not the problem: it is the processed pipeline that will not open. Retrying with the processing off
  * (and finally with no constraints at all) turns that into a working microphone instead of an error
- * the operator can do nothing about. A refusal is never retried — that would just re-prompt. */
+ * the operator can do nothing about. A refusal is never retried — that would just re-prompt.
+ *
+ * The cost of that fallback is real and is now measured instead of assumed: attempt 2 turns echo
+ * cancellation OFF, and `noteMic` records it so the call can stop trusting an absolute level. */
 async function openMic(preferred: MediaStreamConstraints): Promise<MediaStream> {
   const attempts: MediaStreamConstraints[] = [
     preferred,
@@ -264,6 +303,7 @@ async function openMic(preferred: MediaStreamConstraints): Promise<MediaStream> 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(attempts[i]);
       if (i > 0) console.warn("[voice] microphone opened only with degraded constraints", attempts[i]);
+      noteMic(stream, i);
       return stream;
     } catch (e) {
       last = e;

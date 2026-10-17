@@ -105,6 +105,50 @@ export function bargeLevelOf(sensitivity: number): number {
   return 0.5 - 0.45 * (s / 100);
 }
 
+/** How our own loudspeaker shows up in the microphone, in mic-level units.
+ *
+ *  Both numbers are LEVELS from `voice.ts`, and they are NOT on the same scale: the microphone
+ *  level is `rms × 6`, the playback level is `rms × 4`, both clamped at 1. So a byte-for-byte echo
+ *  — raw capture, speaker at the same rms — reads **1.5× louder** on the microphone side.
+ *
+ *   · `raw` is therefore just above that 1.5: with the cancellation off, the operator has to be
+ *     audibly louder than the reply for the floor to change hands (and if the reply is loud enough
+ *     to clamp the meter, the voice barge simply cannot fire — that is the honest answer, and the
+ *     reason the call now says "回声消除没生效，用按键打断或戴耳机" instead of pretending).
+ *   · `aec` is a small fraction, because the canceller has already removed most of it; what is
+ *     left is the residual plus the room. The sensitivity floor dominates here, which is exactly
+ *     what a working echo canceller should give you: a normal voice takes the floor back. */
+export const ECHO = { aec: 0.45, raw: 1.55 } as const;
+
+/** One frame of evidence for "the operator is talking over the reply".
+ *
+ *  The first version compared the microphone to an ABSOLUTE level, and on a phone lying on a table
+ *  that made the call interrupt itself: its own loudspeaker goes straight back into its own
+ *  microphone, so the echo's level follows the reply's level and any fixed bar is crossed by the
+ *  reply. The operator heard it as 「它刚输出一段话就自己打断自己，我都没说话」.
+ *
+ *  The gate is therefore RELATIVE to what we are playing at this instant: echo scales with the
+ *  playback, a human voice does not. That is the double-talk test every voice stack runs
+ *  (AEC + reference signal); ours is one line, because the reference — our own output level — is
+ *  already in the page.
+ *
+ *  `playback < 0` means "cannot measure" (the browser voice is not tappable): no echo model, so
+ *  fall back to the plain absolute bar — the sentence-start grace and the hold time still apply. */
+export function isBargeEvidence(mic: number, playback: number, sensitivity: number, aecOn: boolean): boolean {
+  const floor = bargeLevelOf(sensitivity);
+  if (playback < 0) return mic > floor;
+  return mic > Math.max(floor, playback * (aecOn ? ECHO.aec : ECHO.raw));
+}
+
+/** Ignore the microphone for this long after a sentence STARTS. Two things live here: the attack
+ *  transient of the clip itself (a click through the speaker reads as a spike) and, on devices
+ *  whose echo canceller needs a moment to converge, the first frames of its own reference. */
+export const BARGE_GRACE_MS = 600;
+
+/** …and for this long after a barge lands, so the tail of the interruption (and the recogniser
+ *  catching up) cannot fire a second one. */
+export const BARGE_COOLDOWN_MS = 900;
+
 const KEY = "agentus.call";
 /** numeric knobs only — clamping `interruptMode` as a number would erase the choice */
 const NUMERIC = Object.keys(CALL_RANGE) as CallKnobKey[];

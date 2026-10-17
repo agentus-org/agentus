@@ -1508,6 +1508,28 @@ const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since:
   );
 });
 
+/** THE TRANSCRIPT ROWS — one implementation, two surfaces.
+ *
+ *  The chat page renders it inside its `.stream-inner`; the call's captions view renders the very
+ *  same component inside its frosted panel. That is the operator's requirement in their own words
+ *  (「就用我们现在的这个聊天页面……UI 不要变」): the agent's mark and name, YOU, collapsible
+ *  thinking, tool cards, plan cards, streaming markdown — the call must not grow a second, simplified
+ *  transcript that drifts away from the one they read every day.
+ *
+ *  `App` passes this function down to `CallMode` as a prop instead of `CallMode` importing it, so
+ *  the two modules do not import each other. */
+function TranscriptRows({ msgs, sid, backend, busy, base }: {
+  msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string;
+}): JSX.Element {
+  return (
+    <>
+      {foldWork(msgs).map((row) => (row.kind === "work"
+        ? <WorkRun key={row.key} items={row.items} />
+        : <Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />))}
+    </>
+  );
+}
+
 function Stream({ v }: { v: SessionView }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -1774,9 +1796,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           ) : pagedOnce && v.msgs.length ? (
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
-          {foldWork(v.msgs).map((row) => (row.kind === "work"
-            ? <WorkRun key={row.key} items={row.items} />
-            : <Bubble key={row.m.key} m={row.m} sid={v.info.id} backend={v.info.backend} busy={v.busy} last={row.tail} live={row.live} base={v.info.workspace || v.info.cwd} />))}
+          <TranscriptRows msgs={v.msgs} sid={v.info.id} backend={v.info.backend} busy={v.busy} base={v.info.workspace || v.info.cwd} />
           <TurnLine busy={v.busy} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
@@ -3763,6 +3783,10 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 sessionId={v.info.id}
                 onClose={onCloseCall}
                 onKeyboard={() => { onCloseCall(); window.setTimeout(() => ta.current?.focus(), 30); }}
+                /* The chat page's OWN rows, handed to the call so its captions view shows the same
+                   transcript the operator reads every day (mark + name, YOU, folding, tool and plan
+                   cards) instead of a simplified second one. */
+                renderTranscript={(p) => <TranscriptRows {...p} />}
               />
             ) : null}
             {v.busy ? (
