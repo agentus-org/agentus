@@ -112,7 +112,11 @@ export function TrustCard(): JSX.Element {
       {state === "ok" && info && (
         <div className="tls-cols">
           <div className="tls-left">
-            <a className="tls-dl" href="/api/tls/ca.crt" download="agentus-ca.crt">
+            {/* 不用 `download` 属性：iOS 只有「点链接 → 导航 → 收到 attachment + x-x509-ca-cert」
+                才会弹「此网站正尝试下载配置描述文件」这套安装流程。带 download 属性时 Safari 会
+                把它当成普通文件存进「文件」，描述文件那一步就没了。文件名靠响应头的
+                Content-Disposition（agentus-ca.crt），桌面端照样落到下载目录。 */}
+            <a className="tls-dl" href="/api/tls/ca.crt">
               下载 agentus-ca.crt
             </a>
             <p className="set-hint tls-meta">
