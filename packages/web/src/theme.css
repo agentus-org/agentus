@@ -370,11 +370,19 @@ button { font: inherit; }
   font-size: 11.5px;
   padding-left: 7px; border-left: 1px solid var(--line);
 }
-/* Phones: tighten the rhythm and the type — every pixel saved here is a pixel the sentence gets,
-   which is one line fewer on a screen that has no room to spare. */
+/* Phones: tighten the rhythm and the type, and give the sentence its own line.
+   Sharing one line with 「处理中 (12 秒)」 is what the operator kept reading as 「放不下」: the clock is
+   rigid, so the only thing that could give was the sentence, and a two-line sentence next to a
+   12-char clock reads as a squeezed row. Below 720px the status therefore takes a full line of its
+   own — the word and the clock keep the first line to themselves, which is exactly their natural
+   width, and the sentence gets the full 360px instead of ~250px. */
 @media (max-width: 720px) {
-  .stream-hint { gap: 5px; }
-  .stream-hint .turn-status { padding-left: 5px; font-size: 11px; }
+  .stream-hint { gap: 5px; flex-wrap: wrap; row-gap: 2px; }
+  .stream-hint .turn-status {
+    /* `1 0 100%`: take the whole line, never shrink beside the clock, never grow past it. */
+    flex: 1 0 100%; padding-left: 0; border-left: none;
+    font-size: 11px; line-height: 1.35;
+  }
 }
 .stream-spin {
   /* A ring has no baseline to align on, so it is pinned to the TOP of the row's first line instead —

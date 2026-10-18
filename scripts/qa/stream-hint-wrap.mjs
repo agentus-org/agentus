@@ -60,6 +60,7 @@ const readRow = () => ev(`(() => {
     return {
       cls: c.className || "(word)", text: c.textContent.trim(),
       h: Math.round(b.height), w: Math.round(b.width),
+      y: Math.round(b.top), // vertical position, so a stacked row can be told from a wrapped word
       truncated: c.scrollWidth > c.clientWidth + 1, ws: getComputedStyle(c).whiteSpace,
     };
   });
@@ -101,11 +102,20 @@ try {
       `${word?.w}×${word?.h} lineH=${row.lineH}`);
     check(`${label}: the seconds sit on ONE line`, !!clock && clock.h <= row.lineH * 1.5 && clock.w >= 30,
       `${clock?.w}×${clock?.h}`);
-    check(`${label}: the row is a single line box (no wrap to a second line)`,
-      row.h <= row.lineH + 8, `h=${row.h} lineH=${row.lineH}`);
+    // Phones stack on purpose: the word + clock own the first line, the sentence gets the next one
+    // (theme.css, 2026-10-18). Desktop still has room, so it stays one line.
+    if (label.includes("phone")) {
+      const firstLine = row.spans.filter((s) => s.cls !== "turn-status");
+      const owns = firstLine.every((s) => s.y + s.h <= (status?.y ?? 0) + 2);
+      check(`${label}: the word and the clock own the first line, the status starts below`,
+        owns, `word/clock bottom ${Math.round(Math.max(...firstLine.map((s) => s.y + s.h)))} vs status top ${status?.y}`);
+    } else {
+      check(`${label}: the row is a single line box (no wrap to a second line)`,
+        row.h <= row.lineH + 8, `h=${row.h} lineH=${row.lineH}`);
+    }
     check(`${label}: the row does not overflow horizontally`, row.overflowX <= 1, `overflow=${row.overflowX}px`);
-    check(`${label}: the agent's status keeps its own line and truncates`,
-      !!status && status.h <= row.lineH * 1.5, `${status?.w}×${status?.h}`);
+    check(`${label}: the agent's status is complete, not truncated`,
+      !!status && !status.trunc, `${status?.w}×${status?.h} trunc=${status?.trunc}`);
     check(`${label}: the fixed rule is in the page under test`, word?.ws === "nowrap" && clock?.ws === "nowrap",
       `word=${word?.ws} clock=${clock?.ws}`);
 
