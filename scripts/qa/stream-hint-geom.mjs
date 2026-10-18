@@ -77,10 +77,11 @@ const MEASURE = `(() => {
     const b = c.getBoundingClientRect();
     return { cls: c.className || "(word)", text: c.textContent.trim(),
              w: Math.round(b.width), h: Math.round(b.height),
-             truncated: c.scrollWidth > c.clientWidth + 1, ws: getComputedStyle(c).whiteSpace };
+             truncated: c.scrollWidth > c.clientWidth + 1, ws: getComputedStyle(c).whiteSpace,
+             overflowX: c.scrollWidth - c.clientWidth, fontSize: getComputedStyle(c).fontSize };
   });
   return { found: true, w: Math.round(r.width), h: Math.round(r.height), lineH: Math.round(lineH),
-           overflowX: el.scrollWidth - el.clientWidth, kids };
+           fontSize: cs.fontSize, overflowX: el.scrollWidth - el.clientWidth, kids };
 })()`;
 
 let cssLoaded = "";
@@ -101,12 +102,17 @@ for (const [label, width, mobile] of [["360px 手机", 360, true], ["390px 手�
     !!word && word.h <= d.lineH * 1.5 && word.w >= 30, `${word?.w}×${word?.h} (lineH ${d.lineH})`);
   check(`${label}: 「(1 分 30 秒)」 is one line`,
     !!clock && clock.h <= d.lineH * 1.5 && clock.w >= 30, `${clock?.w}×${clock?.h}`);
-  check(`${label}: the whole row is ONE line box`, d.h <= d.lineH + 8, `h=${d.h} lineH=${d.lineH}`);
+  // the operator's call (2026-10-18): the status may run onto more lines — it must NOT be clipped.
+  check(`${label}: the status is NOT truncated (the sentence is readable in full)`,
+    !!status && status.w <= d.w + 1 && !status.truncated && status.overflowX <= 1,
+    `${status?.w}×${status?.h} trunc=${status?.truncated} overflow=${status?.overflowX}`);
+  check(`${label}: the status wraps rather than being cut (white-space normal, no ellipsis clipping)`,
+    status?.ws === "normal", `ws=${status?.ws}`);
+  check(`${label}: the status sets smaller type than the word (more per line, fewer lines)`,
+    !!status && status.fontSize < d.fontSize, `status=${status?.fontSize} row=${d.fontSize}`);
   check(`${label}: nothing overflows the row horizontally`, d.overflowX <= 1, `overflow=${d.overflowX}px`);
-  check(`${label}: the status absorbs the squeeze (ellipsis, not wrapping)`,
-    !!status && status.h <= d.lineH * 1.5 && !!status.truncated, `${status?.w}×${status?.h} trunc=${status?.truncated}`);
   // the rule under test, read from the page: a stale stylesheet cannot fake this
-  check(`${label}: the stylesheet under test is the FIXED one (word/clock nowrap)`,
+  check(`${label}: the word and the clock are still rigid (nowrap)`,
     word?.ws === "nowrap" && clock?.ws === "nowrap", `word=${word?.ws} clock=${clock?.ws}`);
 
   try {
