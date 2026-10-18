@@ -1371,6 +1371,33 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     setSpeakMenu(false);
     setPrefs({ speakMode: next, autoRead: next === "reply" });
   };
+  // 单击 = 开/关，长按（手机）/ 右键（桌面）/ Shift+F10（键盘）= 选档。
+  // Why this split (the operator, 2026-10-18): the three-way menu had taken over the ONE gesture
+  // used most — every tap opened a menu to turn a switch off. Turning reading on or off is the
+  // frequent action and deserves the single click back; picking WHICH thing to read is rare and
+  // earns the longer gesture, which is also what a menu means everywhere else in this app
+  // (rail rows: ⋯ / right-click / phone long-press).
+  // A long press must swallow the click that follows it, or the menu opens AND the mode flips.
+  const speakPress = useRef<{ timer: number | null; fired: boolean }>({ timer: null, fired: false });
+  const speakPressClear = (): void => {
+    if (speakPress.current.timer) { window.clearTimeout(speakPress.current.timer); speakPress.current.timer = null; }
+  };
+  useEffect(() => speakPressClear, []);
+  const speakPressStart = (): void => {
+    speakPress.current.fired = false;
+    speakPressClear();
+    speakPress.current.timer = window.setTimeout(() => {
+      speakPress.current.fired = true;
+      setSpeakMenu(true);
+    }, 500);
+  };
+  /** brief is not reachable by clicking: a click always means 「开/关」, so from brief it turns
+   *  reading OFF rather than silently downgrading to reply (that would be changing a mode the
+   *  operator asked for without asking). */
+  const speakClick = (): void => {
+    if (speakPress.current.fired) { speakPress.current.fired = false; return; }
+    setMode(mode === "off" ? "reply" : "off");
+  };
   const SPEAK_LABEL: Record<"off" | "reply" | "brief", string> = {
     off: "关",
     reply: "自动朗读（念整条回复）",
@@ -1378,7 +1405,7 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   };
   const autoReadTitle = !canSpeak
     ? "朗读：这台设备没有可用语音（浏览器无 speechSynthesis，服务端也没配）"
-    : `朗读：${SPEAK_LABEL[mode]} —— 点一下换档`;
+    : `朗读：${SPEAK_LABEL[mode]} —— 点一下开/关，长按选档（右键同）`;
   // The head keeps identity and session controls: where this slot works, the panel that
   // shows it, and the two ways of TALKING to it (call, auto-read) — the operator's call
   // list. Mode, thinking depth and context stay in the composer, where the prompt is
@@ -1417,11 +1444,27 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           <button
             className={`icon-btn auto-read ${mode !== "off" ? "on" : ""}`}
             title={autoReadTitle}
-            aria-label="朗读方式"
+            aria-label="朗读：点一下开/关，长按选读什么"
             aria-pressed={mode !== "off"}
+            aria-haspopup="menu"
+            aria-expanded={speakMenu}
             data-speak-mode={mode}
             disabled={!canSpeak}
-            onClick={() => setSpeakMenu((o) => !o)}
+            onClick={speakClick}
+            onPointerDown={speakPressStart}
+            onPointerUp={speakPressClear}
+            onPointerLeave={speakPressClear}
+            onPointerCancel={speakPressClear}
+            onContextMenu={(e) => { e.preventDefault(); speakPressClear(); setSpeakMenu(true); }}
+            onKeyDown={(e) => {
+              // A keyboard has no long press. Shift+F10 and the ContextMenu key are what every
+              // desktop OS uses to ask for "the menu for this thing", so the menu stays reachable
+              // without spending a permanent caret next to the button.
+              if ((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") {
+                e.preventDefault();
+                setSpeakMenu(true);
+              }
+            }}
           >
             {mode === "off" ? <IconVolumeOff /> : <IconVolume />}
             {mode === "brief" ? <span className="speak-dot" aria-hidden /> : null}

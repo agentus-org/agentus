@@ -313,6 +313,10 @@ button { font: inherit; }
    three answers and a toggle can only express two. Same visual language as the session menu: a
    small panel under its trigger, kept inside the head so a popover library is not needed. */
 .speak-wrap { position: relative; display: inline-flex; }
+/* The speaker is pressed and held on a phone to reach its three-way menu, so the OS must not take
+   that gesture: Safari's long press otherwise selects the icon / raises the share sheet at the
+   same time the menu opens. `touch-action: manipulation` also drops the 300 ms tap delay. */
+.speak-wrap .auto-read { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: manipulation; }
 .speak-dot {
   position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent); box-shadow: 0 0 0 1.5px var(--bg-panel);
