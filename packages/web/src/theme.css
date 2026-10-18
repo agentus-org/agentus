@@ -247,11 +247,36 @@ button { font: inherit; }
 /* The sentence that makes the row's point: the conversation looks finished, the work does not. */
 .bg-hint { flex: 1 1 auto; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bg-caret { flex: 0 0 auto; font-size: 10px; opacity: 0.7; }
-.bg-list { list-style: none; margin: 0; padding: 2px 8px 6px; border-top: 1px solid var(--line); }
-.bg-item { display: flex; align-items: baseline; gap: 10px; padding: 2px 0; font-size: 12px; }
+.bg-list { list-style: none; margin: 0; padding: 2px 8px 6px; border-top: 1px solid var(--line); max-height: 40vh; overflow: auto; }
+.bg-item { display: block; padding: 4px 0; border-top: 1px dashed var(--line); }
+.bg-item:first-child { border-top: 0; }
+/* The command is the thing this row is opened for: wrap it, never ellipsise it — but cap the height and
+   let it scroll, because a 4000-char one-liner must not push the composer off the screen. Reading it
+   then feels like a terminal pane rather than a wall. (The operator's words: 「这个框可以滚动的」.) */
+.bg-cmd-full { margin: 0; max-height: 132px; overflow: auto; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.bg-item-foot { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
 .bg-cmd { flex: 1 1 auto; min-width: 0; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bg-meta { flex: 0 0 auto; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .bg-item[data-state="exited"] .bg-meta { color: var(--accent-text); }
+
+/* A background-completion notice inside the transcript. The agent sends it as a PROMPT (that is how it
+   wakes itself), so it lands as a user bubble — folded here to a single line, because nine lines of
+   `Command:` / `Output:` / shell noise is a stack trace in the middle of a conversation. */
+.bg-notice { border: 1px solid var(--line); border-left: 3px solid var(--accent-dim); border-radius: 7px; background: var(--bg-panel); max-width: 100%; }
+.bg-notice[data-ok="fail"] { border-left-color: var(--err); }
+.bg-notice-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 4px 8px; background: none; border: 0; color: var(--text-dim); font: inherit; text-align: left; cursor: pointer; }
+.bg-notice-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.bg-notice[data-ok="fail"] .bg-notice-dot { background: var(--err); }
+.bg-notice-title { flex: 0 0 auto; font-size: 12.5px; color: var(--text); }
+.bg-notice-cmd { flex: 1 1 auto; min-width: 0; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-notice-code { flex: 0 0 auto; font-size: 11.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.bg-notice-caret { flex: 0 0 auto; font-size: 10px; opacity: 0.7; }
+.bg-notice-body { border-top: 1px solid var(--line); padding: 4px 8px 7px; }
+.bg-notice-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); margin-top: 3px; }
+.bg-notice-pre { margin: 2px 0 0; padding: 5px 7px; border-radius: 5px; background: var(--bg-code, rgba(127, 127, 127, 0.07)); font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+@media (max-width: 720px) {
+  .bg-notice-cmd { font-size: 11px; }
+}
 @media (max-width: 720px) {
   /* Phones: the hint is the first thing to go — the count already says it, and three items on one line
      is what squeezed the turn line (§134/§137). */

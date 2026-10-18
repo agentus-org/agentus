@@ -22,6 +22,7 @@ import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
+import { parseBgNotice, shortCommand } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
@@ -1622,12 +1623,20 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
         <ul className="bg-list">
           {tasks.map((t) => (
             <li key={t.id} className="bg-item" data-state={t.status}>
-              <span className="bg-cmd" title={t.command}>{t.command || t.id}</span>
-              <span className="bg-meta">
-                {t.status === "running"
-                  ? `${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
-                  : `exit ${t.exitCode ?? "?"}`}
-              </span>
+              {/* Wrapped, not ellipsised. The command IS what the operator opens this row to read
+                  (「它到底在跑什么、带什么参数」); a single truncated line answered a different question.
+                  The agent caps the string it sends (200 chars until #23), so a very long pipeline can
+                  still arrive short — that is a producer limit, not this row's. */}
+              <pre className="bg-cmd-full">{t.command || t.id}</pre>
+              <div className="bg-item-foot">
+                <span className="bg-meta">
+                  {t.pid ? `pid ${t.pid} · ` : ""}
+                  {t.status === "running"
+                    ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
+                    : `exit ${t.exitCode ?? "?"}`}
+                </span>
+                {t.command ? <CopyButton text={t.command} what="这条命令" /> : null}
+              </div>
             </li>
           ))}
         </ul>
@@ -1984,6 +1993,41 @@ const samePlan = (a: { m: MsgView; busy: boolean }, b: { m: MsgView; busy: boole
 };
 const MemoPlanCard = memo(PlanCard, samePlan);
 
+/**
+ * A background-completion notice, folded.
+ *
+ * The agent wakes itself by sending that notice as a PROMPT (ACP has no server→agent channel), so the
+ * row is a machine-written nine-line block: header, `Command:`, `Output:`, then the shell's own
+ * startup noise. Raw, it reads like a stack trace in the middle of the conversation. Folded, the one
+ * thing the operator needs — 「跑完了，成功，跑了什么」 — is a single line; the output is one click away,
+ * and the copy button still yields the original text verbatim (the roster keeps it untouched).
+ */
+function BgNoticeBlock({ text }: { text: string }): JSX.Element {
+  const notice = parseBgNotice(text);
+  const [open, setOpen] = useState(false);
+  // Not a completion notice (an operator pasting one, a future format): render what we were given.
+  if (!notice) return <>{text}</>;
+  return (
+    <div className={`bg-notice ${open ? "open" : ""}`} data-ok={notice.ok ? "ok" : "fail"}>
+      <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-notice-dot" aria-hidden="true" />
+        <span className="bg-notice-title">后台任务完成</span>
+        <code className="bg-notice-cmd" title={notice.command}>{shortCommand(notice.command)}</code>
+        <span className="bg-notice-code">exit {notice.exitCode}</span>
+        <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="bg-notice-body">
+          <div className="bg-notice-label">命令</div>
+          <pre className="bg-notice-pre">{notice.command || "(未报告)"}</pre>
+          <div className="bg-notice-label">输出{notice.output ? "" : "（空）"}</div>
+          {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean; base?: string }): JSX.Element | null {
   switch (m.kind) {
     case "user":
@@ -2006,7 +2050,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
                 ))}
               </div>
             ) : null}
-            {m.text}
+            {m.from ? <BgNoticeBlock text={m.text} /> : m.text}
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条消息" />
@@ -3647,8 +3691,12 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
         if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
       }}
     >
-      <PlanBar v={v} />
+      {/* Background work reads ABOVE the plan: it is about the session as a whole (is anything still
+          running?), while the plan is the agent's own checklist for one job. Under the plan card the row
+          was easy to miss exactly when it mattered — the operator's question 「会话是不是真的结束了」
+          comes before 「它还差几步」. */}
       <BackgroundRow v={v} />
+      <PlanBar v={v} />
       <UsageRow v={v} />
       <div className="composer-inner" ref={composerRef}>
         {paletteOpen && (
