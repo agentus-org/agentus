@@ -68,6 +68,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
       { anchor: "set-asr", label: "语音识别（ASR）" },
       { anchor: "set-hotwords", label: "热词" },
       { anchor: "set-tts", label: "语音合成（TTS）" },
+      { anchor: "set-summary", label: "语音总结" },
       { anchor: "set-browser", label: "这个浏览器" },
     ],
   },
@@ -98,6 +99,12 @@ interface SettingsView {
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
   observerPromptDefault?: string;
   observerPromptMax?: number;
+  summary?: { enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number };
+  summaryPromptDefault?: string;
+  summaryPromptMax?: number;
+  summaryCharsRange?: [number, number];
+  summaryTimeoutRange?: [number, number];
+  summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
   agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
   agentIdleRange?: [number, number];
@@ -201,6 +208,10 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   // cockpit switch: this section's whole point is that the next brief sounds different.
   const [observer, setObserver] = useState<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number } | null>(null);
   const [observerMsg, setObserverMsg] = useState("");
+  // 语音总结 — the message speaker's long press. Saves on its own like the observer's card: the
+  // whole point is that the next long press summarises differently.
+  const [summary, setSummary] = useState<{ enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number } | null>(null);
+  const [summaryMsg, setSummaryMsg] = useState("");
   const [backendOptions, setBackendOptions] = useState<{ id: string; label: string }[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
@@ -225,6 +236,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
       if (data.observer) setObserver(data.observer);
+      if (data.summary) setSummary(data.summary);
       const be = await fetch("/api/backends", { credentials: "same-origin" })
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []);
@@ -337,6 +349,36 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       setObserverMsg("已保存：下一次播报就是新设置。");
     } catch (e) {
       setObserverMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 语音总结 saves on its own, same rule as 观察智能体: one number or one sentence at a time, and the
+   *  next long press already uses it (the server reads the section per request). */
+  const saveSummary = async (patch: Partial<{ enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number }>): Promise<void> => {
+    const next = {
+      enabled: summary?.enabled ?? true,
+      prompt: summary?.prompt ?? "",
+      maxChars: summary?.maxChars ?? 120,
+      model: summary?.model ?? "",
+      timeoutSec: summary?.timeoutSec ?? 20,
+      ...patch,
+    };
+    setSummary(next);
+    setSummaryMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ summary: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      if (data.summary) setSummary(data.summary);
+      setSummaryMsg("已保存 —— 下一次长按就用新的设置。");
+    } catch (e) {
+      setSummaryMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -925,6 +967,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           {observerMsg ? <p className="set-hint">{observerMsg}</p> : null}
         </section>
 
+
         <section className="set-card" id="set-cockpit" data-setgroup="agent">
           <h3>驾驶舱互发消息（cockpit CLI）</h3>
           <p className="set-hint">
@@ -1088,6 +1131,102 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 语音合成 ---------- */}
+        <section className="set-card" id="set-summary" data-setgroup="voice">
+          <h3>语音总结（消息喇叭长按）</h3>
+          <p className="set-hint">
+            <b>长按</b>任意一条消息旁边的喇叭（电脑上右键）→「语音播报总结」：把这一条压成几十秒能听完的一段话再念出来。
+            适合那种一屏表格、或者很长的输出 —— 通勤时听完就能知道结论。
+          </p>
+          <p className="set-hint">
+            它<b>不经过 agent</b>，也不带会话历史：只把<b>这一条消息</b>加下面这段指令，发到「语音」里配的那个
+            DashScope 端点的 <code>chat/completions</code>（ASR / TTS 用的同一个 key），拿回一段话再用同一个 TTS 念。
+            消息本身就短于字数上限时<b>直接念原文</b>，不花一次模型调用。
+          </p>
+          <div className="set-row">
+            <label>启用</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={summary?.enabled ?? true}
+                onChange={(e) => void saveSummary({ enabled: e.target.checked })}
+              />
+              <span className="set-hint">
+                {summary?.enabled ?? true ? "已启用：长按菜单里会出现「语音播报总结」" : "已关闭：长按只出菜单，没有这一项"}
+              </span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>字数上限</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.summaryCharsRange?.[0] ?? 40}
+                max={view?.summaryCharsRange?.[1] ?? 400}
+                step={10}
+                value={summary?.maxChars ?? 120}
+                onChange={(e) => setSummary((v) => (v ? { ...v, maxChars: Number(e.target.value) } : v))}
+                onBlur={(e) => void saveSummary({ maxChars: Number(e.target.value) })}
+              />
+              <span className="set-hint">中文大约每字 0.2–0.3 秒（120 字 ≈ 25–35 秒）。它同时也是「短于此就念原文」的阈值。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>用哪个模型</label>
+            <div className="set-pair">
+              <input
+                className="set-input"
+                type="text"
+                placeholder={`${view?.summaryModelDefault ?? "qwen-flash"}（默认）`}
+                value={summary?.model ?? ""}
+                onChange={(e) => setSummary((v) => (v ? { ...v, model: e.target.value } : v))}
+                onBlur={(e) => void saveSummary({ model: e.target.value })}
+              />
+              <span className="set-hint">这活不需要大模型，便宜的就行。默认 <code>{view?.summaryModelDefault ?? "qwen-flash"}</code>。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>超时（秒）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.summaryTimeoutRange?.[0] ?? 5}
+                max={view?.summaryTimeoutRange?.[1] ?? 60}
+                step={5}
+                value={summary?.timeoutSec ?? 20}
+                onChange={(e) => setSummary((v) => (v ? { ...v, timeoutSec: Number(e.target.value) } : v))}
+                onBlur={(e) => void saveSummary({ timeoutSec: Number(e.target.value) })}
+              />
+              <span className="set-hint">超时就<b>明说失败</b>，不会拿原文冒充总结。可以重试。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>怎么改写</label>
+          </div>
+          <textarea
+            className="set-textarea"
+            rows={7}
+            spellCheck={false}
+            value={summary?.prompt ?? ""}
+            placeholder="留空即用内置模板 —— 原文就在下面，能直接看、能照着改。"
+            onChange={(e) => setSummary((v) => (v ? { ...v, prompt: e.target.value } : v))}
+            onBlur={(e) => void saveSummary({ prompt: e.target.value })}
+          />
+          <details className="set-builtin" open={!(summary?.prompt ?? "").trim()}>
+            <summary>
+              {(summary?.prompt ?? "").trim()
+                ? "内置模板（你写了自定义的，它不再生效；清空即可恢复）"
+                : "内置模板（留空时生效的就是它）"}
+            </summary>
+            <pre className="set-builtin-text">{view?.summaryPromptDefault ?? ""}</pre>
+          </details>
+          <p className="set-hint">
+            <code>{"{maxChars}"}</code> 会被换成上面的字数上限。消息正文作为<b>用户那一轮</b>单独发出去，
+            不带系统人设、不带历史、不带工具 —— 所以它只会总结你长按的那一条。
+          </p>
+          {summaryMsg ? <p className="set-hint">{summaryMsg}</p> : null}
+        </section>
         <section className="set-card" id="set-tts" data-setgroup="voice">
           <h3>语音合成（TTS）</h3>
           <p className="set-hint">

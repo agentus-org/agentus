@@ -1114,6 +1114,13 @@ export class Store {
   /** The NEWEST page, oldest-first: what a fresh view of a long slot should open on.
    *  `hasOlder` says whether the transcript continues above it (the "load earlier"
    *  affordance). Distinct from messagesAfter, which walks FORWARD from a replay anchor. */
+  /** One stored row by its block key. 语音总结 reads the text from HERE rather than from the
+   *  request body: a browser must not get to decide what reaches the model, and the store's copy is
+   *  the one the operator actually saw. */
+  messageByKey(sessionId: string, key: string): StoredMessage | undefined {
+    return this.#rowByKey(sessionId, key);
+  }
+
   messagesTail(sessionId: string, limit = 500): { messages: StoredMessage[]; hasOlder: boolean } {
     const page = this.messagesBefore(sessionId, Number.MAX_SAFE_INTEGER, limit);
     return { messages: page.messages, hasOlder: page.hasMore };

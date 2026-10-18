@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
-import { Store } from "./store/store.js";
+import { Store, textOf } from "./store/store.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
@@ -19,10 +19,11 @@ import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTex
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
-import { openDashscopeStream } from "./dashscope.js";
+import { openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
 import {
+  SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
-  saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveTheme,
+  saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
 } from "./settings.js";
 import { ObserverHub } from "./observer/hub.js";
 import * as auth from "./auth.js";
@@ -1238,7 +1239,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (body.prefs && typeof body.prefs === "object") savePrefs(body.prefs as Record<string, unknown>);
         if (body.agent && typeof body.agent === "object") saveAgent(body.agent as Record<string, unknown>);
         if (body.observer && typeof body.observer === "object") saveObserver(body.observer as Record<string, unknown>);
-        if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer) saveSettings(body);
+        if (body.summary && typeof body.summary === "object") saveSummary(body.summary as Record<string, unknown>);
+        if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer && !body.summary) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
         return send(res, 400, { error: String((e as Error)?.message ?? e) });
@@ -1523,6 +1525,53 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const msg = describeAcpError(e);
           if (/no such session/.test(msg)) return send(res, 404, { error: msg });
           return send(res, 409, { error: msg });
+        }
+      }
+      if (req.method === "POST" && sub === "/speech-summary") {
+        // 语音总结 (the message speaker's long press): ONE stored message, made listenable.
+        //
+        // No agent, no fork, no history: the text goes to the voice endpoint's chat surface, the
+        // same one ASR already posts to. The BODY of the message is read from the store by key —
+        // the browser does not get to say what reaches the model, and the server's copy is what the
+        // operator actually saw on screen.
+        const cfg = summarySettings();
+        if (!cfg.enabled) return send(res, 409, { error: "语音总结已关闭（设置 → 语音总结）", code: "disabled" });
+        const body = await readJson(req);
+        const key = String(body.key ?? "").trim();
+        if (!key) return send(res, 400, { error: "key is required" });
+        const row = store.messageByKey(id, key);
+        if (!row) return send(res, 404, { error: `no such message: ${key}` });
+        // Judge "short enough to just read" on what would actually be SPOKEN: voice.ts drops code
+        // blocks, and a 20-line diff must not count as a long message worth a model call.
+        const spoken = textOf(row.payload).replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+        if (!spoken) return send(res, 409, { error: "这条消息没有可以念的文字", code: "empty" });
+        if (spoken.length <= cfg.maxChars) {
+          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0 });
+        }
+        try {
+          const model = cfg.model || SUMMARY_MODEL_DEFAULT;
+          const r = await summarizeForSpeech({
+            text: spoken,
+            maxChars: cfg.maxChars,
+            prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
+            model,
+            timeoutSec: cfg.timeoutSec,
+          });
+          // Newlines are the one thing the model keeps ignoring: 「不要换行」 in the prompt is a
+          // request, so the answer is normalised here — the note clamps to two lines and the TTS
+          // chunker reads sentence by sentence, and a stray blank line costs both of them.
+          const text = r.text.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+          return send(res, 200, {
+            ok: true, via: "model", text, chars: text.length,
+            ms: r.ms, truncated: r.truncated, model,
+          });
+        } catch (e) {
+          // 409 = nothing is configured, 504 = we gave up waiting, 502 = the endpoint said no.
+          // None of them may be papered over with the original text: a fallback that looks like a
+          // summary is worse than an honest failure the UI can offer to retry.
+          const err = e as { code?: string; message?: string };
+          const status = err.code === "not_configured" ? 409 : err.code === "timeout" ? 504 : 502;
+          return send(res, status, { error: String(err.message ?? e), code: err.code ?? "upstream" });
         }
       }
       if (req.method === "POST" && sub === "/fork") {

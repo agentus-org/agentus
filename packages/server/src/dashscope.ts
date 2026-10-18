@@ -233,3 +233,64 @@ export function openDashscopeStream(opts: {
     started,
   };
 }
+
+/**
+ * 语音总结: one message in, a few spoken sentences out.
+ *
+ * Same door as batch ASR (`{compat}/chat/completions`) with the audio block swapped for text, so
+ * the operator's existing voice endpoint and key are enough — there is no second model to
+ * configure and no agent, no session and no history involved.
+ *
+ * The input is capped at `maxChars × 20` characters (30k ≈ 15k tokens is already the ceiling for a
+ * 30-second listen): a 200 KB pasted log must not turn a long press into a bill.
+ */
+export async function summarizeForSpeech(opts: {
+  text: string;
+  maxChars: number;
+  prompt: string;
+  model: string;
+  timeoutSec: number;
+}): Promise<{ text: string; truncated: boolean; ms: number }> {
+  const { key, compat } = creds();
+  const v = getSettings().voice;
+  const limit = Math.max(400, opts.maxChars * 20);
+  const body = opts.text.trim();
+  const truncated = body.length > limit;
+  const input = truncated ? `${body.slice(0, limit)}\n…（后面还有 ${body.length - limit} 字没发）` : body;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), Math.max(5, opts.timeoutSec) * 1000);
+  const started = Date.now();
+  try {
+    const res = await fetch(`${compat}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: opts.model || "qwen-flash",
+        messages: [
+          { role: "system", content: opts.prompt.replace(/\{maxChars\}/g, String(opts.maxChars)) },
+          { role: "user", content: input },
+        ],
+        // No temperature knob: this surface is not a playground, and the default has produced
+        // the steadiest length compliance. `max_tokens` guards against a chatty model.
+        max_tokens: Math.max(200, opts.maxChars * 4),
+      }),
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 200);
+      throw new DashscopeError(`chat/completions ${res.status}: ${detail}`, "upstream");
+    }
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const out = String(data?.choices?.[0]?.message?.content ?? "").trim();
+    if (!out) throw new DashscopeError("the model returned nothing", "upstream");
+    void v;
+    return { text: out, truncated, ms: Date.now() - started };
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw new DashscopeError(`summary timed out after ${opts.timeoutSec}s`, "timeout");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}

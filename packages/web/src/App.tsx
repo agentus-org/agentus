@@ -26,6 +26,10 @@ import { parseBgNotice, shortCommand } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
+  forgetSummary, getSummary, subscribeSummaries, summariesVersion, summarizeMessage, SummaryError,
+  type SpeechSummary,
+} from "./speechSummary";
+import {
   browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
@@ -2167,9 +2171,11 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条回复" />
-              <SpeakButton id={m.key} text={m.text} />
+              <SpeakButton id={m.key} text={m.text} sid={sid} />
               {last && !busy ? <ForkHere sid={sid} busy={busy} /> : null}
             </div>
+            {/* inside the bubble, under the action row: 「它念了什么」 belongs to this message */}
+            <SummaryNote mkey={m.key} />
           </div>
         </div>
       );
@@ -2940,12 +2946,33 @@ function PermDialog({ req, sessionTitle, waiting, onSkip }: {
   );
 }
 
-/** Read this reply aloud / stop reading. One button, because the two states are the
- *  same affordance (hermes-studio puts play/stop in the same place for the same
- *  reason: you click where you last clicked). */
-function SpeakButton({ id, text }: { id: string; text: string }): JSX.Element | null {
+/** Read this reply aloud / stop reading — and, on a LONG press, offer 「语音播报总结」.
+ *  One button for play/stop, because the two states are the same affordance (you click where you
+ *  last clicked). The long press is the second meaning, exactly as in the head: a click does the
+ *  frequent thing, a hold opens a menu. */
+function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string }): JSX.Element | null {
   const [prefs] = useVoicePrefs();
   const spoken = useSpeaker();
+  const [menu, setMenu] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<{ msg: string; hint?: string } | null>(null);
+  const wrap = useRef<HTMLSpanElement | null>(null);
+  useDismiss(menu, [wrap], () => setMenu(false));
+  // A long press must swallow the click that follows it, or the menu opens AND the message starts
+  // being read underneath it (same rule as the rail's row menu).
+  const press = useRef<{ timer: number | null; fired: boolean }>({ timer: null, fired: false });
+  const pressClear = (): void => {
+    if (press.current.timer) { window.clearTimeout(press.current.timer); press.current.timer = null; }
+  };
+  useEffect(() => pressClear, []);
+  const pressStart = (): void => {
+    press.current.fired = false;
+    pressClear();
+    press.current.timer = window.setTimeout(() => {
+      press.current.fired = true;
+      setMenu(true);
+    }, 500);
+  };
   if (!text.trim()) return null;
   const playing = spoken.speaking && spoken.speakingId === id;
   // Only claim we cannot speak when the browser really has no speech synthesis at all:
@@ -2953,18 +2980,120 @@ function SpeakButton({ id, text }: { id: string; text: string }): JSX.Element | 
   if (typeof window !== "undefined" && !("speechSynthesis" in window) && !prefs.serverTts) {
     return <span className="bubble-note" title="this browser has no speech synthesis">no voices</span>;
   }
+  const summarise = async (): Promise<void> => {
+    if (busy) return;
+    // Already summarised once: replay it. A second long press must not buy the same paragraph
+    // twice (the note's ✕ forgets it, which turns the next press back into a real call).
+    const cached = getSummary(id);
+    if (cached) {
+      setMenu(false);
+      void speaker.speak(cached.text, `${id}#summary`, prefs);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const s: SpeechSummary = await summarizeMessage(sid, id);
+      setMenu(false);
+      void speaker.speak(s.text, `${id}#summary`, prefs);
+    } catch (e) {
+      const se = e as SummaryError;
+      // Say WHICH failure it was (off / not configured / timed out / endpoint said no) and never
+      // read the original as if it were a summary.
+      setErr({ msg: se?.message ?? String(e), hint: se?.hint });
+      setMenu(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <button
-      className={`bubble-btn speak ${playing ? "on" : ""}`}
-      title={playing ? "stop reading" : "read this reply aloud"}
-      aria-label={playing ? "stop reading" : "read aloud"}
-      onClick={() => {
-        if (playing) speaker.stop();
-        else void speaker.speak(text, id, prefs);
-      }}
-    >
-      {playing ? <IconVolumeOff size={13} /> : <IconVolume size={13} />}
-    </button>
+    <>
+      <span className="speak-wrap bubble-speak" ref={wrap}>
+        <button
+          className={`bubble-btn speak ${playing ? "on" : ""} ${busy ? "working" : ""}`}
+          title={
+            busy
+              ? "正在生成语音播报总结…"
+              : playing
+                ? "stop reading（长按：语音播报总结）"
+                : "read this reply aloud（长按：语音播报总结）"
+          }
+          aria-label={playing ? "stop reading" : "read aloud"}
+          aria-haspopup="menu"
+          aria-expanded={menu}
+          onClick={() => {
+            if (press.current.fired) { press.current.fired = false; return; }
+            if (playing) speaker.stop();
+            else void speaker.speak(text, id, prefs);
+          }}
+          onPointerDown={pressStart}
+          onPointerUp={pressClear}
+          onPointerLeave={pressClear}
+          onPointerCancel={pressClear}
+          onContextMenu={(e) => { e.preventDefault(); pressClear(); setMenu(true); }}
+          onKeyDown={(e) => {
+            if ((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") {
+              e.preventDefault();
+              setMenu(true);
+            }
+          }}
+        >
+          {busy ? <IconRefresh size={13} className="spin" /> : playing ? <IconVolumeOff size={13} /> : <IconVolume size={13} />}
+        </button>
+        {menu ? (
+          <div className="speak-menu bubble-menu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              className="speak-menu-item"
+              disabled={busy}
+              data-speak-summary="1"
+              onClick={() => void summarise()}
+            >
+              <span className="speak-check">{busy ? "•" : ""}</span>
+              <span className="speak-name">{busy ? "总结中…" : "语音播报总结"}</span>
+            </button>
+            <p className="speak-hint">把这条压成几十秒能听完的口头摘要（提示词与字数在 设置 → 语音总结）</p>
+          </div>
+        ) : null}
+      </span>
+      {err ? (
+        <span className="bubble-note err" role="status">
+          {err.msg}{err.hint ? ` · ${err.hint}` : ""}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** The spoken text, visible. 「它到底念了什么」 must never be a mystery: this line is both the
+ *  proof and the thing to judge the prompt by. Click to expand the full text, ✕ to drop it (the
+ *  next long press then asks the model again). */
+function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
+  const version = useSyncExternalStore(subscribeSummaries, summariesVersion, summariesVersion);
+  const [open, setOpen] = useState(false);
+  const sum = getSummary(mkey);
+  if (!sum) return null;
+  const meta = sum.via === "verbatim"
+    ? "原文本身就够短，直接念"
+    : `${sum.chars} 字 · ${(sum.ms / 1000).toFixed(1)}s${sum.model ? ` · ${sum.model}` : ""}`;
+  return (
+    <div className={`bubble-note speech-note${open ? " open" : ""}`} data-summary-chars={sum.chars}>
+      <button type="button" className="speech-note-tag" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        播报稿
+      </button>
+      <span className="speech-note-text" onClick={() => setOpen((o) => !o)} title="点击展开/收起">
+        {sum.text}
+      </span>
+      <span className="speech-note-meta">
+        {meta}{sum.truncated ? " · 原文过长，只总结了前半" : ""}
+      </span>
+      <button type="button" className="speech-note-x" title="丢掉这份稿子（下次长按会重新生成）" aria-label="drop this summary" onClick={() => forgetSummary(mkey)}>
+        <IconClose size={11} />
+      </button>
+      {/* version keeps the subscription honest even when this key's summary is replaced */}
+      <span hidden>{version}</span>
+    </div>
   );
 }
 

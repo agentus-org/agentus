@@ -249,6 +249,50 @@ export const OBSERVER_DEFAULT: ObserverSettings = {
   enabled: false, backend: null, systemPrompt: "", throttleSec: 120,
 };
 
+/** 语音总结 (the message speaker's long press, 2026-10-18): ONE message → a few sentences worth
+ *  listening to.
+ *
+ *  Deliberately NOT an agent, and deliberately not a fork: no session, no history, no tools. The
+ *  server posts the message's own text plus this instruction to `{compat}/chat/completions` — the
+ *  same door ASR already uses — and speaks what comes back. Two reasons the history must stay out
+ *  of it: a summary of ONE message does not need the conversation, and handing it the conversation
+ *  makes the model summarise the wrong thing (the session instead of the message).
+ */
+export interface SummarySettings {
+  /** the long-press menu offers 语音播报总结 at all; off = the menu item disappears */
+  enabled: boolean;
+  /** The instruction. "" = the built-in template (which is what the settings page shows as the
+   *  thing it will actually send). `{maxChars}` is substituted at call time. */
+  prompt: string;
+  /** Target length of the spoken text, in characters. Also the threshold below which the message is
+   *  spoken verbatim without asking a model at all (cheap and instant beats a paraphrase). */
+  maxChars: number;
+  /** chat model on the voice endpoint. "" = SUMMARY_MODEL_DEFAULT. */
+  model: string;
+  /** give up after this many seconds — and SAY so; never pass the original off as a summary. */
+  timeoutSec: number;
+}
+
+export const SUMMARY_PROMPT_MAX = 2000;
+export const SUMMARY_CHARS_RANGE: [number, number] = [40, 400];
+export const SUMMARY_TIMEOUT_RANGE: [number, number] = [5, 60];
+/** Measured against this operator's workspace, 2026-10-18: `qwen-flash` answered a 40-character
+ *  ask with 67 prompt / 20 completion tokens. `qwen3-flash` and `qwen-turbo` are 404 there ("Model
+ *  not exist"), and `qwen3.8-flash` spent 235 output tokens thinking about the same sentence. */
+export const SUMMARY_MODEL_DEFAULT = "qwen-flash";
+
+export const SUMMARY_PROMPT_DEFAULT = [
+  "下面是我在一个工作会话里拿到的一段输出。请把它改写成一段「用嘴念出来」的摘要：",
+  "· 只讲结论和关键动作；不复述步骤，不念代码，不念表格里的数字（关键结论除外）",
+  "· 口语化，一句话一个意思；不要 Markdown、列表、引号、括号、表情",
+  "· 不超过 {maxChars} 字；先说发生了什么变化 / 发现了什么，再说影响",
+  "· 第一句直接说事，不要「这段内容讲了…」这种开场",
+].join("\n");
+
+export const SUMMARY_DEFAULT: SummarySettings = {
+  enabled: true, prompt: "", maxChars: 120, model: "", timeoutSec: 20,
+};
+
 /** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
  *  outside both the range table and the loops that validate numbers. */
 export const CALL_NUMERIC = ["bargeSensitivity", "bargeMs", "silenceMs", "minChars"] as const;
@@ -284,6 +328,7 @@ export interface Settings {
   prefs: PrefsSettings;
   agent: AgentSettings;
   observer: ObserverSettings;
+  summary: SummarySettings;
   updatedAt: number;
 }
 
@@ -311,7 +356,7 @@ let legacyFile = "";
 let cache: Settings = {
   voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT },
   prefs: { ...PREFS_DEFAULT }, agent: { ...AGENT_DEFAULT },
-  observer: { ...OBSERVER_DEFAULT }, updatedAt: 0,
+  observer: { ...OBSERVER_DEFAULT }, summary: { ...SUMMARY_DEFAULT }, updatedAt: 0,
 };
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
@@ -377,6 +422,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
     prefs: pickPrefs(stored.prefs),
     agent: pickAgent(stored.agent),
     observer: pickObserver(stored.observer),
+    summary: pickSummary(stored.summary),
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -489,6 +535,7 @@ function persist(): void {
     db.setSetting("prefs", cache.prefs);
     db.setSetting("agent", cache.agent);
     db.setSetting("observer", cache.observer);
+    db.setSetting("summary", cache.summary);
   } catch (e) {
     console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
   }
@@ -541,6 +588,13 @@ export function publicSettings(): Record<string, unknown> {
     observerPromptDefault: OBSERVER_PROMPT_DEFAULT,
     observerPromptMax: OBSERVER_PROMPT_MAX,
     observerThrottleRange: OBSERVER_THROTTLE_RANGE,
+    summary: cache.summary,
+    summaryDefaults: SUMMARY_DEFAULT,
+    summaryPromptDefault: SUMMARY_PROMPT_DEFAULT,
+    summaryPromptMax: SUMMARY_PROMPT_MAX,
+    summaryCharsRange: SUMMARY_CHARS_RANGE,
+    summaryTimeoutRange: SUMMARY_TIMEOUT_RANGE,
+    summaryModelDefault: SUMMARY_MODEL_DEFAULT,
     // the defaults, so the UI can offer "reset to Bailian defaults"
     defaults: { ...DEFAULTS, apiKey: undefined, baseUrl: undefined },
     updatedAt: cache.updatedAt,
@@ -778,6 +832,72 @@ export function saveObserver(patch: Record<string, unknown>): Settings {
     o.throttleSec = Math.round(n);
   }
   cache = { ...cache, observer: o, updatedAt: Date.now() };
+  persist();
+  return cache;
+}
+
+/** 语音总结 knobs. Untrusted like every other section: a corrupt row must leave it in the SHIPPED
+ *  state (on, 120 characters, built-in prompt), never in a half-configured one. */
+function pickSummary(raw: unknown): SummarySettings {
+  const out = { ...SUMMARY_DEFAULT };
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    if (typeof r.enabled === "boolean") out.enabled = r.enabled;
+    if (typeof r.prompt === "string" && r.prompt.length <= SUMMARY_PROMPT_MAX) out.prompt = r.prompt;
+    if (typeof r.model === "string" && r.model.length <= 60) out.model = r.model;
+    const chars = Number(r.maxChars);
+    const [clo, chi] = SUMMARY_CHARS_RANGE;
+    if (Number.isFinite(chars) && chars >= clo && chars <= chi) out.maxChars = Math.round(chars);
+    const t = Number(r.timeoutSec);
+    const [tlo, thi] = SUMMARY_TIMEOUT_RANGE;
+    if (Number.isFinite(t) && t >= tlo && t <= thi) out.timeoutSec = Math.round(t);
+  }
+  return out;
+}
+
+/** Read per request: the long press must pick up a new prompt without a restart. */
+export function summarySettings(): SummarySettings {
+  return cache.summary;
+}
+
+/** Save 语音总结. Its own update, so a bad value here cannot lock the operator out of the page
+ *  that fixes it. */
+export function saveSummary(patch: Record<string, unknown>): Settings {
+  const s = { ...cache.summary };
+  if ("enabled" in patch) {
+    if (typeof patch.enabled !== "boolean") throw new Error("invalid enabled: expected true/false");
+    s.enabled = patch.enabled;
+  }
+  if ("prompt" in patch) {
+    const v = String(patch.prompt ?? "");
+    if (v.length > SUMMARY_PROMPT_MAX) {
+      throw new Error(`invalid prompt: longer than ${SUMMARY_PROMPT_MAX} characters`);
+    }
+    // whitespace-only means "use the built-in template", same rule as the observer's wording
+    s.prompt = v.trim() ? v : "";
+  }
+  if ("model" in patch) {
+    const v = String(patch.model ?? "").trim();
+    if (v.length > 60) throw new Error("invalid model: longer than 60 characters");
+    s.model = v;
+  }
+  if ("maxChars" in patch) {
+    const n = Number(patch.maxChars);
+    const [lo, hi] = SUMMARY_CHARS_RANGE;
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      throw new Error(`invalid maxChars: ${JSON.stringify(patch.maxChars)} (expected ${lo}…${hi})`);
+    }
+    s.maxChars = Math.round(n);
+  }
+  if ("timeoutSec" in patch) {
+    const n = Number(patch.timeoutSec);
+    const [lo, hi] = SUMMARY_TIMEOUT_RANGE;
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      throw new Error(`invalid timeoutSec: ${JSON.stringify(patch.timeoutSec)} (expected ${lo}…${hi})`);
+    }
+    s.timeoutSec = Math.round(n);
+  }
+  cache = { ...cache, summary: s, updatedAt: Date.now() };
   persist();
   return cache;
 }
