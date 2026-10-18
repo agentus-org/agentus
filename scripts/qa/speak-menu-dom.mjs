@@ -45,13 +45,37 @@ try {
   const opened = await waitFor(`Boolean(document.querySelector('.chat-head'))`);
   check("a session is on screen (the header exists to carry the speaker)", opened);
   const hasButton = await waitFor(`Boolean(document.querySelector('.speak-wrap button.icon-btn'))`);
-  check("the header draws the speaker as a MENU trigger (not a toggle)", hasButton);
+  check("the header draws the speaker as a one-click switch that also owns a menu", hasButton);
+  const attrs = await ev(`(() => { const b = document.querySelector('.speak-wrap button.icon-btn'); return { mode: b.getAttribute('data-speak-mode'), popup: b.getAttribute('aria-haspopup') }; })()`);
+  check("…it starts in a known mode and declares the menu", ["off", "reply", "brief"].includes(attrs.mode) && attrs.popup === "menu", JSON.stringify(attrs));
 
-  // Three options, in one panel.
-  await ev(`document.querySelector('.speak-wrap button.icon-btn').click()`);
-  await sleep(400);
+  // Real pointer events, not element.click(): the long press is timed, and a scripted click would
+  // prove nothing about whether the release afterwards also fires the toggle.
+  const spot = () => ev(`(() => { const b = document.querySelector('.speak-wrap button.icon-btn').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+  const press = async (ms, button = "left") => {
+    const p = await spot();
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button, buttons: button === "left" ? 1 : 2, clickCount: 1 });
+    await sleep(ms);
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button, buttons: 0, clickCount: 1 });
+    await sleep(350);
+  };
+
+  // A short click is the switch: it must NOT open the menu.
+  const modeBefore = (await ev(`document.querySelector('.speak-wrap button.icon-btn').getAttribute('data-speak-mode')`));
+  await press(90);
+  const modeAfterClick = await ev(`document.querySelector('.speak-wrap button.icon-btn').getAttribute('data-speak-mode')`);
+  const menuAfterClick = await ev(`Boolean(document.querySelector('.speak-menu'))`);
+  check("a short click toggles the mode and opens no menu", modeAfterClick !== modeBefore && !menuAfterClick, `${modeBefore} → ${modeAfterClick}`);
+
+  // A long press opens the menu and must NOT toggle (the release would otherwise click through).
+  await press(650);
+  const menuAfterHold = await ev(`Boolean(document.querySelector('.speak-menu'))`);
+  const modeAfterHold = await ev(`document.querySelector('.speak-wrap button.icon-btn').getAttribute('data-speak-mode')`);
+  check("a 650ms hold opens the menu", menuAfterHold);
+  check("…and the release does not also toggle the mode", modeAfterHold === modeAfterClick, `${modeAfterClick} → ${modeAfterHold}`);
+
   const options = await ev(`[...document.querySelectorAll('.speak-menu [data-speak-option]')].map(b => b.getAttribute('data-speak-option'))`);
-  check("clicking it offers all three modes", JSON.stringify(options) === JSON.stringify(["off", "reply", "brief"]), JSON.stringify(options));
+  check("the menu offers all three modes", JSON.stringify(options) === JSON.stringify(["off", "reply", "brief"]), JSON.stringify(options));
 
   // Choosing 工作播报 persists the new pref AND keeps the old boolean in step.
   const before = await apiPrefs();
@@ -64,13 +88,25 @@ try {
   const dot = await ev(`Boolean(document.querySelector('.speak-dot'))`);
   check("…with a badge so the mode is visible without opening the menu", dot);
 
-  await ev(`document.querySelector('.speak-wrap button.icon-btn').click()`);
-  await sleep(300);
+  await press(650);
   await ev(`document.querySelector('.speak-menu [data-speak-option="reply"]').click()`);
   await sleep(1000);
   const afterReply = await apiPrefs();
   check("choosing 自动朗读 writes speakMode=reply and autoRead=true",
     afterReply.prefs.speakMode === "reply" && afterReply.prefs.autoRead === true, JSON.stringify(afterReply.prefs));
+
+  // Right-click is the desktop half of the long press.
+  await press(90, "right");
+  check("right-click opens the same menu", await ev(`Boolean(document.querySelector('.speak-menu'))`));
+  // A real press somewhere neutral: the dismiss hook listens on pointerdown (capture), which a
+  // scripted .click() never fires — testing it with .click() would have proven nothing.
+  const gone = await (async () => {
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: 320, y: 240, button: "left", buttons: 1, clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 320, y: 240, button: "left", buttons: 0, clickCount: 1 });
+    await sleep(300);
+    return !(await ev(`Boolean(document.querySelector('.speak-menu'))`));
+  })();
+  check("…and clicking elsewhere dismisses it", gone);
 
   // ---- 设置 → 观察智能体 ----
   await ev(`document.querySelector('.rail-gear')?.click()`);
