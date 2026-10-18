@@ -2,6 +2,7 @@
 // No third-party state lib: this UI holds zero intelligence (red line D),
 // it just mirrors server events and aggregates ACP chunks into bubbles.
 import type {
+  BackgroundTask,
   ClientCommand,
   PermissionRequestView,
   PlanSnapshot,
@@ -224,6 +225,10 @@ export interface SessionView {
    *  turn ends: it describes what the process is doing NOW, so it must never outlive that turn (and is
    *  never persisted — the server does not store it either). */
   status?: string | null;
+  /** Background processes the agent still has for this session (issue #22) — the ACP twin of the
+   *  desktop status stack. A SNAPSHOT: the server replaces it wholesale and clears it when the agent
+   *  process dies. Empty array = nothing running (the row disappears, never 「0 个」). */
+  background?: BackgroundTask[];
   loaded: boolean; // history fetched
   /** The operator opened a cold slot and the agent process is still coming up (spawn + session/load
    *  takes seconds). The transcript is ALREADY on screen — it is our own rows — so this flag only
@@ -1735,6 +1740,14 @@ class Cockpit {
           // button that depends on liveness (resume vs switch) reads the wrong state.
           v.info = { ...v.info, ...s };
         }
+        // Background snapshots (issue #22) are STATE and ride this frame, so a page that connects after
+        // the agent last spoke is still honest. A missing field means "no news" — never "none" — for the
+        // same reason the three buckets above do: a producer that omits it must not blank a row.
+        if (e.background) {
+          const seen = new Set(e.background.map((b) => b.sessionId));
+          for (const b of e.background) this.#view(b.sessionId).background = b.tasks;
+          for (const [id, v] of this.byId) if (!seen.has(id) && v.background?.length) v.background = [];
+        }
         // Requests still waiting for an answer are STATE, not only events: a page that loads or
         // refreshes after they were raised never saw the event, and would show an empty screen
         // while an agent sits there waiting for a human (the operator's exact complaint).
@@ -1859,6 +1872,13 @@ class Cockpit {
         const v = this.#view(e.sessionId);
         v.status = e.text;
         v.lastAt = Date.now();
+        break;
+      }
+      case "background": {
+        // Snapshot, not news: replace wholesale (#22). `lastAt` is deliberately NOT touched — a process
+        // finishing is not the operator being spoken to, and moving the clock would rewrite the rail's
+        // 「刚刚」 for a conversation nobody opened.
+        this.#view(e.sessionId).background = e.tasks;
         break;
       }
       case "turn-start": {

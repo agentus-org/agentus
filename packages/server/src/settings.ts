@@ -185,9 +185,15 @@ export interface AgentSettings {
    *  (`context`/`messages`/`plan`) is NOT gated: it cannot change anything, and it is what the
    *  工作播报 observer runs on. */
   cockpitSend: boolean;
+  /** Let a finished background process wake the agent with its own result (issue #22). ON by default:
+   *  this is what the CLI and the gateway already do, and the failure it prevents is the silent one —
+   *  a session that looks finished while a build is still running, whose result nobody ever reads. */
+  completionWake: boolean;
 }
 
-export const AGENT_DEFAULT: AgentSettings = { idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false };
+export const AGENT_DEFAULT: AgentSettings = {
+  idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false, completionWake: true,
+};
 
 /** The numeric half of `AgentSettings` — the keys the range-checked helpers may write. */
 type AgentNumberKey = "idleKillMin" | "warmSlots" | "warmTtlHours";
@@ -419,6 +425,7 @@ function pickAgent(raw: unknown): AgentSettings {
     take("warmSlots", AGENT_WARM_RANGE);
     take("warmTtlHours", AGENT_WARM_TTL_RANGE);
     if (typeof r.cockpitSend === "boolean") out.cockpitSend = r.cockpitSend;
+    if (typeof r.completionWake === "boolean") out.completionWake = r.completionWake;
   }
   return out;
 }
@@ -717,6 +724,10 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
   if ("cockpitSend" in patch) {
     if (typeof patch.cockpitSend !== "boolean") throw new Error("invalid cockpitSend: expected true or false");
     a.cockpitSend = patch.cockpitSend;
+  }
+  if ("completionWake" in patch) {
+    if (typeof patch.completionWake !== "boolean") throw new Error("invalid completionWake: expected true or false");
+    a.completionWake = patch.completionWake;
   }
   cache = { ...cache, agent: a, updatedAt: Date.now() };
   persist();

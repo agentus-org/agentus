@@ -22,6 +22,7 @@ import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
+import { parseBgNotice, shortCommand } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
@@ -927,6 +928,15 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                     {cockpit.byId.get(s.id)?.perms.length ? (
                       <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
                     ) : null}
+                    {/* 「这个会话还没干完」 at the list level (issue #22): a turn can end while a build keeps
+                        running, and the rail is where the operator scans for what still needs him. Counted,
+                        not a bare dot — two processes and one are different amounts of waiting. */}
+                    {(() => {
+                      const running = cockpit.byId.get(s.id)?.background?.filter((t) => t.status === "running").length ?? 0;
+                      return running ? (
+                        <span className="badge bg" title={`${running} 个后台任务还在跑`}>⚙ {running}</span>
+                      ) : null;
+                    })()}
                     {/* When I last talked to this session — sorted by it, so it has to be visible.
                         Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
                         the tooltip; the operator asked for exactly this and for it to age. */}
@@ -1569,6 +1579,72 @@ const TurnLine = memo(function TurnLine({ busy, since, status }: { busy: boolean
   );
 });
 
+/** Background work that outlived its turn (issue #22) — the ACP twin of the desktop's status stack.
+ *
+ *  WHY IT IS NEEDED. A turn ends when the AGENT stops talking, not when its work does: `npm run build`
+ *  started with `background=true` keeps running while the session reads `ready`. Every other surface
+ *  (desktop, CLI) shows that; the cockpit showed nothing, so 「会话看起来结束了、实际没结束」 was a
+ *  trust hole with no way to notice it.
+ *
+ *  THREE RULES FROM THE DESIGN. (1) It lives above the composer, not in the transcript: this is state,
+ *  and a stored row would hang a dead process under a conversation from last month. (2) It appears only
+ *  once the turn is over — during a turn the tail line is already the status. (3) A row is running or
+ *  exited-with-a-code, and an exit shows exactly once: the agent reports it when it has no
+ *  `notify_on_complete`, and it is the only witness that the process ever ended.
+ */
+// NOT `memo`: the store MUTATES the SessionView in place (one object per session, same reference), so a
+// memoised component never re-renders when a snapshot frame changes `background` — measured: the rail
+// badge lit up while this row stayed invisible forever.
+function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
+  const tasks = v.background ?? [];
+  const [open, setOpen] = useState(false);
+  // Shown whenever the agent has background work — during a turn too. Hiding it while busy made the row
+  // flash out of existence exactly when a completion wakes a new turn (measured: it was never visible for
+  // a full second), and the operator's question 「这个会话还在干活吗」 does not pause while the agent talks.
+  if (!tasks.length) return null;
+  const running = tasks.filter((t) => t.status === "running");
+  const exited = tasks.filter((t) => t.status !== "running");
+  const head = running.length
+    ? `后台任务 ${running.length} 个运行中`
+    : `${exited.length} 个后台任务已结束`;
+  return (
+    <div className={`bg-row ${open ? "open" : ""}`} data-count={tasks.length}>
+      <button type="button" className="bg-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-dot" aria-hidden="true" data-state={running.length ? "running" : "exited"} />
+        <span className="bg-text">{head}</span>
+        {/* The turn is over, so nothing else on screen says work continues — this hint is the whole
+            reason the row exists. */}
+        {/* Only when the turn is over: during a turn the tail line already says the agent is working, and
+            the point of this sentence is that the conversation looks finished while the work does not. */}
+        {running.length && !v.busy ? <span className="bg-hint">会话已空闲，后台仍在跑</span> : null}
+        <span className="bg-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <ul className="bg-list">
+          {tasks.map((t) => (
+            <li key={t.id} className="bg-item" data-state={t.status}>
+              {/* Wrapped, not ellipsised. The command IS what the operator opens this row to read
+                  (「它到底在跑什么、带什么参数」); a single truncated line answered a different question.
+                  The agent caps the string it sends (200 chars until #23), so a very long pipeline can
+                  still arrive short — that is a producer limit, not this row's. */}
+              <pre className="bg-cmd-full">{t.command || t.id}</pre>
+              <div className="bg-item-foot">
+                <span className="bg-meta">
+                  {t.pid ? `pid ${t.pid} · ` : ""}
+                  {t.status === "running"
+                    ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
+                    : `exit ${t.exitCode ?? "?"}`}
+                </span>
+                {t.command ? <CopyButton text={t.command} what="这条命令" /> : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** THE TRANSCRIPT ROWS — one implementation, two surfaces.
  *
  *  The chat page renders it inside its `.stream-inner`; the call's captions view renders the very
@@ -1917,6 +1993,41 @@ const samePlan = (a: { m: MsgView; busy: boolean }, b: { m: MsgView; busy: boole
 };
 const MemoPlanCard = memo(PlanCard, samePlan);
 
+/**
+ * A background-completion notice, folded.
+ *
+ * The agent wakes itself by sending that notice as a PROMPT (ACP has no server→agent channel), so the
+ * row is a machine-written nine-line block: header, `Command:`, `Output:`, then the shell's own
+ * startup noise. Raw, it reads like a stack trace in the middle of the conversation. Folded, the one
+ * thing the operator needs — 「跑完了，成功，跑了什么」 — is a single line; the output is one click away,
+ * and the copy button still yields the original text verbatim (the roster keeps it untouched).
+ */
+function BgNoticeBlock({ text }: { text: string }): JSX.Element {
+  const notice = parseBgNotice(text);
+  const [open, setOpen] = useState(false);
+  // Not a completion notice (an operator pasting one, a future format): render what we were given.
+  if (!notice) return <>{text}</>;
+  return (
+    <div className={`bg-notice ${open ? "open" : ""}`} data-ok={notice.ok ? "ok" : "fail"}>
+      <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-notice-dot" aria-hidden="true" />
+        <span className="bg-notice-title">后台任务完成</span>
+        <code className="bg-notice-cmd" title={notice.command}>{shortCommand(notice.command)}</code>
+        <span className="bg-notice-code">exit {notice.exitCode}</span>
+        <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="bg-notice-body">
+          <div className="bg-notice-label">命令</div>
+          <pre className="bg-notice-pre">{notice.command || "(未报告)"}</pre>
+          <div className="bg-notice-label">输出{notice.output ? "" : "（空）"}</div>
+          {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean; base?: string }): JSX.Element | null {
   switch (m.kind) {
     case "user":
@@ -1939,7 +2050,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
                 ))}
               </div>
             ) : null}
-            {m.text}
+            {m.from ? <BgNoticeBlock text={m.text} /> : m.text}
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条消息" />
@@ -3580,6 +3691,11 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
         if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
       }}
     >
+      {/* Background work reads ABOVE the plan: it is about the session as a whole (is anything still
+          running?), while the plan is the agent's own checklist for one job. Under the plan card the row
+          was easy to miss exactly when it mattered — the operator's question 「会话是不是真的结束了」
+          comes before 「它还差几步」. */}
+      <BackgroundRow v={v} />
       <PlanBar v={v} />
       <UsageRow v={v} />
       <div className="composer-inner" ref={composerRef}>

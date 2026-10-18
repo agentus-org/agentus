@@ -169,7 +169,7 @@ export interface PermissionDiff {
 // ---- WS envelope (server -> browser) ----
 export type ServerEvent =
   | { t: "hello"; clientId: string; resumed: boolean }
-  | { t: "sessions"; sessions: SessionInfo[]; /** rows on disk with NO process and no archive flag — they belong in 工作空间 beside the live ones (a crashed slot must not look archived, and must not vanish from the rail either) */ cold?: SessionInfo[]; /** rows the operator explicitly archived (archivedAt set) — the 已归档 section, whatever their process state */ archived?: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
+  | { t: "sessions"; sessions: SessionInfo[]; /** current background snapshots, for a page that connects AFTER the frame that carried them */ background?: { sessionId: string; tasks: BackgroundTask[] }[]; /** rows on disk with NO process and no archive flag — they belong in 工作空间 beside the live ones (a crashed slot must not look archived, and must not vanish from the rail either) */ cold?: SessionInfo[]; /** rows the operator explicitly archived (archivedAt set) — the 已归档 section, whatever their process state */ archived?: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
   | { t: "session"; session: SessionInfo }
   | { t: "messages"; sessionId: string; messages: StoredMessage[]; hasMore: boolean; partial?: boolean }
   | { t: "message"; message: StoredMessage; /** text to APPEND for a streamed block that grew (absent
@@ -214,6 +214,15 @@ export type ServerEvent =
    *  conversation from last week). Carrier on the ACP side: an empty thought chunk tagged
    *  `_meta.hermes.kind = "status"`. */
   | { t: "status"; sessionId: string; text: string; statusKind?: string }
+  /** Background processes this session still has (issue #22) — the ACP equivalent of the desktop's
+   *  status stack, and the reason a turn can end while work goes on.
+   *
+   *  SNAPSHOT, replaced wholesale, never stored: the agent re-sends the whole list whenever it changes,
+   *  and the last one wins. A row is 「running」 or 「exited」 (with `exitCode`) — the exit is reported
+   *  once, because a process without `notify_on_complete` publishes no event and this frame is the only
+   *  witness it ever ended. Empty `tasks` = nothing runs; the page shows nothing.
+   *  Carrier on the ACP side: an empty thought chunk tagged `_meta.hermes.kind = "background"`. */
+  | { t: "background"; sessionId: string; tasks: BackgroundTask[] }
   /** The session's plan object — the TRUTH the card renders, not the transcript's frames. Sent on
    *  every change, and the same object is available over GET /api/sessions/:id/plan, so a page that
    *  loads after the agent process died still renders the real plan instead of nothing. */
@@ -241,6 +250,18 @@ export type ServerEvent =
  * this tab in the background (`document.hidden` — the page's own answer to 「我正在看就不弹」, made
  * where the fact lives), (3) draw it with `noticeId` as the notification `tag`. Everything about WHAT
  * happened and WHEN to say it is decided server-side. */
+/** One background process as the agent reports it (issue #22). Field names are the wire's, not the
+ *  registry's: `uptimeSeconds`/`exitCode` are normalised server-side so the page never has to know
+ *  whether it is reading `list_sessions()` or a completion event. */
+export interface BackgroundTask {
+  id: string;
+  command: string;
+  pid?: number | null;
+  status: "running" | "exited";
+  uptimeSeconds?: number;
+  exitCode?: number | null;
+}
+
 export interface WebNotice {
   /** `upsert` = show (or replace) the card for `noticeId`; `dismiss` = take it away. */
   op: "upsert" | "dismiss";

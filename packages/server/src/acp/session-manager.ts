@@ -24,6 +24,7 @@ import type { Store, SessionRow, TitleSrc } from "../store/store.js";
 import { textOf, withText } from "../store/store.js";
 import type {
   AttachmentSummary,
+  BackgroundTask,
   BackendId,
   ConfigOptionView,
   PermissionDecision,
@@ -234,6 +235,15 @@ interface LiveSession {
   /** One log line per agent process the first time a frame is ignored, so a reader of the log can
    *  tell "the cockpit is dropping these on purpose" from "the agent stopped emitting them". */
   planFramesDropped?: boolean;
+  /** Latest background-process snapshot from the agent (issue #22): what is still running once the
+   *  turn is over. Transient STATE, never a transcript row — 「2 个后台任务在跑」 is true now and false in
+   *  five minutes, and a stored row would hang a dead process under a conversation from last month. */
+  background: BackgroundTask[];
+  /** Completion sentences that arrived while the turn was BUSY (#22), in order. Held rather than
+   *  dropped: the agent is the intended reader, and a completion lost to bad timing means work the
+   *  operator has to notice and redo by hand. Drained one at a time at turn-end — each opens its own
+   *  turn, and two at once is a race the agent cannot mediate. */
+  pendingCompletions: string[];
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -246,10 +256,20 @@ export class SessionManager {
    *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
    *  turn with no restart and no session to hibernate. */
   #planHint: () => PlanHintSettings = () => ({ ...PREFS_DEFAULT.planHint });
+  /** Whether a finished background process may open a turn by itself (issue #22). A getter, not a
+   *  value: the operator's switch must apply to the next completion, with no restart and no session
+   *  to hibernate. Default ON — this is the CLI/gateway behaviour, and the whole point is that the
+   *  agent takes its own result instead of the operator noticing a stale screen. */
+  #completionWake: () => boolean = () => true;
 
   constructor(store: Store, emit: Emitter) {
     this.#store = store;
     this.#emit = emit;
+  }
+
+  /** Wire the operator's 「后台任务完成唤醒」 switch in (index.ts → settings.agent.completionWake). */
+  setCompletionWakeSource(fn: () => boolean): void {
+    this.#completionWake = typeof fn === "function" ? fn : () => true;
   }
 
   /** Wire the cockpit's plan-hint setting in. Optional on purpose: with no source wired the
@@ -482,6 +502,7 @@ export class SessionManager {
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      background: [], pendingCompletions: [],
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
@@ -666,6 +687,7 @@ export class SessionManager {
         commands: normCommands(row.commands),
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      background: [], pendingCompletions: [],
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
@@ -1054,7 +1076,52 @@ export class SessionManager {
         s.info.status = "ready";
         this.#updateSession(s);
       }
+      // A completion that arrived mid-turn was held, not dropped (#22). Hand the first one back now —
+      // scheduled rather than awaited so this prompt's own teardown finishes first, and only one at a
+      // time because each opens its own turn.
+      this.#drainHeldCompletion(s);
     }
+  }
+
+  /** Wake the agent for one finished background process, or hold it until the turn ends.
+   *
+   *  The gateway does exactly this (``_inject_watch_notification``): the completion is *for the agent* —
+   *  its own tool text says "you will be notified on exit — do more work instead of waiting" — so the
+   *  cockpit's job is to deliver it as a turn, not to decorate a screen. Two refusals are deliberate:
+   *  with the operator's switch off we say so in the log and drop it (that is the switch's meaning), and
+   *  while a turn is running we hold it, because a prompt would otherwise interrupt work the operator
+   *  started. */
+  #queueOrWakeCompletion(s: LiveSession, text: string): void {
+    if (!text) return;
+    if (!this.#completionWake()) {
+      console.log(`[agentus] background completion dropped for ${s.info.id}: 唤醒关闭`);
+      return;
+    }
+    if (s.busy) {
+      s.pendingCompletions.push(text);
+      return;
+    }
+    void this.#wakeWithCompletion(s, text);
+  }
+
+  async #wakeWithCompletion(s: LiveSession, text: string): Promise<void> {
+    try {
+      // `origin` so the page labels the bubble as a background notice instead of presenting it as
+      // something the operator typed — the same mechanism the cockpit's cross-session `send` uses.
+      await this.prompt(s.info.id, text, [], { origin: { sessionId: "background", title: "后台任务完成" } });
+    } catch (err) {
+      // Lost a race for the floor (an operator prompt landed first): keep it for the next turn end
+      // instead of throwing away the agent's own result.
+      s.pendingCompletions.unshift(text);
+      console.log(`[agentus] completion held for ${s.info.id}: ${errMessage(err)}`);
+    }
+  }
+
+  #drainHeldCompletion(s: LiveSession): void {
+    if (!s.pendingCompletions.length || s.busy) return;
+    const next = s.pendingCompletions.shift();
+    if (!next) return;
+    setTimeout(() => void this.#wakeWithCompletion(s, next), 0).unref?.();
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -1646,6 +1713,14 @@ export class SessionManager {
         if (s.busy || s.pendingPermissions.size) continue;
         if (s.info.status === "starting" || s.info.status === "running") continue;
         if (opts.watched?.(s.info.id)) continue;
+        // A session whose agent still OWNS A RUNNING BACKGROUND PROCESS is not idle, whatever the clock
+        // says. Reaping it would SIGTERM the only process that can report that result (`#stop` kills the
+        // agent, not the process group), so the child would be left orphaned and unread — the exact
+        // silent failure #22 exists to remove: 「会话看起来结束了，活儿其实还在跑」. Reported by the
+        // operator as a question (2026-10-18: 「有后台进程的话，它还会被空闲回收吗？」) — it could.
+        // It is still bounded: only the long warm deadline (`warmTtlMs`) may reclaim it, so a runaway
+        // process cannot pin a slot forever.
+        const hasBackground = s.background.some((t) => t.status === "running");
         // The clock is the LATER of two things: the last MESSAGE this session has (store time, which
         // survives restarts) and the last time the operator actually USED the slot (`touchedAt` — the
         // click that respawned it, or the page reporting it as the one on screen). Reading only the
@@ -1660,6 +1735,13 @@ export class SessionManager {
           if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
           console.log(
             `[agentus] warm slot expired: ${s.info.id} (${fmt(age)} untouched, warm ttl ${fmt(warmTtlMs)})`,
+          );
+        } else if (hasBackground) {
+          // Idle time is not the whole question: the agent still OWNS a running child, so the short
+          // clock does not apply — only the long deadline can reclaim it.
+          if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
+          console.log(
+            `[agentus] idle reap: ${s.info.id} (background task still running after ${fmt(age)}, hard limit ${fmt(warmTtlMs)})`,
           );
         } else {
           if (!(idleMs > 0) || age < idleMs) continue;
@@ -1684,6 +1766,18 @@ export class SessionManager {
 
   /** The list every client needs to be current: the rows PLUS what is already waiting for an
    *  answer. Sent on connect too, which is what makes a refreshed page show a live approval. */
+  /** Every live session's current background snapshot (issue #22), for a page that connects AFTER the
+   *  frame that carried it.
+   *
+   *  EMPTY ONES ARE INCLUDED (`tasks: []`), and that is not noise: the page clears a row when a session
+   *  is absent from this list AND treats a present-but-empty one as 「nothing running」. Omitting empties
+   *  made the two cases indistinguishable — every `sessions` frame (which is emitted for unrelated
+   *  reasons, e.g. a title change) then wiped a row the page had just drawn from a `background` frame.
+   *  An explicit `[]` is the same discipline the three rail buckets use. */
+  backgroundSnapshots(): { sessionId: string; tasks: BackgroundTask[] }[] {
+    return [...this.#sessions.values()].map((s) => ({ sessionId: s.info.id, tasks: s.background }));
+  }
+
   #emitSessions(): void {
     // ALL THREE buckets, every time. This is the SAME event the HTTP path builds (`sessionsEvent()`
     // in index.ts), and the client replaces its lists wholesale from whatever arrives — so emitting
@@ -1697,6 +1791,7 @@ export class SessionManager {
       cold: this.cold(),
       archived: this.archived(),
       pending: this.pendingPermissions(),
+      background: this.backgroundSnapshots(),
     });
   }
 
@@ -1775,6 +1870,22 @@ export class SessionManager {
     // extension door it does leave open. Honoured here rather than in the web, because the decision that
     // matters is 「do not persist」: a recall count belongs to the turn that is running, and writing it
     // into the transcript would put 「recalled 8 memories」 above a conversation from last month.
+    // Background work (issue #22): the same `_meta.hermes` door as the status line carries two more
+    // kinds. `background` is the agent's running snapshot — STATE, replaced wholesale, shown only while
+    // the turn is over and work continues; `completion` is a finished process asking to be read, which
+    // the agent must get as a TURN (ACP has no server->agent wake, so the prompt is the wake). Anything
+    // else is still ignored silently, which is what lets the fork and this server ship independently.
+    const bgTasks = backgroundTasksOf(u);
+    if (bgTasks) {
+      live.background = bgTasks;
+      this.#emit({ t: "background", sessionId: live.info.id, tasks: bgTasks });
+      return;
+    }
+    const finishedText = completionTextOf(u);
+    if (finishedText) {
+      this.#queueOrWakeCompletion(live, finishedText);
+      return;
+    }
     const statusText = statusLineOf(u);
     if (statusText) {
       this.#emit({ t: "status", sessionId: live.info.id, text: statusText, statusKind: statusKindOf(u) });
@@ -1966,6 +2077,13 @@ export class SessionManager {
     if (live.replacing) return;
     this.#dropPending(live);
     live.busy = false;
+    // The child that owned those background processes is gone with it; leaving the rows would draw
+    // 「1 个后台任务在跑」 under a session whose agent is dead (#22).
+    if (live.background.length) {
+      live.background = [];
+      this.#emit({ t: "background", sessionId: live.info.id, tasks: [] });
+    }
+    live.pendingCompletions = [];
     live.info.status = "error";
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);
     const row = this.#store.getSession(live.info.id);
@@ -2415,6 +2533,55 @@ function statusLineOf(u: Record<string, unknown>): string | null {
   if (!h || h.kind !== "status") return null;
   const text = typeof h.text === "string" ? h.text.trim() : "";
   return text || null;
+}
+
+/** The hermes extension kind on this frame, or null for an ordinary ACP update.
+ *
+ *  One reader for every kind, so adding one (completion/background, #22) does not mean another
+ *  defensive `_meta` walk — and so an unknown kind is still ignored SILENTLY, which is what lets the
+ *  fork and the server ship independently.
+ */
+function hermesKindOf(u: Record<string, unknown>): string | null {
+  const meta = u?._meta as { hermes?: { kind?: unknown } } | undefined;
+  const kind = meta?.hermes?.kind;
+  return typeof kind === "string" && kind ? kind : null;
+}
+
+function hermesPayload(u: Record<string, unknown>): Record<string, unknown> {
+  const meta = u?._meta as { hermes?: Record<string, unknown> } | undefined;
+  return meta?.hermes ?? {};
+}
+
+/** The completion sentence a finished background process produced (#22), or null. */
+function completionTextOf(u: Record<string, unknown>): string | null {
+  if (hermesKindOf(u) !== "completion") return null;
+  const text = hermesPayload(u).text;
+  return typeof text === "string" ? text.trim() : null;
+}
+
+/** The agent's running-process snapshot (#22). Dropped (not defaulted) when `tasks` is not an array:
+ *  a malformed frame must never blank a row the operator is reading. */
+function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] | null {
+  if (hermesKindOf(u) !== "background") return null;
+  const raw = hermesPayload(u).tasks;
+  if (!Array.isArray(raw)) return null;
+  const out: BackgroundTask[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue;
+    const r = t as Record<string, unknown>;
+    const id = typeof r.id === "string" ? r.id : "";
+    if (!id) continue;
+    const status = r.status === "exited" ? "exited" : "running";
+    out.push({
+      id,
+      command: typeof r.command === "string" ? r.command : "",
+      pid: typeof r.pid === "number" ? r.pid : null,
+      status,
+      uptimeSeconds: typeof r.uptimeSeconds === "number" ? r.uptimeSeconds : undefined,
+      exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
+    });
+  }
+  return out;
 }
 
 function statusKindOf(u: Record<string, unknown>): string | undefined {
