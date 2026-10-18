@@ -121,7 +121,7 @@ try {
   }
 
   // ---- UI：长按 → 菜单 → 播报稿 ----
-  await ev(`(() => { window.__sumCalls = 0; const f = window.fetch; window.fetch = (...a) => { const u = String(a[0]); if (u.includes('/speech-summary')) window.__sumCalls++; return f(...a); }; })()`);
+  await ev(`(() => { window.__sumCalls = 0; window.__sumBodies = []; const f = window.fetch; window.fetch = (...a) => { const u = String(a[0]); if (u.includes('/speech-summary')) { window.__sumCalls++; window.__sumBodies.push(String(a[1]?.body ?? '')); } return f(...a); }; })()`);
   const speaks = `.bubble-actions .bubble-btn.speak`;
   check("messages carry a speaker", await waitFor(`document.querySelectorAll('${speaks}').length > 0`));
   // The note grows the bubble, so the last speaker moves between presses: scroll it into view
@@ -143,10 +143,14 @@ try {
   await press(650);
   check("a 650ms hold on the message speaker opens its menu", await ev(`Boolean(document.querySelector('.bubble-menu'))`));
   check("…without buying anything yet", (await ev(`window.__sumCalls`)) === 0);
-  const label = await ev(`document.querySelector('.bubble-menu [data-speak-summary]')?.textContent ?? ''`);
-  check("…offering 语音播报总结", label.includes("总结"), label);
+  // The menu is a flat ACTION list (operator's ask, 2026-10-18): 读整条 + three 字数档 + 按设置.
+  const items = await ev(`[...document.querySelectorAll('.bubble-menu [data-speak-summary]')].map(b => b.getAttribute('data-speak-summary'))`);
+  check("the menu offers 读整条 / 100 / 150 / 200 字 / 按设置",
+    JSON.stringify(items) === JSON.stringify(["verbatim", "100", "150", "200", "cfg"]), JSON.stringify(items));
+  const label = await ev(`document.querySelector('.bubble-menu [data-speak-summary="100"]')?.textContent ?? ''`);
+  check("…naming the length it will aim for", label.includes("总结") && label.includes("100"), label);
 
-  await ev(`document.querySelector('.bubble-menu [data-speak-summary]').click()`);
+  await ev(`document.querySelector('.bubble-menu [data-speak-summary="100"]').click()`);
   const noted = await waitFor(`Boolean(document.querySelector('.speech-note'))`, 40_000);
   check("clicking it produces a 播报稿 line", noted);
   const note = await ev(`(() => { const n = document.querySelector('.speech-note'); if (!n) return null; return {
@@ -161,21 +165,33 @@ try {
   check("…naming the provider that paid", /deepseek|openrouter|voice|语音端点/i.test(note?.meta ?? ""), note?.meta);
   const afterFirst = await ev(`window.__sumCalls`);
   check("exactly one model call for it", afterFirst === 1, String(afterFirst));
+  // The length has to REACH the server: it rides the prompt's {maxChars} placeholder, so the body is
+  // the only thing worth asserting from here.
+  const body0 = await ev(`window.__sumBodies[0] ?? ''`);
+  check("…and the chosen length is in the request body (the prompt's {maxChars})", /"maxChars":100/.test(body0), body0);
+  check("…with the note recording which length was used", /100/.test(note?.meta ?? ""), note?.meta);
 
-  // 再长按再点：缓存命中，不再买第二段
+  // 同一个档位再点：缓存命中，不再买第二段
   await press(650);
-  await ev(`document.querySelector('.bubble-menu [data-speak-summary]').click()`);
+  await ev(`document.querySelector('.bubble-menu [data-speak-summary="100"]').click()`);
   await sleep(900);
-  check("a second long press replays the cached summary (no second call)", (await ev(`window.__sumCalls`)) === 1, String(await ev(`window.__sumCalls`)));
+  check("a second long press at the SAME length replays the cached summary (no second call)", (await ev(`window.__sumCalls`)) === 1, String(await ev(`window.__sumCalls`)));
+
+  // 换一个档位：那是另一段话，必须真的再买一次（缓存键带档位）
+  await press(650);
+  await ev(`document.querySelector('.bubble-menu [data-speak-summary="200"]').click()`);
+  const noted2 = await waitFor(`(() => { const m = document.querySelector('.speech-note-meta')?.textContent ?? ''; return m.includes('200'); })()`, 40_000);
+  const meta2 = await ev(`document.querySelector('.speech-note-meta')?.textContent ?? ''`);
+  check("a DIFFERENT length is a different paragraph: it buys again and says 200", noted2 && (await ev(`window.__sumCalls`)) === 2 && /200/.test(meta2), JSON.stringify({ calls: await ev(`window.__sumCalls`), meta2 }));
 
   // ✕ → 作废 → 下一次重新生成
   await ev(`document.querySelector('.speech-note-x').click()`);
   await sleep(250);
   check("✕ drops the note", !(await ev(`Boolean(document.querySelector('.speech-note'))`)));
   await press(650);
-  await ev(`document.querySelector('.bubble-menu [data-speak-summary]').click()`);
+  await ev(`document.querySelector('.bubble-menu [data-speak-summary="100"]').click()`);
   const again = await waitFor(`Boolean(document.querySelector('.speech-note'))`, 40_000);
-  check("…and the next press buys a fresh one", again && (await ev(`window.__sumCalls`)) === 2, String(await ev(`window.__sumCalls`)));
+  check("…and the next press buys a fresh one", again && (await ev(`window.__sumCalls`)) === 3, String(await ev(`window.__sumCalls`)));
   // ---- 设置 → 语音 → 语音总结 ----
   await ev(`document.querySelector('.rail-gear')?.click()`);
   await sleep(700);

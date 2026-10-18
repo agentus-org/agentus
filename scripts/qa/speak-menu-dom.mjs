@@ -75,7 +75,14 @@ try {
   check("…and the release does not also toggle the mode", modeAfterHold === modeAfterClick, `${modeAfterClick} → ${modeAfterHold}`);
 
   const options = await ev(`[...document.querySelectorAll('.speak-menu [data-speak-option]')].map(b => b.getAttribute('data-speak-option'))`);
-  check("the menu offers all three modes", JSON.stringify(options) === JSON.stringify(["off", "reply", "brief"]), JSON.stringify(options));
+  // issue #24: the menu is flat and carries the beat, so 「每 1/2/5 分钟」 are first-class options.
+  check("the menu offers 关 / 自动朗读 / 四个工作播报档位 / 自定义",
+    JSON.stringify(options) === JSON.stringify(["off", "reply", "brief", "brief-60", "brief-120", "brief-300", "custom"]),
+    JSON.stringify(options));
+  const checkedCount = await ev(`document.querySelectorAll('.speak-menu [aria-checked="true"]').length`);
+  check("exactly ONE item is checked (自动朗读 and 工作播报 are one switch, never two)", checkedCount === 1, String(checkedCount));
+  const replyLabel = await ev(`document.querySelector('.speak-menu [data-speak-option="reply"] .speak-name').textContent`);
+  check("自动朗读 is labelled as the click default", /默认/.test(replyLabel), JSON.stringify(replyLabel));
 
   // Choosing 工作播报 persists the new pref AND keeps the old boolean in step.
   const before = await apiPrefs();
@@ -84,6 +91,23 @@ try {
   const afterBrief = await apiPrefs();
   check("choosing 工作播报 writes speakMode=brief (and autoRead=false)",
     afterBrief.prefs.speakMode === "brief" && afterBrief.prefs.autoRead === false, JSON.stringify(afterBrief.prefs));
+
+  // ---- 节拍 (issue #24): picking 「每 2 分钟」 writes the beat in ONE click, and the ✓ moves ----
+  await press(650);
+  await ev(`document.querySelector('.speak-menu [data-speak-option="brief-120"]').click()`);
+  await sleep(1200);
+  const afterBeat = await apiPrefs();
+  check("…and 「每 2 分钟」 writes observer.intervalSec=120 with the same speakMode=brief",
+    afterBeat.prefs.speakMode === "brief" && afterBeat.observer?.intervalSec === 120, JSON.stringify(afterBeat.observer));
+  await press(650);
+  const beatChecked = await ev(`document.querySelector('.speak-menu [aria-checked="true"]')?.getAttribute('data-speak-option')`);
+  const checkedNow = await ev(`document.querySelectorAll('.speak-menu [aria-checked="true"]').length`);
+  check("the ✓ is on the beat that is actually in use, and only there",
+    beatChecked === "brief-120" && checkedNow === 1, JSON.stringify({ beatChecked, checkedNow }));
+  const headTitle = await ev(`document.querySelector('.speak-wrap button.icon-btn').getAttribute('title') ?? ''`);
+  check("the header says which beat is on", /每 2 分钟/.test(headTitle), JSON.stringify(headTitle));
+  await ev(`document.querySelector('.speak-menu [data-speak-option="brief"]').click()`);
+  await sleep(800);
   check("…and the menu closed on the click", !(await ev(`Boolean(document.querySelector('.speak-menu'))`)));
   const dot = await ev(`Boolean(document.querySelector('.speak-dot'))`);
   check("…with a badge so the mode is visible without opening the menu", dot);
