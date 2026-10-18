@@ -230,10 +230,21 @@ export interface ObserverSettings {
    *  events (an approval is waiting, a step completed) never wait on it. Default 120: a brief per
    *  turn is fine, a brief per token is a phone that never stops talking. */
   throttleSec: number;
+  /** 节拍上限 (issue #24), in seconds. 0 = off = pure event-driven (what shipped in #16).
+   *
+   *  What it is NOT: a period the cockpit obeys unconditionally. A long turn that never ends
+   *  produces no `turn-end`, so the operator hears nothing for minutes — that is the hole this
+   *  fills. The ticker only fires while a turn is IN FLIGHT and the last line was at least this
+   *  long ago, so an idle cockpit stays silent and a busy one gets a word every N minutes.
+   *  Deliberately separate from `throttleSec`: min-gap answers 「别话痨」, interval answers
+   *  「长回合别死寂」, and one number cannot serve both. */
+  intervalSec: number;
 }
 
 export const OBSERVER_PROMPT_MAX = 2000;
 export const OBSERVER_THROTTLE_RANGE: [number, number] = [0, 3600];
+/** 0 means 「不按节拍，只在事件上说」 — the whole feature's off switch for the timer. */
+export const OBSERVER_INTERVAL_RANGE: [number, number] = [0, 3600];
 
 /** What the observer is told, when the operator writes nothing. Two jobs in one paragraph: say who
  *  it is watching and how to find out (the cockpit CLI — never trust the trigger line for facts), and
@@ -246,7 +257,9 @@ export const OBSERVER_PROMPT_DEFAULT = [
 ].join("\n");
 
 export const OBSERVER_DEFAULT: ObserverSettings = {
-  enabled: false, backend: null, systemPrompt: "", throttleSec: 120,
+  // intervalSec 0 on purpose: a timer that spends tokens must be asked for. The speaker menu
+  // offers 1/2/5 minutes in one tap, so turning it on is still one gesture.
+  enabled: false, backend: null, systemPrompt: "", throttleSec: 120, intervalSec: 0,
 };
 
 /** 语音总结 (the message speaker's long press, 2026-10-18): ONE message → a few sentences worth
@@ -499,6 +512,9 @@ function pickObserver(raw: unknown): ObserverSettings {
     const n = Number(r.throttleSec);
     const [lo, hi] = OBSERVER_THROTTLE_RANGE;
     if (Number.isFinite(n) && n >= lo && n <= hi) out.throttleSec = n;
+    const iv = Number(r.intervalSec);
+    const [ilo, ihi] = OBSERVER_INTERVAL_RANGE;
+    if (Number.isFinite(iv) && iv >= ilo && iv <= ihi) out.intervalSec = Math.round(iv);
   }
   return out;
 }
@@ -595,6 +611,7 @@ export function publicSettings(): Record<string, unknown> {
     observerPromptDefault: OBSERVER_PROMPT_DEFAULT,
     observerPromptMax: OBSERVER_PROMPT_MAX,
     observerThrottleRange: OBSERVER_THROTTLE_RANGE,
+    observerIntervalRange: OBSERVER_INTERVAL_RANGE,
     summary: cache.summary,
     summaryDefaults: SUMMARY_DEFAULT,
     summaryPromptDefault: SUMMARY_PROMPT_DEFAULT,
@@ -837,6 +854,14 @@ export function saveObserver(patch: Record<string, unknown>): Settings {
       throw new Error(`invalid throttleSec: ${JSON.stringify(patch.throttleSec)} (expected ${lo}…${hi} seconds)`);
     }
     o.throttleSec = Math.round(n);
+  }
+  if ("intervalSec" in patch) {
+    const n = Number(patch.intervalSec);
+    const [lo, hi] = OBSERVER_INTERVAL_RANGE;
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      throw new Error(`invalid intervalSec: ${JSON.stringify(patch.intervalSec)} (expected ${lo}…${hi} seconds, 0 = off)`);
+    }
+    o.intervalSec = Math.round(n);
   }
   cache = { ...cache, observer: o, updatedAt: Date.now() };
   persist();

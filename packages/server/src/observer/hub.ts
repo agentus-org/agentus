@@ -21,7 +21,21 @@
 // observed session's cwd: an observer runs a full agent runtime with file and shell tools, and it
 // should no more be able to write into the project than a log shipper should. `system: true` keeps it
 // out of the rail and out of the cockpit CLI's scope (see SessionManager.list). It is spawned ONCE
-// and reused; the idle reaper may put it to sleep like any slot, and `ensure()` wakes it.
+// and reused; the idle reaper may put it to sleep like any slot, and `#ensure()` below wakes it.
+//
+// THREE THINGS THIS FILE LEARNED THE HARD WAY (issues #23 / #24, 2026-10-18)
+//  1. **The scope is the session on screen.** 「替你看所有会话」 is not the feature — the rail already
+//     does that, and four busy sessions used to grow four observer processes all talking over each
+//     other. Every trigger now asks `watching()` (the notify centre's presence, the same fact the
+//     quiet-when-watching rule uses), and a focus change CLOSES the previous observer, so the number
+//     of observer processes is bounded by one.
+//  2. **A reaped observer must not be a dead end.** `observerId` used to be trusted forever: once the
+//     idle reaper took the process, every later brief said 「播报失败：no such session」 until the
+//     server restarted. `#ensure()` is the fix the old header comment had already promised.
+//  3. **A turn that never ends produces no `turn-end`.** Event-driven only means a 20-minute turn is
+//     20 minutes of silence — the exact complaint that opened #24. The ticker now speaks on a beat,
+//     but ONLY while a turn is in flight (see `intervalSec`): the timer covers the blind spot, it
+//     does not become a metronome for an idle cockpit.
 import fs from "node:fs";
 import path from "node:path";
 import type { BackendId, ServerEvent } from "../../../shared/src/index.js";
@@ -30,6 +44,17 @@ import { OBSERVER_PROMPT_DEFAULT } from "../settings.js";
 
 /** Spoken lines are short on purpose: they are heard once, in the middle of other work. */
 export const BRIEF_MAX = 120;
+
+/** How many model-backed briefs one turn may cost, heartbeat included (issue #24).
+ *
+ *  The ticker is already bounded by `intervalSec`; this is the second wall. A turn that runs two
+ *  hours at a 1-minute beat would otherwise buy 120 paragraphs, and the operator would have learned
+ *  to ignore all of them long before the last one arrived. */
+export const MAX_BRIEFS_PER_TURN = 8;
+
+/** How often the ticker looks. Cheap (a few comparisons), and finer than the smallest beat offered
+ *  (1 minute), so a 1-minute interval is not silently rounded up to two. */
+const TICK_MS = 15_000;
 
 export interface ObserverDeps {
   /** Live settings, read per event — the switch must work without a restart. */
@@ -52,6 +77,12 @@ export interface ObserverDeps {
   disposeSession?(observerId: string): Promise<void>;
   /** Best-effort: move a session into a read-only mode if the backend offers one. */
   preferReadonly?(sessionId: string): void;
+  /** Is the operator looking at THIS session right now (the notify centre's presence)? Absent = every
+   *  session counts, which is the #16 behaviour and what a unit test without a presence wants. */
+  watching?(sessionId: string): boolean;
+  /** Does this session still have a live ACP process? Absent = assume yes. This is the half of #23
+   *  that turns a reaped observer into a recoverable one instead of a permanent 「播报失败」. */
+  alive?(sessionId: string): boolean;
   /** Base directory for per-observer scratch dirs. */
   home: string;
   emit(evt: ServerEvent): void;
@@ -65,16 +96,27 @@ interface Watch {
   observerId: string | null;
   /** A spawn is in flight — do not start a second one. */
   spawning: boolean;
-  /** When the last MODEL-backed brief went out (for the throttle). */
+  /** When the last MODEL-backed brief was ASKED for (feeds both the min-gap and the beat). */
   lastBriefAt: number;
   /** The trigger is owed: an event arrived while a brief was still being produced. */
   queued: boolean;
+  /** WHICH trigger is owed — a heartbeat must not be replayed as a turn-end brief. */
+  queuedKind: "turn-end" | "heartbeat";
   /** Text of the observer's current turn, accumulated from `message` frames. */
   answer: string;
   /** True while the observer is producing a brief. */
   busy: boolean;
   /** Plan step keys already announced, so an unchanged plan is not read out twice. */
   announcedSteps: Set<string>;
+  /** A turn is IN FLIGHT (a `turn-start` arrived and its `turn-end` has not). The heartbeat's gate:
+   *  no turn in flight, no beat — an idle session has nothing to report and must stay silent. */
+  inflight: boolean;
+  /** When a frame for this session was last seen. 「还有没有动静」 is measured from here. */
+  lastActivityAt: number;
+  /** When the current turn started (for 「已经跑了 N 分钟」). */
+  startedAt: number;
+  /** Model-backed briefs spent on the CURRENT turn (the MAX_BRIEFS_PER_TURN counter). */
+  briefsThisTurn: number;
 }
 
 const NOTHING = "（没有可播报的进展）";
@@ -94,12 +136,22 @@ export function oneLine(text: string, max = BRIEF_MAX): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/** 「7 分钟」 / 「1 小时 12 分钟」 — the one fact a heartbeat has without a model call. */
+export function minutesLabel(ms: number): string {
+  const min = Math.max(1, Math.round(ms / 60_000));
+  return min < 60 ? `${min} 分钟` : `${Math.floor(min / 60)} 小时 ${min % 60} 分钟`;
+}
+
 export class ObserverHub {
   #deps: ObserverDeps;
   #watch = new Map<string, Watch>();
   /** Observer ids, so their own frames are never mistaken for the operator's sessions. */
   #observers = new Set<string>();
   #now: () => number;
+  #timer: ReturnType<typeof setInterval> | null = null;
+  /** how many times the ticker has run — `GET /api/observer` prints it, and 「节拍没动静」 has to be
+   *  distinguishable from 「timer 没起来」. */
+  #ticks = 0;
 
   constructor(deps: ObserverDeps) {
     this.#deps = deps;
@@ -114,19 +166,73 @@ export class ObserverHub {
     return this.#observers.has(sessionId);
   }
 
+  /** Everything the hub currently holds, for `GET /api/observer` and the QA sweeps. Read-only and
+   *  cheap: 工作播报's bookkeeping used to be invisible from outside, which is why 「它到底有没有在
+   *  看这个会话」 could only be guessed at from the speak frames. */
+  ticks(): number {
+    return this.#ticks;
+  }
+
+  debug(): { watched: string; observerId: string | null; inflight: boolean; busy: boolean; briefs: number; watching: boolean; quietMs: number }[] {
+    const now = this.#now();
+    return [...this.#watch.values()].map((w) => ({
+      watched: w.observedId,
+      observerId: w.observerId,
+      inflight: w.inflight,
+      busy: w.busy,
+      briefs: w.briefsThisTurn,
+      watching: this.#watching(w.observedId),
+      quietMs: now - w.lastActivityAt,
+    }));
+  }
+
+  /** Start the beat (issue #24). Called AFTER the notify centre exists, because the gate reads its
+   *  presence — a ticker started earlier would be a timer reading an uninitialised `const`. */
+  start(intervalMs = TICK_MS): void {
+    if (this.#timer) return;
+    this.#timer = setInterval(() => this.tick(), intervalMs);
+    // Never let a server keep a process alive just for this timer.
+    (this.#timer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  stop(): void {
+    if (this.#timer) clearInterval(this.#timer);
+    this.#timer = null;
+  }
+
   /** Forget everything about a session (it was closed, archived or purged). The observer process is
    *  the idle reaper's business; we only stop treating this pair as current. */
   forget(sessionId: string): void {
     const w = this.#watch.get(sessionId);
-    this.#watch.delete(sessionId);
     if (w?.observerId) this.#observers.delete(w.observerId);
+    this.#watch.delete(sessionId);
+  }
+
+  /** The operator moved to another session: CLOSE the one we were reading (issue #23).
+   *
+   *  `next` is the session now on screen (null = nobody). 「切走即关」 is about switching SESSIONS,
+   *  not about a tab going to the background: a hidden page keeps its observer, because a rebuild
+   *  means re-reading the whole session and the first brief after a rebuild is the expensive one.
+   *  A closed tab is the idle reaper's job — `#ensure()` is what makes that safe. */
+  focusChanged(next: string | null): void {
+    for (const [sid, w] of [...this.#watch]) {
+      if (sid === next || !w.observerId) continue;
+      void this.#dispose(w);
+    }
+  }
+
+  /** The operator turned the speaker (or the observer) off: stop paying NOW, not at the next reap.
+   *  Until #23 this was invisible — `speakEnabled()` only made the hub idle, while the observer
+   *  process (a whole ACP runtime, ~137 MB) sat there for the reaper's five minutes. */
+  onPolicyChanged(): void {
+    if (this.#deps.speakEnabled() && this.#deps.settings().enabled) return;
+    for (const w of [...this.#watch.values()]) void this.#dispose(w);
   }
 
   /** Every ServerEvent in the process passes through here (index.ts wires it in front of the
    *  broadcast). Cheap by construction: a few kind checks per frame. */
   onEvent(evt: ServerEvent): void {
     if (evt.t === "message") {
-      // The observer's own answer, being assembled.
       const sid = evt.message.sessionId;
       // `message` frames for an observer carry the OBSERVER's id, while the watch entry is keyed by
       // the OBSERVED session — so this is a lookup by observer id, not by key.
@@ -134,6 +240,19 @@ export class ObserverHub {
         if (watch.observerId !== sid) continue;
         if (evt.message.kind === "agent") watch.answer += textOfPayload(evt.message.payload);
       }
+      // ANY frame counts as 「有动静」: the beat only fires when nothing at all has happened since.
+      const w = this.#watch.get(sid);
+      if (w) w.lastActivityAt = this.#now();
+      return;
+    }
+
+    if (evt.t === "turn-start") {
+      if (this.#observers.has(evt.sessionId)) return;
+      const w = this.#watchFor(evt.sessionId);
+      w.inflight = true;
+      w.startedAt = this.#now();
+      w.lastActivityAt = w.startedAt;
+      w.briefsThisTurn = 0;
       return;
     }
 
@@ -145,14 +264,22 @@ export class ObserverHub {
         for (const w of this.#watch.values()) if (w.observerId === evt.sessionId) this.#finishBrief(w);
         return;
       }
-      void this.#maybeBrief(evt.sessionId, evt.error);
+      const w = this.#watchFor(evt.sessionId);
+      w.inflight = false;
+      w.lastActivityAt = this.#now();
+      void this.#maybeBrief(evt.sessionId, evt.error, "turn-end");
       return;
     }
 
     if (evt.t === "permission") {
-      // A request waiting for an answer is the one thing never worth a model call: the fact is
-      // right here, and the operator may be away from the screen for a while.
+      // A request waiting for an answer is never worth a model call: the fact is right here, and the
+      // operator may be away from the screen. It is also the one blocking event in the product, so
+      // it is the one place where silencing a background session is a real trade: the phone push
+      // still delivers it (approvals are never suppressed by 「我在看」), so the voice follows the
+      // same scope as everything else here. Flip this to `#speaking()` alone if 「后台审批也念出来」
+      // turns out to be wanted.
       if (!this.#speaking()) return;
+      if (!this.#watching(evt.request.sessionId)) return;
       const sid = evt.request.sessionId;
       const title = evt.request.toolCallTitle?.trim();
       this.#speak(sid, title ? `有请求等你确认：${title}` : "有个请求等你确认", "approval", 2);
@@ -161,9 +288,12 @@ export class ObserverHub {
 
     if (evt.t === "plan") {
       if (!this.#speaking()) return;
-      const w = this.#watchFor(evt.sessionId);
       const plan = evt.plan;
       if (!plan) return;
+      // Zero-cost, but still an announcement: the rail is where you read progress on a session you
+      // are not looking at, so the voice follows the same scope as the model-backed brief.
+      if (!this.#watching(evt.sessionId)) return;
+      const w = this.#watchFor(evt.sessionId);
       for (const item of plan.items) {
         if (item.status !== "completed") continue;
         // PlanItem has no id: its content IS the identity (ACP replaces the whole list each frame).
@@ -180,25 +310,56 @@ export class ObserverHub {
     }
   }
 
-  /** A turn ended on a session the operator owns: is it worth a brief? */
-  async #maybeBrief(sessionId: string, error?: string): Promise<void> {
+  /** One pass of the beat (issue #24). Written for many watches even though #23 keeps it at one:
+   *  the ticker must never become the reason the scope rule matters. */
+  tick(): void {
+    this.#ticks++;
+    const s = this.#deps.settings();
+    if (!s.enabled || s.intervalSec <= 0 || !this.#deps.speakEnabled()) return;
+    const now = this.#now();
+    for (const w of [...this.#watch.values()]) {
+      this.#ensure(w);                                           // a dead observer is not 「busy」
+      if (w.busy || w.spawning) continue;                        // a brief is already on its way
+      if (!w.inflight) continue;                                 // no turn → nothing to report
+      if (!this.#watching(w.observedId)) continue;               // not the session on screen
+      if (now - w.lastBriefAt < s.intervalSec * 1000) continue;  // the beat
+      if (now - w.lastBriefAt < s.throttleSec * 1000) continue;  // the min-gap still guards
+      if (w.briefsThisTurn >= MAX_BRIEFS_PER_TURN) continue;     // the per-turn wall
+      void this.#maybeBrief(w.observedId, undefined, "heartbeat");
+    }
+  }
+
+  /** A turn ended (or a beat came due) on a session the operator owns: is it worth a brief? */
+  async #maybeBrief(sessionId: string, error?: string, kind: "turn-end" | "heartbeat" = "turn-end"): Promise<void> {
     if (!this.#speaking()) return;
     if (this.#observers.has(sessionId)) return;
+    if (!this.#watching(sessionId)) return;
     const w = this.#watchFor(sessionId);
     const settings = this.#deps.settings();
     if (!settings.enabled) {
-      // Degrade to the zero-cost line (#11's plan title) — the observer is off, but the operator
-      // still asked to be told what happened.
-      const title = this.#deps.titleOf(sessionId);
+      // Degrade to a zero-cost line: the observer is off, but the operator still asked to be told
+      // what happened. For a beat that is 「还在跑」 — which is the whole point of the beat.
+      const title = this.#deps.titleOf(sessionId) ?? "会话";
+      if (kind === "heartbeat") {
+        const ran = this.#now() - (w.startedAt || w.lastActivityAt);
+        this.#speak(sessionId, `${title} 已跑 ${minutesLabel(ran)}，还没结束`, "fallback", 1);
+        return;
+      }
       const planTitle = this.#deps.planTitleOf?.(sessionId) ?? null;
-      if (error) this.#speak(sessionId, `${title ?? "会话"} 出错了：${oneLine(error, 60)}`, "fallback", 1);
-      else if (planTitle) this.#speak(sessionId, `${title ?? "会话"} · ${planTitle}`, "fallback", 1);
+      if (error) this.#speak(sessionId, `${title} 出错了：${oneLine(error, 60)}`, "fallback", 1);
+      else if (planTitle) this.#speak(sessionId, `${title} · ${planTitle}`, "fallback", 1);
       return;
     }
+    // #23's other half, and it has to come BEFORE the busy check: a reaped observer never sends the
+    // turn-end that clears `busy`, so 「观察员被回收」 used to leave the watch stuck at busy=true and
+    // every later brief was queued into a session that no longer exists. `#ensure()` is the missing
+    // piece the header comment had been promising.
+    this.#ensure(w);
     if (w.busy) {
       // A brief is in flight: remember that another one is owed and let the current one finish,
       // rather than interleaving two turns into one voice.
       w.queued = true;
+      w.queuedKind = kind;
       return;
     }
     const gap = settings.throttleSec * 1000;
@@ -208,12 +369,15 @@ export class ObserverHub {
     if (!observerId) {
       if (w.spawning) {
         w.queued = true;
+        w.queuedKind = kind;
         return;
       }
       w.spawning = true;
       // Busy from here: the observer's FIRST turn (persona + look) is itself a brief, and a second
       // event arriving during the spawn must queue instead of starting a rival turn.
       w.busy = true;
+      w.lastBriefAt = this.#now();
+      w.briefsThisTurn++;
       try {
         observerId = await this.#spawnObserver(w);
       } catch (e) {
@@ -239,12 +403,23 @@ export class ObserverHub {
 
     w.busy = true;
     w.lastBriefAt = this.#now();
+    w.briefsThisTurn++;
     // The ONE thing an event passes the observer: that something happened. Everything else is read.
-    const why = error ? "这一轮报了错。" : "这一轮结束了。";
+    const why =
+      kind === "heartbeat"
+        ? `这个会话已经跑了 ${minutesLabel(this.#now() - (w.startedAt || w.lastActivityAt))}还没结束。` +
+          "用一句话说清它现在在干什么、卡在哪；不要回「（没有可播报的进展）」。"
+        : error
+          ? "这一轮报了错。看一眼进展，按你的契约给一句播报。"
+          : "这一轮结束了。看一眼进展，按你的契约给一句播报。";
     try {
-      await this.#deps.prompt(observerId, `${why}看一眼进展，按你的契约给一句播报。`);
+      await this.#deps.prompt(observerId, why);
     } catch (e) {
       w.busy = false;
+      // The prompt itself failed — most likely the process is gone. Do not keep a dead id (that was
+      // the permanent-failure bug): drop it and let the next event re-spawn.
+      this.#observers.delete(observerId);
+      w.observerId = null;
       this.#speak(sessionId, `播报失败：${oneLine(String((e as Error)?.message ?? e), 50)}`, "fallback", 1);
     }
   }
@@ -256,8 +431,9 @@ export class ObserverHub {
     w.busy = false;
     if (text && text !== NOTHING) this.#speak(w.observedId, text, "brief", 1);
     if (w.queued) {
+      const kind = w.queuedKind;
       w.queued = false;
-      void this.#maybeBrief(w.observedId);
+      void this.#maybeBrief(w.observedId, undefined, kind);
     }
   }
 
@@ -288,18 +464,64 @@ export class ObserverHub {
     return id;
   }
 
+  /** Close an observer and drop its watch. Best effort: a failed close must not keep the bookkeeping
+   *  alive, or the map becomes exactly the leak `forget()` was written to prevent. */
+  async #dispose(w: Watch): Promise<void> {
+    const id = w.observerId;
+    w.observerId = null;
+    w.busy = false;
+    w.queued = false;
+    if (id) {
+      this.#observers.delete(id);
+      try {
+        await this.#deps.disposeSession?.(id);
+      } catch {
+        /* closing is best effort — the reaper is the backstop, our map is already clean */
+      }
+    }
+    if (this.#watch.get(w.observedId) === w) this.#watch.delete(w.observedId);
+  }
+
   #watchFor(sessionId: string): Watch {
     let w = this.#watch.get(sessionId);
     if (!w) {
-      w = { observedId: sessionId, observerId: null, spawning: false, lastBriefAt: 0, queued: false, answer: "", busy: false, announcedSteps: new Set() };
+      const now = this.#now();
+      w = {
+        observedId: sessionId, observerId: null, spawning: false, lastBriefAt: 0, queued: false,
+        queuedKind: "turn-end", answer: "", busy: false, announcedSteps: new Set(),
+        inflight: false, lastActivityAt: now, startedAt: now, briefsThisTurn: 0,
+      };
       this.#watch.set(sessionId, w);
     }
     return w;
   }
 
+  /** Make the watch honest about its observer. A process that is gone is not 「busy」: without this,
+   *  a reap (or a close) mid-brief left `busy` true forever and the session went permanently silent. */
+  #ensure(w: Watch): void {
+    if (!w.observerId) return;
+    if (this.#alive(w.observerId)) return;
+    this.#observers.delete(w.observerId);
+    w.observerId = null;
+    w.busy = false;
+    w.spawning = false;
+    w.answer = "";
+  }
+
   #speaking(): boolean {
     if (!this.#deps.speakEnabled()) return false;
     return true;
+  }
+
+  /** Is the operator on THIS session? The scope gate of #23; no dep = no scope (tests, old hosts). */
+  #watching(sessionId: string): boolean {
+    const fn = this.#deps.watching;
+    return fn ? fn(sessionId) : true;
+  }
+
+  #alive(sessionId: string): boolean {
+    const fn = this.#deps.alive;
+    return fn ? fn(sessionId) : true;
   }
 
   #speak(sessionId: string, text: string, kind: "approval" | "plan-step" | "brief" | "fallback", priority: 1 | 2): void {

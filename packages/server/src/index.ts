@@ -22,7 +22,7 @@ import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, 
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
 import {
-  SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
+  SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
   saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
 } from "./settings.js";
@@ -263,6 +263,21 @@ hub = new ObserverHub({
     };
     pick();
   },
+  // 工作播报 的作用域与生命周期 (issues #23/#24, 2026-10-18).
+  // `watching` is the SAME presence the notification rules use: 「他在看哪个会话」 has one answer in
+  // this process, and a second, quieter definition of it is how a feature starts talking about the
+  // wrong session. `notify` is a `const` declared below — this closure only ever runs from an event
+  // handler, never during construction.
+  watching: (id) => notify.operatorWatching(id),
+  // The reaped-observer fix: a `system` session the idle reaper took no longer accepts prompts, and
+  // trusting its id forever is what made the brief say 「播报失败：no such session」 until a restart.
+  // `hasSession` (not `list()`) on purpose: `list()` is the RAIL's view and excludes system sessions,
+  // so asking it about an observer answers 「no」 every single time — which would re-spawn a fresh
+  // observer on every turn and throw away the context continuity the whole design is for.
+  alive: (id) => mgr.hasSession(id),
+  // 切走即关 / 关掉收听即关: closing the PROCESS is the point — an idle observer is a whole ACP
+  // runtime, and the reaper's five minutes are five minutes of paying for nothing.
+  disposeSession: (id) => mgr.closeSession(id),
   emit,
 });
 
@@ -284,7 +299,12 @@ const notify = new NotifyCenter({
   // The page reporting which session it is showing is also the idle reaper's clock: opening a slot
   // (and staying in it) counts as USED, so switching away gives it a full threshold instead of
   // reaping it on the next tick because its last MESSAGE was days ago.
-  onFocus: (sessionId: string) => mgr.touch(sessionId),
+  // ...and it is also the 工作播报 scope switch (issue #23): the observer follows the session on
+  // screen, and the previous one is CLOSED rather than left warming. Two consumers, one fact.
+  onFocus: (sessionId: string) => {
+    mgr.touch(sessionId);
+    hub?.focusChanged(sessionId);
+  },
   // Username+password pairing: the phone types the same login the browser uses. The check and
   // its rate limit stay here, in auth.ts, so a phone cannot have a laxer door than the UI.
   credentials: (username, password, ip) => {
@@ -300,6 +320,11 @@ const notify = new NotifyCenter({
     return { ok: true };
   },
 });
+
+// The beat starts here, and not at construction: `tick()` reads `notify`'s presence, and a timer
+// started before that `const` exists would be the one thing in this file able to throw a TDZ error
+// at runtime. 15s is finer than the smallest beat the menu offers (1 minute).
+hub?.start();
 
 // One row per interaction. A notification button carries an opaque actionId plus the ref the
 // publisher attached; the cockpit is the only place that knows what it means. Adding a new
@@ -810,6 +835,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
+    // ---- 工作播报 diagnostics (issues #23/#24) ------------------------------------------
+    // What the hub is watching and what it spawned. Operator-only, read-only, no secrets: this is
+    // the answer to 「它有没有在看这个会话 / 观察员还活着吗」 that used to require reading logs.
+    if (url.pathname === "/api/observer" && req.method === "GET") {
+      if (!auth.authenticate(req.headers, url)) return send(res, 401, { error: "login required" });
+      const o = getSettings().observer;
+      return send(res, 200, {
+        enabled: o.enabled,
+        intervalSec: o.intervalSec,
+        throttleSec: o.throttleSec,
+        observers: hub?.observerIds() ?? [],
+        watches: hub?.debug() ?? [],
+        ticks: hub?.ticks() ?? 0,
+      });
+    }
+
     // ---- the phone's onboarding page + the APK, both behind the operator login ----------
     // The pairing code lives on this page, so it is NOT public: an unauthenticated visitor is
     // sent to the login screen (the SPA at /) and comes back with a session cookie.
@@ -1240,6 +1281,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (body.prefs && typeof body.prefs === "object") savePrefs(body.prefs as Record<string, unknown>);
         if (body.agent && typeof body.agent === "object") saveAgent(body.agent as Record<string, unknown>);
         if (body.observer && typeof body.observer === "object") saveObserver(body.observer as Record<string, unknown>);
+        // Turning the speaker off (or the observer off) must stop the COST, not just the voice:
+        // the observer is a whole ACP process, and waiting for the idle reaper to take it is five
+        // minutes of paying for a feature the operator just switched off (issue #23 §3.2).
+        if (body.prefs || body.observer) hub?.onPolicyChanged();
         if (body.summary && typeof body.summary === "object") saveSummary(body.summary as Record<string, unknown>);
         if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer && !body.summary) saveSettings(body);
         return send(res, 200, publicSettings());
@@ -1353,11 +1398,15 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // here used to kill the whole server (QA#19, unhandled rejection)
         if (mgr.hasSession(id)) {
           await mgr.closeSession(id);
+          // 工作播报 (#23): a closed session's observer and its watch entry have no future. Before
+          // this, `forget()` had zero call sites and the map only grew.
+          hub?.forget(id);
           return send(res, 200, { closed: id });
         }
         // not live: either a cold slot the operator wants gone, or an unknown id.
         // Purging is what makes the rail's "on disk · N" list manageable (M4).
         if (store.deleteSession(id)) {
+          hub?.forget(id);
           emit(sessionsEvent());
           return send(res, 200, { purged: id });
         }
@@ -1370,6 +1419,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // had no way to make it.
         try {
           const info = await mgr.setArchived(id, true);
+          hub?.forget(id);
           emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
@@ -1555,12 +1605,20 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!key) return send(res, 400, { error: "key is required" });
         const row = store.messageByKey(id, key);
         if (!row) return send(res, 404, { error: `no such message: ${key}` });
+        // 字数档 (issue from the operator, 2026-10-18): the message speaker's long press offers
+        // 100/150/200 字 next to 「按设置」. The count is the ONE thing that varies per call, and it
+        // rides the prompt's existing `{maxChars}` placeholder — so this is the only place it has to
+        // be honoured. Clamped to the same range the settings page validates, so a crafted body
+        // cannot ask for a 10k-character invoice.
+        const asked = Math.round(Number(body.maxChars));
+        const [clo, chi] = SUMMARY_CHARS_RANGE;
+        const maxChars = Number.isFinite(asked) && asked >= clo && asked <= chi ? asked : cfg.maxChars;
         // Judge "short enough to just read" on what would actually be SPOKEN: voice.ts drops code
         // blocks, and a 20-line diff must not count as a long message worth a model call.
         const spoken = textOf(row.payload).replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
         if (!spoken) return send(res, 409, { error: "这条消息没有可以念的文字", code: "empty" });
-        if (spoken.length <= cfg.maxChars) {
-          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0 });
+        if (spoken.length <= maxChars) {
+          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars });
         }
         try {
           // The operator's rule: bill this to the model he is already talking to. The voice
@@ -1569,7 +1627,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const model = own.route?.model || cfg.model || SUMMARY_MODEL_DEFAULT;
           const r = await summarizeForSpeech({
             text: spoken,
-            maxChars: cfg.maxChars,
+            maxChars,
             prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
             model,
             timeoutSec: cfg.timeoutSec,
@@ -1581,6 +1639,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const text = r.text.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
           return send(res, 200, {
             ok: true, via: "model", text, chars: text.length,
+            // echo the bucket: the note prints 「约 150 字」 and a summary that silently used the
+            // configured number would make the menu look broken
+            maxChars,
             ms: r.ms, truncated: r.truncated, model,
             // which account this call was billed to — the note prints it, and a fallback that
             // silently used the OTHER provider would be a lie about the cost

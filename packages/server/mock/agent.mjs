@@ -416,6 +416,12 @@ const agent = () => ({
     // per-turn slow mode: long stream so QA can drop the socket mid-turn (AC6)
     const slow = /\[slow\]/.test(text) ? Math.max(SLOW, 900) : SLOW;
 
+    // `[hold:<ms>]` — a turn that is IN FLIGHT but SILENT for that long (issue #24's heartbeat
+    // fixture). No frames at all, so 「有任务在跑 + 没有动静」 is exactly the state the ticker must
+    // speak on — and the state a `[slow]` stream can never reproduce (it emits every 900 ms).
+    const hold = Number((/\[hold:(\d+)\]/.exec(text) || [])[1] || 0);
+    if (hold > 0) await sleep(Math.min(180_000, hold));
+
     // `[status]` — the agent-status carrier from issue #18, exactly as hermes' `make_status_cb` sends
     // it: an EMPTY thought chunk whose `_meta.hermes` holds the sentence. Sent mid-turn on purpose, so a
     // sweep can prove the line appears while the turn runs and is gone when it ends, and that NOTHING
