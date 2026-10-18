@@ -443,6 +443,40 @@ const agent = () => ({
       }, Math.min(slow * 2, 1000));
     }
 
+    // `[bg]` — a background process that outlives the turn (issue #22), in the three frames the fork's
+    // `acp_adapter/background.py` sends: a running snapshot, then the completion carrier, then the
+    // snapshot that clears the row. Deliberately AFTER the turn: that is the shape that matters — the
+    // session reads ready while the work continues, and the completion has to wake a new turn.
+    if (/\[bg\]/.test(text)) {
+      const taskId = `bg-${sessionId}-1`;
+      const snapshot = (rows) => ({
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermes: { kind: "background", tasks: rows } },
+        content: { type: "text", text: "" },
+      });
+      const running = [{
+        id: taskId, command: "npm run build --workspace packages/web", pid: 4242,
+        status: "running", uptimeSeconds: 12,
+      }];
+      void send(agent._conn, sessionId, snapshot(running)).catch(() => undefined);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: {
+            kind: "completion",
+            text: "后台进程已结束（exit 0）：npm run build --workspace packages/web",
+            exitCode: 0,
+            processId: taskId,
+            command: "npm run build --workspace packages/web",
+          } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, 1400);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
+      }, 2600);
+    }
+
     // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).
     // Numeric AND text cells, deliberately NOT in any sorted order, and a local file link plus a
     // relative image, so "clicking a header reorders the rows" and "a relative path resolves" are

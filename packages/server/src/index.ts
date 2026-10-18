@@ -209,6 +209,9 @@ const sessionsEvent = (): ServerEvent => ({
   cold: mgr.cold(),
   archived: mgr.archived(),
   pending: mgr.pendingPermissions(),
+  // Background snapshots (issue #22) ride this frame for the same reason pending approvals do: they are
+  // STATE, and a page that connects or refreshes after the agent last spoke still has to be current.
+  background: mgr.backgroundSnapshots(),
 });
 
 // 工作播报 (issue #16): one long-lived observer per watched session, in its own scratch home under
@@ -383,6 +386,10 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   // The plan-tool hint: read per prompt, so the 设置 switch applies to the next turn with nothing
   // to restart (the session's own plan card is what it fills).
   mgr.setPlanHintSource(planHintSettings);
+  // Issue #22: a finished background process may open a turn by itself. Default on (the CLI/gateway
+  // behaviour); the switch exists because a synthetic turn spends tokens the operator may not want
+  // spent at 3am — and it is read live, so flipping it applies to the next completion.
+  mgr.setCompletionWakeSource(() => agentSettings().completionWake);
   mgr.startIdleReaper({
     idleMs: () => envIdleMs ?? agentSettings().idleKillMin * 60_000,
     warmSlots: () => envWarm ?? agentSettings().warmSlots,

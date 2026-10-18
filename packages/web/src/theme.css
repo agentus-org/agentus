@@ -230,6 +230,34 @@ button { font: inherit; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 .badge { font-size: 10.5px; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; color: var(--text-dim); }
 .badge.perm { border-color: var(--accent-dim); color: var(--accent-text); }
+/* 「还有后台任务在跑」 (issue #22): the same badge slot as ⚿, because both answer "what still needs me".
+   Running processes are an ACTIVE state, so it takes the accent colour rather than the dim one. */
+.badge.bg { border-color: var(--accent-dim); color: var(--accent-text); font-variant-numeric: tabular-nums; }
+
+/* ---- background tasks above the composer (issue #22) ----
+   A turn ends when the agent stops talking, not when its work does. This row is the only place that
+   difference is visible, so it is quiet but never hidden: one line, the count first, details on click.
+   Layout mirrors `.plan-bar` (same margin, same panel background) — it belongs to the same band above
+   the input, and a second visual language there would read as a different feature. */
+.bg-row { border: 1px solid var(--line); border-left: 3px solid var(--accent-dim); border-radius: 8px; margin-bottom: 6px; background: var(--bg-panel); }
+.bg-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 3px 8px; background: none; border: 0; color: var(--text-dim); font: inherit; text-align: left; cursor: pointer; }
+.bg-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.bg-dot[data-state="exited"] { background: var(--text-dim); }
+.bg-text { flex: 0 0 auto; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+/* The sentence that makes the row's point: the conversation looks finished, the work does not. */
+.bg-hint { flex: 1 1 auto; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-caret { flex: 0 0 auto; font-size: 10px; opacity: 0.7; }
+.bg-list { list-style: none; margin: 0; padding: 2px 8px 6px; border-top: 1px solid var(--line); }
+.bg-item { display: flex; align-items: baseline; gap: 10px; padding: 2px 0; font-size: 12px; }
+.bg-cmd { flex: 1 1 auto; min-width: 0; font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bg-meta { flex: 0 0 auto; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.bg-item[data-state="exited"] .bg-meta { color: var(--accent-text); }
+@media (max-width: 720px) {
+  /* Phones: the hint is the first thing to go — the count already says it, and three items on one line
+     is what squeezed the turn line (§134/§137). */
+  .bg-hint { display: none; }
+  .bg-text { font-size: 12px; }
+}
 .sidebar footer { padding: 10px 14px; font-size: 11.5px; color: var(--text-dim); border-top: 1px solid var(--line); }
 .sidebar footer .conn.off { color: var(--err); }
 
