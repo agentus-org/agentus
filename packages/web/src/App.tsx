@@ -3074,9 +3074,14 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const sum = getSummary(mkey);
   if (!sum) return null;
+  // Which account paid for this one: the session's own provider (the default) or the voice
+  // endpoint it fell back to. Same line as the model name — one glance answers "whose tokens".
+  const billed = sum.route === "session"
+    ? `${sum.provider ?? ""}${sum.provider ? " · " : ""}${sum.model ?? ""}`
+    : sum.model ? `语音端点 · ${sum.model}` : "";
   const meta = sum.via === "verbatim"
     ? "原文本身就够短，直接念"
-    : `${sum.chars} 字 · ${(sum.ms / 1000).toFixed(1)}s${sum.model ? ` · ${sum.model}` : ""}`;
+    : `${sum.chars} 字 · ${(sum.ms / 1000).toFixed(1)}s${billed ? ` · ${billed}` : ""}`;
   return (
     <div className={`bubble-note speech-note${open ? " open" : ""}`} data-summary-chars={sum.chars}>
       <button type="button" className="speech-note-tag" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
@@ -3085,7 +3090,7 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
       <span className="speech-note-text" onClick={() => setOpen((o) => !o)} title="点击展开/收起">
         {sum.text}
       </span>
-      <span className="speech-note-meta">
+      <span className="speech-note-meta" title={sum.routeNote ?? undefined}>
         {meta}{sum.truncated ? " · 原文过长，只总结了前半" : ""}
       </span>
       <button type="button" className="speech-note-x" title="丢掉这份稿子（下次长按会重新生成）" aria-label="drop this summary" onClick={() => forgetSummary(mkey)}>

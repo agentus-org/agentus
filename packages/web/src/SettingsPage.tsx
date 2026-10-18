@@ -99,7 +99,7 @@ interface SettingsView {
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
   observerPromptDefault?: string;
   observerPromptMax?: number;
-  summary?: { enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number };
+  summary?: { enabled: boolean; prompt: string; maxChars: number; followSession: boolean; model: string; timeoutSec: number };
   summaryPromptDefault?: string;
   summaryPromptMax?: number;
   summaryCharsRange?: [number, number];
@@ -210,7 +210,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [observerMsg, setObserverMsg] = useState("");
   // 语音总结 — the message speaker's long press. Saves on its own like the observer's card: the
   // whole point is that the next long press summarises differently.
-  const [summary, setSummary] = useState<{ enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number } | null>(null);
+  const [summary, setSummary] = useState<{ enabled: boolean; prompt: string; maxChars: number; followSession: boolean; model: string; timeoutSec: number } | null>(null);
   const [summaryMsg, setSummaryMsg] = useState("");
   const [backendOptions, setBackendOptions] = useState<{ id: string; label: string }[]>([]);
 
@@ -354,11 +354,12 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
   /** 语音总结 saves on its own, same rule as 观察智能体: one number or one sentence at a time, and the
    *  next long press already uses it (the server reads the section per request). */
-  const saveSummary = async (patch: Partial<{ enabled: boolean; prompt: string; maxChars: number; model: string; timeoutSec: number }>): Promise<void> => {
+  const saveSummary = async (patch: Partial<{ enabled: boolean; prompt: string; maxChars: number; followSession: boolean; model: string; timeoutSec: number }>): Promise<void> => {
     const next = {
       enabled: summary?.enabled ?? true,
       prompt: summary?.prompt ?? "",
       maxChars: summary?.maxChars ?? 120,
+      followSession: summary?.followSession ?? true,
       model: summary?.model ?? "",
       timeoutSec: summary?.timeoutSec ?? 20,
       ...patch,
@@ -1138,8 +1139,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             适合那种一屏表格、或者很长的输出 —— 通勤时听完就能知道结论。
           </p>
           <p className="set-hint">
-            它<b>不经过 agent</b>，也不带会话历史：只把<b>这一条消息</b>加下面这段指令，发到「语音」里配的那个
-            DashScope 端点的 <code>chat/completions</code>（ASR / TTS 用的同一个 key），拿回一段话再用同一个 TTS 念。
+            它<b>不经过 agent</b>，也不带会话历史：只把<b>这一条消息</b>加下面这段指令，发一次
+            <code>chat/completions</code>，拿回一段话交给同一个 TTS 念。
             消息本身就短于字数上限时<b>直接念原文</b>，不花一次模型调用。
           </p>
           <div className="set-row">
@@ -1155,6 +1156,28 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
               </span>
             </div>
           </div>
+          <div className="set-row">
+            <label>用会话自己的模型</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={summary?.followSession ?? true}
+                onChange={(e) => void saveSummary({ followSession: e.target.checked })}
+              />
+              <span className="set-hint">
+                {summary?.followSession ?? true
+                  ? "已开启：跟这个会话当前选的 provider 和模型走 —— 你在用 DeepSeek，这笔就记在 DeepSeek 上"
+                  : "已关闭：改用下面那个模型，走「语音」里配的 DashScope 端点"}
+              </span>
+            </div>
+          </div>
+          <p className="set-hint">
+            端点与 key <b>不在这里配第二份</b>：驾驶舱读 agent 自己的家 —— <code>config.yaml</code> 里的
+            <code>providers.&lt;id&gt;</code>（本机的 <code>lab</code> 就是），或那几家的 key
+            （<code>~/.hermes/.env</code> 的 <code>DEEPSEEK_API_KEY</code>、<code>OPENROUTER_API_KEY</code> 等）。
+            只认 OpenAI 兼容的 <code>/v1/chat/completions</code>；Anthropic Messages / Bedrock / Vertex 这类形状解析不出来，
+            会退到下面那个模型，并在播报稿那一行写明「语音端点」。
+          </p>
           <div className="set-row">
             <label>字数上限</label>
             <div className="set-pair">
@@ -1172,7 +1195,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             </div>
           </div>
           <div className="set-row">
-            <label>用哪个模型</label>
+            <label>备用模型（语音端点）</label>
             <div className="set-pair">
               <input
                 className="set-input"
@@ -1182,7 +1205,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
                 onChange={(e) => setSummary((v) => (v ? { ...v, model: e.target.value } : v))}
                 onBlur={(e) => void saveSummary({ model: e.target.value })}
               />
-              <span className="set-hint">这活不需要大模型，便宜的就行。默认 <code>{view?.summaryModelDefault ?? "qwen-flash"}</code>。</span>
+              <span className="set-hint">
+                只在上面关掉、或会话那个 provider 解析不出来时用。<code>{view?.summaryModelDefault ?? "qwen-flash"}</code> 是默认。
+              </span>
             </div>
           </div>
           <div className="set-row">

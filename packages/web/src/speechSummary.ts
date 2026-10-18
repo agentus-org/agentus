@@ -19,6 +19,13 @@ export interface SpeechSummary {
   ms: number;
   /** the model name that answered, when one did */
   model?: string;
+  /** Which account it was billed to: the session's own provider, or the voice endpoint as fallback.
+   *  The note prints this — a summary that silently cost money on the OTHER vendor would be a lie
+   *  about where the tokens went. */
+  route?: "session" | "voice";
+  provider?: string;
+  /** where the endpoint came from (config.yaml / an env var), or why the fallback happened */
+  routeNote?: string;
   /** the message was longer than the guard limit and only its head was sent */
   truncated?: boolean;
 }
@@ -93,6 +100,9 @@ export async function summarizeMessage(sid: string, key: string): Promise<Speech
     chars: Number(data.chars ?? String(data.text ?? "").length),
     ms: Number(data.ms ?? 0),
     model: data.model,
+    route: data.route === "session" ? "session" : data.route === "voice" ? "voice" : undefined,
+    provider: data.provider,
+    routeNote: data.routeNote,
     truncated: data.truncated === true,
   };
   remember(key, out);

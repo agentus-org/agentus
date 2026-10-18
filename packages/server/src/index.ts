@@ -10,11 +10,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store, textOf } from "./store/store.js";
+import { routeForModel, type SpeechRoute } from "./speech/route.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
-import { classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
+import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
@@ -1528,6 +1529,19 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
       }
       if (req.method === "POST" && sub === "/speech-summary") {
+        /** The endpoint this session's OWN model lives on. Read per request: the operator can
+         *  switch the model from the toolbar and the next long press must follow it. */
+        const sessionRoute = (): { route: SpeechRoute | null; why: string } => {
+          const row = store.getSession(id);
+          if (!row) return { route: null, why: "会话不在库里" };
+          const be = store.listBackends().find((b) => b.id === row.backend);
+          const models = (row.models ?? {}) as { currentModelId?: string | null };
+          // The provider keys live in this box's agent home, which is a property of the runtime —
+          // not of the vendor that happens to be driving this session. A backend that owns no home
+          // (mock, qoder) therefore still resolves a `deepseek:…` model through the Hermes home.
+          const home = (be ? planFor(be).home : null) ?? HERMES_DEFAULT_HOME;
+          return routeForModel(models.currentModelId ?? null, home);
+        };
         // 语音总结 (the message speaker's long press): ONE stored message, made listenable.
         //
         // No agent, no fork, no history: the text goes to the voice endpoint's chat surface, the
@@ -1549,13 +1563,17 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0 });
         }
         try {
-          const model = cfg.model || SUMMARY_MODEL_DEFAULT;
+          // The operator's rule: bill this to the model he is already talking to. The voice
+          // endpoint stays as the fallback (and is the whole route when followSession is off).
+          const own = cfg.followSession ? sessionRoute() : { route: null, why: "" };
+          const model = own.route?.model || cfg.model || SUMMARY_MODEL_DEFAULT;
           const r = await summarizeForSpeech({
             text: spoken,
             maxChars: cfg.maxChars,
             prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
             model,
             timeoutSec: cfg.timeoutSec,
+            endpoint: own.route ? { baseUrl: own.route.baseUrl, apiKey: own.route.apiKey } : undefined,
           });
           // Newlines are the one thing the model keeps ignoring: 「不要换行」 in the prompt is a
           // request, so the answer is normalised here — the note clamps to two lines and the TTS
@@ -1564,6 +1582,11 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return send(res, 200, {
             ok: true, via: "model", text, chars: text.length,
             ms: r.ms, truncated: r.truncated, model,
+            // which account this call was billed to — the note prints it, and a fallback that
+            // silently used the OTHER provider would be a lie about the cost
+            route: own.route ? "session" : "voice",
+            provider: own.route?.provider ?? "dashscope",
+            routeNote: own.route ? own.route.source : own.why,
           });
         } catch (e) {
           // 409 = nothing is configured, 504 = we gave up waiting, 502 = the endpoint said no.

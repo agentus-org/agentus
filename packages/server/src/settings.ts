@@ -267,7 +267,14 @@ export interface SummarySettings {
   /** Target length of the spoken text, in characters. Also the threshold below which the message is
    *  spoken verbatim without asking a model at all (cheap and instant beats a paraphrase). */
   maxChars: number;
-  /** chat model on the voice endpoint. "" = SUMMARY_MODEL_DEFAULT. */
+  /** Use THIS session's own provider + model (`deepseek:deepseek-v4-flash` → DeepSeek) instead of
+   *  the voice endpoint. On by default: the summary is a side call on the operator's existing
+   *  account, not a second vendor to configure. When it cannot be resolved (a provider with no
+   *  OpenAI-compatible endpoint, no key on this box) the call falls back to the voice endpoint and
+   *  SAYS so in the response. */
+  followSession: boolean;
+  /** chat model on the voice endpoint — now the FALLBACK (and the only route when
+   *  `followSession` is off). "" = SUMMARY_MODEL_DEFAULT. */
   model: string;
   /** give up after this many seconds — and SAY so; never pass the original off as a summary. */
   timeoutSec: number;
@@ -290,7 +297,7 @@ export const SUMMARY_PROMPT_DEFAULT = [
 ].join("\n");
 
 export const SUMMARY_DEFAULT: SummarySettings = {
-  enabled: true, prompt: "", maxChars: 120, model: "", timeoutSec: 20,
+  enabled: true, prompt: "", maxChars: 120, followSession: true, model: "", timeoutSec: 20,
 };
 
 /** The NUMERIC knobs. `interruptMode` is a two-way choice, not a slider, so it is deliberately
@@ -843,6 +850,7 @@ function pickSummary(raw: unknown): SummarySettings {
   if (raw && typeof raw === "object") {
     const r = raw as Record<string, unknown>;
     if (typeof r.enabled === "boolean") out.enabled = r.enabled;
+    if (typeof r.followSession === "boolean") out.followSession = r.followSession;
     if (typeof r.prompt === "string" && r.prompt.length <= SUMMARY_PROMPT_MAX) out.prompt = r.prompt;
     if (typeof r.model === "string" && r.model.length <= 60) out.model = r.model;
     const chars = Number(r.maxChars);
@@ -875,6 +883,10 @@ export function saveSummary(patch: Record<string, unknown>): Settings {
     }
     // whitespace-only means "use the built-in template", same rule as the observer's wording
     s.prompt = v.trim() ? v : "";
+  }
+  if ("followSession" in patch) {
+    if (typeof patch.followSession !== "boolean") throw new Error("invalid followSession: expected true/false");
+    s.followSession = patch.followSession;
   }
   if ("model" in patch) {
     const v = String(patch.model ?? "").trim();

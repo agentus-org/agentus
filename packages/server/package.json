@@ -11,7 +11,8 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.5.1",
     "@agentus/shared": "*",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

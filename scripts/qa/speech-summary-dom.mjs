@@ -11,6 +11,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name, ok, detail = "") => { ok ? pass++ : fail++; console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  — ${detail}` : ""}`); };
 
+// The provider half of this sweep needs a session whose stored model carries a provider prefix
+// (`deepseek:deepseek-v4-flash`) — a mock-backed QA session has none, and without one the route can
+// only ever prove the fallback. The fixture is written into the QA store and put back at the end,
+// so a re-run starts from the same place and the operator's data is untouched on exit.
+const QA_DB = process.env.QA_DB ?? "/tmp/agentus-qa-account/agentus.sqlite";
+const FIXTURE = "deepseek:deepseek-v4-flash";
+let sqlite = null, restoreModels = [];
+try {
+  const { DatabaseSync } = await import("node:sqlite");
+  sqlite = new DatabaseSync(QA_DB);
+  const rows = sqlite.prepare("select id, models from sessions where models is null or models not like '%:%'").all();
+  for (const r of rows) {
+    restoreModels.push({ id: r.id, models: r.models ?? null });
+    sqlite.prepare("update sessions set models = ? where id = ?").run(JSON.stringify({ currentModelId: FIXTURE, availableModels: [] }), r.id);
+  }
+  console.log(`fixture: ${restoreModels.length} session(s) set to ${FIXTURE} for this run`);
+} catch (e) {
+  console.log(`fixture: skipped (${String(e).slice(0, 80)}) — the provider assertion will only see the fallback route`);
+}
+
 const t = await (await fetch(`${CDP}/json/new?${encodeURIComponent(BASE)}`, { method: "PUT" })).json();
 await sleep(1500);
 const ws = new WebSocket(t.webSocketDebuggerUrl);
@@ -39,11 +59,15 @@ try {
   // ---- 服务端四条边，直接打接口（不经过 UI）----
   // /api/sessions is bucketed ({live, cold, archived, ...}), not a flat array — and the session the
   // browser just opened is the one whose speakers this sweep is about.
-  const sid = await ev(`(async () => {
+  const pickedIds = await ev(`(async () => {
     const d = await (await fetch('/api/sessions')).json();
-    const all = [...(d.live ?? []), ...(d.cold ?? [])];
-    return all[0]?.id ?? null;
+    const all = [...(d.live ?? []), ...(d.cold ?? [])].map((s) => ({ id: s.id, model: s.models?.currentModelId ?? null }));
+    return { all, firstPrefixed: all.find((s) => (s.model ?? '').includes(':')) ?? null };
   })()`);
+  // A session whose model carries a provider prefix (`deepseek:deepseek-v4-flash`) is the one that
+  // can prove 语音总结 follows the session's own provider; otherwise fall back to the first session.
+  const sid = (pickedIds.firstPrefixed ?? pickedIds.all[0])?.id ?? null;
+  const sessionModel = (pickedIds.firstPrefixed ?? pickedIds.all[0])?.model ?? null;
   check("found a session to read messages from", Boolean(sid), String(sid));
   const picked = await ev(`(async () => {
     const d = await (await fetch('/api/sessions/${sid}/messages?tail=1')).json();
@@ -63,17 +87,51 @@ try {
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: { enabled: false } }) });
     const off = await call('definitely-not-a-key');
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: { enabled } }) });
-    return { nope: nope.status, off: off.status, offMsg: off.body?.error ?? '' , charsRange: s.summaryCharsRange, model: s.summaryModelDefault };
+    return { nope: nope.status, off: off.status, offMsg: off.body?.error ?? '' , charsRange: s.summaryCharsRange, model: s.summaryModelDefault, followSession: s.summary?.followSession };
   })()`);
   check("an unknown message key is a 404", edges.nope === 404, String(edges.nope));
   check("the switch being off refuses with 409 (never a silent verbatim fallback)", edges.off === 409, `${edges.off} ${edges.offMsg}`);
   check("…and the settings name the default model and the allowed range", Boolean(edges.model) && Array.isArray(edges.charsRange), JSON.stringify([edges.model, edges.charsRange]));
+  check("…followSession is on by default (the summary is billed to the session's own provider)", edges.followSession === true, String(edges.followSession));
+
+  // The provider half: the response says which account paid, and a session running
+  // `deepseek:…` must produce route=session / provider=deepseek — not a silent Bailian fallback.
+  // The browser's key is `agent:<messageId>` (transcript.ts blockKeyOf) — the REST rows do not carry
+  // the stored block_key, so pick the LONGEST agent block that has a messageId (it must exceed
+  // maxChars, or the route answers verbatim and never touches a model).
+  const lastKey = await ev(`(async () => {
+    const d = await (await fetch('/api/sessions/${sid}/messages?tail=1')).json();
+    const agent = (d.messages ?? []).filter((m) => m.kind === 'agent' && typeof m.payload?.messageId === 'string');
+    if (!agent.length) return null;
+    agent.sort((a, b) => String(b.payload?.content?.text ?? '').length - String(a.payload?.content?.text ?? '').length);
+    return 'agent:' + agent[0].payload.messageId;
+  })()`);
+  const route = lastKey ? await ev(`(async () => {
+    const r = await fetch('/api/sessions/${sid}/speech-summary', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: ${JSON.stringify(lastKey)} }) });
+    const b = await r.json().catch(() => ({}));
+    return { status: r.status, route: b.route, provider: b.provider, model: b.model, note: b.routeNote, via: b.via };
+  })()`) : null;
+  const expectProvider = String(sessionModel ?? '').split(':')[0];
+  if (route && route.status === 200 && route.via === 'model') {
+    check("a model call reports which account paid (route/provider)", route.route === "session" && route.provider === expectProvider,
+      JSON.stringify({ route: route.route, provider: route.provider, expectProvider, note: route.note }));
+    check("…and the model it used is the session's own", String(route.model ?? '').includes(String(sessionModel ?? '').split(':').slice(1).join(':')), JSON.stringify(route.model));
+  } else {
+    check("a model call reports which account paid (route/provider)", false, JSON.stringify(route));
+  }
 
   // ---- UI：长按 → 菜单 → 播报稿 ----
   await ev(`(() => { window.__sumCalls = 0; const f = window.fetch; window.fetch = (...a) => { const u = String(a[0]); if (u.includes('/speech-summary')) window.__sumCalls++; return f(...a); }; })()`);
   const speaks = `.bubble-actions .bubble-btn.speak`;
   check("messages carry a speaker", await waitFor(`document.querySelectorAll('${speaks}').length > 0`));
-  const spot = () => ev(`(() => { const b = [...document.querySelectorAll('${speaks}')].pop().getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+  // The note grows the bubble, so the last speaker moves between presses: scroll it into view
+  // first, otherwise a y beyond the viewport is a click on nothing (and the menu never opens).
+  const spot = () => ev(`(() => {
+    const el = [...document.querySelectorAll('${speaks}')].pop();
+    el.scrollIntoView({ block: 'center' });
+    const b = el.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  })()`);
   const press = async (ms) => {
     const p = await spot();
     await send("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button: "left", buttons: 1, clickCount: 1 });
@@ -100,6 +158,7 @@ try {
   check("…with the字数 the server reported", note && note.chars > 0, JSON.stringify(note?.chars));
   check("…a single line of speech, not the original transcript", note && !note.text.includes("\n"), JSON.stringify(note?.text?.slice(0, 40)));
   check("…and how long it took / which model", note && /字/.test(note.meta) && /(s|秒)/.test(note.meta), note?.meta);
+  check("…naming the provider that paid", /deepseek|openrouter|voice|语音端点/i.test(note?.meta ?? ""), note?.meta);
   const afterFirst = await ev(`window.__sumCalls`);
   check("exactly one model call for it", afterFirst === 1, String(afterFirst));
 
@@ -150,6 +209,12 @@ try {
   await sleep(400);
   check("…and the sweep puts it back", (await ev(`(async () => (await (await fetch('/api/settings')).json()).summary.maxChars)()`)) === beforeChars);
 } finally {
+  if (sqlite) {
+    for (const r of restoreModels) {
+      sqlite.prepare("update sessions set models = ? where id = ?").run(r.models, r.id);
+    }
+    sqlite.close();
+  }
   await fetch(`${CDP}/json/close/${t.id}`).catch(() => {});
 }
 

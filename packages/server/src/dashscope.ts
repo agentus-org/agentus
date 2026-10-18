@@ -250,8 +250,14 @@ export async function summarizeForSpeech(opts: {
   prompt: string;
   model: string;
   timeoutSec: number;
+  /** Where to send it. Absent = the voice endpoint (settings → 语音), which is the old, always-on
+   *  route. Present = the SESSION's own provider (see speech/route.ts) — the operator asked for the
+   *  summary to be billed to whatever model he is actually talking to, not to a second vendor. */
+  endpoint?: { baseUrl: string; apiKey: string };
 }): Promise<{ text: string; truncated: boolean; ms: number }> {
-  const { key, compat } = creds();
+  const { key, compat } = opts.endpoint
+    ? { key: opts.endpoint.apiKey, compat: opts.endpoint.baseUrl.replace(/\/+$/, "") }
+    : creds();
   const v = getSettings().voice;
   const limit = Math.max(400, opts.maxChars * 20);
   const body = opts.text.trim();
@@ -265,14 +271,18 @@ export async function summarizeForSpeech(opts: {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify({
-        model: opts.model || "qwen-flash",
+        model: opts.model || (opts.endpoint ? "" : "qwen-flash"),
         messages: [
           { role: "system", content: opts.prompt.replace(/\{maxChars\}/g, String(opts.maxChars)) },
           { role: "user", content: input },
         ],
         // No temperature knob: this surface is not a playground, and the default has produced
-        // the steadiest length compliance. `max_tokens` guards against a chatty model.
-        max_tokens: Math.max(200, opts.maxChars * 4),
+        // the steadiest length compliance. `max_tokens` guards against a chatty model — and it
+        // must leave room for REASONING tokens, which count against the same budget: measured on
+        // deepseek-v4-flash, a 480-token cap was spent entirely on reasoning_content and the
+        // visible answer came back empty with finish_reason=length. 1200 is the floor that makes a
+        // reasoning model answer; for a plain one it is only a ceiling nobody reaches.
+        max_tokens: Math.max(1200, opts.maxChars * 6),
       }),
       signal: ac.signal,
     });
@@ -280,9 +290,20 @@ export async function summarizeForSpeech(opts: {
       const detail = (await res.text().catch(() => "")).slice(0, 200);
       throw new DashscopeError(`chat/completions ${res.status}: ${detail}`, "upstream");
     }
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const out = String(data?.choices?.[0]?.message?.content ?? "").trim();
-    if (!out) throw new DashscopeError("the model returned nothing", "upstream");
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];
+    };
+    const choice = data?.choices?.[0];
+    const out = String(choice?.message?.content ?? "").trim();
+    if (!out) {
+      // Say WHICH silence this was. An empty `content` with a fat `reasoning_content` and
+      // finish_reason=length means the budget went to thinking, not that the model refused.
+      const thought = String(choice?.message?.reasoning_content ?? "").length;
+      const why = choice?.finish_reason === "length"
+        ? `预算被推理吃光了（reasoning ${thought} 字，finish_reason=length）—— 调大字数上限，或换一个非推理模型`
+        : `模型返回空内容（finish_reason=${choice?.finish_reason ?? "?"}）`;
+      throw new DashscopeError(why, "upstream");
+    }
     void v;
     return { text: out, truncated, ms: Date.now() - started };
   } catch (e) {
