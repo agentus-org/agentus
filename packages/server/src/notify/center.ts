@@ -17,6 +17,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { PermissionRequestView, PlanSnapshot, ServerEvent } from "../../../shared/src/index.js";
 import { DEFAULT_NOTIFY_RULES } from "./types.js";
+import { WebPushService } from "./webpush.js";
 import type {
   ActionCallback,
   ActivityObject,
@@ -98,6 +99,33 @@ function tapTarget(url: string, prefer: OpenTarget["prefer"] = "app"): Pick<Acti
   return { deeplink: url, open: { url, prefer: prefer ?? "auto" } };
 }
 
+/** The session a notice points at, from its `open` URL (`/?session=<id>`). */
+function sessionOfOpen(open: string | null | undefined): string | null {
+  if (!open) return null;
+  try {
+    return new URL(open, "http://local").searchParams.get("session");
+  } catch {
+    return null;
+  }
+}
+
+/** A subscription as the settings card may see it: the device, never the endpoint.
+ *  The endpoint is a long-lived capability URL (whoever holds it can post to that browser's push
+ *  service) — the card only needs to tell one device from another, so host + tail is enough. */
+function publicSub(rec: { endpoint: string; ua?: string; createdAt: number; lastOkAt?: number; fails: number; lastError?: string }) {
+  let host = "";
+  try { host = new URL(rec.endpoint).host; } catch { host = "?"; }
+  return {
+    host,
+    tail: rec.endpoint.slice(-6),
+    ua: rec.ua,
+    createdAt: rec.createdAt,
+    lastOkAt: rec.lastOkAt,
+    fails: rec.fails,
+    lastError: rec.lastError,
+  };
+}
+
 /** How a finished turn reads on a lock screen: 「用时 1m12s」.
  *
  *  The protocol's own answer (`stopReason: end_turn`) is a fact about the wire, not about the
@@ -166,6 +194,8 @@ export class NotifyCenter {
   private onActionCb: ((e: ActionEvent) => void) | null = null;
   /** The page channel's sink: index.ts fans this out to every cockpit websocket. */
   private onNoticeCb: ((n: WebNotice) => void) | null = null;
+  /** The third channel: the only one that reaches a LOCKED screen (see webpush.ts). */
+  private readonly push: WebPushService;
   private timers: NodeJS.Timeout[] = [];
   private wss: WebSocketServer | null = null;
   /** Which session the cockpit is showing, and whether its tab is visible. Deliberately in
@@ -278,6 +308,7 @@ export class NotifyCenter {
     this.sessionPlan = opts.sessionPlan ?? null;
     this.apkPath = opts.apkPath ?? null;
     this.onFocus = opts.onFocus ?? null;
+    this.push = new WebPushService(opts.dataDir, { log: (l) => this.log(l) });
     this.state = this.loadState();
     this.events = this.loadEvents();
   }
@@ -528,11 +559,56 @@ export class NotifyCenter {
     this.onNoticeCb = cb;
   }
 
-  /** Emit one page notice, gated on the web channel's own switches. */
+  /** Emit one page notice, gated on the web channel's own switches — and hand the same notice to the
+   *  push services, so 「关屏也能收」 needs no second decision path (and cannot drift from the page's). */
   private notice(n: Omit<WebNotice, "at">, rule: keyof Omit<NotifyWebRules, "enabled">): void {
     const web = this.rules().web;
     if (!web.enabled || !web[rule]) return;
+    this.emitNotice(n);
+  }
+
+  /** The page + push half of a notice, without any rule gate — for the two cleanups (「跑完了」撤掉
+   *  「运行中」卡、批准后撤掉批准卡) that must happen even when the rule that would have SENT the card
+   *  is off. Taking a dead card off the screen is not an interruption, which is why these two calls
+   *  skip the switches; the push side follows the same logic, or a locked phone would keep a card
+   *  advertising a decision that was already made. */
+  private emitNotice(n: Omit<WebNotice, "at">): void {
     this.onNoticeCb?.({ ...n, at: Date.now() });
+    this.pushNotice(n);
+  }
+
+  /** The push renderer of a notice. Narrower than the page channel on purpose:
+   *
+   *   · 「运行中」 never pushes. A lock-screen card saying "still running" is noise by definition, and
+   *     what was asked for is 完成 and 需要批准 — the two things that want a human.
+   *   · a notice about the session he is LOOKING AT never pushes. The page channel leaves presence to
+   *     the page (`document.hidden`); a push cannot see that, so the server judges here. A phone
+   *     buzzing about the window already on screen is pure interruption.
+   *   · a dismiss IS pushed: it takes the stale card off the lock screen (the worker closes the
+   *     notification by tag), which is the same unconditional cleanup the other two channels do.
+   *
+   *  Fire-and-forget: a push service being slow or dead must never delay the frame to the phone or the
+   *  page. Each send records its own outcome on the subscription (fails / lastError) for the UI to show. */
+  private pushNotice(n: Omit<WebNotice, "at">): void {
+    if (!this.push.subscriptions().length) return;
+    if (n.kind === "agent_running") return; // never pushed, so a dismiss for it has nothing to close
+    const sessionId = sessionOfOpen(n.open);
+    if (sessionId && this.watching(sessionId)) return;
+    const dismiss = n.op === "dismiss";
+    const payload = dismiss
+      ? { op: "dismiss", noticeId: n.noticeId }
+      : { op: "upsert", noticeId: n.noticeId, kind: n.kind, title: n.title, body: n.body, open: n.open, sticky: Boolean(n.sticky) };
+    // 审批卡要活到有人动手：TTL 一天，urgency high（叫醒设备）。完成/出错一小时就够。
+    const approval = n.kind === "approval";
+    void this.push
+      .broadcast(payload, dismiss
+        ? { urgency: "very-low", ttlSec: 300 }
+        : { urgency: approval ? "high" : "normal", ttlSec: approval ? 86_400 : 3_600 })
+      .then((results) => {
+        const bad = results.filter((r) => !r.ok);
+        if (bad.length) this.log(`[notify] web push: ${bad.length}/${results.length} 未送达（${bad[0]?.error ?? ""}）`);
+      })
+      .catch((e: Error) => this.log(`[notify] web push threw: ${e.message}`));
   }
 
   // ---- actions -------------------------------------------------------------
@@ -607,6 +683,54 @@ export class NotifyCenter {
           lastSeenAt: d.lastSeenAt, cursor: d.cursor, online: this.sockets.has(d.deviceId),
         })),
       }) && true;
+    }
+
+    // ---- 网页推送（关屏也能收）-----------------------------------------------------
+    // The public key has to reach the browser to subscribe; the SUBSCRIPTION LIST must not — it says
+    // how many devices listen to this cockpit. So the whole group sits behind the operator gate, the
+    // same reason the APK and the root certificate do.
+    if (p === "/api/notify/webpush" || p.startsWith("/api/notify/webpush/")) {
+      if (!isOperator()) return json(401, { error: "operator auth required" }) && true;
+      const subs = () => this.push.subscriptions().map(publicSub);
+
+      if (p === "/api/notify/webpush" && req.method === "GET") {
+        return json(200, { ok: true, publicKey: this.push.publicKey(), subs: subs() }) && true;
+      }
+
+      if (p === "/api/notify/webpush/subscribe" && req.method === "POST") {
+        const body = await readBody();
+        const rec = this.push.subscribe({
+          endpoint: body.endpoint,
+          keys: (body.keys ?? {}) as { p256dh?: unknown; auth?: unknown },
+          ua: body.ua,
+        });
+        if ("error" in rec) return json(400, { error: rec.error }) && true;
+        this.log(`[notify] 网页推送已订阅：${new URL(rec.endpoint).host}（共 ${this.push.subscriptions().length} 台）`);
+        return json(200, { ok: true, subs: subs() }) && true;
+      }
+
+      if (p === "/api/notify/webpush/unsubscribe" && req.method === "POST") {
+        const body = await readBody();
+        const removed = this.push.unsubscribe(String(body.endpoint ?? ""));
+        return json(200, { ok: true, removed, subs: subs() }) && true;
+      }
+
+      // The test button: proves the WHOLE chain (our VAPID key → push service → service worker →
+      // lock screen). A test that only logged to the server would prove none of it.
+      if (p === "/api/notify/webpush/test" && req.method === "POST") {
+        if (!this.push.subscriptions().length) return json(400, { error: "这台服务器还没有任何浏览器订阅" }) && true;
+        const results = await this.push.broadcast({
+          op: "upsert", noticeId: "test:webpush", kind: "agent_done", sticky: false,
+          title: "推送测试", body: "锁屏上能看到这条，就说明关屏也能收", open: "/",
+        }, { urgency: "high", ttlSec: 300 });
+        return json(200, {
+          ok: results.every((r) => r.ok),
+          results: results.map((r) => ({ ok: r.ok, status: r.status, error: r.error, gone: r.gone })),
+          subs: subs(),
+        }) && true;
+      }
+
+      return json(404, { error: "unknown webpush route" }) && true;
     }
 
     if (p === "/api/notify/presence" && req.method === "POST") {
@@ -1037,17 +1161,13 @@ export class NotifyCenter {
         // taking a dead card off the screen is not an interruption, and gating it on a preference
         // would leave a card nobody can answer.
         this.dismiss(`perm:${evt.requestId}`);
-        this.onNoticeCb?.({
-          op: "dismiss", noticeId: `perm:${evt.requestId}`, kind: "approval", title: "", body: "", at: Date.now(),
-        });
+        this.emitNotice({ op: "dismiss", noticeId: `perm:${evt.requestId}`, kind: "approval", title: "", body: "" });
         return;
       case "turn-end": {
         // The running card goes away unconditionally — a zombie "still running" on the phone is worse
         // than no card at all, even when the frame that started it was suppressed.
         this.dismiss(`turn:${evt.sessionId}`);
-        this.onNoticeCb?.({
-          op: "dismiss", noticeId: `turn:${evt.sessionId}`, kind: "agent_running", title: "", body: "", at: Date.now(),
-        });
+        this.emitNotice({ op: "dismiss", noticeId: `turn:${evt.sessionId}`, kind: "agent_running", title: "", body: "" });
         // Both gates belong here and both were missing: `completion` was stored but never read, and
         // presence was only consulted for turn-start — so the completion card fired while the operator was watching
         // the very session (and, mid-call, with a sound: the reported bug).

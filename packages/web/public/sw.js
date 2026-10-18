@@ -98,3 +98,47 @@ self.addEventListener("notificationclick", (e) => {
     })(),
   );
 });
+
+// ---- Web Push: the only channel that reaches a LOCKED screen ----------------------
+//
+// Everything above needs the page to be alive. On iOS/Android the page is frozen the moment it leaves
+// the foreground, so "跑完了" while the phone is in a pocket can only arrive here: the push service
+// wakes THIS worker, and the worker draws the card. (Server side: packages/server/src/notify/webpush.ts.)
+//
+// The payload is the same notice the page channel renders — one decision upstream, two renderers:
+//   { op:"upsert", noticeId, kind, title, body, open, sticky }  or  { op:"dismiss", noticeId }
+self.addEventListener("push", (e) => {
+  let data = {};
+  if (e.data) {
+    try { data = e.data.json(); } catch { data = { title: "Agentus", body: e.data.text() }; }
+  }
+
+  // A dismiss is not a notification: it takes a stale card OFF the lock screen. `approval` cards are
+  // sticky and outlive the answer on some platforms; nothing should advertise a decision already made.
+  if (data.op === "dismiss") {
+    e.waitUntil(
+      (data.noticeId
+        ? self.registration.getNotifications({ tag: data.noticeId })
+        : self.registration.getNotifications()
+      ).then((ns) => ns.forEach((n) => n.close())),
+    );
+    return;
+  }
+
+  const title = typeof data.title === "string" && data.title ? data.title : "Agentus";
+  e.waitUntil(
+    self.registration.showNotification(title, {
+      body: typeof data.body === "string" ? data.body : "",
+      // Same tag as the page channel: if both drew a card for the same event, the browser replaces
+      // one instead of stacking two — the dedup is the browser's, so it cannot drift.
+      tag: typeof data.noticeId === "string" ? data.noticeId : undefined,
+      renotify: Boolean(data.noticeId),
+      // 审批卡不走：它必须活到有人动手（用户离开了桌面，卡片消失就等于没通知）。
+      requireInteraction: Boolean(data.sticky),
+      data: { open: typeof data.open === "string" ? data.open : "/" },
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      silent: false,
+    }),
+  );
+});

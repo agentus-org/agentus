@@ -12,6 +12,7 @@
 // 弹出来是什么样（铃声）→ 哪些事要弹（服务端规则）。
 import { useCallback, useEffect, useState } from "react";
 import { playChime, unlockChime, useWebNotify, webNotify, type NoticeSound } from "./webNotify";
+import { AVAILABILITY_HINT, webPush, type PushStatus } from "./webPush";
 
 interface WebRules {
   enabled: boolean;
@@ -38,6 +39,8 @@ export function WebNotifySettings(): JSX.Element {
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [push, setPush] = useState<PushStatus | null>(null);
+  const [pushNote, setPushNote] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -51,9 +54,14 @@ export function WebNotifySettings(): JSX.Element {
     }
   }, []);
 
+  const loadPush = useCallback(async () => {
+    setPush(await webPush.status());
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadPush();
+  }, [load, loadPush]);
 
   const saveRules = async (next: WebRules, label: string): Promise<void> => {
     setRules(next); // optimistic: the switch must not lag behind the finger
@@ -99,6 +107,42 @@ export function WebNotifySettings(): JSX.Element {
   const sendTest = async (): Promise<void> => {
     const ok = await webNotify.test();
     setNote(ok ? "已发一条测试通知" : "没弹出来 —— 看下面的权限/地址提示");
+  };
+
+  const pushOn = async (): Promise<void> => {
+    setBusy(true);
+    setPushNote("");
+    try {
+      const out = await webPush.enable();
+      setPushNote(out.ok ? "这台设备已开通推送 —— 锁屏上应该能收到「跑完」了" : `没开成：${out.error}`);
+      await loadPush();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushOff = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await webPush.disable();
+      setPushNote("这台设备已退订推送");
+      await loadPush();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushTest = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const out = await webPush.test();
+      setPushNote(out.ok
+        ? `已推到 ${out.sent} 台设备 —— 现在把屏幕锁上等一下`
+        : `推送失败：${out.error ?? "推送服务拒绝了"}`);
+      await loadPush();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const permissionLine = (): JSX.Element => {
@@ -157,11 +201,68 @@ export function WebNotifySettings(): JSX.Element {
       </p>
       {err ? <div className="set-err" role="alert">{err}</div> : null}
       {note ? <div className="set-toast">{note}</div> : null}
+      {pushNote ? <div className="set-toast">{pushNote}</div> : null}
 
       <div className="set-row">
         <label>这台设备</label>
         <div>{permissionLine()}</div>
       </div>
+
+      {/* ---- 推送：唯一一条在屏幕锁上之后还能到的通道 ---- */}
+      <div className="set-row">
+        <label>锁屏 / 切后台</label>
+        <div>
+          {push?.availability !== "ok" ? (
+            <span className="set-hint">{AVAILABILITY_HINT[push?.availability ?? "no-sw"]}</span>
+          ) : push.subscribed ? (
+            <>
+              <button type="button" className="set-mini on" aria-pressed disabled={busy} onClick={() => void pushOff()}>
+                已开通
+              </button>
+              <span className="set-hint">
+                {" · 点一下退订。页面关掉、手机锁屏时，「跑完」和「要我确认」会走系统的推送服务到这里。"}
+              </span>
+            </>
+          ) : (
+            <>
+              <button type="button" className="set-mini" disabled={busy} onClick={() => void pushOn()}>
+                开启推送
+              </button>
+              <span className="set-hint">
+                {" · 上面那个开关只管「页面还开着」，屏幕一锁就失效；推送才是关屏也能收的那条。"}
+              </span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="set-row">
+        <label>推送测试</label>
+        <div>
+          <button type="button" className="set-mini" disabled={busy || !push?.subs.length} onClick={() => void pushTest()}>
+            往所有设备推一条
+          </button>
+          <span className="set-hint">
+            {push?.subs.length
+              ? ` · 服务端已记下 ${push.subs.length} 台设备的订阅${push.subs.some((x) => x.fails) ? "（有设备最近推失败，见下）" : ""}`
+              : " · 还没有设备订阅推送"}
+          </span>
+        </div>
+      </div>
+
+      {push?.subs.length ? (
+        <div className="set-row">
+          <label>已订阅</label>
+          <div className="set-hint" style={{ display: "grid", gap: "3px" }}>
+            {push.subs.map((x) => (
+              <span key={`${x.host}-${x.tail}`}>
+                {x.host} · …{x.tail} · {x.lastOkAt ? `上次送达 ${new Date(x.lastOkAt).toLocaleString()}` : "还没送达过"}
+                {x.fails ? ` · 失败 ${x.fails} 次${x.lastError ? `（${x.lastError.slice(0, 60)}）` : ""}` : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="set-row">
         <label>铃声</label>
