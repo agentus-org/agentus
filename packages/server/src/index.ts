@@ -2,7 +2,7 @@
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,19 @@ const APK_FILE = process.env.AGENTUS_APK
     path.join(DATA_DIR, "agentus-companion.apk"),
   ].find((p) => fs.existsSync(p))
   ?? path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk");
+// The root CA this instance's HTTPS is signed by, served to logged-in operators so a phone can
+// trust the tunnel's self-signed cert once instead of tapping through a warning forever. Same
+// reasoning as the APK: an artifact you install on a device belongs behind the operator login, and
+// a page that invites you to install a TRUST ANCHOR especially so. Public half only — `ca.key` is
+// never read here, and the file this points at holds the certificate alone.
+// Candidates: an explicit pin (a Caddy/safe-nat root lives outside any checkout), then the data
+// dir for a self-contained install, then the Caddy default. Absent is not fatal: the card says so.
+const CA_FILE = process.env.AGENTUS_CA_FILE
+  ?? [
+    path.join(DATA_DIR, "tls", "ca.pem"),
+    path.join(homedir(), ".config", "caddy", "tls", "ca.pem"),
+  ].find((p) => fs.existsSync(p))
+  ?? path.join(DATA_DIR, "tls", "ca.pem");
 // `agentus --where` (bin/agentus.mjs) asks the ONE place that decides these paths to say
 // what it decided, then exits — before any listener, store or subprocess exists. Print and
 // exit here rather than re-deriving the same rules in the CLI: "where is my data" must not
@@ -758,6 +771,41 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (!auth.verifyBasic(req.headers.authorization)) {
       res.writeHead(401, auth.basicChallenge());
       return res.end("Agentus: authentication required\n");
+    }
+
+    // ---- the root CA, behind the operator login too -------------------------------------
+    // `GET /api/tls`         what the cert is (subject, validity, SHA-256 fingerprint) so the
+    //                        settings card can show it before you download anything;
+    // `GET /api/tls/ca.crt`  the DER the phone/Mac installs. DER + `application/x-x509-ca-cert`
+    //                        is what makes iOS/macOS open the *profile install* flow on a plain
+    //                        tap — serve it as text/plain or octet-stream and iOS just shows text.
+    // Nothing here reads a key: this is the certificate, which is public material by design.
+    if (url.pathname === "/api/tls" || url.pathname === "/api/tls/ca.crt") {
+      if (!auth.authenticate(req.headers, url)) return send(res, 401, { error: "login required" });
+      if (!fs.existsSync(CA_FILE)) return send(res, 404, { error: "no ca configured", path: CA_FILE });
+      let cert: X509Certificate;
+      try { cert = new X509Certificate(fs.readFileSync(CA_FILE)); }
+      catch (e) { return send(res, 500, { error: `ca is not a certificate: ${(e as Error).message}` }); }
+      if (url.pathname === "/api/tls/ca.crt") {
+        res.writeHead(200, {
+          "content-type": "application/x-x509-ca-cert",
+          "content-length": String(cert.raw.length),
+          "content-disposition": 'attachment; filename="agentus-ca.crt"',
+          "cache-control": "no-store",
+        });
+        return res.end(cert.raw);
+      }
+      return send(res, 200, {
+        ok: true,
+        hasCA: true,
+        subject: cert.subject.replace(/\n/g, ", "),
+        issuer: cert.issuer.replace(/\n/g, ", "),
+        notBefore: cert.validFrom,
+        notAfter: cert.validTo,
+        fingerprint256: cert.fingerprint256,
+        bytes: cert.raw.length,
+        selfSigned: cert.subject === cert.issuer,
+      });
     }
 
     // ---- the phone's onboarding page + the APK, both behind the operator login ----------

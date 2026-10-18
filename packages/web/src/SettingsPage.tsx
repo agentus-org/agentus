@@ -14,6 +14,7 @@ import { pushTheme, useTheme, type ThemeConfig } from "./theme";
 import { AccountPanels, type AccountInfo } from "./Account";
 import { PLAN_GUIDANCE_VARIANTS } from "../../shared/src/index";
 import { NotifySettings } from "./NotifySettings";
+import { TrustCard } from "./TrustCard";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
 import {
@@ -54,6 +55,7 @@ const SET_NAV: { id: string; label: string; hint: string; items: { anchor: strin
     items: [
       { anchor: "set-webnotify", label: "网页通知（这台设备）" },
       { anchor: "set-notify", label: "手机通知（Android 伴侣）" },
+      { anchor: "set-roots", label: "根证书（自签 HTTPS）" },
     ],
   },
   {
@@ -609,6 +611,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         <WebNotifySettings />
         {/* ---------- 手机通知（Android 伴侣 + 推送规则） ---------- */}
         <NotifySettings sessionId={sessionId} />
+        {/* ---------- 根证书：手机/电脑装一次就不再报「不是私密连接」 ---------- */}
+        <TrustCard />
 
         <h4 className="set-group" id="grp-look" data-setgroup="look">外观</h4>
         {/* ---------- 主题 ---------- */}

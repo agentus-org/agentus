@@ -2788,3 +2788,37 @@ body.pane-dragging * { cursor: col-resize !important; }
    margin on each side while the widgets stayed flush left (「任务计划和上下文长度都对齐左边，但
    输入框和聊天对话消息泡都没有自动拉起到最边缘」). No gutter, no threshold, no container query:
    the column's own width, minus a plain 20px inner padding. */
+
+/* ---------- 根证书卡（设置 → 通知 → 根证书） ----------------------------------------
+   Two columns on a wide screen: the download is one action, the install steps are reference you
+   read once. Stacked under 860px, which is where an iPad in portrait used to squeeze the steps
+   into a 4-word-wide ribbon. */
+.tls-once {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding: 7px 10px; font-size: 12px; line-height: 1.5;
+  background: var(--chip-bg); border: 1px solid var(--accent-dim); border-radius: 8px;
+}
+.tls-warn { color: var(--warn, #b4690e); }
+.tls-cols { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); gap: 18px; margin-top: 12px; }
+@media (max-width: 860px) { .tls-cols { grid-template-columns: minmax(0, 1fr); gap: 14px; } }
+.tls-left { min-width: 0; }
+.tls-dl {
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+  font-size: 13px; font-weight: 600; padding: 7px 12px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink, #fff); border: 1px solid transparent;
+}
+.tls-dl:hover { filter: brightness(1.06); }
+.tls-meta { gap: 10px; }
+.tls-side { font-size: 11.5px; color: var(--text-dim); line-height: 1.55; }
+.tls-right { min-width: 0; border-left: 1px solid var(--line); padding-left: 16px; }
+@media (max-width: 860px) { .tls-right { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; } }
+.tls-steps-title { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.tls-os { margin-top: 10px; }
+.tls-os-name { font-size: 12px; font-weight: 600; color: var(--accent-text); }
+.tls-os ol { margin: 4px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.65; color: var(--text-dim); }
+.tls-os ol li { margin: 3px 0; }
+.tls-os code { font-family: var(--mono); background: var(--chip-bg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 4px; font-size: 11px; }
+/* 命令折行而不是横向滚动：一行 `sudo security add-trusted-cert …` 在窄栏里 scrollWidth 763px
+   对 404px 视口，横滚等于看不全；折行至少能整段读完、能选中复制。 */
+.tls-cmd { display: block; margin-top: 4px; white-space: pre-wrap; word-break: break-all; }
