@@ -31,7 +31,7 @@ import {
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
 import {
-  IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
+  IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
@@ -930,11 +930,15 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                     ) : null}
                     {/* 「这个会话还没干完」 at the list level (issue #22): a turn can end while a build keeps
                         running, and the rail is where the operator scans for what still needs him. Counted,
-                        not a bare dot — two processes and one are different amounts of waiting. */}
+                        not a bare dot — two processes and one are different amounts of waiting.
+                        The icon is an activity pulse, not a cog: 「⚙ 在别的 App 里就是设置」 (the operator,
+                        2026-10-18) — and the cog did sit confusingly close to the settings button. */}
                     {(() => {
                       const running = cockpit.byId.get(s.id)?.background?.filter((t) => t.status === "running").length ?? 0;
                       return running ? (
-                        <span className="badge bg" title={`${running} 个后台任务还在跑`}>⚙ {running}</span>
+                        <span className="badge bg" title={`${running} 个后台任务还在跑`}>
+                          <IconActivity size={9} />{running}
+                        </span>
                       ) : null;
                     })()}
                     {/* When I last talked to this session — sorted by it, so it has to be visible.

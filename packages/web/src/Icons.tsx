@@ -87,6 +87,13 @@ export const IconShield = (p: IconProps = {}): JSX.Element =>
 export const IconGauge = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M4 17a8 8 0 1 1 16 0" /><path d="M12 17l4-5" /></>, p);
 
+/** 「还有东西在后台跑」 — an activity pulse. Replaces the ⚙ this badge used to wear: a gear reads
+ *  as SETTINGS in every other product (that is what the cog means everywhere), while a heartbeat
+ *  line is the shape CI, Grafana and Datadog use for "a process is still doing work". Deliberately
+ *  asymmetric so it cannot be read as a letter at the 9px this badge renders it. */
+export const IconActivity = (p: IconProps = {}): JSX.Element =>
+  svg(<path d="M3 12h4l2.5-7 4 14 2.5-7H21" />, p);
+
 /** context window — concentric rings, fills by percent (see ContextGauge) */
 export const IconStop = (p: IconProps = {}): JSX.Element => svg(<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none" />, p);
 

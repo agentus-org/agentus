@@ -232,7 +232,11 @@ button { font: inherit; }
 .badge.perm { border-color: var(--accent-dim); color: var(--accent-text); }
 /* 「还有后台任务在跑」 (issue #22): the same badge slot as ⚿, because both answer "what still needs me".
    Running processes are an ACTIVE state, so it takes the accent colour rather than the dim one. */
-.badge.bg { border-color: var(--accent-dim); color: var(--accent-text); font-variant-numeric: tabular-nums; }
+/* Background-work badge: an activity pulse + a count. `inline-flex` on purpose — a bare <svg> is an
+   inline box and drags the descender space in with it, which pushed the number off the badge's
+   optical centre (measured at 9px). */
+.badge.bg { border-color: var(--accent-dim); color: var(--accent-text); font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: 3px; }
 
 /* ---- background tasks above the composer (issue #22) ----
    A turn ends when the agent stops talking, not when its work does. This row is the only place that

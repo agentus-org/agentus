@@ -8,7 +8,8 @@
 // three frames the fork's `acp_adapter/background.py` sends — a running snapshot, then the completion
 // carrier, then the snapshot that clears the row — AFTER the turn has ended:
 //   ① the snapshot reaches the page as `background` with one running task;
-//   ② the row draws above the composer once the turn is over, and the rail grows a ⚙ badge;
+//   ② the row draws above the composer once the turn is over, and the rail grows a `.badge.bg`
+//      (activity pulse + count) — the glyph itself is not asserted, only the badge;
 //   ③ the completion OPENS A NEW TURN by itself: a `turn-start` with no operator input, whose user row
 //      is labelled as coming from 「后台任务完成」 rather than attributed to the operator;
 //   ④ the clearing snapshot removes the row (and the badge) — no zombie 「在跑」;
