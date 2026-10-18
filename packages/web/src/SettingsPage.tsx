@@ -95,7 +95,7 @@ interface SettingsView {
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
   agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
   /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
-  observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
+  observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number };
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
   observerPromptDefault?: string;
   observerPromptMax?: number;
@@ -106,6 +106,7 @@ interface SettingsView {
   summaryTimeoutRange?: [number, number];
   summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
+  observerIntervalRange?: [number, number];
   agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
@@ -206,7 +207,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [cockpitMsg, setCockpitMsg] = useState("");
   // 观察智能体 — the agent behind 工作播报 (issue #16). Every field saves on its own, like the
   // cockpit switch: this section's whole point is that the next brief sounds different.
-  const [observer, setObserver] = useState<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number } | null>(null);
+  const [observer, setObserver] = useState<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number } | null>(null);
   const [observerMsg, setObserverMsg] = useState("");
   // 语音总结 — the message speaker's long press. Saves on its own like the observer's card: the
   // whole point is that the next long press summarises differently.
@@ -325,12 +326,15 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   /** 观察智能体 saves on its own. The backend list is fetched here rather than through the backends
    *  page's store: the card only needs id + label, and a select that lags behind a deleted backend is
    *  worse than a select that knows less. */
-  const saveObserver = async (patch: Partial<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number }>): Promise<void> => {
+  const saveObserver = async (patch: Partial<{ enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number }>): Promise<void> => {
     const next = {
       enabled: observer?.enabled ?? false,
       backend: observer?.backend ?? null,
       systemPrompt: observer?.systemPrompt ?? "",
       throttleSec: observer?.throttleSec ?? 120,
+      // Sent along on every save so this card can never silently reset the beat the speaker menu set
+      // (the server applies only the keys it is given, but a missing key here would show a stale box).
+      intervalSec: observer?.intervalSec ?? 0,
       ...patch,
     };
     setObserver(next);
@@ -938,6 +942,25 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
                 onBlur={(e) => void saveObserver({ throttleSec: Number(e.target.value) })}
               />
               <span className="set-hint">0 = 每回合都播报；待审批这类零成本事件不受它限制。</span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>节拍（每 N 秒报一次）</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.observerIntervalRange?.[0] ?? 0}
+                max={view?.observerIntervalRange?.[1] ?? 3600}
+                step={30}
+                value={observer?.intervalSec ?? 0}
+                onChange={(e) => setObserver((o) => (o ? { ...o, intervalSec: Number(e.target.value) } : o))}
+                onBlur={(e) => void saveObserver({ intervalSec: Number(e.target.value) })}
+              />
+              <span className="set-hint">
+                0 = 关（只在回合结束、待审批时说）。设了节拍之后，<b>只有「有任务在跑」</b>时才按节拍说话 ——
+                空闲的会话不报平安；同一个回合最多 8 条。顶部喇叭长按也能直接选 1/2/5 分钟。
+              </span>
             </div>
           </div>
           <div className="set-row">

@@ -323,6 +323,9 @@ button { font: inherit; }
 }
 .speak-menu {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 240px;
+  /* Seven rows + the hint is taller than a phone's keyboard-adjacent space, and the menu must stay
+     reachable: cap it and scroll inside rather than run off the viewport (issue #24 added four). */
+  max-height: min(70vh, 420px); overflow-y: auto; overscroll-behavior: contain;
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 10px 30px rgb(0 0 0 / 32%); padding: 3px; display: flex; flex-direction: column;
 }

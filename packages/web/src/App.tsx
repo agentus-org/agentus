@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
 import { ModelList } from "./ModelList";
@@ -26,7 +26,8 @@ import { parseBgNotice, shortCommand } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
-  forgetSummary, getSummary, subscribeSummaries, summariesVersion, summarizeMessage, SummaryError,
+  forgetSummary, getLatestSummary, getSummary, subscribeSummaries, summariesVersion, summarizeMessage,
+  summaryKey, SummaryError,
   type SpeechSummary,
 } from "./speechSummary";
 import {
@@ -60,6 +61,14 @@ export function App(): JSX.Element {
   // Settings is a view, not a modal: it replaces the chat area (hermes-studio's shape),
   // so a half-read conversation is still there when the operator comes back.
   const [settings, setSettings] = useState(false);
+  // The speaker menu's 「自定义节拍…」 needs to OPEN settings, and it lives four components deep
+  // (App → Main → ChatPane → head). An event beats threading a prop through three layers for one
+  // global action — and the menu closes itself on click either way.
+  useEffect(() => {
+    const open = (): void => { setSettings(true); setDrawer(false); };
+    window.addEventListener("agentus:open-settings", open);
+    return () => window.removeEventListener("agentus:open-settings", open);
+  }, []);
 
   // ---- the two side panes, both resizable and both the operator's to size -----------------
   // The clamps are carved out in order — the rail first, the panel against what the rail left —
@@ -1371,9 +1380,15 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   const [speakMenu, setSpeakMenu] = useState(false);
   const speakRef = useRef<HTMLSpanElement | null>(null);
   useDismiss(speakMenu, [speakRef], () => setSpeakMenu(false));
-  const setMode = (next: "off" | "reply" | "brief"): void => {
+  // 节拍 (issue #24). Read here, next to the mode, because the menu shows ONE ✓ across all six
+  // items: 「工作播报」 without a beat and 「每 2 分钟」 are different positions on the same switch.
+  const [intervalSec, saveInterval] = useObserverInterval();
+  const setMode = (next: "off" | "reply" | "brief", interval?: number): void => {
     setSpeakMenu(false);
+    // Mutual exclusion is the data model, not a UI convention: `speakMode` is ONE field, so 自动朗读
+    // and 工作播报 cannot both be on. A beat is only ever written together with `brief`.
     setPrefs({ speakMode: next, autoRead: next === "reply" });
+    if (next === "brief" && interval !== undefined) saveInterval(interval);
   };
   // 单击 = 开/关，长按（手机）/ 右键（桌面）/ Shift+F10（键盘）= 选档。
   // Why this split (the operator, 2026-10-18): the three-way menu had taken over the ONE gesture
@@ -1402,14 +1417,33 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     if (speakPress.current.fired) { speakPress.current.fired = false; return; }
     setMode(mode === "off" ? "reply" : "off");
   };
-  const SPEAK_LABEL: Record<"off" | "reply" | "brief", string> = {
-    off: "关",
-    reply: "自动朗读（念整条回复）",
-    brief: "工作播报（念驾驶舱的一句话）",
-  };
+  // The menu, as data: one flat list, each row carrying the mode AND the beat it means. Flat on
+  // purpose (the operator's words): 「长按的时候就有多个可选项，工作播报（每分钟）、（每 2 分钟）…」
+  // — a nested 「模式 → 节拍」 would be two clicks for one decision.
+  const SPEAK_ITEMS: { key: string; mode: "off" | "reply" | "brief"; interval: number | null; label: string }[] = [
+    { key: "off", mode: "off", interval: null, label: "关" },
+    { key: "reply", mode: "reply", interval: null, label: "自动朗读（点一下就是这个 · 默认）" },
+    { key: "brief", mode: "brief", interval: 0, label: "工作播报（有进展就说一句）" },
+    { key: "brief-60", mode: "brief", interval: 60, label: "工作播报（每 1 分钟也报一次）" },
+    { key: "brief-120", mode: "brief", interval: 120, label: "工作播报（每 2 分钟也报一次）" },
+    { key: "brief-300", mode: "brief", interval: 300, label: "工作播报（每 5 分钟也报一次）" },
+  ];
+  const isItemOn = (it: (typeof SPEAK_ITEMS)[number]): boolean =>
+    it.mode === mode && (it.mode !== "brief" || it.interval === intervalSec);
+  /** 节拍是自定义值（菜单里没有这一档）：它仍然是在用的那个 —— ✓ 落到「自定义」那一行，
+   *  否则菜单会出现「一个都没选」的假象。 */
+  const customOn = mode === "brief" && !SPEAK_ITEMS.some((it) => it.mode === "brief" && it.interval === intervalSec);
+  const speakLabel =
+    mode === "off"
+      ? "关"
+      : mode === "reply"
+        ? "自动朗读（念整条回复）"
+        : intervalSec > 0
+          ? `工作播报 · 每 ${intervalLabel(intervalSec)}`
+          : "工作播报（念驾驶舱的一句话）";
   const autoReadTitle = !canSpeak
     ? "朗读：这台设备没有可用语音（浏览器无 speechSynthesis，服务端也没配）"
-    : `朗读：${SPEAK_LABEL[mode]} —— 点一下开/关，长按选档（右键同）`;
+    : `朗读：${speakLabel} —— 点一下开/关，长按选档（右键同）`;
   // The head keeps identity and session controls: where this slot works, the panel that
   // shows it, and the two ways of TALKING to it (call, auto-read) — the operator's call
   // list. Mode, thinking depth and context stay in the composer, where the prompt is
@@ -1475,23 +1509,43 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           </button>
           {speakMenu ? (
             <div className="speak-menu" role="menu">
-              {(["off", "reply", "brief"] as const).map((m) => (
+              {SPEAK_ITEMS.map((it) => (
                 <button
-                  key={m}
+                  key={it.key}
                   type="button"
                   role="menuitemradio"
-                  aria-checked={mode === m}
-                  className={`speak-menu-item ${mode === m ? "on" : ""}`}
-                  data-speak-option={m}
-                  onClick={() => setMode(m)}
+                  aria-checked={isItemOn(it)}
+                  className={`speak-menu-item ${isItemOn(it) ? "on" : ""}`}
+                  data-speak-option={it.key}
+                  onClick={() => setMode(it.mode, it.interval ?? undefined)}
                 >
-                  <span className="speak-check">{mode === m ? "✓" : ""}</span>
-                  <span className="speak-name">{SPEAK_LABEL[m]}</span>
+                  <span className="speak-check">{isItemOn(it) ? "✓" : ""}</span>
+                  <span className="speak-name">{it.label}</span>
                 </button>
               ))}
+              <button
+                type="button"
+                role="menuitem"
+                aria-checked={customOn}
+                className={`speak-menu-item ${customOn ? "on" : ""}`}
+                data-speak-option="custom"
+                onClick={() => {
+                  setSpeakMenu(false);
+                  // The numeric box lives in 设置 → 观察智能体; opening it from here is the shortest
+                  // path to 「自定义」 without teaching a second place to type a number.
+                  window.dispatchEvent(new CustomEvent("agentus:open-settings", { detail: "voice" }));
+                }}
+              >
+                <span className="speak-check">{customOn ? "✓" : ""}</span>
+                <span className="speak-name">
+                  {customOn ? `自定义节拍（现在 · 每 ${intervalLabel(intervalSec)}）` : "自定义节拍…"}
+                </span>
+              </button>
               <p className="speak-hint">
                 {mode === "brief"
-                  ? "回合结束时由一个观察智能体念一句进展（设置 → 观察智能体）"
+                  ? intervalSec > 0
+                    ? `有任务在跑时每 ${intervalLabel(intervalSec)} 念一句；没任务在跑不念。观察员在 设置 → 观察智能体`
+                    : "回合结束、待审批时由一个观察智能体念一句（设置 → 观察智能体）"
                   : mode === "reply"
                     ? "每条回复结束后念全文 —— 长回复会被截断"
                     : "不自动出声；点消息旁的喇叭可以按需念"}
@@ -2946,6 +3000,46 @@ function PermDialog({ req, sessionTitle, waiting, onSkip }: {
   );
 }
 
+/** 每 N 分钟 → 人话。Only used for labels, so it rounds nothing but whole minutes. */
+function intervalLabel(sec: number): string {
+  if (sec <= 0) return "";
+  if (sec % 60 === 0) {
+    const m = sec / 60;
+    return m < 60 ? `${m} 分钟` : `${Math.round(m / 60)} 小时`;
+  }
+  return `${sec} 秒`;
+}
+
+/** 工作播报 (issue #24): the beat lives in the OBSERVER settings, not in the voice prefs — it is the
+ *  cockpit's timer, not the browser's voice. One fetch per pane; a `null` answer (settings route
+ *  unavailable) simply means 「no beat」, which is the shipped default.
+ *
+ *  `save` posts immediately: picking 「每 2 分钟」 must not need a trip to 设置. It also updates local
+ *  state first, so the ✓ moves on the same click the operator made. */
+function useObserverInterval(): [number, (sec: number) => void] {
+  const [sec, setSec] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    void fetch("/api/settings", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { observer?: { intervalSec?: number } } | null) => {
+        if (live) setSec(Number(d?.observer?.intervalSec ?? 0));
+      })
+      .catch(() => { if (live) setSec(0); });
+    return () => { live = false; };
+  }, []);
+  const save = useCallback((next: number): void => {
+    setSec(next);
+    void fetch("/api/settings", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ observer: { intervalSec: next } }),
+    }).catch(() => { /* the label keeps the picked value; the next save fixes it */ });
+  }, []);
+  return [sec ?? 0, save];
+}
+
 /** Read this reply aloud / stop reading — and, on a LONG press, offer 「语音播报总结」.
  *  One button for play/stop, because the two states are the same affordance (you click where you
  *  last clicked). The long press is the second meaning, exactly as in the head: a click does the
@@ -2980,22 +3074,25 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
   if (typeof window !== "undefined" && !("speechSynthesis" in window) && !prefs.serverTts) {
     return <span className="bubble-note" title="this browser has no speech synthesis">no voices</span>;
   }
-  const summarise = async (): Promise<void> => {
+  // 字数档 (the operator's ask, 2026-10-18): the long press offers 100/150/200 字 beside 「按设置」,
+  // and the count rides the server prompt's `{maxChars}` placeholder. `undefined` = 按设置.
+  const summarise = async (maxChars?: number): Promise<void> => {
     if (busy) return;
-    // Already summarised once: replay it. A second long press must not buy the same paragraph
-    // twice (the note's ✕ forgets it, which turns the next press back into a real call).
-    const cached = getSummary(id);
+    // Already summarised at THIS length: replay it. A second long press must not buy the same
+    // paragraph twice (the note's ✕ forgets it, which turns the next press back into a real call).
+    // The key carries the bucket, so 100 字 and 200 字 are two paragraphs, not one cache hit.
+    const cached = getSummary(summaryKey(id, maxChars));
     if (cached) {
       setMenu(false);
-      void speaker.speak(cached.text, `${id}#summary`, prefs);
+      void speaker.speak(cached.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
       return;
     }
     setBusy(true);
     setErr(null);
     try {
-      const s: SpeechSummary = await summarizeMessage(sid, id);
+      const s: SpeechSummary = await summarizeMessage(sid, id, maxChars);
       setMenu(false);
-      void speaker.speak(s.text, `${id}#summary`, prefs);
+      void speaker.speak(s.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
     } catch (e) {
       const se = e as SummaryError;
       // Say WHICH failure it was (off / not configured / timed out / endpoint said no) and never
@@ -3042,18 +3139,46 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
         </button>
         {menu ? (
           <div className="speak-menu bubble-menu" role="menu">
+            {/* An ACTION list, not a mode picker: no ✓ on purpose — 「读整条」 is what a click does,
+                and the 字数 items fire once. A radio mark here would promise a remembered state
+                that this menu deliberately does not have (the note is the record of what was made).
+                The last item is the configured number, which is what a plain long press used to do. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="speak-menu-item"
+              data-speak-summary="verbatim"
+              onClick={() => { setMenu(false); void speaker.speak(text, id, prefs); }}
+            >
+              <span className="speak-check">›</span>
+              <span className="speak-name">读整条</span>
+            </button>
+            {[100, 150, 200].map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="menuitem"
+                className="speak-menu-item"
+                disabled={busy}
+                data-speak-summary={String(n)}
+                onClick={() => void summarise(n)}
+              >
+                <span className="speak-check">{busy ? "•" : "›"}</span>
+                <span className="speak-name">{busy ? "总结中…" : `语音播报总结 · 约 ${n} 字`}</span>
+              </button>
+            ))}
             <button
               type="button"
               role="menuitem"
               className="speak-menu-item"
               disabled={busy}
-              data-speak-summary="1"
+              data-speak-summary="cfg"
               onClick={() => void summarise()}
             >
-              <span className="speak-check">{busy ? "•" : ""}</span>
-              <span className="speak-name">{busy ? "总结中…" : "语音播报总结"}</span>
+              <span className="speak-check">›</span>
+              <span className="speak-name">{busy ? "总结中…" : "语音播报总结 · 按设置"}</span>
             </button>
-            <p className="speak-hint">把这条压成几十秒能听完的口头摘要（提示词与字数在 设置 → 语音总结）</p>
+            <p className="speak-hint">把这条压成一段能听完的话；字数写进提示词交给模型（提示词在 设置 → 语音总结）</p>
           </div>
         ) : null}
       </span>
@@ -3072,16 +3197,18 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
 function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
   const version = useSyncExternalStore(subscribeSummaries, summariesVersion, summariesVersion);
   const [open, setOpen] = useState(false);
-  const sum = getSummary(mkey);
+  const sum = getLatestSummary(mkey);
   if (!sum) return null;
   // Which account paid for this one: the session's own provider (the default) or the voice
   // endpoint it fell back to. Same line as the model name — one glance answers "whose tokens".
   const billed = sum.route === "session"
     ? `${sum.provider ?? ""}${sum.provider ? " · " : ""}${sum.model ?? ""}`
     : sum.model ? `语音端点 · ${sum.model}` : "";
+  // The bucket is part of the record: 「约 150 字」 is why this paragraph is longer than the last one.
+  const bucket = sum.maxChars ? ` · 按 ${sum.maxChars} 字压` : "";
   const meta = sum.via === "verbatim"
     ? "原文本身就够短，直接念"
-    : `${sum.chars} 字 · ${(sum.ms / 1000).toFixed(1)}s${billed ? ` · ${billed}` : ""}`;
+    : `${sum.chars} 字${bucket} · ${(sum.ms / 1000).toFixed(1)}s${billed ? ` · ${billed}` : ""}`;
   return (
     <div className={`bubble-note speech-note${open ? " open" : ""}`} data-summary-chars={sum.chars}>
       <button type="button" className="speech-note-tag" aria-expanded={open} onClick={() => setOpen((o) => !o)}>

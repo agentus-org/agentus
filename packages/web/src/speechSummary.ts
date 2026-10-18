@@ -4,7 +4,9 @@
 // 前端只负责：长按手势、把结果念出来、并且让操作者能看见它到底念了什么。
 //
 // 三条规矩：
-//  1) **缓存**：同一条消息只烧一次模型。第二次长按直接重播（summary 里带着上次的文本）。
+//  1) **缓存**：同一条消息的同一个字数档只烧一次模型。第二次长按直接重播（summary 里带着上次的文本）。
+//     键里带档位（`<key>#<maxChars>`）：先点 100 字再点 200 字是两个不同的请求，否则第二下会
+//     回放那份 100 字的旧稿，看起来像「档位没用」。
 //  2) **看得见**：生成后在消息下方留一行「播报稿 · N 字」，可展开全文 —— 语音最怕「它念了什么」说不清，
 //     这一行同时也是判断提示词好不好用的唯一入口。
 //  3) **不许假装**：失败就是失败，绝不把原文当成摘要念（那会让人以为模型总结过了）。
@@ -28,11 +30,22 @@ export interface SpeechSummary {
   routeNote?: string;
   /** the message was longer than the guard limit and only its head was sent */
   truncated?: boolean;
+  /** which 字数档 produced this one (absent on server rows that predate the buckets) */
+  maxChars?: number;
 }
 
 const cache = new Map<string, SpeechSummary>();
+/** messageKey → the cache key of the bucket generated LAST for it. The note shows that one; a
+ *  per-bucket cache without this would leave 「播报稿」 pointing at whichever was asked first. */
+const latest = new Map<string, string>();
 const listeners = new Set<() => void>();
 let version = 0;
+
+/** The cache key for one (message, 字数档) pair. No bucket = 「按设置」, which keeps the old key so a
+ *  summary generated before this change still plays. */
+export function summaryKey(messageKey: string, maxChars?: number): string {
+  return maxChars === undefined || maxChars === null ? messageKey : `${messageKey}#${maxChars}`;
+}
 
 export function subscribeSummaries(fn: () => void): () => void {
   listeners.add(fn);
@@ -48,15 +61,32 @@ export function getSummary(key: string): SpeechSummary | undefined {
   return cache.get(key);
 }
 
-function remember(key: string, s: SpeechSummary): void {
+/** The most recent summary for a message, whichever 字数档 produced it. */
+export function getLatestSummary(messageKey: string): SpeechSummary | undefined {
+  const k = latest.get(messageKey);
+  return k ? cache.get(k) : cache.get(messageKey);
+}
+
+function remember(messageKey: string, key: string, s: SpeechSummary): void {
   cache.set(key, s);
+  latest.set(messageKey, key);
   version++;
   for (const fn of listeners) fn();
 }
 
-/** Drop a cached summary (the ✕ in the note). Turns the next long press back into a real call. */
+/** Drop a cached summary (the ✕ in the note). Turns the next long press back into a real call.
+ *  Takes either shape: a bucket key (`m1#150`) drops that bucket, a bare message key drops every
+ *  bucket of that message — 「丢掉这份稿子」 must not leave a stale sibling behind. */
 export function forgetSummary(key: string): void {
-  if (!cache.delete(key)) return;
+  const bare = key.includes("#") ? key.slice(0, key.lastIndexOf("#")) : key;
+  let dropped = false;
+  for (const k of [...cache.keys()]) {
+    if (k !== key && k !== bare && !k.startsWith(`${bare}#`)) continue;
+    cache.delete(k);
+    dropped = true;
+  }
+  if (latest.get(bare) === key || !cache.has(latest.get(bare) ?? "")) latest.delete(bare);
+  if (!dropped) return;
   version++;
   for (const fn of listeners) fn();
 }
@@ -73,12 +103,14 @@ export class SummaryError extends Error {
  * Only the message KEY travels: the body is read from the store server-side, so the browser cannot
  * decide what reaches the model (nor skip the length guard by claiming a shorter text).
  */
-export async function summarizeMessage(sid: string, key: string): Promise<SpeechSummary> {
+export async function summarizeMessage(sid: string, key: string, maxChars?: number): Promise<SpeechSummary> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/speech-summary`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key }),
+    // `maxChars` is optional on purpose: absent = 「按设置」, and the server keeps using the
+    // configured number (which is also what a page that predates the buckets sends).
+    body: JSON.stringify(maxChars === undefined ? { key } : { key, maxChars }),
   });
   const data = (await res.json().catch(() => ({}))) as Partial<SpeechSummary> & { error?: string; code?: string };
   if (!res.ok) {
@@ -104,7 +136,8 @@ export async function summarizeMessage(sid: string, key: string): Promise<Speech
     provider: data.provider,
     routeNote: data.routeNote,
     truncated: data.truncated === true,
+    maxChars: data.maxChars === undefined ? maxChars : Number(data.maxChars),
   };
-  remember(key, out);
+  remember(key, summaryKey(key, maxChars), out);
   return out;
 }
