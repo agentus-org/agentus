@@ -69,7 +69,11 @@ export type MsgView =
       explanation?: string;
       at?: number;
     }
-  | { key: string; kind: "meta"; text: string };
+  | { key: string; kind: "meta"; text: string }
+  /** 一条状态行（`messages.kind = "note"`）：不是谁说过的话，是过程 —— 「这一轮回忆了几条记忆」
+   *  「上下文压缩过」「有个警告」。它现在是**落库的行**（操作者 2026-10-18），所以刷新、重连、
+   *  换设备之后都还在；`category` 是家族，`hits` 是折叠掉的次数（压缩会心跳十几条）。 */
+  | { key: string; kind: "note"; category: string; text: string; hits?: number; at?: number };
 
 /** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
  *  choices — which COMMAND (and env, e.g. PYTHONPATH at a source tree), which HERMES_HOME, and
@@ -2099,7 +2103,7 @@ class Cockpit {
     const keyed = (m.kind === "agent" || m.kind === "thought") && blockKeyOf(m.kind, p0) !== null;
     const reapply = opts?.resync === true
       && (m.kind === "tool" || m.kind === "plan" || m.kind === "user" || m.kind === "meta" || keyed);
-    const upsertRow = reapply || m.kind === "tool" || m.kind === "meta" || m.seq <= 0 || grew;
+    const upsertRow = reapply || m.kind === "tool" || m.kind === "meta" || m.kind === "note" || m.seq <= 0 || grew;
     if (!upsertRow) {
       if (v.seen.has(m.seq)) return;
       v.seen.add(m.seq);
@@ -2174,6 +2178,25 @@ class Cockpit {
         }
         // This thought is the one being written; every other thought folds (after the switch).
         if (kind === "thought") thoughtKey = list[idx]?.key ?? null;
+        break;
+      }
+      case "note": {
+        // 一条落库的状态行（服务端 Store.appendNote）：位置由 seq 决定，所以它天生排在
+        // 「用户那句话之后、回复之前」，不需要客户端再算锚点。同一个 seq 再次到达就是
+        // 「还在压缩 → 压完了」这类更新（服务端已折叠），就地替换；新对象而不是改字段，
+        // 否则 memo 看不见这次变化。
+        const key = `n${m.seq}`;
+        const hits = typeof p.hits === "number" ? p.hits : undefined;
+        const row: MsgView = {
+          key, kind: "note", category: String(p.category ?? ""),
+          text: typeof p.text === "string" ? p.text : "", hits, at,
+        };
+        const at0 = index.get(key);
+        if (at0 !== undefined && list[at0]?.kind === "note") list[at0] = row;
+        else {
+          list.push(row);
+          index.set(key, list.length - 1);
+        }
         break;
       }
       case "tool": {

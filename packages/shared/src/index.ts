@@ -424,7 +424,11 @@ export type ClientCommand =
 export interface StoredMessage {
   seq: number; // monotonic per session — reconnect dedup anchor
   sessionId: string;
-  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta";
+  /** `note` = a 「状态行」 that is not a message: 「recalled 8 memories」 / 「compacting」 / a warning.
+   *  Deliberately a transcript row (not a separate table): its position IS the seq — after the
+   *  operator's sentence, before the reply — and the page already orders, pages and replays by seq.
+   *  `meta` stays what it was: a line the HOST says (a rejected send), never persisted. */
+  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta" | "note";
   payload: unknown; // raw ACP content/update fragment (kept lossless)
   toolCallId?: string; // set for kind=tool; upsert key
   createdAt: number;

@@ -1888,7 +1888,18 @@ export class SessionManager {
     }
     const statusText = statusLineOf(u);
     if (statusText) {
-      this.#emit({ t: "status", sessionId: live.info.id, text: statusText, statusKind: statusKindOf(u) });
+      const statusKind = statusKindOf(u);
+      const category = noteCategoryOf(statusText, statusKind);
+      if (category) {
+        // 落库（操作者 2026-10-18 选的 A 档）：刷新页面、重连、换设备之后，这行还在。
+        // 折叠在 store 里做（见 Store.appendNote），因为「压缩开始 → 心跳 → 完成」和每回合的
+        // 一次回忆都必须收敛成一行 —— 客户端折只治屏幕噪音，库里照样长心跳。
+        const row = this.#store.appendNote(live.info.id, { category, text: statusText });
+        this.#emit({ t: "message", message: row });
+      } else {
+        // 剩下的（provider 等待的倒计时、租约闲聊）本来就是一秒就作废的呼吸声：只走 live 通道。
+        this.#emit({ t: "status", sessionId: live.info.id, text: statusText, statusKind });
+      }
       return;
     }
     let msg: Parameters<Store["appendMessage"]>[0] | null = null;
@@ -2588,6 +2599,27 @@ function statusKindOf(u: Record<string, unknown>): string | undefined {
   const meta = u?._meta as { hermes?: { statusKind?: unknown } } | undefined;
   const kind = meta?.hermes?.statusKind;
   return typeof kind === "string" && kind ? kind : undefined;
+}
+
+/** 哪些状态行值得留档（操作者 2026-10-18 选的是 A 档）。
+ *
+ *  Hermes 发来的「状态行」是一根混在一起的管子：`status_output.py:102` 把所有东西都标成
+ *  `lifecycle`，只有警告是 `warn`。所以分类只能看**文本**，而这些字符串是从 fork 里抄来的
+ *  真实文案（`conversation_compression.py` 的 `🗜️ Compacting context` / `✓ Context compaction
+ *  complete` / `📦 Pre-API compression:`，`memory_manager.describe_recall` 的 `recalled N memories`）：
+ *
+ *   · memory     —— 「这一轮记忆召回了什么」，每回合都会发生，事后有意义；
+ *   · compaction —— 「上下文压过」，一行就够（记住它压缩过，不需要记住它压了 12 次心跳）；
+ *   · warn       —— 稀有，且几乎总是"要人看一眼"的东西。
+ *
+ *  provider 等待（`⏳ waiting on … 15s waiting for the first stream chunk`，十来秒一条倒计时）和
+ *  「Session is free; loading the latest transcript...」这类租约闲聊返回 null：它们描述的是"此刻
+ *  网络的呼吸"，一秒后就作废，落库只会把会话记录变成心跳日志。 */
+export function noteCategoryOf(text: string, statusKind?: string): "memory" | "compaction" | "warn" | null {
+  if (statusKind === "warn") return "warn";
+  if (/Compacting context|Context compaction complete|compression:|compacting ~/i.test(text)) return "compaction";
+  if (/recalled (?:relevant memory|1 memory|\d+ memories)/i.test(text)) return "memory";
+  return null;
 }
 
 function buildPromptBlocks(text: string, attachments: PromptAttachment[]): unknown[] {

@@ -1655,9 +1655,11 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
  *  会把上一句顶掉，于是「压缩开始」永远看不到「压缩完成」；而且同一时刻只能显示一条，回忆与压缩
  *  同时发生时就丢了一条。做成行以后按时间往下排，滚动自然往上走，滚上去就是历史。
  *
- *  为什么必须显式说明它「不是消息」：不能被导出成 markdown、不能被 copy 走、不能在刷新后当历史
- *  回放 —— 它不是谁说过的话，是过程。所以它只活在内存里（state.ts 的 `notes`），刷新即失。 */
-function StatusNoteRow({ n }: { n: StatusNote }): JSX.Element {
+ *  它「不是消息」这件事仍然成立：不能导出成 markdown，也不是谁说过的话 —— 所以它在库里是单独一种
+ *  `kind`（`note`），渲染成这行而不是气泡。**但它是落库的**（同一个 2026-10-18 的第二个决定）：
+ *  「回忆了几条记忆」「上下文压缩过」「有警告」事后还有意义，刷新一次就消失是丢信息。真正的呼吸声
+ *  （provider 倒计时、租约闲聊）不落库，仍然只活在 state.ts 的 `notes` 里，随回合结束消失。 */
+function StatusNoteRow({ n }: { n: Pick<StatusNote, "key" | "kind" | "text" | "at"> & { hits?: number } }): JSX.Element {
   const clock = new Date(n.at);
   const hh = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}:${String(clock.getSeconds()).padStart(2, "0")}`;
   return (
@@ -1692,9 +1694,20 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
     n++;
   }
   for (const row of rows) {
-    out.push(row.kind === "work"
-      ? <WorkRun key={row.key} items={row.items} />
-      : <Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
+    if (row.kind === "work") {
+      out.push(<WorkRun key={row.key} items={row.items} />);
+    } else if (row.m.kind === "note") {
+      // 落库的状态行：它本来就是一条消息行（kind `note`），位置由 seq 定，所以直接画在这一行上，
+      // 不需要 `afterKey` 锚点那套（那套是给内存里、没有 seq 的临时状态行用的）。
+      out.push(
+        <StatusNoteRow
+          key={row.m.key}
+          n={{ key: row.m.key, kind: row.m.category, text: row.m.text, at: row.m.at ?? Date.now(), hits: row.m.hits }}
+        />,
+      );
+    } else {
+      out.push(<Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
+    }
     const keys = new Set<string>(row.kind === "msg" ? [row.m.key] : row.items.map((i) => i.key));
     for (let cand = notes[n]; cand && cand.afterKey !== null && keys.has(cand.afterKey); cand = notes[n]) {
       out.push(<StatusNoteRow key={cand.key} n={cand} />);

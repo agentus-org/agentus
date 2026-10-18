@@ -118,6 +118,8 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
     case "tool": return { kind: "tool", who: "", text: `${m.title || m.kind2 || "工具"}${m.status ? ` · ${m.status}` : ""}` };
     case "plan": return { kind: "tool", who: "", text: `计划：${m.items.map((i) => i.content).join("；")}` };
     case "thought": return { kind: "tool", who: "", text: m.text };
+    // 状态行（回忆了几条记忆 / 压缩过 / 警告）：在语音通话的历史里当一行低调的提示。
+    case "note": return { kind: "meta", who: "", text: m.text };
   }
 }
 

@@ -925,6 +925,56 @@ export class Store {
   }
 
   /**
+   * 一条「状态行」落库（操作者 2026-10-18）：回忆了几条记忆、上下文压缩了、有警告。
+   *
+   * 为什么它不是 `notes` 表而是一行 `messages`（kind `note`）：状态行的位置信息就是 seq ——
+   * 「在用户那句话之后、在回复之前」。单独一张表要么丢掉这个位置，要么在客户端重建锚点，
+   * 而消息流本来就已经按 seq 排队、分页、回放，复用它是这里最省也最不容易错的做法。
+   *
+   * 为什么必须在这里折叠，而不是留给前端（前端 state.ts 原来是自己折的）：压缩是「开始 → 每几秒
+   * 一个心跳 → 完成」，provider 等待也是十来秒一条。客户端折只解决"屏幕上的噪音"，库里照样会
+   * 长出一串心跳。规则只有一条 —— **位置没变就折**：本会话最后一条消息如果是同类的状态行
+   * （说明这中间没有别的消息落下），就更新它，而不是再加一行；位置变了（新消息进来了）就另起一行。
+   * 于是「压缩中 → 完成」收敛成一行（保留开始时间），一个回合一次回忆也只留一行。
+   */
+  appendNote(sessionId: string, note: { category: string; text: string; createdAt?: number }): StoredMessage {
+    const createdAt = note.createdAt ?? Date.now();
+    const edge = this.#db
+      .prepare("select coalesce(max(seq),0) as seq from messages where session_id = ?")
+      .get(sessionId) as { seq: number };
+    const last = this.#db
+      .prepare("select seq, payload, created_at from messages where session_id = ? and kind = 'note' order by seq desc limit 1")
+      .get(sessionId) as { seq: number; payload: string; created_at: number } | undefined;
+    if (last && last.seq === edge.seq) {
+      const prev = JSON.parse(last.payload) as { category?: string; text?: string; hits?: number };
+      if (prev.category === note.category) {
+        const payload = { category: note.category, text: note.text, hits: (prev.hits ?? 1) + 1 };
+        // `created_at` stays: it answers "这一轮什么时候开始回忆/压缩的", and the heartbeat is not news.
+        this.#db
+          .prepare("update messages set payload = ? where session_id = ? and seq = ?")
+          .run(JSON.stringify(payload), sessionId, last.seq);
+        return {
+          seq: last.seq, sessionId, kind: "note", payload, createdAt: last.created_at,
+        };
+      }
+    }
+    const row = this.appendMessage({
+      sessionId, kind: "note", payload: { category: note.category, text: note.text, hits: 1 }, createdAt,
+    });
+    // Bounded: a session left open for weeks must not keep every recall it ever did. 80 is well past
+    // what any transcript page shows, and a note is ~120 bytes.
+    const over = this.#db
+      .prepare("select seq from messages where session_id = ? and kind = 'note' order by seq desc limit -1 offset 80")
+      .all(sessionId) as { seq: number }[];
+    if (over.length) {
+      const del = this.#db.prepare("delete from messages where session_id = ? and seq = ?");
+      for (const r of over) del.run(sessionId, r.seq);
+    }
+    return row;
+  }
+
+
+  /**
    * The streaming half of the transcript: one logical message, one row.
    *
    * The agent emits `agent_message_chunk` / `agent_thought_chunk` per token, so appending a row per
