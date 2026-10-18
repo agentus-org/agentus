@@ -3914,7 +3914,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             rows={1}
             value={text}
             onFocus={() => setPaletteHidden(false)}
-            placeholder={v.resuming ? "正在唤醒 agent 进程…（转录现在就能看）" : v.info.cold ? "无 ACP 进程 — 回车唤醒这个会话" : busyNow(v) ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
+            placeholder={v.resuming ? "waking the agent…" : v.info.cold ? "no ACP process — Enter wakes it" : busyNow(v) ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
               setText(e.target.value);
               setPaletteHidden(false);
@@ -4365,7 +4365,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                 autoFocus
                 value={text}
                 aria-label="first message"
-                placeholder="说点什么开始…（Enter 发送）"
+                placeholder="say something to start… (Enter sends)"
                 onChange={(e) => setText(e.target.value)}
                 onCompositionStart={() => { composing.current = true; }}
                 onCompositionEnd={() => { composing.current = false; }}
