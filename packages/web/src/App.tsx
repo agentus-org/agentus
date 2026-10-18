@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
 import { ModelList } from "./ModelList";
 import { modelProvider, shortModelName } from "./modelNames";
-import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick } from "./state";
+import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick, type StatusNote } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { clockHM, messageTime, relTime, stamp } from "./time";
@@ -1554,7 +1554,7 @@ const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; las
  *
  *  The clock lives in HERE, for the reason the deleted `Busy` also owned its own: a ticking second
  *  must not drag the transcript's rows into a re-render. */
-const TurnLine = memo(function TurnLine({ busy, since, status }: { busy: boolean; since: number | null; status?: string | null }): JSX.Element | null {
+const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since: number | null }): JSX.Element | null {
   // Re-stamped on every (busy, since) change, so a SECOND message sent into a running turn restarts
   // the clock — the operator asked for the count from the send. A page that loaded MID-turn has no
   // `turn-start` for this turn: it anchors on first sight, which undercounts instead of inventing a
@@ -1575,10 +1575,9 @@ const TurnLine = memo(function TurnLine({ busy, since, status }: { busy: boolean
       <span className="stream-spin" aria-hidden="true" />
       <span>处理中</span>
       {startedAt != null ? <span className="elapsed">({durationWords(now - startedAt)})</span> : null}
-      {/* The agent's own line about what it is doing (issue #18). One at a time, next to the clock it
-          belongs to: 「👁️ Hindsight — recalled 8 memories」 is the only place the operator can see the
-          memory system working, and a second line would be a log, not a status. */}
-      {status ? <span className="turn-status" title={status}>{status}</span> : null}
+      {/* The agent's status lines are NOT here any more (operator, 2026-10-18): 「它不只是这一个状态，
+          压缩什么的也会显示，所以应该放在会话记录框里面」. They are transcript rows now — see
+          StatusNoteRow. This line is only the clock: 「我现在等了多久」. */}
     </div>
   );
 });
@@ -1649,6 +1648,26 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
   );
 }
 
+/** 一条状态记录：agent 或它所在的运行时关于「正在干什么」的公告 —— 回忆了几条记忆、上下文压缩了、
+ *  在等 provider。「处理中」那行只回答「等了多久」，这些行回答「它到底在忙什么」。
+ *
+ *  为什么是会话记录里的一行而不是尾巴上的一句话（操作者 2026-10-18）：尾巴只有一个位置，新的一句
+ *  会把上一句顶掉，于是「压缩开始」永远看不到「压缩完成」；而且同一时刻只能显示一条，回忆与压缩
+ *  同时发生时就丢了一条。做成行以后按时间往下排，滚动自然往上走，滚上去就是历史。
+ *
+ *  为什么必须显式说明它「不是消息」：不能被导出成 markdown、不能被 copy 走、不能在刷新后当历史
+ *  回放 —— 它不是谁说过的话，是过程。所以它只活在内存里（state.ts 的 `notes`），刷新即失。 */
+function StatusNoteRow({ n }: { n: StatusNote }): JSX.Element {
+  const clock = new Date(n.at);
+  const hh = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}:${String(clock.getSeconds()).padStart(2, "0")}`;
+  return (
+    <div className="status-note" data-kind={n.kind || "lifecycle"} role="note" title={clock.toLocaleString()}>
+      <span className="status-note-time">{hh}</span>
+      <span className="status-note-text">{n.text}</span>
+    </div>
+  );
+}
+
 /** THE TRANSCRIPT ROWS — one implementation, two surfaces.
  *
  *  The chat page renders it inside its `.stream-inner`; the call's captions view renders the very
@@ -1659,16 +1678,34 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
  *
  *  `App` passes this function down to `CallMode` as a prop instead of `CallMode` importing it, so
  *  the two modules do not import each other. */
-function TranscriptRows({ msgs, sid, backend, busy, base }: {
-  msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string;
+function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
+  msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string; notes?: StatusNote[];
 }): JSX.Element {
-  return (
-    <>
-      {foldWork(msgs).map((row) => (row.kind === "work"
-        ? <WorkRun key={row.key} items={row.items} />
-        : <Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />))}
-    </>
-  );
+  // 状态行按「它来的时候最新那条消息是谁」插回去（`afterKey`），而不是一律堆在末尾 —— 回忆发生在
+  // 回复之前、压缩发生在回合中间，堆在末尾等于把时间顺序讲错。锚点消息不在本页（翻页翻掉了、或
+  // 还在后面的页里）时退到末尾：宁可位置不精确，也不能让一行状态凭空消失。
+  const rows = foldWork(msgs);
+  const out: JSX.Element[] = [];
+  let n = 0;
+  while (n < notes.length && notes[n].afterKey === null) {
+    out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
+    n++;
+  }
+  for (const row of rows) {
+    out.push(row.kind === "work"
+      ? <WorkRun key={row.key} items={row.items} />
+      : <Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
+    const keys = new Set<string>(row.kind === "msg" ? [row.m.key] : row.items.map((i) => i.key));
+    for (let cand = notes[n]; cand && cand.afterKey !== null && keys.has(cand.afterKey); cand = notes[n]) {
+      out.push(<StatusNoteRow key={cand.key} n={cand} />);
+      n++;
+    }
+  }
+  while (n < notes.length) {
+    out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
+    n++;
+  }
+  return <>{out}</>;
 }
 
 function Stream({ v }: { v: SessionView }): JSX.Element {
@@ -1937,8 +1974,8 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
           ) : pagedOnce && v.msgs.length ? (
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
-          <TranscriptRows msgs={v.msgs} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
-          <TurnLine busy={busyNow(v)} since={v.busySince} status={v.status ?? null} />
+          <TranscriptRows msgs={v.msgs} notes={v.notes} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
+          <TurnLine busy={busyNow(v)} since={v.busySince} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
@@ -4030,7 +4067,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 /* The chat page's OWN rows, handed to the call so its captions view shows the same
                    transcript the operator reads every day (mark + name, YOU, folding, tool and plan
                    cards) instead of a simplified second one. */
-                renderTranscript={(p) => <TranscriptRows {...p} />}
+                renderTranscript={(p) => <TranscriptRows {...p} notes={v.notes} />}
               />
             ) : null}
             {busyNow(v) ? (

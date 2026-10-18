@@ -206,6 +206,18 @@ export interface QueuedPrompt {
   inflight?: boolean;
 }
 
+/** One line the agent (or its runtime) announced about the work in flight — a memory recall, a
+ *  compaction, a provider wait. A transcript ROW that is deliberately not a message: `text` is the
+ *  sentence, `kind` its family (`lifecycle` / `compacting` / `compacted` / `warn`), `afterKey` the
+ *  message row it arrived after (null = before any message in this view). */
+export interface StatusNote {
+  key: string;
+  kind?: string;
+  text: string;
+  at: number;
+  afterKey: string | null;
+}
+
 export interface SessionView {
   info: SessionInfo;
   msgs: MsgView[];
@@ -220,11 +232,13 @@ export interface SessionView {
    *  start (`durationMs` on turn-end) but does not put it on the wire, and a server change is a
    *  restart, so this stamp is client-side by design. */
   busySince: number | null;
-  /** The agent's most recent STATUS line for the running turn (issue #18) — `👁️ Hindsight — recalled 8
-   *  memories`, a compaction countdown, a provider wait. Set by the `status` frame and cleared when the
-   *  turn ends: it describes what the process is doing NOW, so it must never outlive that turn (and is
-   *  never persisted — the server does not store it either). */
-  status?: string | null;
+  /** The agent's STATUS lines (issue #18), as ROWS in the transcript rather than a suffix on the tail
+   *  line — the operator's call (2026-10-18): 「压缩什么的也会显示，所以应该放在会话记录框里面」.
+   *  In memory only, on purpose: they describe process state, not something anybody said, so they must
+   *  never be persisted, replayed, exported or counted as history — a refresh drops them and that is
+   *  the honest degradation. Each row keeps the key of the message it followed (`afterKey`), which is
+   *  how the transcript interleaves them in the order they actually happened. */
+  notes: StatusNote[];
   /** Background processes the agent still has for this session (issue #22) — the ACP twin of the
    *  desktop status stack. A SNAPSHOT: the server replaces it wholesale and clears it when the agent
    *  process dies. Empty array = nothing running (the row disappears, never 「0 个」). */
@@ -1703,7 +1717,7 @@ class Cockpit {
     if (!v) {
       v = {
         info: this.sessions.find((s) => s.id === id) ?? ({ id } as never),
-        msgs: [], perms: [], busy: false, busySince: null, loaded: false, hasOlder: false, loadingOlder: false,
+        msgs: [], notes: [], perms: [], busy: false, busySince: null, loaded: false, hasOlder: false, loadingOlder: false,
         minSeq: null, lastAt: Date.now(), rev: 0, seen: new Set(), blocks: new Map(),
         plan: null, turn: 0, turnStart: 0,
         queue: this.#loadQueue(id),
@@ -1865,13 +1879,28 @@ class Cockpit {
         this.lastSeq[e.message.sessionId] = Math.max(this.lastSeq[e.message.sessionId] ?? 0, e.message.seq);
         break;
       }
-      // The agent's own one-line status for the turn in flight (issue #18). Deliberately NOT a
-      // transcript row: it is replaced by the next one and dropped at turn-end, so it renders next to
-      // the running turn and never claims to be part of the conversation.
+      // The agent's own status lines (issue #18), appended as transcript rows — see `notes` on
+      // SessionView for why they live in memory only.
+      //
+      // COALESCE BY KIND, and only against the NEWEST row: a compaction emits 「summarizing…」 then a
+      // heartbeat every few seconds then 「complete」. Appending every frame would turn one compaction
+      // into a dozen rows of noise; comparing only with the newest means a heartbeat UPDATES the row
+      // it belongs to, while a genuinely new kind (or a line arriving after other rows) starts its
+      // own. The row keeps its original `at`, so 「started 13:24:07」 survives the heartbeat rewrite.
       case "status": {
         const v = this.#view(e.sessionId);
-        v.status = e.text;
-        v.lastAt = Date.now();
+        const at = Date.now();
+        const last = v.notes[v.notes.length - 1];
+        const afterKey = v.msgs.length ? v.msgs[v.msgs.length - 1].key : null;
+        if (last && e.statusKind && last.kind === e.statusKind) {
+          last.text = e.text;
+          last.afterKey = afterKey;
+        } else {
+          v.notes.push({ key: `st-${at}-${v.notes.length}`, kind: e.statusKind, text: e.text, at, afterKey });
+          // Bounded: a session left open for days must not accumulate every recall it ever did.
+          if (v.notes.length > 200) v.notes.splice(0, v.notes.length - 200);
+        }
+        v.lastAt = at;
         break;
       }
       case "background": {
@@ -1884,7 +1913,6 @@ class Cockpit {
       case "turn-start": {
         const v = this.#view(e.sessionId);
         v.busy = true;
-        v.status = null; // last turn's line belongs to that turn
         v.busySince = Date.now(); // the tail line's zero: the operator's send, not the first token
         v.lastAt = Date.now();
         v.trace = e.trace ?? null;
@@ -1929,7 +1957,8 @@ class Cockpit {
         // rail's timestamp still says what happened while they were away.
         if (e.sessionId !== this.activeId) this.markUnread(e.sessionId);
         v.busySince = null; // a finished turn has no elapsed time; a later frame must not inherit it
-        v.status = null;    // nor does the status line (it described the turn that just ended)
+        // `notes` deliberately SURVIVE turn-end: 「压缩花了多久」 is most useful one second after the
+        // turn stops, and they are dropped by a refresh anyway (in memory only).
         // Close the block that was still arriving — a data change, so the transcript re-renders THAT
         // row and drops its `.live` marking. Relying on "the last row of the fold, while busy" used to
         // leave the window marked live FOREVER: the block carrying the marking is early in the turn

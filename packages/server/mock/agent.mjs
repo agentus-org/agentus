@@ -420,14 +420,29 @@ const agent = () => ({
     // it: an EMPTY thought chunk whose `_meta.hermes` holds the sentence. Sent mid-turn on purpose, so a
     // sweep can prove the line appears while the turn runs and is gone when it ends, and that NOTHING
     // of it reaches the stored transcript.
-    if (/\[status\]/.test(text)) {
-      setTimeout(() => {
-        void send(agent._conn, sessionId, {
-          sessionUpdate: "agent_thought_chunk",
-          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: "👁️ Hindsight — recalled 8 memories" } },
-          content: { type: "text", text: "" },
-        }).catch(() => undefined);
-      }, Math.min(slow * 2, 1200));
+    // `[status]` / `[status:<kind>]` / `[status:<kind>#<n>]` — the carrier above, with the kind and a
+    // repeat count the sweeps need: a compaction is NOT one frame (start, then heartbeats, then done),
+    // and the cockpit must fold the heartbeats into the row they belong to instead of stacking rows.
+    const statusM = /\[status(?::([a-z_]+))?(?:#(\d+))?\]/.exec(text);
+    if (statusM) {
+      const kind = statusM[1] ?? "lifecycle";
+      const times = Math.min(Number(statusM[2] ?? 1), 8);
+      const line = kind === "lifecycle"
+        ? "👁️ Hindsight — recalled 8 memories"
+        : kind === "compacting"
+          ? (times > 1 ? "🗜️ Compacting context — still summarizing earlier conversation..." : "🗜️ Compacting context — summarizing earlier conversation...")
+          : kind === "compacted"
+            ? "✓ Context compaction complete — continuing turn..."
+            : `⚠️ mock ${kind} status`;
+      for (let i = 0; i < times; i++) {
+        setTimeout(() => {
+          void send(agent._conn, sessionId, {
+            sessionUpdate: "agent_thought_chunk",
+            _meta: { hermes: { kind: "status", statusKind: kind, text: line } },
+            content: { type: "text", text: "" },
+          }).catch(() => undefined);
+        }, Math.min(slow * 2, 1200) + i * 350);
+      }
     }
 
     // `[blank]` — the SAME carrier with its `_meta` stripped, i.e. the shape a status line takes when
