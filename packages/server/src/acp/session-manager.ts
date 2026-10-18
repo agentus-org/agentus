@@ -1713,6 +1713,14 @@ export class SessionManager {
         if (s.busy || s.pendingPermissions.size) continue;
         if (s.info.status === "starting" || s.info.status === "running") continue;
         if (opts.watched?.(s.info.id)) continue;
+        // A session whose agent still OWNS A RUNNING BACKGROUND PROCESS is not idle, whatever the clock
+        // says. Reaping it would SIGTERM the only process that can report that result (`#stop` kills the
+        // agent, not the process group), so the child would be left orphaned and unread — the exact
+        // silent failure #22 exists to remove: 「会话看起来结束了，活儿其实还在跑」. Reported by the
+        // operator as a question (2026-10-18: 「有后台进程的话，它还会被空闲回收吗？」) — it could.
+        // It is still bounded: only the long warm deadline (`warmTtlMs`) may reclaim it, so a runaway
+        // process cannot pin a slot forever.
+        const hasBackground = s.background.some((t) => t.status === "running");
         // The clock is the LATER of two things: the last MESSAGE this session has (store time, which
         // survives restarts) and the last time the operator actually USED the slot (`touchedAt` — the
         // click that respawned it, or the page reporting it as the one on screen). Reading only the
@@ -1727,6 +1735,13 @@ export class SessionManager {
           if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
           console.log(
             `[agentus] warm slot expired: ${s.info.id} (${fmt(age)} untouched, warm ttl ${fmt(warmTtlMs)})`,
+          );
+        } else if (hasBackground) {
+          // Idle time is not the whole question: the agent still OWNS a running child, so the short
+          // clock does not apply — only the long deadline can reclaim it.
+          if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
+          console.log(
+            `[agentus] idle reap: ${s.info.id} (background task still running after ${fmt(age)}, hard limit ${fmt(warmTtlMs)})`,
           );
         } else {
           if (!(idleMs > 0) || age < idleMs) continue;

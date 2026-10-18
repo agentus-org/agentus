@@ -447,7 +447,12 @@ const agent = () => ({
     // `acp_adapter/background.py` sends: a running snapshot, then the completion carrier, then the
     // snapshot that clears the row. Deliberately AFTER the turn: that is the shape that matters — the
     // session reads ready while the work continues, and the completion has to wake a new turn.
-    if (/\[bg\]/.test(text)) {
+    if (/\[bg\]|\[bg:\d+\]/.test(text)) {
+      // `[bg:<seconds>]` holds the row RUNNING that long, which is what the idle-reaper sweep needs: a
+      // task still running when the reap clock runs out (scripts/qa/reap-vs-background.mjs). `[bg]`
+      // alone keeps the original 1.4 s shape the wake sweeps are built on.
+      const hold = Number((/\[bg:(\d+)\]/.exec(text) || [])[1] || 0);
+      const runMs = hold ? hold * 1000 : 1400;
       const taskId = `bg-${sessionId}-1`;
       const snapshot = (rows) => ({
         sessionUpdate: "agent_thought_chunk",
@@ -471,10 +476,10 @@ const agent = () => ({
           } },
           content: { type: "text", text: "" },
         }).catch(() => undefined);
-      }, 1400);
+      }, runMs);
       setTimeout(() => {
         void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
-      }, 2600);
+      }, runMs + 1200);
     }
 
     // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).
