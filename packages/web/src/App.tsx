@@ -3521,10 +3521,13 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   // 插话 (issue #14) is only discoverable where the operator is actually typing. While a turn runs,
   // Enter FILES into the queue — the modifier is what puts those words on the floor — so the busy
-  // placeholder says so. Desktop only: a phone keyboard has no modifier, and there the queue row's ↑
-  // button is the way in.
+  // placeholder is the one place that can teach it. Same sentence shape as the idle placeholder with
+  // one word swapped (send → queues), so it reads as a rule rather than a status: the UI language
+  // here is English, and this was the only Chinese string left in the composer (his call, 2026-10-18).
+  // Never say 「queued」 as a state: an empty box is not queued, and announcing a status the operator
+  // never asked for reads as a stuck message. The queue row below carries the real state.
   const modKey = /Mac|iPhone|iPad/.test(navigator.platform ?? "") ? "⌘" : "Ctrl+";
-  const busyHint = window.innerWidth < 720 ? "排队中 — 回车排到本轮之后" : `插话直发 ${modKey}Enter · 回车排队`;
+  const busyHint = window.innerWidth < 720 ? "message… (Enter queues)" : `message… (${modKey}Enter interrupts · Enter queues)`;
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
   // clicking outside hides the palette without eating the "/..." the operator typed
   const [paletteHidden, setPaletteHidden] = useState(false);
