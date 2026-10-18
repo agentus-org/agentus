@@ -628,6 +628,20 @@ const agent = () => ({
       }
     }
 
+    // `[plan-long]` — the same frame with steps long enough to wrap on a phone. The operator's
+    // complaint (2026-10-18) is about exactly this: a step that runs onto a second line on a 360px
+    // screen. Short English steps hide it, so the fixture has to carry the long shape.
+    if (/\[plan-long\]/.test(text)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "plan",
+        entries: [
+          { content: "读一遍失败用例，确认它失败在断言上而不是环境上", status: "completed", priority: "medium" },
+          { content: "把时间相关的 flaky 断言改成注入时钟，然后跑完整套件确认不再抖动", status: "in_progress", priority: "high" },
+          { content: "run full suite", status: "pending", priority: "medium" },
+        ],
+      });
+    }
+
     if (wantPlan) {
       // ACP requires content+priority+status on every PlanEntry: @agentclientprotocol/sdk
       // silently DROPS entries that fail validation (spec-conformant, but hostile — the

@@ -21,6 +21,7 @@ import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile } from "./fileBus";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
+import { fitPlanSteps } from "./plan-fit";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
@@ -1987,7 +1988,11 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
  *  layer splices the old card into its own turn's end). Mirrors Studio's TaskPlanCard semantics. */
 function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const bodyRef = useRef<HTMLOListElement | null>(null);
   const plan = v.plan;
+  // Phone only: a step that wraps doubles the card's height and breaks the icon column, so shrink it
+  // until it fits (see plan-fit.ts). Runs after layout, when the real width is known.
+  useLayoutEffect(() => { if (open) fitPlanSteps(bodyRef.current); }, [open, plan]);
   if (!plan || !plan.items.length) return null;
   const total = plan.items.length;
   const done = plan.items.filter((it) => it.status === "completed").length;
@@ -2024,7 +2029,7 @@ function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
         <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} />
       </button>
       {open ? (
-        <ol className="plan-body">
+        <ol className="plan-body" ref={bodyRef}>
           {plan.title ? <li className="plan-name" aria-label="计划名">{plan.title}</li> : null}
           {plan.items.map((it, i) => (
             <li key={i} className={`plan-step ${it.status}`}>
@@ -2049,6 +2054,9 @@ function PlanBar({ v }: { v: SessionView }): JSX.Element | null {
  *  them anymore). Unknown statuses render neutral rather than as failures. */
 function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: boolean }): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const bodyRef = useRef<HTMLOListElement | null>(null);
+  // Same phone-only fit as PlanBar (see plan-fit.ts).
+  useLayoutEffect(() => { if (open) fitPlanSteps(bodyRef.current); }, [open, m]);
   const total = m.items.length;
   if (!total) return null;
   const done = m.items.filter((it) => it.status === "completed").length;
@@ -2075,7 +2083,7 @@ function PlanCard({ m, busy }: { m: Extract<MsgView, { kind: "plan" }>; busy: bo
           <IconChevronRight size={11} className={`tool-chev ${open ? "open" : ""}`} />
         </button>
         {open ? (
-          <ol className="plan-body">
+          <ol className="plan-body" ref={bodyRef}>
             {m.title ? <li className="plan-name" aria-label="计划名">{m.title}</li> : null}
             {m.items.map((it, i) => (
               <li key={i} className={`plan-step ${it.status}`}>

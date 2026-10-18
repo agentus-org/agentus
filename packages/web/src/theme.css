@@ -545,6 +545,14 @@ button { font: inherit; }
    the card's own heading. Wraps rather than ellipses: a truncated task name is a puzzle, not a title. */
 .plan-name { padding: 1px 0 6px; margin-bottom: 2px; border-bottom: 1px dotted var(--line); font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
 .plan-step { display: flex; align-items: baseline; gap: 8px; padding: 2.5px 0; font-size: 13px; }
+/* Phones: the steps start smaller (12px), and `plan-fit.ts` shrinks a step further when its text still
+   runs onto a second line — the operator wants a step on one line, not two (2026-10-18). Desktop keeps
+   13px: there is width there, and shrinking would be a fix for a problem that does not exist. */
+@media (max-width: 720px) {
+  .plan-step { font-size: 12px; gap: 6px; }
+  .plan-step .step-icon { flex-basis: 12px; }
+  .plan-name { font-size: 12.5px; }
+}
 .plan-step .step-icon { flex: 0 0 14px; text-align: center; color: var(--text-dim); }
 .plan-step.completed .step-icon { color: var(--ok); }
 .plan-step.completed .step-title { color: var(--text-dim); }
