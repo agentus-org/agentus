@@ -36,8 +36,10 @@ Plain Hermes is enough to drive sessions. The capabilities this cockpit itself l
 in the released build — a per-session **thinking depth** (ACP `reasoning_effort`), a **permission
 mode that survives a restart** and `session/load`, a free-form **context budget** (with
 256K/512K/768K/1M presets), the **status channel** that carries memory-recall / save hints into the
-cockpit's message stream, and **per-process skill roots** (`HERMES_EXTERNAL_SKILLS_DIRS`, which is
-how a slot sees the cockpit's own skill without anything being written into your `~/.hermes`).
+cockpit's message stream, **per-process skill roots** (`HERMES_EXTERNAL_SKILLS_DIRS`, which is how a
+slot sees the cockpit's own skill without anything being written into your `~/.hermes`), and a
+**DeepSeek web backend** (`search` + `extract` on top of `DEEPSEEK_API_KEY` — DeepSeek has no separate
+search key).
 They live on the ACP branches of the fork
 [`LiangYang666/hermes-agent`](https://github.com/LiangYang666/hermes-agent), and reach the cockpit
 through one **tag per integration build**, in a namespace of its own:
@@ -51,7 +53,7 @@ ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/`
 ours apart from upstream's own tags (`v0.22.0`, `v0.22.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.22.0/merge-20261017-2152`** — the newest tag on the fork,
+**Current integration build: `agentus/v0.22.0/merge-20261018-1005`** — the newest tag on the fork,
 built on Hermes `v0.22.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
