@@ -1892,6 +1892,20 @@ export class SessionManager {
       this.#queueOrWakeCompletion(live, finishedText);
       return;
     }
+    // Project skills the agent is NOT loading (fork: `_meta.hermes = {kind:"project_skills"}`).
+    // The same door, one more kind. It rides the live status channel on purpose: the sentence is
+    // about THIS open, and persisting it would put 「这个仓库有 N 个 skill 未启用」 above a
+    // conversation from last month — the very thing the status path already refuses to store.
+    const projectSkills = projectSkillsNoticeOf(u);
+    if (projectSkills) {
+      this.#emit({
+        t: "status",
+        sessionId: live.info.id,
+        text: projectSkills.text,
+        statusKind: "project-skills",
+      });
+      return;
+    }
     const statusText = statusLineOf(u);
     if (statusText) {
       const statusKind = statusKindOf(u);
@@ -2567,6 +2581,28 @@ function hermesKindOf(u: Record<string, unknown>): string | null {
 function hermesPayload(u: Record<string, unknown>): Record<string, unknown> {
   const meta = u?._meta as { hermes?: Record<string, unknown> } | undefined;
   return meta?.hermes ?? {};
+}
+
+/** Untrusted project skills the agent reported at session open, or null.
+ *
+ *  Shape (fork `acp_adapter/server.py::_notify_project_skills`): empty thought chunk with
+ *  `_meta.hermes = {kind:"project_skills", state:"untrusted", root, skillCount, text}`. The agent
+ *  sends it only when the repo actually carries skills AND nobody has decided yet — so a plain
+ *  checkout never produces one, and an unknown kind is still ignored silently (that is what lets
+ *  the two repositories ship independently).
+ */
+function projectSkillsNoticeOf(
+  u: Record<string, unknown>,
+): { text: string; root: string; count: number } | null {
+  if (hermesKindOf(u) !== "project_skills") return null;
+  const payload = hermesPayload(u);
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
+  if (!text) return null;
+  return {
+    text,
+    root: typeof payload.root === "string" ? payload.root : "",
+    count: typeof payload.skillCount === "number" ? payload.skillCount : 0,
+  };
 }
 
 /** The completion sentence a finished background process produced (#22), or null. */
