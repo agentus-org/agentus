@@ -99,9 +99,9 @@ export function WebNotifySettings(): JSX.Element {
     }
   };
 
-  const tryChime = (): void => {
+  const tryChime = (kind: "agent_done" | "approval"): void => {
     unlockChime();
-    playChime(st.prefs.volume, true);
+    playChime(st.prefs.volume, kind);
   };
 
   const sendTest = async (): Promise<void> => {
@@ -295,11 +295,15 @@ export function WebNotifySettings(): JSX.Element {
               <span className="set-hint">{Math.round(st.prefs.volume * 100)}%</span>
             </label>
           ) : null}
-          <button type="button" className="set-mini" style={{ marginLeft: "10px" }} onClick={tryChime}>
-            试听
+          <button type="button" className="set-mini" style={{ marginLeft: "10px" }} onClick={() => tryChime("agent_done")}>
+            试听·完成
+          </button>
+          <button type="button" className="set-mini" style={{ marginLeft: "6px" }} onClick={() => tryChime("approval")}>
+            试听·等你处理
           </button>
           <div className="set-hint" style={{ marginTop: "4px" }}>
-            点「试听」能听到，通知就能听到 —— 顺带这也是让浏览器解锁音频的那一次点击。
+            听到的就是真实通知的两段：<b>完成</b>是平稳的两声「叮—咚」；<b>等你处理</b>（审批/出错）更急、音往上走。
+            点这两个按钮能听到，通知就能听到 —— 顺带这也是让浏览器解锁音频的那一次点击。
             通话中不会响（麦克风开着，声音会被 agent 听见）。
           </div>
         </div>

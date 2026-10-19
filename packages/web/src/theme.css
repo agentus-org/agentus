@@ -991,6 +991,10 @@ code.inline {
   background: var(--bg-raised); font-size: 12.5px; color: var(--text);
 }
 .queue-row.inflight { border-left-color: var(--accent); opacity: 0.75; }
+/* 「未确认送达」(issue #26): the write went into a socket that never answered, so this row is the
+   operator's only copy. Amber, not red — nothing failed loudly, it is a question mark. */
+.queue-row.unsure { border-left-color: var(--warn, #d08a2a); border-color: var(--warn, #d08a2a); }
+.queue-flag { flex: 0 0 auto; font-size: 10.5px; color: var(--warn, #d08a2a); padding-top: 2px; white-space: nowrap; }
 .queue-idx {
   flex: 0 0 auto; min-width: 14px; text-align: right; font-size: 10.5px; color: var(--text-dim);
   font-variant-numeric: tabular-nums; padding-top: 2px;

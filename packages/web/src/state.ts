@@ -208,6 +208,13 @@ export interface QueuedPrompt {
   attachments: PromptAttachment[];
   at: number;
   inflight?: boolean;
+  /** The page put this on the wire but the server never confirmed it (issue #26). Such a row is NOT
+   *  drained automatically: a resend the operator did not ask for could duplicate a message that did
+   *  land late. It waits for an explicit ↑. */
+  unsure?: boolean;
+  /** The wire id of that unconfirmed send, so a late `turn-start` can retire the row instead of
+   *  leaving him with a copy of a message that is already in the transcript. */
+  pid?: string;
 }
 
 /** One line the agent (or its runtime) announced about the work in flight — a memory recall, a
@@ -362,6 +369,12 @@ const UNREAD_KEY = "agentus.unread";
  *  claiming it was delivered and offers the click again (see `permAnswer`). */
 export const PERM_ACK_MS = 8000;
 
+/** How long a READY-session prompt waits for the `turn-start` that proves it landed (issue #26).
+ *  Same magnitude as `PERM_ACK_MS` on purpose: both answer 「did my click reach the server」, and a
+ *  second number would only be a second thing to get wrong. The server answers a prompt in
+ *  milliseconds when it is there at all — this is not a latency budget, it is a liveness verdict. */
+export const SEND_ACK_MS = 8000;
+
 function readStoredUnread(): string[] {
   try {
     const raw = localStorage.getItem(UNREAD_KEY);
@@ -412,6 +425,15 @@ class Cockpit {
    *  arrives in the meantime belongs to the turn he just interrupted — draining on that one would
    *  send the next queued prompt on top of the message he explicitly pushed to the front. */
   #takingFloor = new Set<string>();
+  /** pid → the prompt the page put on the wire and has NOT seen acknowledged (issue #26).
+   *
+   *  `send()` returning true only means the frame was handed to a socket the browser still believes
+   *  is OPEN — and a TCP connection that died without a FIN stays OPEN forever. So a ready-session
+   *  send is registered here and only leaves when the server answers with the `turn-start` that
+   *  carries its `pid`. No answer within `SEND_ACK_MS` = the frame went nowhere: the words are put
+   *  back in the operator's queue as `unsure` (visible, editable, explicitly resendable) instead of
+   *  disappearing with a cleared input box — which is exactly how #26 was reported. */
+  #pendingSends = new Map<string, { sessionId: string; pid: string; text: string; attachments: PromptAttachment[]; rowId?: string; timer: ReturnType<typeof setTimeout> }>();
   /** 「跑完了，还没看」 — set by `turn-end` for a session the operator was NOT in (AionUi's completion
    *  dot, and its rule: only a turn that finished somewhere else is news). TRANSIENT on purpose: the
    *  acknowledgement is opening the session, and a page that reloads has no business re-dotting rows
@@ -875,6 +897,103 @@ class Cockpit {
     ws.onerror = () => ws.close();
   }
 
+  /** Enter on a READY slot: put it on the wire and prove it landed (issue #26).
+   *
+   *  This is the only send path that had no acknowledgement: the cold path files a queue row and waits
+   *  for `turn-start`, the busy path does the same, but a ready send went straight out and the box was
+   *  cleared on `send()` returning true — which a half-open socket also does. So the frame is tagged
+   *  with a `pid` and registered in `#pendingSends`; the server echoes the pid on the `turn-start` it
+   *  causes. Silence within `SEND_ACK_MS` means nobody received it, and the words go back into the
+   *  queue as an `unsure` row rather than vanishing. */
+  sendPrompt(sessionId: string, text: string, attachments: PromptAttachment[] = []): void {
+    if (!text.trim() && !attachments.length) return;
+    this.#sendAcked(sessionId, { text, attachments });
+  }
+
+  /** One place builds the wire frame that expects a `turn-start` back (issue #26): a ready-session
+   *  Enter, a queue row's ↑, and the drain all ride this. `rowId` is the queue row that must go back
+   *  to `unsure` when nobody answers — without it a retry that also lands in a dead socket silently
+   *  marks its own row as sent and the operator has nothing left to click. */
+  #sendAcked(sessionId: string, opts: {
+    text: string;
+    attachments: PromptAttachment[];
+    interrupt?: boolean;
+    rowId?: string;
+  }): void {
+    const pid = `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const cmd: ClientCommand = { t: "prompt", sessionId, text: opts.text, attachments: opts.attachments, pid,
+      ...(opts.interrupt ? { interrupt: true } : {}) };
+    const delivered = this.send(cmd);
+    // Not OPEN: `send()` filed the prompt in the queue itself and told the operator so — that row IS
+    // the acknowledgement, and registering a second one would duplicate his words on reconnect.
+    if (!delivered) {
+      if (opts.rowId) {
+        const rows = this.#queues.get(sessionId) ?? [];
+        this.#setQueue(sessionId, rows.map((r) => (r.id === opts.rowId ? { ...r, inflight: false } : r)));
+      }
+      return;
+    }
+    const timer = setTimeout(() => this.#requeueUnconfirmed(pid), SEND_ACK_MS);
+    this.#pendingSends.set(pid, { sessionId, pid, text: opts.text, attachments: opts.attachments, rowId: opts.rowId, timer });
+  }
+
+  /** The server started a turn for this prompt: it is a real message now. */
+  #confirmSent(sessionId: string, pid?: string): void {
+    const hit = pid
+      ? this.#pendingSends.get(pid)
+      // An older server does not echo `pid`. A turn that started on a session with exactly one
+      // unconfirmed send is that send — treating it as confirmed is the honest reading, and the
+      // alternative (requeueing a message that is already in the transcript) is the worse error.
+      : [...this.#pendingSends.values()].find((p) => p.sessionId === sessionId);
+    if (!hit) return;
+    // A turn started on this session, so nothing else is still on its way to it: only one prompt can
+    // begin a turn at a time. Retiring the rest here is what stops a stale timer from filing a copy of
+    // a sentence that already landed under another pid (measured: a retry's own 8s budget expired after
+    // the operator's next attempt had gone through, and the transcript ended up with two).
+    for (const other of [...this.#pendingSends.values()]) {
+      if (other.sessionId !== sessionId) continue;
+      clearTimeout(other.timer);
+      this.#pendingSends.delete(other.pid);
+    }
+    clearTimeout(hit.timer);
+    this.#pendingSends.delete(hit.pid);
+    // A late arrival retires the row the timeout created: the operator must not be left holding a
+    // copy of something that did land.
+    const rows = this.#queues.get(sessionId) ?? [];
+    if (rows.some((r) => r.pid === hit.pid)) this.#setQueue(sessionId, rows.filter((r) => r.pid !== hit.pid));
+  }
+
+  /** A refusal names the prompt it refused, so the ack budget does not expire into a second copy of
+   *  the same sentence while the refusal path is already filing it (`rejectedPrompt`). */
+  #forgetSent(pid: string): void {
+    const hit = this.#pendingSends.get(pid);
+    if (!hit) return;
+    clearTimeout(hit.timer);
+    this.#pendingSends.delete(pid);
+  }
+
+  /** `SEND_ACK_MS` of silence: the frame went into a socket that is dead but still `OPEN`. Put the
+   *  words back where the operator can see them, marked as NOT delivered. */
+  #requeueUnconfirmed(pid: string): void {
+    const hit = this.#pendingSends.get(pid);
+    if (!hit) return;
+    this.#pendingSends.delete(pid);
+    // Nobody took the floor after all: release the guard, or the queue behind this row stays wedged.
+    this.#takingFloor.delete(hit.sessionId);
+    const rows = this.#queues.get(hit.sessionId) ?? [];
+    if (hit.rowId && rows.some((r) => r.id === hit.rowId)) {
+      // A retry (↑ / drain) that ALSO went into the dead socket: the row is already there, so put it
+      // back to `unsure` instead of appending a second copy of the same sentence.
+      this.#setQueue(hit.sessionId, rows.map((r) => (r.id === hit.rowId ? { ...r, inflight: false, unsure: true } : r)));
+    } else if (!rows.some((r) => r.pid === hit.pid)) {
+      this.#setQueue(hit.sessionId, [...rows, {
+        id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        text: hit.text, attachments: hit.attachments, at: Date.now(), unsure: true, pid: hit.pid,
+      }]);
+    }
+    this.#setNet(false, "消息未确认送达 — 已放回队列，点 ↑ 重发");
+  }
+
   /** Send a command. Returns false when it could not go out and was queued for the next
    *  connection — a caller that promises the operator "delivered" must not do so for a queued
    *  command, and one that watches for an acknowledgement must not expect one. */
@@ -927,7 +1046,13 @@ class Cockpit {
       if (!Array.isArray(rows)) return [];
       return rows
         .filter((r) => r && typeof r.text === "string" && r.text.trim())
-        .map((r) => ({ id: String(r.id ?? `q-${r.at ?? Date.now()}`), text: r.text, attachments: r.attachments ?? [], at: r.at ?? Date.now() }));
+        .map((r) => ({
+          id: String(r.id ?? `q-${r.at ?? Date.now()}`), text: r.text, attachments: r.attachments ?? [], at: r.at ?? Date.now(),
+          // `unsure` survives a reload (issue #26): a message that was never confirmed is still
+          // unconfirmed after a refresh, and must not turn into an ordinary queued row that the
+          // drain would then send on its own.
+          ...(r.unsure ? { unsure: true, pid: typeof r.pid === "string" ? r.pid : undefined } : {}),
+        }));
     } catch { return []; }
   }
 
@@ -1047,8 +1172,12 @@ class Cockpit {
     const item = rows.find((r) => r.id === id);
     if (!item) return;
     this.#takingFloor.add(sessionId);
-    this.#setQueue(sessionId, rows.map((r) => (r.id === id ? { ...r, inflight: true } : r)));
-    this.send({ t: "prompt", sessionId, text: item.text, attachments: item.attachments, interrupt: true });
+    // An explicit ↑ is the operator overriding the "not delivered" verdict: the row stops being
+    // `unsure` and takes the ordinary in-flight path (its `turn-start` settles it, #26).
+    this.#setQueue(sessionId, rows.map((r) => (r.id === id ? { ...r, inflight: true, unsure: false } : r)));
+    // Acknowledged like any other send (#26): a retry can hit the same dead socket, and then the row
+    // has to come back rather than sit in "sending…" forever.
+    this.#sendAcked(sessionId, { text: item.text, attachments: item.attachments, interrupt: true, rowId: id });
   }
 
   /** ⌘/Ctrl+Enter — 插话: put what is in the box on the floor NOW, interrupting the running turn.
@@ -1077,6 +1206,9 @@ class Cockpit {
     const rows = this.#queues.get(sessionId) ?? this.#loadQueue(sessionId);
     const head = rows[0];
     if (!head || head.inflight) return;
+    // Never auto-resend a prompt the server never confirmed (#26): it may have landed after all, and
+    // the operator decides with ↑. Draining it here is how one message becomes two.
+    if (head.unsure) return;
     // Someone is taking the floor by hand: the next item waits for that turn to start (see #takingFloor).
     if (this.#takingFloor.has(sessionId)) return;
     // `busy` is FALSE (not unknown) on a page that missed the turn-start, so `?? status` never fired
@@ -1090,7 +1222,9 @@ class Cockpit {
     // with interrupt it simply waits for a turn that is already over. (It only cancels if one is
     // genuinely still running, which is the case this whole feature exists for.)
     this.#setQueue(sessionId, rows.map((r) => (r.id === head.id ? { ...r, inflight: true } : r)));
-    this.send({ t: "prompt", sessionId, text: head.text, attachments: head.attachments, interrupt: true });
+    // …and it is acknowledged like an Enter (#26): a drain into a dead socket would otherwise drop
+    // the operator's next message with no trace at all.
+    this.#sendAcked(sessionId, { text: head.text, attachments: head.attachments, interrupt: true, rowId: head.id });
   }
 
   /** `turn-start` proves an inflight prompt landed: it has left the queue (it is a real message now). */
@@ -1871,7 +2005,12 @@ class Cockpit {
         // A prompt refused with "turn already running" never became a message, and the red bubble is
         // not a place to keep the operator's sentence: file it again so the queue hands it over at
         // turn-end. A race costs a delay; it must not cost the words.
-        const rejected = (e.message as { payload?: { rejectedPrompt?: unknown } }).payload?.rejectedPrompt;
+        const rejected = (e.message as { payload?: { rejectedPrompt?: unknown; pid?: unknown } }).payload?.rejectedPrompt;
+        // A refusal names the prompt it refused: drop the ack budget for it, because the branch below
+        // is already putting that sentence back in line (#26). Without this the timeout fires later
+        // and files a SECOND copy of the same message.
+        const refusedPid = (e.message as { payload?: { pid?: unknown } }).payload?.pid;
+        if (typeof refusedPid === "string") this.#forgetSent(refusedPid);
         if (e.message.kind === "meta" && typeof rejected === "string" && rejected.trim()) {
           this.enqueuePrompt(e.message.sessionId, rejected);
         }
@@ -1923,6 +2062,8 @@ class Cockpit {
         // A queued prompt that reached `turn-start` HAS landed: it is a real message in the transcript
         // now, so it leaves the queue. This is the proof the queue waits for.
         this.#settleQueue(e.sessionId);
+        // …and a READY-session send that carried a `pid` is proven the same way (#26).
+        this.#confirmSent(e.sessionId, e.pid);
         // NOTE: the previous turn's bubbles are closed by the turn-end that preceded this (and by the
         // `.live` fallback in App's foldWork). Do NOT re-run #endOpenBubbles here: a turn that starts
         // while the previous one is still on screen would close a bubble that is about to grow again.

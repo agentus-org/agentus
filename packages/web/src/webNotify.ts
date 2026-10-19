@@ -32,7 +32,14 @@ export interface WebNotifyPrefs {
   sound: NoticeSound;
   /** Chime volume 0..1 (only meaningful for `chime`). */
   volume: number;
+  /** Schema stamp of what wrote this object (issue #27). Absent = written before the chime default
+   *  existed; that difference is the only way to repair an old `sound: "default"` without overriding
+   *  a choice somebody makes today. */
+  v?: number;
 }
+
+/** Bumped when a stored default has to be reinterpreted. 2 = `sound` defaults to `chime`. */
+export const WEB_NOTIFY_SCHEMA = 2;
 
 export const WEB_NOTIFY_KEY = "agentus.webnotify";
 // `chime`, not `default`: handing the tone to the platform is silent on exactly the setups that
@@ -111,12 +118,27 @@ export function shouldChime(
   return kind === "approval" || kind === "agent_done" || kind === "error";
 }
 
-/** Which of the two chimes a kind gets: something that wants the operator — a decision waiting on a
- *  human, or a turn that died — is worth two tones, a clean finish one. (The same asymmetry the phone
- *  channel has between 权限请求 and 任务完成; a failure wears the interruptive tone because it is the
- *  one case where waiting for him to come back on his own is the wrong default.) */
-export function chimeIsDouble(kind: WebNotice["kind"]): boolean {
-  return kind === "approval" || kind === "error";
+/** Which notes a kind gets (issue #28). All of them are at least TWO notes: a single 0.16s blip is
+ *  below the "was that my phone" threshold when the operator has walked away, which is exactly the
+ *  situation a completion sound exists for (AionUi's own comment: 「easy to notice from another tab」).
+ *
+ *  What separates them is the SHAPE, not the count — counting was the old design and it made 「done」
+ *  quiet precisely because it was considered less important:
+ *    · done      falling pair (880 → 659), calm. Nothing is asked of you.
+ *    · approval  rising pair (659 → 988), quicker. A human is the blocker — come here.
+ *    · error     rising then falling, three notes. Must never be mistaken for 「done」.
+ */
+export interface ChimeNote { freq: number; at: number; dur: number }
+
+export function chimePattern(kind: WebNotice["kind"]): ChimeNote[] {
+  if (kind === "approval") {
+    return [{ freq: 659.25, at: 0, dur: 0.13 }, { freq: 987.77, at: 0.15, dur: 0.28 }];
+  }
+  if (kind === "error") {
+    return [{ freq: 739.99, at: 0, dur: 0.11 }, { freq: 1046.5, at: 0.12, dur: 0.13 }, { freq: 739.99, at: 0.27, dur: 0.26 }];
+  }
+  // `agent_done` — and anything else that reaches the sound channel.
+  return [{ freq: 880, at: 0, dur: 0.16 }, { freq: 659.25, at: 0.2, dur: 0.3 }];
 }
 
 /** `/?session=<id>` (what the server sends) -> the id, or null when the target says nothing. */
@@ -134,19 +156,33 @@ export function sessionIdOf(open: string): string | null {
 function readPrefs(): WebNotifyPrefs {
   try {
     const raw = localStorage.getItem(WEB_NOTIFY_KEY);
-    if (!raw) return { ...WEB_NOTIFY_DEFAULT };
+    if (!raw) return { ...WEB_NOTIFY_DEFAULT, v: WEB_NOTIFY_SCHEMA };
     const v = JSON.parse(raw) as Partial<WebNotifyPrefs>;
     // Whitelist, never spread: a value that no longer means what it meant (or was never ours) must not
     // ride into the live object.
-    return {
+    const prefs: WebNotifyPrefs = {
       on: typeof v.on === "boolean" ? v.on : WEB_NOTIFY_DEFAULT.on,
       sound: v.sound === "chime" || v.sound === "silent" || v.sound === "default" ? v.sound : WEB_NOTIFY_DEFAULT.sound,
       volume: typeof v.volume === "number" && Number.isFinite(v.volume)
         ? Math.min(1, Math.max(0, v.volume))
         : WEB_NOTIFY_DEFAULT.volume,
     };
+    // ---- one-time repair (issue #27) -------------------------------------------------------------
+    // `sound: "default"` used to BE the default, so everybody who ever touched this card is carrying
+    // it as if they had chosen it — and the platform tone is silent exactly on the setups the chime
+    // was introduced for. An object with no schema stamp was written before that distinction existed,
+    // so "default" there is a leftover, not a decision: move it to the current default ONCE and stamp
+    // the object. From then on the operator's own pick — including "default" — is permanent.
+    if (v.v !== WEB_NOTIFY_SCHEMA && prefs.sound === "default") {
+      prefs.sound = WEB_NOTIFY_DEFAULT.sound;
+    }
+    if (v.v !== WEB_NOTIFY_SCHEMA) {
+      prefs.v = WEB_NOTIFY_SCHEMA;
+      try { localStorage.setItem(WEB_NOTIFY_KEY, JSON.stringify(prefs)); } catch { /* private mode */ }
+    }
+    return prefs;
   } catch {
-    return { ...WEB_NOTIFY_DEFAULT };
+    return { ...WEB_NOTIFY_DEFAULT, v: WEB_NOTIFY_SCHEMA };
   }
 }
 
@@ -197,16 +233,15 @@ function tone(c: AudioContext, freq: number, at: number, dur: number, volume: nu
   osc.stop(at + dur + 0.02);
 }
 
-/** The cockpit's own chime: a short two-note figure, synthesized (no asset to load, no file to ship,
- *  and the volume is the operator's). Exported so the settings card's 试听 uses the exact same sound
- *  the notification will. */
-export function playChime(volume: number, double: boolean): void {
+/** The cockpit's own chime, synthesized (no asset to load, no file to ship, and the volume is the
+ *  operator's). Exported so the settings card's 试听 uses the exact same sound the notification will —
+ *  a preview that is not the real thing is how 「试听有声、真通知没声」 happened in the first place. */
+export function playChime(volume: number, kind: WebNotice["kind"]): void {
   const c = audioContext();
   if (!c) return;
   if (c.state === "suspended") void c.resume();
   const t0 = c.currentTime + 0.01;
-  tone(c, 880, t0, 0.16, volume);
-  if (double) tone(c, 1174.66, t0 + 0.19, 0.22, volume);
+  for (const note of chimePattern(kind)) tone(c, note.freq, t0 + note.at, note.dur, volume);
 }
 
 // ----------------------------------------------------------------- drawing
@@ -352,7 +387,9 @@ class WebNotify {
       this.#prefs.volume = Math.min(1, Math.max(0, patch.volume));
     }
     try {
-      localStorage.setItem(WEB_NOTIFY_KEY, JSON.stringify(this.#prefs));
+      // The stamp is what makes the choice above immutable to the v1 repair (#27): once this device has
+      // written prefs under the current schema, `sound: "default"` means the operator meant it.
+      localStorage.setItem(WEB_NOTIFY_KEY, JSON.stringify({ ...this.#prefs, v: WEB_NOTIFY_SCHEMA }));
     } catch {
       /* private mode: the choice just will not outlive the tab */
     }
@@ -401,7 +438,7 @@ class WebNotify {
       hidden: typeof document === "undefined" ? false : document.hidden,
     };
     if (shouldChime(this.#prefs, notice.kind, sound, isCallActive())) {
-      playChime(this.#prefs.volume, chimeIsDouble(notice.kind));
+      playChime(this.#prefs.volume, notice.kind);
     }
     if (!shouldDrawNotice(gate)) return;
     void draw(notice, this.#prefs).then((ok) => {
@@ -433,7 +470,7 @@ class WebNotify {
     const ok = await draw(notice, this.#prefs);
     this.#last = { title: notice.title, at: Date.now(), drawn: ok };
     this.#publish();
-    if (this.#prefs.sound === "chime" && !isCallActive()) playChime(this.#prefs.volume, false);
+    if (this.#prefs.sound === "chime" && !isCallActive()) playChime(this.#prefs.volume, "agent_done");
     return ok;
   }
 

@@ -450,8 +450,9 @@ function runPrompt(
   text: string,
   attachments: PromptAttachment[] = [],
   interrupt = false,
+  pid?: string,
 ): void {
-  void mgr.prompt(sessionId, text, attachments, { interrupt }).catch((e: unknown) => {
+  void mgr.prompt(sessionId, text, attachments, { interrupt, pid }).catch((e: unknown) => {
     const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
     console.error(`[agentus] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
@@ -463,7 +464,10 @@ function runPrompt(
     const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED;
     emit({ t: "message", message: {
       seq: -1, sessionId, kind: "meta",
-      payload: { text: `turn failed: ${msg}`, ...(lost ? { rejectedPrompt: text } : {}) },
+      // `pid` rides along (issue #26) so the page can pair this refusal with the prompt it is still
+      // waiting to acknowledge: without it the refusal and the ack timeout both put the same sentence
+      // back in line, and the operator sees his message twice.
+      payload: { text: `turn failed: ${msg}`, ...(lost ? { rejectedPrompt: text } : {}), ...(pid ? { pid } : {}) },
       createdAt: Date.now(),
     } });
     // `turn-end` is the frame that says A TURN IS OVER. For the two "nothing left the client" refusals
@@ -1510,7 +1514,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const attachments = Array.isArray(body.attachments) ? (body.attachments as PromptAttachment[]) : [];
         if (!text && !attachments.length) return send(res, 400, { error: "empty prompt" });
         // fire & forget: stream arrives via WS; client watches turn-start/end
-        void runPrompt(id, text, attachments, body.interrupt === true);
+        void runPrompt(id, text, attachments, body.interrupt === true, typeof body.pid === "string" ? body.pid : undefined);
         return send(res, 202, { ok: true });
       }
       if (req.method === "POST" && sub === "/workspace") {
@@ -1795,6 +1799,9 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
 httpServer.on("upgrade", handleUpgrade);
 wss.on("connection", (ws) => {
   const clientId = randomUUID().slice(0, 8);
+  // Any frame — including a pong — proves the peer is alive (see the heartbeat below).
+  (ws as WebSocket & { isAlive?: boolean }).isAlive = true;
+  ws.on("pong", () => { (ws as WebSocket & { isAlive?: boolean }).isAlive = true; });
   clients.set(clientId, { ws, lastSeen: new Map() });
   const sendEvt = (e: ServerEvent) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(e));
@@ -1831,7 +1838,7 @@ wss.on("connection", (ws) => {
           break;
         }
         case "prompt":
-          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true);
+          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid);
           break;
         case "cancel":
           await mgr.cancel(cmd.sessionId);
@@ -1864,6 +1871,35 @@ wss.on("connection", (ws) => {
   });
   ws.on("close", () => clients.delete(clientId));
 });
+
+// ---- liveness: the half-open socket ---------------------------------------------------------
+// A TCP connection that dies without a FIN (Wi-Fi switch, laptop sleep, NAT timeout) stays OPEN in
+// BOTH ends: the page's `send()` succeeds into the void, and this server keeps a client that will
+// never read again. There is no traffic to fail on, so nothing above this line can notice — and the
+// operator's message is written into a socket nobody owns, with no bubble and no error (issue #26,
+// measured live 2026-10-11 with the network cut). Ping/pong is the only detector the protocol gives
+// us: browsers answer `ping` automatically, so a missing pong means the peer is gone.
+//
+// 20s, not 60s: the window between "socket died" and "page knows" is exactly how long a prompt can
+// vanish, and the ack timeout on the client (8s) covers what happens inside one beat. An idle
+// cockpit costs 3 tiny frames a minute.
+const HEARTBEAT_MS = Number(process.env.AGENTUS_WS_HEARTBEAT_MS ?? "") || 20_000;
+const heartbeat = setInterval(() => {
+  for (const [id, client] of clients) {
+    const ws = client.ws as WebSocket & { isAlive?: boolean };
+    if (ws.isAlive === false) {
+      // No pong since the last beat: the peer is not there. `terminate()` (not `close()`) because a
+      // half-open peer never answers the closing handshake either — this is the only way out.
+      ws.terminate();
+      clients.delete(id);
+      continue;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { /* already gone; the next beat reaps it */ }
+  }
+}, HEARTBEAT_MS);
+heartbeat.unref();
+
 
 // ---- the workspace panel's terminal -----------------------------------------
 // A shell is a stream, so it gets its own socket instead of riding the event bus:

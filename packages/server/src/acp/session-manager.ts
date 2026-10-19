@@ -972,6 +972,12 @@ export class SessionManager {
        * message, no attribution, indistinguishable from something they typed).
        */
       origin?: { sessionId: string; title?: string | null };
+      /**
+       * Client-generated id of the prompt that is being sent (issue #26). Echoed on the `turn-start`
+       * this call causes, so a page can prove its frame landed instead of assuming `ws.send()` did
+       * something. Opaque to the server: it comes back unchanged, it is never stored.
+       */
+      pid?: string;
     } = {},
   ): Promise<void> {
     const s = this.#need(sessionId);
@@ -1038,7 +1044,7 @@ export class SessionManager {
     // Timed from the announcement, not from the prompt call: the operator's wait INCLUDES the
     // moment the card lit up. Only the queue-wait above is excluded (that is other turns' time).
     const turnStartedAt = Date.now();
-    this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s) });
+    this.#emit({ t: "turn-start", sessionId, trace: this.#turnTrace(s), ...(opts.pid ? { pid: opts.pid } : {}) });
     const msg = this.#store.appendMessage({
       sessionId,
       kind: "user",

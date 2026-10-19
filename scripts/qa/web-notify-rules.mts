@@ -9,7 +9,7 @@
 //   npx tsx scripts/qa/web-notify-rules.mts
 import {
   WEB_NOTIFY_DEFAULT,
-  chimeIsDouble,
+  chimePattern,
   sessionIdOf,
   shouldChime,
   shouldDrawNotice,
@@ -70,11 +70,14 @@ check("notifications denied ⇒ no banner, but the turn is still HEARD",
   shouldDrawNotice(gate({ permission: "denied" })) === false
   && shouldChime(prefs(), "agent_done", sound(), false) === true);
 
-// ---- the two chimes: a decision waiting on a human is worth more than a finished turn
-check("an approval is the two-tone chime", chimeIsDouble("approval"));
-check("a finished turn is the single tone", !chimeIsDouble("agent_done"));
-check("a FAILED turn also wears the interruptive tone (it wants him back)", chimeIsDouble("error"));
-check("a 「运行中」 status line is not even a single tone", !chimeIsDouble("agent_running"));
+// ---- the figures per kind (issue #28 replaced "how many notes" with "which shape")
+check("an approval is a rising pair (come here)", chimePattern("approval").length === 2
+  && chimePattern("approval")[1].freq > chimePattern("approval")[0].freq);
+check("a finished turn is a falling pair — two notes, but calm", chimePattern("agent_done").length === 2
+  && chimePattern("agent_done")[1].freq < chimePattern("agent_done")[0].freq);
+check("a FAILED turn is three notes (never mistakable for 完成)", chimePattern("error").length === 3);
+check("the three kinds are pairwise different",
+  new Set([chimePattern("agent_done"), chimePattern("approval"), chimePattern("error")].map((p) => JSON.stringify(p))).size === 3);
 
 // ---- the tap target: the same `?session=` the phone's card carries
 check("session id is read off the notice's open target", sessionIdOf("/?session=abc123") === "abc123");

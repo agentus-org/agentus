@@ -581,6 +581,8 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   railHandle: JSX.Element;
 }): JSX.Element {
   const { sessions, cold, archived, activeId, conn, net, netError, authInfo } = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  // 中文用户改会话名时第一下回车是「选词」(#29)，不是「确认重命名」。
+  const ime = useImeGuard();
   // ---- presence: tell the server which session is on screen, so the phone can stay quiet while
   // I am looking at it (设置 → 手机通知 → 我正在看这个会话时不推). "Looking at it" means the tab is
   // visible AND I touched the machine recently — a laptop left open with the cockpit on screen is
@@ -930,7 +932,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
                         onClick={(e) => e.stopPropagation()}
                         onPointerDown={(e) => e.stopPropagation()}
                         onBlur={() => void commitRename(s.id)}
+                        {...ime.handlers}
                         onKeyDown={(e) => {
+                          if (ime.isComposing(e)) return; // 选词回车：让输入法自己处理
                           if (e.key === "Enter") { e.preventDefault(); void commitRename(s.id); }
                           else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditing(""); }
                         }}
@@ -3247,6 +3251,27 @@ const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT_BYTES = 256 * 1024;
 
+/** Enter while an IME is COMPOSING is 「选词」, not 「提交」 (issue #29).
+ *
+ *  The main composer has carried this guard since 2026-10-17 (a report: 「拼音模式下输入 app，按回车
+ *  选中英文，消息直接发出了」). Every other box that treats Enter as "commit" — renaming a session,
+ *  typing a context budget, a freeform config value — did not, so the FIRST candidate key committed.
+ *  Two signals, because neither is enough: `isComposing` (Chrome sets it on keydown) and the
+ *  composition ref (Safari fires keydown before compositionend clears the flag). */
+function useImeGuard(): {
+  handlers: { onCompositionStart: () => void; onCompositionEnd: () => void };
+  isComposing: (e: { nativeEvent: KeyboardEvent }) => boolean;
+} {
+  const composing = useRef(false);
+  return {
+    handlers: {
+      onCompositionStart: () => { composing.current = true; },
+      onCompositionEnd: () => { composing.current = false; },
+    },
+    isComposing: (e) => composing.current || e.nativeEvent.isComposing === true,
+  };
+}
+
 function readFileAsDraft(file: File): Promise<Draft | { error: string }> {
   const isImage = IMAGE_TYPES.includes(file.type);
   if (isImage) {
@@ -3276,6 +3301,24 @@ function readFileAsDraft(file: File): Promise<Draft | { error: string }> {
     fr.onerror = () => resolve({ error: `${file.name}: could not be read` });
     fr.readAsText(file);
   });
+}
+
+/** Files the clipboard is carrying (issue #31): a screenshot straight out of a snipping tool, or a
+ *  file copied in Finder/Explorer. Empty for ordinary text — and that is the whole contract, because
+ *  the caller must NOT intercept a text paste.
+ *
+ *  Two sources, because browsers disagree: `files` is populated for copied images in Chrome/Safari,
+ *  while `items` is the only place some platforms put a copied FILE. De-duplicated by identity so a
+ *  browser that fills both does not attach the same picture twice. */
+function clipboardFiles(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const out: File[] = Array.from(dt.files ?? []);
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const f = item.getAsFile();
+    if (f && !out.some((x) => x.name === f.name && x.size === f.size && x.type === f.type)) out.push(f);
+  }
+  return out;
 }
 
 function humanBytes(n: number): string {
@@ -3419,6 +3462,8 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  // 数字框里按回车 = 提交；用拼音输入法时第一下回车是选词，不能当成提交 (#29)。
+  const ime = useImeGuard();
   const trace = v.trace;
   // clicking a message, another session, or empty space puts the popover away
   useDismiss(open, [rowRef], () => { setOpen(false); setEditing(false); });
@@ -3537,6 +3582,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                       ? "任意 token 数，如 300000" : "填一个数"}
                     onChange={(e) => setDraft(e.target.value)}
                     onKeyDown={(e) => {
+                      if (ime.isComposing(e)) return;
                       if (e.key === "Enter") sendConfig(budgetCfg.id, draft);
                       if (e.key === "Escape") { e.stopPropagation(); setOpen(false); }
                     }}
@@ -3562,7 +3608,9 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                       aria-label="context window in tokens"
                       placeholder={String(usage.size || v.info.contextLimit || 200000)}
                       onChange={(e) => setDraft(e.target.value)}
+                      {...ime.handlers}
                       onKeyDown={(e) => {
+                        if (ime.isComposing(e)) return;
                         if (e.key === "Enter") {
                           const n = Number(draft.replace(/[^0-9]/g, ""));
                           if (n > 0) void apply(n, { remember });
@@ -3640,6 +3688,8 @@ function ConfigOptionGroup({ o, sessionId }: {
   const current = String(o.currentValue ?? "");
   const unit = typeof meta.unit === "string" ? meta.unit : "tokens";
   const send = (value: string) => cockpit.send({ t: "set-config", sessionId, configId: o.id, value });
+  // Enter = 确认这个值；输入法组字期间的回车是选词 (#29)。
+  const ime = useImeGuard();
   return (
     <div className="settings-group">
       <div className="settings-label"><IconSettings size={13} /> {o.name || o.id}</div>
@@ -3664,7 +3714,8 @@ function ConfigOptionGroup({ o, sessionId }: {
             aria-label={`${o.name || o.id} value`}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) send(draft.trim()); }}
+            {...ime.handlers}
+            onKeyDown={(e) => { if (ime.isComposing(e)) return; if (e.key === "Enter" && draft.trim()) send(draft.trim()); }}
           />
           <button className="settings-opt" disabled={!draft.trim()} onClick={() => send(draft.trim())}>set</button>
         </div>
@@ -3844,6 +3895,22 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   // A ref set by the composition events covers Chrome and Safari (in Safari the committing
   // keydown precedes `compositionend`, and in Chrome `isComposing` is unreliable by itself).
   const composing = useRef(false);
+  // ---- ↑/↓ recall of what the operator already said (issue #25) -------------------------------
+  // Terminal muscle memory: ↑ walks back through this session's own messages, ↓ walks forward, and
+  // leaving the walk restores the draft that was in the box before it started. Source is the
+  // transcript itself (`v.msgs`), so there is no second store to keep in sync and a reload keeps it.
+  //
+  // Deliberately narrow: only at the edges of the draft (↑ on a line that has text above it is caret
+  // movement), never with a modifier, and never while the slash palette is open (that menu owns ↑/↓).
+  // `histNav` marks a setText that came from the walk, so the box's own onChange does not mistake the
+  // recall for typing and drop the position.
+  const histIdx = useRef<number | null>(null);
+  const histDraft = useRef("");
+  const histNav = useRef(false);
+  const history = useMemo(
+    () => v.msgs.filter((m): m is Extract<MsgView, { kind: "user" }> => m.kind === "user").map((m) => m.text).filter((t) => t.trim()),
+    [v.msgs],
+  );
   // The session the box currently holds text for: a switch saves under the old id and loads
   // under the new one (`text` stays the source of truth inside a session).
   const draftSid = useRef(v.info.id);
@@ -3853,6 +3920,9 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     draftsBySession.set(draftSid.current, text);
     draftSid.current = v.info.id;
     setText(draftsBySession.get(v.info.id) ?? "");
+    // Another conversation = another history; a walk position from the previous one means nothing here.
+    histIdx.current = null;
+    histDraft.current = "";
     setPaletteHidden(false);
     setPick(0);
   }, [v.info.id, text]);
@@ -3918,6 +3988,43 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
       : { kind: "text", name: d.name, text: d.payload }
   ));
 
+  /** ↑/↓ through what was already said (#25). Returns true when the key was consumed. */
+  const historyKey = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return false;
+    if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return false;
+    if (!history.length) return false;
+    const el = e.currentTarget;
+    const at = el.selectionStart ?? 0;
+    // A multi-line draft keeps its caret: ↑ inside the text is editing, not recall.
+    if (e.key === "ArrowUp" && el.value.slice(0, at).includes("\n")) return false;
+    if (e.key === "ArrowDown" && el.value.slice(at).includes("\n")) return false;
+    e.preventDefault();
+    if (e.key === "ArrowUp") {
+      if (histIdx.current === null) {
+        histDraft.current = el.value;                  // the draft to come back to
+        histIdx.current = history.length - 1;
+      } else {
+        histIdx.current = Math.max(0, histIdx.current - 1);  // clamp, do not wrap: wrapping loses your place
+      }
+    } else {
+      if (histIdx.current === null) return true;       // already at the draft: ↓ has nowhere to go
+      if (histIdx.current >= history.length - 1) {
+        histIdx.current = null;
+        histNav.current = true;
+        setText(histDraft.current);
+        requestAnimationFrame(() => ta.current?.setSelectionRange(histDraft.current.length, histDraft.current.length));
+        return true;
+      }
+      histIdx.current += 1;
+    }
+    const picked = history[histIdx.current];
+    histNav.current = true;
+    setText(picked);
+    // The caret belongs at the END of the recalled message — that is where you continue typing.
+    requestAnimationFrame(() => ta.current?.setSelectionRange(picked.length, picked.length));
+    return true;
+  };
+
   const send = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
@@ -3948,12 +4055,16 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
       if (!t && !attachments.length) return;
       cockpit.enqueuePrompt(v.info.id, t, attachments);
     } else {
-      cockpit.send({ t: "prompt", sessionId: v.info.id, text: t, attachments });
+      // Ready + idle: the one path that had no acknowledgement (#26).
+      cockpit.sendPrompt(v.info.id, t, attachments);
     }
     setText("");
     setDrafts([]);
     setAttachErr("");
     setPick(0);
+    // Sending ends the recall: the next ↑ should walk back from the newest message, not resume a walk.
+    histIdx.current = null;
+    histDraft.current = "";
     // Sending is an explicit "show me the answer": re-attach the stream even if the
     // operator had scrolled up to read something.
     streamReattach.current();
@@ -4051,6 +4162,15 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
         setDragging(false);
         if (e.dataTransfer?.files?.length) void addFiles(e.dataTransfer.files);
       }}
+      // Cmd+V / Ctrl+V of a screenshot (issue #31). Only intercepted when the clipboard really carries
+      // files: a text paste must keep the browser's own behaviour (caret, undo, IME), and swallowing it
+      // here would break typing in a way that looks unrelated to attachments.
+      onPaste={(e) => {
+        const files = clipboardFiles(e.clipboardData);
+        if (!files.length) return;
+        e.preventDefault();
+        void addFiles(files);
+      }}
     >
       {/* Background work reads ABOVE the plan: it is about the session as a whole (is anything still
           running?), while the plan is the agent's own checklist for one job. Under the plan card the row
@@ -4116,19 +4236,21 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             <div className="queue-head">
               <span className="queue-title">Queued · {v.queue.length}</span>
               <span className="queue-hint">
-                {v.queue.some((q) => q.inflight)
-                  ? "sending…"
-                  : v.resuming
-                    ? "waking the agent — sends once it is up"
-                    : v.info.cold
-                      ? "sends when you wake this session"
-                      : v.info.status !== "ready"
-                        ? "process starting — sends once ready"
-                        : "goes out when this turn ends"}
+                {v.queue.some((q) => q.unsure)
+                  ? "未确认送达 — 点 ↑ 重发，或 ✕ 丢掉"
+                  : v.queue.some((q) => q.inflight)
+                    ? "sending…"
+                    : v.resuming
+                      ? "waking the agent — sends once it is up"
+                      : v.info.cold
+                        ? "sends when you wake this session"
+                        : v.info.status !== "ready"
+                          ? "process starting — sends once ready"
+                          : "goes out when this turn ends"}
               </span>
             </div>
             {v.queue.map((q, i) => (
-              <div key={q.id} className={`queue-row${q.inflight ? " inflight" : ""}`} data-queue-id={q.id}>
+              <div key={q.id} className={`queue-row${q.inflight ? " inflight" : ""}${q.unsure ? " unsure" : ""}`} data-queue-id={q.id}>
                 <span className="queue-idx" aria-hidden="true">{i + 1}</span>
                 {editingQ?.id === q.id ? (
                   <textarea
@@ -4156,6 +4278,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 ) : (
                   <span className="queue-text" title={q.text}>{q.text}</span>
                 )}
+                {q.unsure ? <span className="queue-flag" title="服务器没回执 —— 点 ↑ 重发">未送达</span> : null}
                 <span className="queue-actions">
                   <button
                     className="queue-btn"
@@ -4223,6 +4346,10 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               setText(e.target.value);
               setPaletteHidden(false);
               setPick(0);
+              // Typing during a recall means "this is my message now" — leave the walk so the next ↑
+              // starts from the current text as the draft (#25).
+              if (histNav.current) histNav.current = false;
+              else histIdx.current = null;
             }}
             onCompositionStart={() => { composing.current = true; }}
             onCompositionEnd={() => { composing.current = false; }}
@@ -4248,6 +4375,15 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
                 }
                 if (e.key === "Escape") { e.preventDefault(); setText(""); return; }
               }
+              // ↑/↓ recall (issue #25) — after the palette, so the menu keeps owning the arrows.
+              if (historyKey(e)) return;
+              // Esc leaves the recall and restores the draft that was in the box before it started.
+              if (e.key === "Escape" && histIdx.current !== null) {
+                e.preventDefault();
+                histIdx.current = null;
+                setText(histDraft.current);
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
           />
@@ -4259,7 +4395,11 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
               hidden
               accept={`${IMAGE_TYPES.join(",")},.txt,.md,.json,.log,.csv,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.ini,.html,.css`}
               onChange={(e) => {
-                if (e.target.files) void addFiles(e.target.files);
+                const picked = e.target.files;
+                // Nothing came back (#30): the App's WebView can hand the page an EMPTY selection
+                // (OEM file pickers), and silence is indistinguishable from a broken button.
+                if (picked && picked.length) void addFiles(picked);
+                else setAttachErr("选择器没有返回文件 —— 再试一次，或从相册 / 文件管理里选");
                 e.target.value = "";
               }}
             />
@@ -4635,7 +4775,17 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
         </div>
         {/* The chat page's own input card and bar — same classes on purpose: same box, same buttons,
             same gaps. A reduced copy, not a lookalike. */}
-        <div className="composer start-composer">
+        <div
+          className="composer start-composer"
+          // Same clipboard rule as the chat composer (#31): files in the clipboard become drafts,
+          // anything else keeps the browser's own paste.
+          onPaste={(e) => {
+            const files = clipboardFiles(e.clipboardData);
+            if (!files.length) return;
+            e.preventDefault();
+            void addFiles(files);
+          }}
+        >
           <div className="composer-inner">
             {/* The chat composer's own draft row, same classes: an attachment must look identical
                 whether or not the session it will belong to exists yet. */}
@@ -4688,7 +4838,9 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                   hidden
                   accept={`${IMAGE_TYPES.join(",")},.txt,.md,.json,.log,.csv,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.sh,.yaml,.yml,.toml,.ini,.html,.css`}
                   onChange={(e) => {
-                    if (e.target.files) void addFiles(e.target.files);
+                    const picked = e.target.files;
+                    if (picked && picked.length) void addFiles(picked);
+                    else setAttachErr("选择器没有返回文件 —— 再试一次，或从相册 / 文件管理里选");
                     e.target.value = "";
                   }}
                 />

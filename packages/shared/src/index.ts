@@ -206,7 +206,10 @@ export type ServerEvent =
       durationMs?: number }
   /** per-turn trace: what model/effort/mode this turn is actually running with
    *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
-  | { t: "turn-start"; sessionId: string; trace?: TurnTrace }
+  /** `pid` is the id of the prompt that started this turn, copied from the client's command (issue
+   *  #26): it is the only thing that can prove a particular frame landed. Absent for turns the page
+   *  did not start (a call utterance, the cockpit's cross-session `send`, a resumed transcript). */
+  | { t: "turn-start"; sessionId: string; trace?: TurnTrace; pid?: string }
   /** A one-line status from the AGENT itself (issue #18): `👁️ Hindsight — recalled 8 memories`,
    *  a compaction countdown, a provider wait. Deliberately NOT a transcript row and not persisted —
    *  it describes what the process is doing NOW, so the page shows the latest one beside the running
@@ -407,7 +410,12 @@ export type ClientCommand =
    *  wait for it to actually stop before sending this prompt. Call mode sends every utterance
    *  this way (the operator speaking over the agent IS the interrupt), which is also what
    *  removes the race between an async cancel and the next prompt. */
-  | { t: "prompt"; sessionId: string; text: string; attachments?: PromptAttachment[]; interrupt?: boolean }
+  | { t: "prompt"; sessionId: string; text: string; attachments?: PromptAttachment[]; interrupt?: boolean;
+      /** Client-generated id for THIS prompt, echoed back on the `turn-start` it causes (issue #26).
+       *  Without it a page can only guess whether its frame landed: a socket that dies without a FIN
+       *  stays `OPEN` in JS, so `send()` returns true for a frame nobody received and the operator's
+       *  words vanish with no error. With it, "the server started a turn for prompt X" is a fact. */
+      pid?: string }
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }
