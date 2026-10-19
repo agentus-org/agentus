@@ -35,7 +35,9 @@ brew install node                 # 或者 https://nodejs.org/en/download
 （带 256K/512K/768K/1M 预设）、把记忆召回 / 存记忆提示送进驾驶舱消息流的 **status 通道**，以及
 **按进程指定的技能根**（`HERMES_EXTERNAL_SKILLS_DIRS` —— 驾驶舱靠它让槽位看见自己的 skill，
 不往你的 `~/.hermes` 写任何东西）、**后台任务完成唤醒**（`terminal(background=true)` 的进程跑完会被
-中继成一个新回合，agent 自己接着干，而不是回合就这么结束），以及 **DeepSeek 的 web 后端**
+中继成一个新回合，agent 自己接着干，而不是回合就这么结束）、**项目 skill 的可见 / 可信任 / 可写**
+（驾驶舱会告诉 agent 这个仓库有哪些项目 skill、你信任哪个层级，并能把信任层级写回配置 —— 信号走
+同一条 status 通道；裸装 Hermes 遇到没信任的项目 skill 是悄悄跳过、不吭声的），以及 **DeepSeek 的 web 后端**
 （`search` + `extract` 都复用
 `DEEPSEEK_API_KEY` —— DeepSeek 没有单独的搜索密钥）。它们在 fork
 [`LiangYang666/hermes-agent`](https://github.com/LiangYang666/hermes-agent) 的 ACP 分支上，

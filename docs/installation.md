@@ -39,7 +39,10 @@ mode that survives a restart** and `session/load`, a free-form **context budget*
 cockpit's message stream, **per-process skill roots** (`HERMES_EXTERNAL_SKILLS_DIRS`, which is how a
 slot sees the cockpit's own skill without anything being written into your `~/.hermes`),
 **background-job completion wake-ups** (a finished `terminal(background=true)` job is relayed back as
-a turn of its own, so the agent resumes instead of the turn simply ending), and a
+a turn of its own, so the agent resumes instead of the turn simply ending), **project skills the agent
+can see, trust and edit** (the cockpit reports which project skills a repo has and which tier you
+trust, and writes the trust level back to config — it rides the same status channel; a released
+Hermes silently skips untrusted project skills without saying so), and a
 **DeepSeek web backend** (`search` + `extract` on top of `DEEPSEEK_API_KEY` — DeepSeek has no separate
 search key).
 They live on the ACP branches of the fork
