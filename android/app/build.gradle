@@ -14,8 +14,8 @@ android {
         applicationId "app.agentus.companion"
         minSdk 26            // Notification channels; also the floor for a simple FGS
         targetSdk 36
-        versionCode 21
-        versionName "0.7.1"
+        versionCode 22
+        versionName "0.7.2"
     }
 
     buildTypes {
