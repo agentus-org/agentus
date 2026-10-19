@@ -4,6 +4,7 @@
 import type {
   BackgroundTask,
   ClientCommand,
+  PermissionDecision,
   PermissionRequestView,
   PlanSnapshot,
   PromptAttachment,
@@ -73,7 +74,18 @@ export type MsgView =
   /** 一条状态行（`messages.kind = "note"`）：不是谁说过的话，是过程 —— 「这一轮回忆了几条记忆」
    *  「上下文压缩过」「有个警告」。它现在是**落库的行**（操作者 2026-10-18），所以刷新、重连、
    *  换设备之后都还在；`category` 是家族，`hits` 是折叠掉的次数（压缩会心跳十几条）。 */
-  | { key: string; kind: "note"; category: string; text: string; hits?: number; at?: number };
+  | { key: string; kind: "note"; category: string; text: string; hits?: number; at?: number }
+  /** 审批请求落库的那一行（`messages.kind = "approval"`）。请求到达时写入，决定随后补进同一行 ——
+   *  于是「问过什么、我答了什么、还是超时作废了」在聊天记录里留得住，而不是只活在那张弹窗里。
+   *  `decision === null` 表示还没答；是否仍在等由 `v.perms` 说了算（服务端重启后可能已经不在了）。 */
+  | {
+      key: string; kind: "approval"; requestId: string; title: string; kind2: string;
+      path: string | null; diff: PermissionRequestView["diff"];
+      options: PermissionRequestView["options"]; decision: PermissionDecision | null; at?: number;
+    }
+  /** 「这个仓库有 N 个项目 skill 没启用」的一张卡（`messages.kind = "project-skills"`）。
+   *  `state` 是那次决定：ask（还没答）/ trusted / ignore。 */
+  | { key: string; kind: "project-skills"; root: string; count: number; text: string; state: string; at?: number };
 
 /** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
  *  choices — which COMMAND (and env, e.g. PYTHONPATH at a source tree), which HERMES_HOME, and
@@ -2244,7 +2256,10 @@ class Cockpit {
     const keyed = (m.kind === "agent" || m.kind === "thought") && blockKeyOf(m.kind, p0) !== null;
     const reapply = opts?.resync === true
       && (m.kind === "tool" || m.kind === "plan" || m.kind === "user" || m.kind === "meta" || keyed);
-    const upsertRow = reapply || m.kind === "tool" || m.kind === "meta" || m.kind === "note" || m.seq <= 0 || grew;
+    // `approval` / `project-skills` are rows that CHANGE IN PLACE (the decision lands on the row that
+    // already asked), so they must re-apply on every delivery — same reason as `note` and `tool`.
+    const upsertRow = reapply || m.kind === "tool" || m.kind === "meta" || m.kind === "note"
+      || m.kind === "approval" || m.kind === "project-skills" || m.seq <= 0 || grew;
     if (!upsertRow) {
       if (v.seen.has(m.seq)) return;
       v.seen.add(m.seq);
@@ -2334,6 +2349,48 @@ class Cockpit {
         };
         const at0 = index.get(key);
         if (at0 !== undefined && list[at0]?.kind === "note") list[at0] = row;
+        else {
+          list.push(row);
+          index.set(key, list.length - 1);
+        }
+        break;
+      }
+      case "approval": {
+        const key = `p${m.seq}`;
+        const decision = p.decision as PermissionDecision | null | undefined;
+        const row: MsgView = {
+          key,
+          kind: "approval",
+          requestId: String(p.requestId ?? ""),
+          title: String(p.toolCallTitle ?? "tool call"),
+          kind2: String(p.kind ?? "other"),
+          path: typeof p.path === "string" ? p.path : null,
+          diff: (p.diff ?? null) as PermissionRequestView["diff"],
+          options: Array.isArray(p.options) ? (p.options as PermissionRequestView["options"]) : [],
+          decision: decision ?? null,
+          at,
+        };
+        const at0 = index.get(key);
+        if (at0 !== undefined && list[at0]?.kind === "approval") list[at0] = row;
+        else {
+          list.push(row);
+          index.set(key, list.length - 1);
+        }
+        break;
+      }
+      case "project-skills": {
+        const key = `s${m.seq}`;
+        const row: MsgView = {
+          key,
+          kind: "project-skills",
+          root: String(p.root ?? ""),
+          count: typeof p.count === "number" ? p.count : 0,
+          text: String(p.text ?? ""),
+          state: String(p.state ?? "ask"),
+          at,
+        };
+        const at0 = index.get(key);
+        if (at0 !== undefined && list[at0]?.kind === "project-skills") list[at0] = row;
         else {
           list.push(row);
           index.set(key, list.length - 1);

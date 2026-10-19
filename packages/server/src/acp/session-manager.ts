@@ -177,6 +177,12 @@ interface LiveSession {
     timer: NodeJS.Timeout;
   }>;
   alwaysAllow: Set<string>; // "allow_always" remembered per live session only (AionUi F-PERM-05)
+  /** requestId → seq of the `approval` row this request already wrote into the transcript, so the
+   *  decision can be filled into the SAME row instead of appending a second one. */
+  approvalSeq: Map<string, number>;
+  /** repo root → the `project-skills` row this session already shows, with its payload, so a
+   *  second "untrusted" notice never stacks and a decision can rewrite the row in place. */
+  skillNoticeSeq: Map<string, { seq: number; payload: Record<string, unknown> }>;
   stderrBuf: string[];
   /** What the agent says it can do (initialize.agentCapabilities). `fork` gates title
    *  regeneration, `load` gates resume; `image` is the one a TURN can be refused on — see
@@ -382,12 +388,25 @@ export class SessionManager {
    *
    * The decision is `cancelled` — what the agent would have received had nobody ever answered.
    */
+  /** 把一条已经落库的卡片换成新 payload，并推给所有客户端。
+   *
+   *  审批卡与项目 skill 卡都是「先落行、后补决定」：行必须在请求到达那一刻就写进转录（否则
+   *  刷新之后「弹过这张卡」这件事就不存在了），决定要等操作者点。改 payload 而不改 seq ——
+   *  seq 决定它在聊天记录里的位置，改了它会跳到别的地方。 */
+  #settleRow(live: LiveSession, seq: number | undefined, payload: Record<string, unknown>): void {
+    if (seq === undefined) return;
+    const row = this.#store.updateMessagePayload(seq, live.info.id, payload);
+    if (row) this.#emit({ t: "message", message: row });
+  }
+
   #dropPending(live: LiveSession, decision: PermissionDecision = { outcome: "cancelled" }): void {
     if (!live.pendingPermissions.size) return;
-    for (const [requestId, { resolve, timer }] of live.pendingPermissions) {
+    for (const [requestId, { resolve, timer, view }] of live.pendingPermissions) {
       clearTimeout(timer);
       resolve({ outcome: decision });
       this.#emit({ t: "permission-resolved", requestId, decision });
+      this.#settleRow(live, live.approvalSeq.get(requestId), { ...view, decision });
+      live.approvalSeq.delete(requestId);
     }
     live.pendingPermissions.clear();
   }
@@ -501,7 +520,8 @@ export class SessionManager {
         ...(opts.system ? { system: true } : {}),
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
-      child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
+      approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
       background: [], pendingCompletions: [],
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
@@ -686,7 +706,8 @@ export class SessionManager {
         usage: (row.usage ?? null) as SessionInfo["usage"],
         commands: normCommands(row.commands),
       },
-      child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(), stderrBuf: [],
+      child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
+      approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
       background: [], pendingCompletions: [],
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
@@ -1238,6 +1259,15 @@ export class SessionManager {
       // local-only "success" would be a lie. Keep the session's real value and flag the pick.
       rejected = true;
       actual = String(s.info.configOptions.find((o) => o.id === configId)?.currentValue ?? "");
+    }
+    if (configId === "project_skills" && !rejected) {
+      // 决定落在卡上：卡片是「问过」的证据，改配置却不改卡，读起来就像问完没下文。
+      for (const [root, cur] of s.skillNoticeSeq) {
+        if (cur.payload.root && String(cur.payload.root) !== root) continue;
+        const payload = { ...cur.payload, state: actual };
+        cur.payload = payload;
+        this.#settleRow(s, cur.seq, payload);
+      }
     }
     if (rejected) {
       this.#emit({
@@ -1832,6 +1862,8 @@ export class SessionManager {
     s.pendingPermissions.delete(requestId);
     pending.resolve({ outcome: decision });
     this.#emit({ t: "permission-resolved", requestId, decision });
+    this.#settleRow(s, s.approvalSeq.get(requestId), { ...pending.view, decision });
+    s.approvalSeq.delete(requestId);
     return true;
   }
 
@@ -1898,12 +1930,25 @@ export class SessionManager {
     // conversation from last month — the very thing the status path already refuses to store.
     const projectSkills = projectSkillsNoticeOf(u);
     if (projectSkills) {
-      this.#emit({
-        t: "status",
-        sessionId: live.info.id,
-        text: projectSkills.text,
-        statusKind: "project-skills",
-      });
+      // 一张卡而不是一行闪现的状态：操作者要能在聊天记录里看到「这个仓库有 N 个 skill 没启用」，
+      // 并就地做决定（信任 / 先不）。每个 repo root 只落一次，重复打开不会堆卡片。
+      const rootKey = projectSkills.root || "(no root)";
+      if (!live.skillNoticeSeq.has(rootKey)) {
+        const payload: Record<string, unknown> = {
+          root: projectSkills.root,
+          count: projectSkills.count,
+          text: projectSkills.text,
+          state: "ask",
+        };
+        const row = this.#store.appendMessage({
+          sessionId: live.info.id,
+          kind: "project-skills",
+          payload,
+          createdAt: Date.now(),
+        });
+        live.skillNoticeSeq.set(rootKey, { seq: row.seq, payload });
+        this.#emit({ t: "message", message: row });
+      }
       return;
     }
     const statusText = statusLineOf(u);
@@ -2088,6 +2133,18 @@ export class SessionManager {
         outcome: { outcome: "selected", optionId: remembered.optionId } as never,
       });
     }
+    // 落一行再弹卡（操作者 2026-10-19）：审批只以 transient 事件存在时，弹窗关掉/刷新/换设备之后
+    // 就什么都不剩了 —— 「刚才那个请求我批的什么」无从查起。行在请求到达这一刻写，决定稍后补进
+    // 同一行（#settleRow），于是聊天记录里留下一条带结论的记录。
+    const approvalRow = this.#store.appendMessage({
+      sessionId: live.info.id,
+      kind: "approval",
+      payload: { ...view, decision: null },
+      createdAt: view.createdAt,
+    });
+    live.approvalSeq.set(requestId, approvalRow.seq);
+    this.#touch(live, approvalRow.createdAt);
+    this.#emit({ t: "message", message: approvalRow });
     this.#emit({ t: "permission", request: view });
     return new Promise<RequestPermissionResponse>((resolve) => {
       const timer = setTimeout(() => {
@@ -2095,6 +2152,9 @@ export class SessionManager {
         const d: PermissionDecision = { outcome: "cancelled" };
         resolve({ outcome: d });
         this.#emit({ t: "permission-resolved", requestId, decision: d });
+        // 超时也是「有结论」：卡片上要留下「没人答，已取消」，不能一直挂着等批准。
+        this.#settleRow(live, live.approvalSeq.get(requestId), { ...view, decision: d });
+        live.approvalSeq.delete(requestId);
       }, PERMISSION_TIMEOUT_MS);
       live.pendingPermissions.set(requestId, { view, resolve, timer });
     });

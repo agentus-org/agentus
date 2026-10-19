@@ -120,6 +120,12 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
     case "thought": return { kind: "tool", who: "", text: m.text };
     // 状态行（回忆了几条记忆 / 压缩过 / 警告）：在语音通话的历史里当一行低调的提示。
     case "note": return { kind: "meta", who: "", text: m.text };
+    // 审批卡：通话里只剩一句「批了什么」——声音场景不需要按钮。
+    case "approval": return {
+      kind: "meta", who: "",
+      text: `审批：${m.title}${m.decision ? (m.decision.outcome === "selected" ? "（已答）" : "（已取消）") : ""}`,
+    };
+    case "project-skills": return { kind: "meta", who: "", text: m.text };
   }
 }
 

@@ -783,6 +783,15 @@ code.inline {
 .perm-card .opts button.reject { border-color: var(--err); color: var(--err); }
 .perm-card.resolved { opacity: 0.55; }
 .perm-card.resolved .picked { font-size: 12px; color: var(--accent-text); margin-top: 8px; }
+/* A settled card stays in the transcript as the RECEIPT of the question: still a card, one step
+   quieter than a live one, with the decision spelled out instead of buttons. */
+.perm-card.done { background: transparent; border-style: dashed; opacity: 0.9; }
+.perm-card.done.yes { border-color: var(--ok); }
+.perm-card.done.no { border-color: var(--err); opacity: 0.75; }
+.perm-card .perm-decision { font-size: 12.5px; margin-top: 8px; color: var(--text-dim); }
+.perm-card.done.yes .perm-decision { color: var(--ok); }
+.perm-card.done.no .perm-decision { color: var(--err); }
+.perm-card.skills { border-color: var(--accent-dim); }
 
 /* ---- the approval dialog -------------------------------------------------------------
    The file a request is about, and (when the agent sent one) the before/after. Both are

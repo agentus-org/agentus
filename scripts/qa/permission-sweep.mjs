@@ -101,7 +101,10 @@ const waitSurface = async (ms = 20000) => {
 /** Everything the sweep reads off the page about the pending-request surface. */
 const READ_SURFACE = `(() => {
   const dialog = document.querySelector('.perm-dialog');
-  const card = document.querySelector('.perm-card');
+  // Only a card that still ASKS counts as a surface: a settled approval stays in the transcript as
+  // a receipt (kind=approval, dashed, no buttons), and treating that as "still pending" would make
+  // the answered-state assertions read the wrong row forever.
+  const card = [...document.querySelectorAll('.perm-card')].find((c) => c.querySelector('.opts button')) ?? null;
   const host = dialog ?? card;
   const r = host ? host.getBoundingClientRect() : null;
   const stream = document.querySelector('.stream');
@@ -295,7 +298,7 @@ for (let i = 0; i < 40; i++) {
   // expand whatever has a body so the assertion reads what the operator can read
   await ev(`[...document.querySelectorAll('.tool-head')].forEach((b) => { if (b.getAttribute('aria-expanded') === 'false') b.click(); })`);
   loop = await ev(`(() => { const txt = document.querySelector('.stream')?.textContent || '';
-    return { wrote: /wrote 24 bytes to \\.\\/demo\\.txt/.test(txt), pending: Boolean(document.querySelector('.perm-card') || document.querySelector('.perm-dialog')) }; })()`);
+    return { wrote: /wrote 24 bytes to \\.\\/demo\\.txt/.test(txt), pending: Boolean(document.querySelector('.perm-card .opts button') || document.querySelector('.perm-dialog')) }; })()`);
   if (loop.wrote) break;
 }
 check("the answer reached the agent (its own tool output says the write happened)", loop?.wrote,
@@ -313,7 +316,7 @@ for (let i = 0; i < 40; i++) {
   await sleep(500);
   await ev(`[...document.querySelectorAll('.tool-head')].forEach((b) => { if (b.getAttribute('aria-expanded') === 'false') b.click(); })`);
   rejected = await ev(`(() => { const txt = document.querySelector('.stream')?.textContent || '';
-    return { ok: /rejected by the operator/.test(txt), pending: Boolean(document.querySelector('.perm-card') || document.querySelector('.perm-dialog')) }; })()`);
+    return { ok: /rejected by the operator/.test(txt), pending: Boolean(document.querySelector('.perm-card .opts button') || document.querySelector('.perm-dialog')) }; })()`);
   if (rejected.ok) break;
 }
 check("a reject reaches the agent too (nothing is written)", rejected?.ok, JSON.stringify(rejected));
@@ -322,24 +325,38 @@ check("a reject reaches the agent too (nothing is written)", rejected?.ok, JSON.
 // The server can no longer hold it (its own timeout fired, or the agent gave up first) and
 // now answers the page with an event instead of silently returning false: a click that does
 // nothing is the one failure an operator cannot tell from a broken button.
-const tok = fs.readFileSync(`${process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account"}/auth.token`, "utf8").trim();
+// The sweep's own session can be idle-reaped by now (measured: `idle reap: 80d88a18 (6 min idle,
+// limit 5 min)`), and answering a request on a session the server no longer has is a DIFFERENT
+// failure than answering a request it does not hold. Use a session that is live right now.
+const liveId = await ev(`fetch('/api/sessions').then(r=>r.json()).then(d=>((d.live||[]).find(s=>s.backend==='mock'&&s.status!=='starting')||{}).id||'')`);
+// Read the token of the account the PAGE logs into — never `AGENTUS_DATA`: a reviewer's shell
+// often exports it for a different tree, and a token from another instance is rejected here
+// (the socket errors out and the check reads as a product failure).
+const qaData = process.env.QA_DATA ?? "/tmp/agentus-qa-account";
+const tok = fs.readFileSync(`${qaData}/auth.token`, "utf8").trim();
 const wsq = new WebSocket(`${BASE.replace(/^http/, "ws")}/ws?token=${encodeURIComponent(tok)}`);
 const expired = await new Promise((res) => {
-  wsq.addEventListener("open", () => {
+  // Send only after the server's `hello`: a frame written in `open` can beat the server's own
+  // registration of this socket, and then nothing answers it (`permission-expired` never arrives
+  // and the check reads as a product failure when it is only a race).
+  wsq.addEventListener("message", (e) => {
+    if (JSON.parse(e.data).t !== "hello") return;
     wsq.send(JSON.stringify({
-      t: "respond-permission", sessionId: sid, requestId: "no-such-request",
+      t: "respond-permission", sessionId: liveId, requestId: "no-such-request",
       decision: { outcome: "cancelled" },
     }));
   });
   wsq.addEventListener("message", (e) => {
     const m = JSON.parse(e.data);
+    if (process.env.QA_DEBUG) console.log("wsq frame:", String(e.data).slice(0, 120));
     if (m.t === "permission-expired") res(m);
   });
+  wsq.addEventListener("error", (e) => { if (process.env.QA_DEBUG) console.log("wsq error", String(e?.message ?? e)); });
   setTimeout(() => res(null), 8000);
 });
 wsq.close();
 check("an answer for a request the server no longer holds is reported back, not dropped",
-  expired?.requestId === "no-such-request", JSON.stringify(expired));
+  expired?.requestId === "no-such-request", JSON.stringify({ expired, liveId }));
 
 // --- the REAL hermes shape: two options, one whole file before and after ----------------
 // Mirrors hermes' `acp_adapter/edit_approval.py`: the options are `allow_once` "Allow edit"
@@ -352,7 +369,9 @@ check("a hermes-shaped edit request surfaces", hSurf.hasDialog, JSON.stringify(h
 const hOpts = await ev(`[...document.querySelectorAll('.perm-dialog button')].map((b) => (b.textContent || '').trim())`);
 check("the options are the AGENT's (Allow edit / Deny) — nothing invented on top",
   hOpts.includes("Allow edit") && hOpts.includes("Deny"), JSON.stringify(hOpts));
-const hRow = await ev(`(() => { const r = document.querySelector('.perm-change-row');
+// Scope to the DIALOG: older approvals now leave their own (settled) cards in the transcript, and
+// the first `.perm-change-row` on the page is no longer the one this request drew.
+const hRow = await ev(`(() => { const r = document.querySelector('.perm-dialog .perm-change-row') || document.querySelector('.perm-change-row');
   return {
     path: r?.querySelector('code')?.textContent ?? '',
     counts: r?.querySelector('.perm-counts')?.textContent ?? '',
@@ -361,7 +380,7 @@ const hRow = await ev(`(() => { const r = document.querySelector('.perm-change-r
 check("an 83-line file is still ONE row with ＋1 −1 counts, not 166 printed lines",
   /hermes-real-shape\.txt$/.test(hRow.path) && /\+1/.test(hRow.counts) && !hRow.diffShown,
   JSON.stringify(hRow));
-check("expanding that row opens the change", await clickAt(".perm-change-row"));
+check("expanding that row opens the change", await clickAt(".perm-dialog .perm-change-row"));
 const hDiff = await ev(`(() => { const d = document.querySelector('.perm-diff');
   return {
     lines: d?.querySelectorAll('.perm-diff-line').length ?? 0,

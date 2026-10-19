@@ -435,8 +435,12 @@ export interface StoredMessage {
   /** `note` = a 「状态行」 that is not a message: 「recalled 8 memories」 / 「compacting」 / a warning.
    *  Deliberately a transcript row (not a separate table): its position IS the seq — after the
    *  operator's sentence, before the reply — and the page already orders, pages and replays by seq.
-   *  `meta` stays what it was: a line the HOST says (a rejected send), never persisted. */
-  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta" | "note";
+   *  `meta` stays what it was: a line the HOST says (a rejected send), never persisted.
+   *  `approval` = an approval request as a transcript row (it asks a question, then carries the
+   *  decision), and `project-skills` = the agent reporting that this repo ships skills it is NOT
+   *  loading. Both are DUrable on purpose: a modal that vanishes leaves no record of what was
+   *  asked or what was answered. */
+  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta" | "note" | "approval" | "project-skills";
   payload: unknown; // raw ACP content/update fragment (kept lossless)
   toolCallId?: string; // set for kind=tool; upsert key
   createdAt: number;

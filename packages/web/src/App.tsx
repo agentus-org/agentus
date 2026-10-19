@@ -2100,7 +2100,11 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               operator saw nothing while the agent sat blocked, and Hermes self-denied after
               its own `approvals.timeout`. Measured: rect.top = -7365px on a 20-message
               transcript, -10600px at 390×844. */}
-          {v.perms.map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
+          {/* 审批卡不在末尾另画一遍：请求落地时就已经写进转录（kind=approval），
+              末尾再补一张等于同一个请求在屏幕上出现两次。这里只补「有 perms 但没有对应行」
+              的兜底（升级前就挂着的旧请求，或者落库失败），免得那种请求变成看不见的死锁。 */}
+          {v.perms.filter((p) => !v.msgs.some((m) => m.kind === "approval" && m.requestId === p.requestId))
+            .map((p) => <PermCard key={p.requestId} sid={v.info.id} req={p} />)}
         </div>
       </div>
       {!follow && (
@@ -2242,6 +2246,12 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
       // unreadable status carrier takes, and a 「思考 0 字」 row reads as a bug to the operator rather
       // than as the nothing it is.
       return m.text.trim() ? <MemoThought m={m} live={Boolean(live)} /> : null;
+    // 审批卡：这条记录在请求到达时就落库了。还挂着 → 原样的按钮（和弹窗打的是同一个调用）；
+    // 有结论 → 说话的那张卡；服务端已经不认了（重启/超时）→ 说明它作废了，而不是留一排死按钮。
+    case "approval":
+      return <ApprovalRow m={m} sid={sid} />;
+    case "project-skills":
+      return <ProjectSkillsRow m={m} sid={sid} />;
     case "tool":
       return <MemoToolCard m={m} />;
     case "plan":
@@ -2719,6 +2729,75 @@ function PermCard({ sid, req }: { sid: string; req: PermissionRequestView }): JS
         <div className="opts">
           <PermOptions sid={sid} req={req} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** One persisted approval request, rendered where it happened.
+ *
+ *  Why it exists at all: the request used to live only in `v.perms` (a transient event). The dialog
+ *  covered the screen, the operator answered, and then NOTHING remained in the transcript — no way to
+ *  see later what had been asked or what had been allowed. This row is written by the server the
+ *  moment the request arrives and updated in place when the decision lands, so the conversation keeps
+ *  the receipt.
+ *
+ *  Buttons only while the server still holds the request: a request that expired (Hermes self-denies
+ *  at its own `approvals.timeout`) or vanished with a restart shows its 作废 state instead of offering
+ *  a click that can only fail. */
+function ApprovalRow({ m, sid }: { m: Extract<MsgView, { kind: "approval" }>; sid: string }): JSX.Element {
+  const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
+  const stillLive = snap.active?.info.id === sid
+    && Boolean(snap.active?.perms.some((p) => p.requestId === m.requestId));
+  const req = {
+    requestId: m.requestId, sessionId: sid, toolCallTitle: m.title, kind: m.kind2,
+    options: m.options, createdAt: m.at ?? Date.now(), path: m.path, diff: m.diff,
+  } as PermissionRequestView;
+  if (!m.decision) {
+    return stillLive || !snap.active ? <PermCard sid={sid} req={req} /> : <ApprovalSettled m={m} lapsed />;
+  }
+  return <ApprovalSettled m={m} />;
+}
+
+/** 有结论（或作废）的审批卡：只说事实 —— 问的是哪件事、答的是什么。 */
+function ApprovalSettled({ m, lapsed }: { m: Extract<MsgView, { kind: "approval" }>; lapsed?: boolean }): JSX.Element {
+  const pickedId = m.decision && m.decision.outcome === "selected" ? m.decision.optionId : null;
+  const picked = m.options.find((o) => o.optionId === pickedId);
+  const label = lapsed
+    ? "已作废（服务端不再等这个请求了）"
+    : m.decision?.outcome === "selected"
+      ? `已答：${picked?.name ?? "已选"}`
+      : "已取消";
+  const tone = lapsed || m.decision?.outcome !== "selected" ? "no" : "yes";
+  return (
+    <div className="msg">
+      <div className={`perm-card done ${tone}`}>
+        <div className="q">🔑 agent 曾要执行：<b>{m.title}</b>（{m.kind2}）</div>
+        <PermSubject req={{ requestId: m.requestId, sessionId: "", toolCallTitle: m.title, kind: m.kind2, options: m.options, createdAt: m.at ?? 0, path: m.path, diff: m.diff }} />
+        <div className="perm-decision">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+/** 「这个仓库有 N 个项目 skill 没启用」——一张能就地决定的卡（决定写回同一行）。
+ *  这是 #32 的落地形态：以前它是一行闪过的状态，看完就没了，也没法答。 */
+function ProjectSkillsRow({ m, sid }: { m: Extract<MsgView, { kind: "project-skills" }>; sid: string }): JSX.Element {
+  const decided = m.state === "trusted" || m.state === "ignore";
+  const act = (value: string): void => { cockpit.send({ t: "set-config", sessionId: sid, configId: "project_skills", value }); };
+  return (
+    <div className="msg">
+      <div className={`perm-card skills ${decided ? "done" : ""} ${m.state === "trusted" ? "yes" : m.state === "ignore" ? "no" : ""}`}>
+        <div className="q">📦 {m.text}</div>
+        {m.root ? <div className="perm-file" title={m.root}><IconFile size={12} /><code>{m.root}</code></div> : null}
+        {decided ? (
+          <div className="perm-decision">{m.state === "trusted" ? "已信任：这个仓库的 skill 会随会话加载" : "已忽略：不再问，也不加载"}</div>
+        ) : (
+          <div className="opts">
+            <button className="opt primary" onClick={() => act("trusted")}>信任这个仓库（{m.count} 个 skill）</button>
+            <button className="opt" onClick={() => act("ignore")}>这个仓库不用问</button>
+          </div>
+        )}
       </div>
     </div>
   );

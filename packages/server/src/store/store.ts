@@ -925,6 +925,34 @@ export class Store {
   }
 
   /**
+   * 换掉一行已有消息的 payload（seq 与 created_at 不动）。
+   *
+   * 为什么需要：审批卡、项目 skill 卡都**先生成一模一样的行、随后才由操作者做决定**。行必须在
+   * 请求到达那一刻就落库（否则「弹出来过」这件事在刷新后就不存在），而决定要在几秒/几分钟后
+   * 补上。改 seq 会让它在转录里换位置，改 created_at 会让「什么时候问的」变成「什么时候答的」。
+   */
+  updateMessagePayload(seq: number, sessionId: string, payload: unknown): StoredMessage | null {
+    this.#db
+      .prepare("update messages set payload = ? where session_id = ? and seq = ?")
+      .run(JSON.stringify(payload), sessionId, seq);
+    const row = this.#db
+      .prepare("select seq, session_id, kind, payload, tool_call_id, created_at from messages where session_id = ? and seq = ?")
+      .get(sessionId, seq) as
+      | { seq: number; session_id: string; kind: string; payload: string; tool_call_id: string | null; created_at: number }
+      | undefined;
+    if (!row) return null;
+    return {
+      seq: row.seq,
+      sessionId: row.session_id,
+      kind: row.kind as StoredMessage["kind"],
+      payload: JSON.parse(row.payload) as unknown,
+      toolCallId: row.tool_call_id ?? undefined,
+      createdAt: row.created_at,
+    };
+  }
+
+
+  /**
    * 一条「状态行」落库（操作者 2026-10-18）：回忆了几条记忆、上下文压缩了、有警告。
    *
    * 为什么它不是 `notes` 表而是一行 `messages`（kind `note`）：状态行的位置信息就是 seq ——
