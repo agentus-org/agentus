@@ -164,13 +164,20 @@ button { font: inherit; }
   border-right: 1px solid var(--line); display: flex; flex-direction: column;
   position: relative;   /* the resize handle hangs off its right edge (`.pane-handle`) */
 }
-.sidebar header { padding: 14px 16px 10px; display: flex; align-items: baseline; gap: 8px; }
-.sidebar header .logo { color: var(--accent-text); font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 7px; }
+/* The header is a flex row of brand + tagline + gear. `min-width: 0` on the children is what lets
+   the tagline CLIP instead of wrapping into 4–5 lines and blowing the head (measured on a 390px
+   drawer, issue #33). Without it a flex item's floor is its longest word. */
+.sidebar header { padding: 14px 16px 10px; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.sidebar header > * { min-width: 0; }
+.sidebar header .logo { color: var(--accent-text); font-weight: 700; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 
 /* The mark, as an <img>: one traced SVG file per palette rather than paths inlined into the
    bundle. The light-surface file is the brand art; dark surfaces get the lightened inks. */
 .brand-mark { display: block; flex: 0 0 auto; }
-.sidebar header .tagline { font-size: 11px; color: var(--text-dim); }
+.sidebar header .tagline {
+  font-size: 11px; color: var(--text-dim);
+  flex: 1 1 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .new-btn {
   margin: 0 12px 10px; padding: 9px; border-radius: 8px; cursor: pointer;
   border: 1px dashed var(--accent-dim); background: transparent; color: var(--accent-text);
@@ -1231,7 +1238,46 @@ code.inline {
   border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 12px;
 }
 
-.menu-btn { display: none; background: none; border: none; color: var(--text); font-size: 20px; padding: 2px 8px; cursor: pointer; }
+/* Present at EVERY width (issue #33): the wide screen had no way to collapse the rail at all — the
+   button existed only inside the ≤720px block, so 「fold」 was a phone-only verb. Same handler,
+   different meaning per form factor (drawer on a phone, expanded→compact→hidden on a tablet). */
+.menu-btn { display: inline-flex; background: none; border: none; color: var(--text); font-size: 20px; padding: 2px 8px; cursor: pointer; }
+
+/* ---- the rail's wide-screen states (issue #33) -------------------------------------------
+   `compact` is a 60px strip: the backend avatar of every session is still there (so 「which
+   backend / is it running」 remains readable at a glance), and everything that needs width —
+   titles, timestamps, badges, group names, search — is gone rather than squeezed into an
+   8px column. `hidden` gives the transcript the whole window; the same button brings it back. */
+.sidebar.compact { --rail-w: 60px; }
+.sidebar.compact header { padding: 12px 0 8px; justify-content: center; gap: 0; }
+.sidebar.compact header .logo { font-size: 0; gap: 0; }        /* the mark stays, the word goes */
+.sidebar.compact header .tagline,
+.sidebar.compact .rail-search-wrap,
+.sidebar.compact .rail-error,
+.sidebar.compact .rail-section span,
+.sidebar.compact .rail-placeholder,
+.sidebar.compact footer,
+.sidebar.compact .rail-group-name,
+.sidebar.compact .rail-group-count,
+.sidebar.compact .group-add,
+.sidebar.compact .rail-more,
+.sidebar.compact .session-item .title,
+.sidebar.compact .session-item .rail-at,
+.sidebar.compact .session-item .badge,
+.sidebar.compact .session-item .unread-dot,
+.sidebar.compact .session-item .row-menu,
+.sidebar.compact .new-btn .new-label { display: none; }
+.sidebar.compact .new-btn { margin: 0 auto 10px; width: 40px; height: 36px; padding: 0;
+  display: flex; align-items: center; justify-content: center; }
+.sidebar.compact .rail-section { justify-content: center; padding: 4px 0; min-height: 22px; }
+.sidebar.compact .rail-group-head { justify-content: center; padding-left: 0; padding-right: 0; }
+.sidebar.compact .rail-group-row { padding: 0 4px; }
+.sidebar.compact .session-item { justify-content: center; padding: 6px 0; }
+.sidebar.compact > .pane-handle { display: none; }   /* nothing to size a 60px strip against */
+
+.sidebar.hidden { display: none; }
+.sidebar.hidden > .pane-handle { display: none; }
+
 
 /* ---- narrow screens: drawer sidebar, bigger touch targets ---- */
 @media (max-width: 720px) {
@@ -1240,7 +1286,10 @@ code.inline {
     transform: translateX(-105%); transition: transform 0.22s ease;
   }
   .sidebar.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0, 0, 0, 0.6); }
-  .menu-btn { display: block; }
+  /* The drawer is 82vw wide at most and the brand already says the name: the tagline is pure
+     decoration that wrapped into 4–5 lines and pushed the session list off the first screen
+     (issue #33, comment). Gone here, ellipsised everywhere else. */
+  .sidebar header .tagline { display: none; }
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 25; }
 
   .chip { padding: 2px 6px; }
@@ -1434,10 +1483,18 @@ code.inline {
    pointer flickers back to `text` as soon as it leaves the 12px strip, and text gets selected. */
 body.pane-dragging { cursor: col-resize; user-select: none; }
 body.pane-dragging * { cursor: col-resize !important; }
-/* No handles where they cannot be used: a phone shows one pane at a time, and a touch pointer has no
-   hover to reveal the line. */
+/* A phone shows one pane at a time, so there is nothing to drag. A TOUCH TABLET is different and
+   used to be lumped in here by `@media (hover: none)`: dragging is a pointer gesture, and the
+   handle already sets `touch-action: none`, so a finger resizes exactly like a mouse (issue #33 —
+   「触屏用户没有任何 UI 途径去改宽」). */
 @media (max-width: 720px) { .pane-handle { display: none; } }
-@media (hover: none) { .pane-handle { display: none; } }
+@media (pointer: coarse) and (min-width: 721px) {
+  /* no hover to reveal the 2px line — keep it faintly visible so the target is discoverable */
+  .pane-handle-line { background: var(--line); }
+  .pane-handle { width: 18px; }
+  .sidebar > .pane-handle { right: -9px; }
+  .tool-panel > .pane-handle, .explorer-col > .pane-handle { left: -9px; }
+}
 .tool-tabs {
   display: flex; align-items: center; gap: 3px; padding: 4px 6px;
   border-bottom: 1px solid var(--line);
@@ -2877,3 +2934,23 @@ body.pane-dragging * { cursor: col-resize !important; }
 /* 命令折行而不是横向滚动：一行 `sudo security add-trusted-cert …` 在窄栏里 scrollWidth 763px
    对 404px 视口，横滚等于看不全；折行至少能整段读完、能选中复制。 */
 .tls-cmd { display: block; margin-top: 4px; white-space: pre-wrap; word-break: break-all; }
+
+/* ---- a TOUCH tablet is not a desktop with a fat finger -------------------------------
+   At the same 268px the desktop rail reads fine because a mouse sits 50cm from a 27" display; on
+   an iPad the same strip is read at 35cm through a lower DPI and the 10–11px secondary text stops
+   being legible (issue #33). Bump the rail's type and row height only where both are true:
+   a wide viewport AND a coarse pointer — a desktop with a touchscreen should keep the dense rail. */
+@media (min-width: 721px) and (pointer: coarse) {
+  .sidebar header .tagline { font-size: 12px; }
+  .rail-section { font-size: 12px; min-height: 34px; }
+  .rail-group-name { font-size: 13px; }
+  .rail-group-count { font-size: 12px; }
+  .rail-placeholder { font-size: 12.5px; min-height: 34px; }
+  .session-item { min-height: 42px; padding-top: 6px; padding-bottom: 6px; }
+  .session-item .title { font-size: 14.5px; }
+  .session-item .meta { font-size: 12px; }
+  .rail-at { font-size: 12px; }
+  .rail-search { font-size: 14px; min-height: 38px; }
+  .new-btn { min-height: 40px; font-size: 14px; }
+  .rail-more { min-height: 34px; font-size: 12px; }
+}

@@ -47,6 +47,28 @@ import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 export function App(): JSX.Element {
   const snap = useSyncExternalStore(cockpit.subscribe, cockpit.getSnapshot);
   const [drawer, setDrawer] = useState(false);
+  // ---- the rail's three states on a wide screen (issue #33) ---------------------------------
+  // `expanded` (the full list) → `compact` (a 60px strip of backend avatars) → `hidden` (the
+  // transcript gets the whole window). The drawer stays what it is on a phone (≤720px): one pane
+  // at a time, opened by the same button. Persisted because a tablet user sets this ONCE and
+  // expects it to hold across reloads — the same reason `agentus.rail-width` is persisted.
+  const [railMode, setRailMode] = useState<"expanded" | "compact" | "hidden">(() => {
+    try {
+      const v = localStorage.getItem("agentus.rail-mode");
+      return v === "compact" || v === "hidden" ? v : "expanded";
+    } catch {
+      return "expanded";
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("agentus.rail-mode", railMode); } catch { /* private mode */ }
+  }, [railMode]);
+  /** The one 「sessions」 button does the right thing per form factor: on a phone it opens the
+   *  drawer (there is no room for a rail), on a wide screen it cycles what the rail IS. */
+  const onMenu = useCallback(() => {
+    if (window.matchMedia("(max-width: 720px)").matches) { setDrawer(true); return; }
+    setRailMode((m) => (m === "expanded" ? "compact" : m === "compact" ? "hidden" : "expanded"));
+  }, []);
   // The new-session dialog, with the workspace the operator already pointed at (the rail's
   // per-directory 「+」) — no cwd means the standalone button, which browses for one.
   const [modal, setModal] = useState<{ cwd?: string } | false>(false);
@@ -119,6 +141,7 @@ export function App(): JSX.Element {
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <Sidebar
         open={drawer}
+        mode={railMode}
         onNew={() => setModal({})}
         onNewIn={(cwd) => setModal({ cwd })}
         onSettings={() => { setSettings(true); setDrawer(false); }}
@@ -127,7 +150,7 @@ export function App(): JSX.Element {
         railHandle={rail.handle}
       />
       <Main
-        onMenu={() => setDrawer(true)}
+        onMenu={onMenu}
         settingsOpen={settings}
         onCloseSettings={() => setSettings(false)}
         onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
@@ -568,8 +591,10 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
   );
 }
 
-function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, railHandle }: {
+function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWidth, railHandle }: {
   open: boolean;
+  /** Wide-screen state of the rail: full list / 60px avatar strip / gone (issue #33). */
+  mode: "expanded" | "compact" | "hidden";
   onNew: () => void;
   /** Create a session in the directory the operator already pointed at (a rail group's 「+」). */
   onNewIn: (cwd: string) => void;
@@ -1024,7 +1049,9 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
   };
 
   return (
-    <aside className={`sidebar ${open ? "open" : ""}`} style={{ "--rail-w": `${railWidth}px` } as CSSProperties}>
+    // The width is inline (the operator's drag), so `compact` has to win HERE — a class rule cannot
+    // override an inline custom property.
+    <aside className={`sidebar ${open ? "open" : ""} ${mode}`} style={{ "--rail-w": `${mode === "compact" ? 60 : railWidth}px` } as CSSProperties}>
       {railHandle}
       <header>
         <span className="logo"><BrandMark size={24} /> Agentus</span>
@@ -1050,7 +1077,7 @@ function Sidebar({ open, onNew, onNewIn, onSettings, settingsOpen, railWidth, ra
         </div>
       ) : null}
       <button className="new-btn" onClick={onNew} title="new session (pick a backend + working directory)">
-        <IconPlus size={14} /> new session
+        <IconPlus size={14} /> <span className="new-label">new session</span>
       </button>
       <div className="rail-search-wrap">
         <IconSearch size={13} />
