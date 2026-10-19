@@ -6,6 +6,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -57,6 +58,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -209,6 +211,11 @@ public final class MainActivity extends Activity {
         handleIntent(intent);
     }
 
+    /** 最近一次文件选择器的回传诊断（#30）。HyperOS 的 DocumentsUI 有前科：选择器弹得出、也选得中，
+     *  但回传形态不是标准 EXTRA_STREAM/ClipData，`parseResult` 解出空数组，页面就"零反馈"。
+     *  这条链路上原本一行日志都没有，真机又常常接不上 adb —— 所以先把事实记下来，再谈兜底。 */
+    private volatile String fileChooserProbe = "（没选过）";
+
     /** The system file picker's answer. `parseResult` handles the multi-select and the "nothing was
      *  picked" cases; answering with null on cancel is mandatory — otherwise the page's file input
      *  never settles and the same input is dead for the rest of the session. */
@@ -218,7 +225,60 @@ public final class MainActivity extends Activity {
         if (req != REQ_PICK_FILES) return;
         ValueCallback<Uri[]> cb = pendingFileChooser;
         pendingFileChooser = null;
-        if (cb != null) cb.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+        Uri[] chosen = res == RESULT_OK ? pickedFiles(res, data) : null;
+        fileChooserProbe = describePicker(res, data, chosen);
+        if (cb != null) cb.onReceiveValue(chosen);
+    }
+
+    /**
+     * What the picker actually returned (#30).
+     *
+     * `parseResult` is the documented path and stays first: it understands EXTRA_ALLOW_MULTIPLE and
+     * returns null for "cancelled". But an OEM picker that hands the files back in a shape the AOSP
+     * helper does not recognise yields an EMPTY array, and WebView then tells the page "the operator
+     * chose nothing" — no card, no error, and every retry behaves the same way. So when the documented
+     * parse comes back empty but the Intent plainly carries URIs, take them by hand rather than
+     * believing the empty list. The read grant is re-asserted for the same reason: some MIUI builds
+     * return a `content://` URI without the grant flag, and Chromium then fails silently on open.
+     */
+    private Uri[] pickedFiles(int res, Intent data) {
+        Uri[] parsed = WebChromeClient.FileChooserParams.parseResult(res, data);
+        if (parsed != null && parsed.length > 0) return parsed;
+        if (data == null) return parsed; // a genuine cancel: keep the null the page expects
+        List<Uri> out = new ArrayList<>();
+        Uri single = data.getData();
+        if (single != null) out.add(single);
+        ClipData clip = data.getClipData();
+        if (clip != null) {
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                Uri u = clip.getItemAt(i).getUri();
+                if (u != null && !out.contains(u)) out.add(u);
+            }
+        }
+        if (out.isEmpty()) {
+            String raw = data.getDataString();
+            if (raw != null && !raw.isEmpty()) {
+                try { out.add(Uri.parse(raw)); } catch (Exception ignored) { /* not a usable uri */ }
+            }
+        }
+        for (Uri u : out) {
+            try { grantUriPermission(getPackageName(), u, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+            catch (Exception ignored) { /* nothing granted: the log line below still tells the story */ }
+        }
+        return out.toArray(new Uri[0]);
+    }
+
+    /** One line for /api/notify/diag: every number needed to tell the three failure shapes apart. */
+    private String describePicker(int res, Intent data, Uri[] chosen) {
+        int clip = data == null || data.getClipData() == null ? 0 : data.getClipData().getItemCount();
+        String authority = "—";
+        if (chosen != null && chosen.length > 0) authority = String.valueOf(chosen[0].getAuthority());
+        else if (data != null && data.getData() != null) authority = String.valueOf(data.getData().getAuthority());
+        return "选择器回传: result=" + res
+            + " data=" + (data == null ? "null" : "有")
+            + " clip=" + clip
+            + " 解析=" + (chosen == null ? "null(取消)" : chosen.length + " 个")
+            + " authority=" + authority;
     }
 
     @Override
@@ -1133,6 +1193,7 @@ public final class MainActivity extends Activity {
         sb.append("语音自检: 页面 getUserMedia=").append(pageProbe)
           .append(" / 原生桥=").append(bridgeProbe)
           .append(" / 裸 AudioRecord=").append(nativeProbe).append('\n');
+        sb.append(fileChooserProbe).append('\n');
         try {
             sb.append(XiaomiFocus.preview(this, selfTestPayload(3, 8, "", "上岛自检")));
         } catch (Exception e) {
@@ -1683,6 +1744,9 @@ public final class MainActivity extends Activity {
             intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         }
         pendingFileChooser = callback;
+        // The result is read by WebView through our own uid, but a `content://` URI is only readable
+        // when the grant travels WITH it — and some OEM pickers drop that flag (#30).
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         try {
             startActivityForResult(intent, REQ_PICK_FILES);
             return true;
