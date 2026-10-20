@@ -56,7 +56,7 @@ option instead of being skipped in silence), **background-job completion wake-up
 background process comes back as a turn of its own), and a **DeepSeek web backend** (search +
 extract on the model key) — come from the fork's integration build instead. That is a five-line install:
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
-`agentus/v0.22.0/merge-20261019-2348`, on Hermes `v0.22.0`.
+`agentus/v0.22.0/merge-20261020-2337`, on Hermes `v0.22.0`.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.

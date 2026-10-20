@@ -35,7 +35,8 @@ brew install node                 # 或者 https://nodejs.org/en/download
 （带 256K/512K/768K/1M 预设）、把记忆召回 / 存记忆提示送进驾驶舱消息流的 **status 通道**，以及
 **按进程指定的技能根**（`HERMES_EXTERNAL_SKILLS_DIRS` —— 驾驶舱靠它让槽位看见自己的 skill，
 不往你的 `~/.hermes` 写任何东西）、**后台任务完成唤醒**（`terminal(background=true)` 的进程跑完会被
-中继成一个新回合，agent 自己接着干，而不是回合就这么结束）、**项目 skill 的可见 / 可信任 / 可写**
+中继成一个新回合，agent 自己接着干，而不是回合就这么结束），快照里的每个进程还会带
+`notifyOnComplete` —— 驾驶舱据此只显示「会唤醒会话」的那些，而不是一屏噪音、**项目 skill 的可见 / 可信任 / 可写**
 （驾驶舱会告诉 agent 这个仓库有哪些项目 skill、你信任哪个层级，并能把信任层级写回配置 —— 信号走
 同一条 status 通道；裸装 Hermes 遇到没信任的项目 skill 是悄悄跳过、不吭声的），以及 **DeepSeek 的 web 后端**
 （`search` + `extract` 都复用
@@ -51,7 +52,7 @@ agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.22.0`、`v0.22.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.22.0/merge-20261019-2348`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`agentus/v0.22.0/merge-20261020-2337`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.22.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 

@@ -39,7 +39,9 @@ mode that survives a restart** and `session/load`, a free-form **context budget*
 cockpit's message stream, **per-process skill roots** (`HERMES_EXTERNAL_SKILLS_DIRS`, which is how a
 slot sees the cockpit's own skill without anything being written into your `~/.hermes`),
 **background-job completion wake-ups** (a finished `terminal(background=true)` job is relayed back as
-a turn of its own, so the agent resumes instead of the turn simply ending), **project skills the agent
+a turn of its own, so the agent resumes instead of the turn simply ending), and each row of the running
+snapshot now says whether that process is the kind that wakes the session (`notifyOnComplete`) — which
+is how the cockpit shows only the ones that mean 「not finished yet」 instead of a wall of noise, **project skills the agent
 can see, trust and edit** (the cockpit reports which project skills a repo has and which tier you
 trust, and writes the trust level back to config — it rides the same status channel; a released
 Hermes silently skips untrusted project skills without saying so), and a
@@ -58,7 +60,7 @@ ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/`
 ours apart from upstream's own tags (`v0.22.0`, `v0.22.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.22.0/merge-20261019-2348`** — the newest tag on the fork,
+**Current integration build: `agentus/v0.22.0/merge-20261020-2337`** — the newest tag on the fork,
 built on Hermes `v0.22.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
