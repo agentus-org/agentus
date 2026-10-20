@@ -56,8 +56,10 @@ const BUILTIN: Record<string, { baseUrl: string; keys: string[]; baseEnv?: strin
 
 /**
  * ACP model ids arrive as `deepseek:deepseek-v4-flash` (provider prefix, wire form) or
- * `openrouter:anthropic/claude-x`; older agents use `provider/model`. Returns "" for a bare id
- * with no prefix — the caller then has to ask config.yaml who owns it.
+ * `openrouter:anthropic/claude-x`. Returns "" for a bare id with no prefix — the caller then has to
+ * ask config.yaml who owns it. The `provider/model` form is NOT handled here (a prefix here can be
+ * a vendor namespace rather than a provider); `slashProvider()` below resolves it with the provider
+ * tables in hand (#36).
  */
 export function splitModelId(raw: string | null | undefined): { provider: string; model: string } {
   const id = String(raw ?? "").trim();
@@ -92,6 +94,21 @@ const asString = (v: unknown): string => (typeof v === "string" ? v.trim() : typ
 const trimSlash = (u: string): string => u.replace(/\/+$/, "");
 
 /**
+ * `provider/model` — the second id form a session can report. Only stripped when the prefix really
+ * names a provider this box knows (declared in config.yaml or in the builtin table): a catalogue
+ * slug like `anthropic/claude-x` must survive intact, or an OpenRouter model id would be mangled
+ * into provider `anthropic` + model `claude-x`.
+ */
+function slashProvider(cfgProviders: Record<string, unknown>, model: string): { provider: string; model: string } {
+  const slash = model.indexOf("/");
+  if (slash <= 0) return { provider: "", model };
+  const cand = model.slice(0, slash).trim().toLowerCase();
+  if (!(cand in BUILTIN) && !(cand in cfgProviders)) return { provider: "", model };
+  const rest = model.slice(slash + 1).trim();
+  return rest ? { provider: cand, model: rest } : { provider: "", model };
+}
+
+/**
  * Resolve the route for one session's model. `home` is the home of the backend that session runs
  * on (`planFor(row).home`) — reading a DIFFERENT agent's config would hand this call a key its
  * model was never entitled to use.
@@ -101,10 +118,19 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   why: string;
 } {
   const parsed = splitModelId(modelId);
-  const model = parsed.model;
-  if (!model) return { route: null, why: "会话还没报出模型（agent 未握手）" };
+  if (!parsed.model) return { route: null, why: "会话还没报出模型（agent 未握手）" };
 
   const cfg = readConfig(home);
+  // Slash form is a LAST resort after the colon form (#36): `deepseek/deepseek-v4-flash` is what
+  // this session reports, and before this the split returned no provider at all, so the summary
+  // silently fell back to the voice endpoint on `qwen-flash`.
+  const slash = parsed.provider
+    ? { provider: parsed.provider, model: parsed.model }
+    : slashProvider(
+        (cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {}) as Record<string, unknown>,
+        parsed.model,
+      );
+  const model = slash.model;
   // An alias row may rename the model as well as point at a provider (`lab-qwen38-27b` →
   // `qwen38-27b`); the wire id is not the name the vendor knows.
   const aliasRow = (aliases: Record<string, unknown>): Record<string, unknown> | null => {
@@ -121,7 +147,7 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   // Who owns this model? The id's own prefix wins; otherwise config.yaml's default provider, and
   // only when the model really is that default (a session can be running a model the default no
   // longer names — then guessing the provider would send the request to the wrong vendor).
-  let provider = parsed.provider;
+  let provider = slash.provider;
   if (!provider) {
     if (aliasNow) provider = asString(aliasNow.provider).toLowerCase();
   }

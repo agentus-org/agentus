@@ -189,10 +189,16 @@ export interface AgentSettings {
    *  this is what the CLI and the gateway already do, and the failure it prevents is the silent one —
    *  a session that looks finished while a build is still running, whose result nobody ever reads. */
   completionWake: boolean;
+  /** 显示不唤醒的后台进程 (issue #35). OFF by default: the row and the rail badge answer
+   *  「这个会话还在干活吗」, and a silent process the agent is polling itself is noise — the
+   *  agent knows it is there, the operator does not need to. Turned ON, every running process
+   *  shows, which is what the fork's original "a snapshot is the only witness" design wanted. */
+  showSilentBackground: boolean;
 }
 
 export const AGENT_DEFAULT: AgentSettings = {
   idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false, completionWake: true,
+  showSilentBackground: false,
 };
 
 /** The numeric half of `AgentSettings` — the keys the range-checked helpers may write. */
@@ -298,8 +304,26 @@ export const SUMMARY_CHARS_RANGE: [number, number] = [40, 400];
 export const SUMMARY_TIMEOUT_RANGE: [number, number] = [5, 60];
 /** Measured against this operator's workspace, 2026-10-18: `qwen-flash` answered a 40-character
  *  ask with 67 prompt / 20 completion tokens. `qwen3-flash` and `qwen-turbo` are 404 there ("Model
- *  not exist"), and `qwen3.8-flash` spent 235 output tokens thinking about the same sentence. */
-export const SUMMARY_MODEL_DEFAULT = "qwen-flash";
+ *  not exist"), and `qwen3.8-flash` spent 235 output tokens thinking about the same sentence.
+ *
+ *  2026-10-20 (operator's call): the fallback IS `qwen3.8-flash` anyway — it is the model this
+ *  workspace already talks to, and `qwen-flash` was a second vendor's answer to a problem that has
+ *  a proper knob. The 235-token overspend is what `SUMMARY_THINKING_BUDGET` below exists for:
+ *  thinking stays ON (it reads the message better) but is capped at 200 tokens. */
+export const SUMMARY_MODEL_DEFAULT = "qwen3.8-flash";
+
+/** Thinking cap for qwen3-family models, in tokens (`thinking_budget`). 200 is deliberate: enough
+ *  to hold the sentence together, too small to wander — measured 235 → 200 keeps the visible
+ *  answer intact at a fifth of the default 4000. NOT used for non-qwen3 models (DeepSeek ignores
+ *  the field, and sending it there would be a lie about what we asked for). */
+export const SUMMARY_THINKING_BUDGET = 200;
+
+/** The most characters this feature will ever hand a model. Above it the call is REFUSED with a
+ *  visible 409 instead of quietly summarising the head (#36) — a summary that silently drops the
+ *  second half is worse than no summary, because the conclusion usually lives there. 20k ≈ 10k
+ *  tokens: longer than any agent reply worth listening to, short enough that a pasted 200 KB log
+ *  cannot turn one long press into a bill. */
+export const SUMMARY_MAX_INPUT_CHARS = 20_000;
 
 export const SUMMARY_PROMPT_DEFAULT = [
   "下面是我在一个工作会话里拿到的一段输出。请把它改写成一段「用嘴念出来」的摘要：",
@@ -492,6 +516,7 @@ function pickAgent(raw: unknown): AgentSettings {
     take("warmTtlHours", AGENT_WARM_TTL_RANGE);
     if (typeof r.cockpitSend === "boolean") out.cockpitSend = r.cockpitSend;
     if (typeof r.completionWake === "boolean") out.completionWake = r.completionWake;
+    if (typeof r.showSilentBackground === "boolean") out.showSilentBackground = r.showSilentBackground;
   }
   return out;
 }
@@ -806,6 +831,10 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
   if ("completionWake" in patch) {
     if (typeof patch.completionWake !== "boolean") throw new Error("invalid completionWake: expected true or false");
     a.completionWake = patch.completionWake;
+  }
+  if ("showSilentBackground" in patch) {
+    if (typeof patch.showSilentBackground !== "boolean") throw new Error("invalid showSilentBackground: expected true or false");
+    a.showSilentBackground = patch.showSilentBackground;
   }
   cache = { ...cache, agent: a, updatedAt: Date.now() };
   persist();

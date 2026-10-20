@@ -47,7 +47,7 @@ import type {
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
-import { PREFS_DEFAULT, type PlanHintSettings } from "../settings.js";
+import { PREFS_DEFAULT, agentSettings, type PlanHintSettings } from "../settings.js";
 
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
@@ -1828,7 +1828,10 @@ export class SessionManager {
    *  reasons, e.g. a title change) then wiped a row the page had just drawn from a `background` frame.
    *  An explicit `[]` is the same discipline the three rail buckets use. */
   backgroundSnapshots(): { sessionId: string; tasks: BackgroundTask[] }[] {
-    return [...this.#sessions.values()].map((s) => ({ sessionId: s.info.id, tasks: s.background }));
+    return [...this.#sessions.values()].map((s) => ({
+      sessionId: s.info.id,
+      tasks: visibleBackgroundTasks(s.background),
+    }));
   }
 
   #emitSessions(): void {
@@ -1933,7 +1936,7 @@ export class SessionManager {
     const bgTasks = backgroundTasksOf(u);
     if (bgTasks) {
       live.background = bgTasks;
-      this.#emit({ t: "background", sessionId: live.info.id, tasks: bgTasks });
+      this.#emit({ t: "background", sessionId: live.info.id, tasks: visibleBackgroundTasks(bgTasks) });
       return;
     }
     const finishedText = completionTextOf(u);
@@ -2698,7 +2701,7 @@ function completionTextOf(u: Record<string, unknown>): string | null {
 
 /** The agent's running-process snapshot (#22). Dropped (not defaulted) when `tasks` is not an array:
  *  a malformed frame must never blank a row the operator is reading. */
-function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] | null {
+export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] | null {
   if (hermesKindOf(u) !== "background") return null;
   const raw = hermesPayload(u).tasks;
   if (!Array.isArray(raw)) return null;
@@ -2716,9 +2719,26 @@ function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] | null 
       status,
       uptimeSeconds: typeof r.uptimeSeconds === "number" ? r.uptimeSeconds : undefined,
       exitCode: typeof r.exitCode === "number" ? r.exitCode : null,
+      // Explicit boolean, never `undefined` by omission (#35): the page filters on this, and an
+      // old agent that does not send it must land on `false` (silent) rather than a third state
+      // nobody renders.
+      notifyOnComplete: r.notifyOnComplete === true,
     });
   }
   return out;
+}
+
+/** 默认降噪 (#35): 只留下「完成后会唤醒 agent」的进程。静默进程是 agent 自己轮询的活,
+ *  操作者不需要看见 —— 而唤醒型才是「这个会话还没收工」的强信号。开关打开才回到全量,
+ *  保留 fork 原本「快照是这个进程存在过的唯一见证」的设计价值, 但决定权交给操作者。
+ *
+ *  WHY THIS IS A SEPARATE STEP FROM PARSING (measured while running the reap/background sweep):
+ *  `live.background` feeds more than rendering — the idle reaper treats a running child as
+ *  「not idle」 and refuses to SIGTERM the agent that owns it. Filtering at parse time made every
+ *  silent process invisible to the reaper too, i.e. a slot could be reaped while it still had a
+ *  live child (the exact orphan #22 removed). So: store everything, hide at the wire. */
+export function visibleBackgroundTasks(tasks: BackgroundTask[]): BackgroundTask[] {
+  return agentSettings().showSilentBackground ? tasks : tasks.filter((t) => t.notifyOnComplete === true);
 }
 
 function statusKindOf(u: Record<string, unknown>): string | undefined {

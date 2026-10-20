@@ -93,7 +93,7 @@ interface SettingsView {
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
-  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean };
   /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
   observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number };
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
@@ -107,7 +107,7 @@ interface SettingsView {
   summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
   observerIntervalRange?: [number, number];
-  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
@@ -204,6 +204,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [planHintMsg, setPlanHintMsg] = useState("");
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
   const [cockpitSend, setCockpitSend] = useState<boolean | null>(null);
+  // 显示不唤醒的后台进程 (#35) — 默认关：后台任务行与 rail 角标回答的是「这个会话还在干活吗」,
+  // 而静默进程是 agent 自己在轮询的活, 操作者不需要看见。
+  const [showSilentBg, setShowSilentBg] = useState<boolean | null>(null);
   const [cockpitMsg, setCockpitMsg] = useState("");
   // 观察智能体 — the agent behind 工作播报 (issue #16). Every field saves on its own, like the
   // cockpit switch: this section's whole point is that the next brief sounds different.
@@ -236,6 +239,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
+      if (typeof data.agent?.showSilentBackground === "boolean") setShowSilentBg(data.agent.showSilentBackground);
       if (data.observer) setObserver(data.observer);
       if (data.summary) setSummary(data.summary);
       const be = await fetch("/api/backends", { credentials: "same-origin" })
@@ -407,6 +411,26 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
     } catch (e) {
       setCockpitSend(!next);
       setCockpitMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 后台任务行的降噪开关 (#35). Same shape as cockpitSend: optimistic local state, then the
+   *  server's answer wins; a failed save puts the checkbox back rather than lying. */
+  const saveShowSilentBg = async (next: boolean): Promise<void> => {
+    setShowSilentBg(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { showSilentBackground: next } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setShowSilentBg(Boolean(data.agent?.showSilentBackground));
+    } catch {
+      setShowSilentBg(!next);
     }
   };
 
@@ -1025,6 +1049,40 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             进程一死就失效；也只听本机回环地址。改动立刻对下一轮生效，不用重启会话。
           </p>
           {cockpitMsg ? <p className="set-hint">{cockpitMsg}</p> : null}
+        </section>
+
+        <section className="set-card" id="set-background" data-setgroup="agent">
+          <h3>后台任务行</h3>
+          <p className="set-hint">
+            后台任务行和会话轨上的 <b>⚡ 角标</b>默认只显示<b>会唤醒 agent 的进程</b>
+            （<code>notify_on_complete</code>）—— 那种进程意味着 agent 没有真正收工，它还在等这次
+            结果回来继续干活，所以那一行是绿的、会呼吸，会话也保持「进行中」。
+          </p>
+          <p className="set-hint">
+            静默进程（agent 自己轮询取结果、不打算被唤醒的那种）默认不显示：它们只是噪音，
+            会把「这个会话还要不要我看」这个问题淹没。打开下面的开关就会显示全部，
+            包括跑完就静默消失的那些。
+          </p>
+          <div className="set-row">
+            <label>显示不唤醒的后台进程</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={showSilentBg ?? false}
+                onChange={(e) => void saveShowSilentBg(e.target.checked)}
+              />
+              <span className="set-hint">
+                {showSilentBg
+                  ? "已开启：所有后台进程都显示（静默型跑完即消失）"
+                  : "已关闭：只显示会唤醒会话的进程"}
+              </span>
+            </div>
+          </div>
+          <p className="set-hint">
+            需要带这个标记的后端（Hermes fork <code>agentus/v0.22.0/merge-*</code> 那一版起）。
+            旧后端不发这个字段，于是所有进程都被当作静默型 —— 那时这一行不会出现，
+            开关也没有东西可显示。
+          </p>
         </section>
 
         <section className="set-card" id="set-asr" data-setgroup="voice">

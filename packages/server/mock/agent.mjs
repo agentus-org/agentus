@@ -480,9 +480,13 @@ const agent = () => ({
         _meta: { hermes: { kind: "background", tasks: rows } },
         content: { type: "text", text: "" },
       });
+      // `notifyOnComplete: true` because this fixture IS the wake shape: it ends with a completion
+      // carrier, i.e. the agent is waiting for that result (issue #35). The cockpit filters silent
+      // processes out by default, so a fixture without the flag would render no row at all — and the
+      // wake sweeps would fail for the right reason but the wrong cause.
       const running = [{
         id: taskId, command: "npm run build --workspace packages/web", pid: 4242,
-        status: "running", uptimeSeconds: 12,
+        status: "running", uptimeSeconds: 12, notifyOnComplete: true,
       }];
       void send(agent._conn, sessionId, snapshot(running)).catch(() => undefined);
       setTimeout(() => {
@@ -501,6 +505,20 @@ const agent = () => ({
       setTimeout(() => {
         void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
       }, runMs + 1200);
+    }
+
+    // `[bgquiet]` — a SILENT background process: running, no notify, no completion carrier. This is
+    // what the agent's own polling looks like, and the cockpit hides it by default (issue #35).
+    if (/\[bgquiet\]/.test(text)) {
+      const quietId = `bgq-${sessionId}-1`;
+      void send(agent._conn, sessionId, {
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermes: { kind: "background", tasks: [{
+          id: quietId, command: "tail -f /tmp/agentus-qa.log", pid: 4343,
+          status: "running", uptimeSeconds: 5, notifyOnComplete: false,
+        }] } },
+        content: { type: "text", text: "" },
+      }).catch(() => undefined);
     }
 
     // `[table]` — a table fixture for the sorting / full-screen sweep (scripts/qa/table-sweep.mjs).

@@ -23,6 +23,7 @@ import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
+  SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
   saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
 } from "./settings.js";
@@ -1592,12 +1593,19 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const row = store.getSession(id);
           if (!row) return { route: null, why: "会话不在库里" };
           const be = store.listBackends().find((b) => b.id === row.backend);
-          const models = (row.models ?? {}) as { currentModelId?: string | null };
+          // LIVE first, store second (#36). The ACP handshake reports the model, and the live
+          // session object holds it — but `sessions.models` is flushed later (observed: JSON null
+          // for every row on this box), so reading the store alone answered 「agent 未握手」 and
+          // every summary silently fell back to the voice endpoint's qwen-flash.
+          const live = mgr.list().find((s) => s.id === id);
+          const modelId = live?.models?.currentModelId
+            ?? ((row.models ?? {}) as { currentModelId?: string | null }).currentModelId
+            ?? null;
           // The provider keys live in this box's agent home, which is a property of the runtime —
           // not of the vendor that happens to be driving this session. A backend that owns no home
           // (mock, qoder) therefore still resolves a `deepseek:…` model through the Hermes home.
           const home = (be ? planFor(be).home : null) ?? HERMES_DEFAULT_HOME;
-          return routeForModel(models.currentModelId ?? null, home);
+          return routeForModel(modelId, home);
         };
         // 语音总结 (the message speaker's long press): ONE stored message, made listenable.
         //
@@ -1627,6 +1635,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (spoken.length <= maxChars) {
           return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars });
         }
+        // Over the ceiling we REFUSE, loudly (#36). The old behaviour summarised the head and said
+        // so in a footnote — but a summary that drops the second half is worse than none, because
+        // that is where the conclusion lives. 20k chars is far above any reply worth listening to
+        // and still stops a pasted 200 KB log from becoming an invoice.
+        if (spoken.length > SUMMARY_MAX_INPUT_CHARS) {
+          return send(res, 409, {
+            error: `这条消息 ${spoken.length} 字，超出语音总结上限 ${SUMMARY_MAX_INPUT_CHARS} 字 —— 直接朗读，或截取要听的那段`,
+            code: "too_long",
+            chars: spoken.length,
+            limit: SUMMARY_MAX_INPUT_CHARS,
+          });
+        }
         try {
           // The operator's rule: bill this to the model he is already talking to. The voice
           // endpoint stays as the fallback (and is the whole route when followSession is off).
@@ -1638,6 +1658,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
             model,
             timeoutSec: cfg.timeoutSec,
+            // Thinking stays ON for qwen3 models, capped at 200 tokens (operator's call, #36):
+            // a little reasoning reads the sentence better than none, and 200 keeps it from
+            // wandering the way the default 4000 did (measured 235 output tokens on a 40-char ask).
+            thinkingBudget: /^qwen3/i.test(model) ? SUMMARY_THINKING_BUDGET : undefined,
             endpoint: own.route ? { baseUrl: own.route.baseUrl, apiKey: own.route.apiKey } : undefined,
           });
           // Newlines are the one thing the model keeps ignoring: 「不要换行」 in the prompt is a
@@ -1649,7 +1673,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             // echo the bucket: the note prints 「约 150 字」 and a summary that silently used the
             // configured number would make the menu look broken
             maxChars,
-            ms: r.ms, truncated: r.truncated, model,
+            ms: r.ms, model,
             // which account this call was billed to — the note prints it, and a fallback that
             // silently used the OTHER provider would be a lie about the cost
             route: own.route ? "session" : "voice",

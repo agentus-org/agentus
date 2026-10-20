@@ -254,6 +254,13 @@ button { font: inherit; }
 .bg-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 3px 8px; background: none; border: 0; color: var(--text-dim); font: inherit; text-align: left; cursor: pointer; }
 .bg-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .bg-dot[data-state="exited"] { background: var(--text-dim); }
+/* 唤醒型后台进程在跑 (#35)：这一行不是「有个后台程序在跑」，而是「这个会话还在等它」。
+   用和回合进行中同一条呼吸节奏，让「等唤醒」和「已结束」一眼分得开 —— 一个静态色点
+   回答的是「它存在过」，不是「它还没回来」。 */
+.bg-dot[data-wake="1"] { animation: pulse 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .bg-dot[data-wake="1"] { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+}
 .bg-text { flex: 0 0 auto; white-space: nowrap; font-size: 12.5px; color: var(--text); }
 /* The sentence that makes the row's point: the conversation looks finished, the work does not. */
 .bg-hint { flex: 1 1 auto; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

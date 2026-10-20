@@ -263,6 +263,11 @@ export interface BackgroundTask {
   status: "running" | "exited";
   uptimeSeconds?: number;
   exitCode?: number | null;
+  /** Does this process OWE the session a wake-up (`notify_on_complete`)? Issue #35: that is the
+   *  difference between 「agent 已经收工」 and 「agent 还在等这次唤醒才能继续」. Optional — an
+   *  older agent never sends it, and `undefined` must read as "silent", never as "unknown so
+   *  show it anyway". */
+  notifyOnComplete?: boolean;
 }
 
 export interface WebNotice {

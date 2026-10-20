@@ -15,7 +15,7 @@
 // The base URL is the operator's — every Bailian workspace id is different, and the
 // whole point is that this is NOT the coding-plan endpoint. No URLs or keys are baked in.
 import WebSocket from "ws";
-import { getSettings, dashscopeUrls } from "./settings.js";
+import { getSettings, dashscopeUrls, SUMMARY_MODEL_DEFAULT } from "./settings.js";
 
 export class DashscopeError extends Error {
   constructor(message: string, readonly code: "not_configured" | "upstream" | "timeout" | "bad_audio") {
@@ -241,8 +241,10 @@ export function openDashscopeStream(opts: {
  * the operator's existing voice endpoint and key are enough — there is no second model to
  * configure and no agent, no session and no history involved.
  *
- * The input is capped at `maxChars × 20` characters (30k ≈ 15k tokens is already the ceiling for a
- * 30-second listen): a 200 KB pasted log must not turn a long press into a bill.
+ * The input is NOT truncated any more (#36). It used to be capped at `maxChars × 20` characters,
+ * which punished exactly the case this feature exists for — a long agent reply — while the case
+ * the cap protected against (a pasted 200 KB log) is rare and is now refused outright by the
+ * caller with a visible 409. Half a summary that looks finished is worse than an error.
  */
 export async function summarizeForSpeech(opts: {
   text: string;
@@ -251,18 +253,20 @@ export async function summarizeForSpeech(opts: {
   model: string;
   timeoutSec: number;
   /** Where to send it. Absent = the voice endpoint (settings → 语音), which is the old, always-on
-   *  route. Present = the SESSION's own provider (see speech/route.ts) — the operator asked for the
-   *  summary to be billed to whatever model he is actually talking to, not to a second vendor. */
+   *  route. Present = the SESSION's own provider (see speech/route.ts) — the operator asked for
+   *  the summary to be billed to whatever model he is actually talking to, not to a second vendor. */
   endpoint?: { baseUrl: string; apiKey: string };
-}): Promise<{ text: string; truncated: boolean; ms: number }> {
+  /** qwen3-family only: `enable_thinking: true` + `thinking_budget: N`. The operator's rule is
+   *  「开着思考，但只给一点点」 — a capped think reads the message better than a non-reasoning
+   *  model, without the 235-token wander measured on the default budget (4000). Sending this to
+   *  a non-qwen3 model would be a lie, so the caller decides and we just transmit. */
+  thinkingBudget?: number;
+}): Promise<{ text: string; ms: number }> {
   const { key, compat } = opts.endpoint
     ? { key: opts.endpoint.apiKey, compat: opts.endpoint.baseUrl.replace(/\/+$/, "") }
     : creds();
   const v = getSettings().voice;
-  const limit = Math.max(400, opts.maxChars * 20);
-  const body = opts.text.trim();
-  const truncated = body.length > limit;
-  const input = truncated ? `${body.slice(0, limit)}\n…（后面还有 ${body.length - limit} 字没发）` : body;
+  const input = opts.text.trim();
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), Math.max(5, opts.timeoutSec) * 1000);
   const started = Date.now();
@@ -271,18 +275,25 @@ export async function summarizeForSpeech(opts: {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify({
-        model: opts.model || (opts.endpoint ? "" : "qwen-flash"),
+        model: opts.model || (opts.endpoint ? "" : SUMMARY_MODEL_DEFAULT),
         messages: [
           { role: "system", content: opts.prompt.replace(/\{maxChars\}/g, String(opts.maxChars)) },
           { role: "user", content: input },
         ],
         // No temperature knob: this surface is not a playground, and the default has produced
-        // the steadiest length compliance. `max_tokens` guards against a chatty model — and it
-        // must leave room for REASONING tokens, which count against the same budget: measured on
-        // deepseek-v4-flash, a 480-token cap was spent entirely on reasoning_content and the
-        // visible answer came back empty with finish_reason=length. 1200 is the floor that makes a
-        // reasoning model answer; for a plain one it is only a ceiling nobody reaches.
-        max_tokens: Math.max(1200, opts.maxChars * 6),
+        // the steadiest length compliance. `max_completion_tokens` (NOT `max_tokens`): it bounds
+        // thinking and answer TOGETHER and has no 32768 ceiling, so a capped-think call cannot
+        // come back empty with finish_reason=length. Measured on deepseek-v4-flash, a 480-token
+        // cap was spent entirely on reasoning_content and the visible answer was empty; 1200 is
+        // the floor that makes a reasoning model answer, and for a plain one it is only a ceiling
+        // nobody reaches. The think budget is added on top so capping the think never eats the
+        // answer.
+        max_completion_tokens: Math.max(1200, opts.maxChars * 6) + (opts.thinkingBudget ?? 0),
+        // qwen3 family (#36): thinking ON, budget 200. `thinking_budget` and `reasoning_effort`
+        // must never travel together (the vendor rejects the pair), so this is the only knob.
+        ...(opts.thinkingBudget
+          ? { enable_thinking: true, thinking_budget: opts.thinkingBudget }
+          : {}),
       }),
       signal: ac.signal,
     });
@@ -305,7 +316,7 @@ export async function summarizeForSpeech(opts: {
       throw new DashscopeError(why, "upstream");
     }
     void v;
-    return { text: out, truncated, ms: Date.now() - started };
+    return { text: out, ms: Date.now() - started };
   } catch (e) {
     if ((e as Error).name === "AbortError") {
       throw new DashscopeError(`summary timed out after ${opts.timeoutSec}s`, "timeout");

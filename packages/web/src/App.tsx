@@ -437,7 +437,7 @@ const STATUS_WORD: Record<string, string> = {
   reaped: "已回收（空闲）",
 };
 
-function BackendAvatar({ backend, cold, status }: { backend: string; cold: boolean; status: string }): JSX.Element {
+function BackendAvatar({ backend, cold, status, wake }: { backend: string; cold: boolean; status: string; wake?: boolean }): JSX.Element {
   const mark = markOf(backend);
   const [broken, setBroken] = useState(false);
   const useIcon = mark.icon && !broken;
@@ -454,7 +454,10 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
   //     fact worth scanning for disappear into a rail of green pixels (operator, 2026-10-11:
   //     「绿点点是 acp 进程运行中…能不能改成灰色的，然后进行中的不仅显示光流也显示当前这个绿色」).
   //     The status WORD (待命/运行中/出错) stays in the tooltip and in the row, never in a 7px pixel.
-  const live = !cold && status === "running";
+  // 「还在跑」有两种：回合在进行（status），以及回合已经结束但有一个唤醒型后台进程在等
+  // 结果回来（issue #35）。后者同样意味着这个会话没有收工 —— 呼吸灯必须继续亮，否则
+  // 语义正好反了：会话明明在等唤醒续跑，却亮成「已结束待查看」。
+  const live = !cold && (status === "running" || wake === true);
   return (
     <span
       className={`be-avatar be-${backend} ${cold ? "cold" : ""} ${live ? "live" : ""}`}
@@ -462,7 +465,7 @@ function BackendAvatar({ backend, cold, status }: { backend: string; cold: boole
       data-letter={mark.letter}
       // "cold" is about the PROCESS, not about the archive — the row's own title says whether the
       // session was put away, and a crashed slot must not be labelled 已归档 (that is the bug).
-      title={`${mark.label} · ${cold ? "无进程" : STATUS_WORD[status] ?? status}`}
+      title={`${mark.label} · ${cold ? "无进程" : wake && status !== "running" ? "等后台任务唤醒" : STATUS_WORD[status] ?? status}`}
       aria-hidden="true"
     >
       {useIcon
@@ -946,7 +949,12 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                       else cockpit.setActive(s.id);
                     }}
                   >
-                    <BackendAvatar backend={s.backend} cold={cold} status={s.status} />
+                    <BackendAvatar
+                      backend={s.backend}
+                      cold={cold}
+                      status={s.status}
+                      wake={(cockpit.byId.get(s.id)?.background ?? []).some((t) => t.status === "running")}
+                    />
                     {editing === s.id ? (
                       <input
                         className="title-input"
@@ -978,7 +986,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                     {(() => {
                       const running = cockpit.byId.get(s.id)?.background?.filter((t) => t.status === "running").length ?? 0;
                       return running ? (
-                        <span className="badge bg" title={`${running} 个后台任务还在跑`}>
+                        <span className="badge bg" title={`${running} 个后台任务还在跑（完成后会唤醒会话）`}>
                           <IconActivity size={9} />{running}
                         </span>
                       ) : null;
@@ -994,7 +1002,10 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                         answer a question nobody asked. */}
                     {cockpit.isUnread(s.id)
                       && !cockpit.byId.get(s.id)?.busy
-                      && !cockpit.byId.get(s.id)?.perms.length ? (
+                      && !cockpit.byId.get(s.id)?.perms.length
+                      // 等唤醒 ≠ 跑完等你看 (#35)：蓝点说「停下来了，回来看」，而这个会话
+                      // 马上会因为后台结果自己继续 —— 蓝点会把「还在干活」读成「干完了」。
+                      && !(cockpit.byId.get(s.id)?.background ?? []).some((t) => t.status === "running") ? (
                         <span
                           className="unread-dot"
                           data-unread
@@ -1739,13 +1750,21 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
   if (!tasks.length) return null;
   const running = tasks.filter((t) => t.status === "running");
   const exited = tasks.filter((t) => t.status !== "running");
+  // Every row that survives the server's filter is a WAKE-UP process (#35): the agent is not done,
+  // it is waiting for this result to continue. Said in words because a number alone reads like
+  // 「有个后台程序在跑，跟我没关系」.
   const head = running.length
-    ? `后台任务 ${running.length} 个运行中`
+    ? `后台任务 ${running.length} 个运行中 · 完成后会唤醒会话`
     : `${exited.length} 个后台任务已结束`;
   return (
     <div className={`bg-row ${open ? "open" : ""}`} data-count={tasks.length}>
       <button type="button" className="bg-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className="bg-dot" aria-hidden="true" data-state={running.length ? "running" : "exited"} />
+        <span
+          className="bg-dot"
+          aria-hidden="true"
+          data-state={running.length ? "running" : "exited"}
+          data-wake={running.length ? "1" : undefined}
+        />
         <span className="bg-text">{head}</span>
         {/* The turn is over, so nothing else on screen says work continues — this hint is the whole
             reason the row exists. */}
@@ -3328,7 +3347,7 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
         {sum.text}
       </span>
       <span className="speech-note-meta" title={sum.routeNote ?? undefined}>
-        {meta}{sum.truncated ? " · 原文过长，只总结了前半" : ""}
+        {meta}
       </span>
       <button type="button" className="speech-note-x" title="丢掉这份稿子（下次长按会重新生成）" aria-label="drop this summary" onClick={() => forgetSummary(mkey)}>
         <IconClose size={11} />
