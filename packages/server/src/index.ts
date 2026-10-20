@@ -635,7 +635,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const isOperator = !caller && auth.verifyMachineToken(/^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ""))?.[1] ?? undefined);
       if (!caller && !isOperator) return send(res, 403, { error: COCKPIT_ERRORS.badToken });
       // Scope: what the operator can see. 已归档 is out, on purpose — see `cockpitRows`.
-      const rows = mgr.cockpitRows();
+      // The cold page is taken once so its `omitted` count can travel with the answer (#34).
+      const cold = mgr.cockpitCold();
+      const rows = [...mgr.list(), ...cold.rows];
       const rowOf = (id: string): SessionInfo | null => rows.find((s) => s.id === id) ?? null;
       const summarize = (s: SessionInfo) => sessionRow(s, {
         plan: store.getPlan(s.id),
@@ -673,6 +675,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           all: sp.get("all") === "1" || sp.get("all") === "true",
           includeSelf: sp.get("include_self") === "1" || sp.get("include_self") === "true",
           by: by as ListQuery["by"],
+          coldOmitted: cold.omitted,
         };
         if (query.sort && !["last", "created", "name"].includes(query.sort)) {
           return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: `--sort wants last|created|name, got "${query.sort}"` });

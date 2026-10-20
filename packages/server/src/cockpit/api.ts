@@ -195,6 +195,10 @@ export interface ListQuery {
   /** bucket the page instead of returning it flat. `workspace` is the only dimension today because it
    *  is the one the operator's rail groups by — anything else would be an invented taxonomy. */
   by?: "workspace";
+  /** How many cold rows the caller's own page left out (issue #34). Set by the route from
+   *  `cockpitCold()`: absent/0 means "you are looking at everything", non-zero means the view is
+   *  partial and the answer must say so. Never a wire parameter. */
+  coldOmitted?: number;
   /** fixed clock for tests; never set by a caller over the wire */
   now?: number;
 }
@@ -207,7 +211,12 @@ export interface ListResult {
   meta: {
     total: number;
     returned: number;
+    /** TRUE means "this is not the whole answer" — either the list limit cut it, or (`cold_omitted`)
+     *  the cold page itself did. Before #34 only the first was visible, so an agent could not tell a
+     *  complete view from a truncated one. */
     capped: boolean;
+    /** cold rows that existed but never reached this function (0 = nothing was hidden) */
+    cold_omitted: number;
     /** the filters that were actually applied, echoed back so a caller cannot misread an empty list
      *  as "there is nothing" when what happened is "your filter matched nothing" */
     applied: Record<string, string | number | boolean>;
@@ -308,7 +317,10 @@ export function listSessions(rows: CockpitSessionRow[], q: ListQuery = {}): List
   const limit = Math.max(1, Math.min(LIST_LIMIT_MAX, Math.round(q.limit ?? LIST_LIMIT_DEFAULT)));
   applied.limit = limit;
   const total = out.length;
-  const capped = total > limit;
+  const coldOmitted = Math.max(0, Math.floor(q.coldOmitted ?? 0));
+  // `capped` answers "can I trust this as the whole picture?", so a cold page that dropped rows counts
+  // even when the list limit itself did not bite (#34).
+  const capped = total > limit || coldOmitted > 0;
   const page = out.slice(0, limit);
 
   let groups: ListResult["groups"];
@@ -331,7 +343,7 @@ export function listSessions(rows: CockpitSessionRow[], q: ListQuery = {}): List
     }));
   }
 
-  return { rows: page, ...(groups ? { groups } : {}), meta: { total, returned: Math.min(total, limit), capped, applied } };
+  return { rows: page, ...(groups ? { groups } : {}), meta: { total, returned: Math.min(total, limit), capped, cold_omitted: coldOmitted, applied } };
 }
 
 function normPath(p: string): string {

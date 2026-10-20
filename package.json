@@ -59,6 +59,7 @@
   "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
   "android-trust-merge": "node scripts/qa/android-trust-merge.mjs",
   "cards-persist": "node scripts/qa/cards-persist.mjs",
+  "cold-paging": "tsx scripts/qa/cold-paging.mts",
   "plan-hint-sweep": "node scripts/qa/plan-hint-sweep.mjs",
   "plan-service-sweep": "node scripts/qa/plan-service-sweep.mjs",
   "plan-mcp-sweep": "node scripts/qa/plan-mcp-sweep.mjs",

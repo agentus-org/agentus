@@ -14,6 +14,14 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
+import {
+  byActivity,
+  coldPage as pageCold,
+  COLD_PER_WORKSPACE,
+  COLD_PER_WORKSPACE_COCKPIT,
+  COLD_TOTAL_MAX,
+  type ColdPage,
+} from "./cold-page.js";
 import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
@@ -945,17 +953,26 @@ export class SessionManager {
    *  reachable in the rail (the old rule showed them under 已归档; the older one dropped them out of
    *  the list entirely, which is how a transcript became unreachable while still on disk).
    *
-   *  Capped, unlike `archived()`: crash debris accumulates without anyone choosing it, and the rail
-   *  has its own recent-N rule anyway. */
-  cold(limit = 20): SessionInfo[] {
-    return this.#store
+   *  Paged **per workspace** (#34), unlike `archived()` which is complete: crash debris accumulates
+   *  without anyone choosing it, so a cap is still right — but the axis has to be the one the rail
+   *  groups by. A global top-N let the busiest workspace eat the page, and since a cold row is the
+   *  only handle that can wake its session, everything it pushed out became unreachable from the UI
+   *  while the transcript sat fine on disk. See `cold-page.ts`. */
+  cold(perWorkspace = COLD_PER_WORKSPACE, totalMax = COLD_TOTAL_MAX): SessionInfo[] {
+    return this.coldPage(perWorkspace, totalMax).rows;
+  }
+
+  /** The same page plus `total`/`omitted`, so a caller can say "this is a partial view" instead of
+   *  presenting a truncated list as the whole cockpit. */
+  coldPage(perWorkspace = COLD_PER_WORKSPACE, totalMax = COLD_TOTAL_MAX): ColdPage<SessionInfo> {
+    const sorted = this.#store
       .listSessions(true)
       // system rows are the cockpit's own (see list()): never offered as a slot to wake
       .filter((r) => r.archivedAt == null && !r.system && !this.#sessions.has(r.id))
       .map((r) => this.#infoFromRow(r))
       // cold rows by the same rule as live ones (recent chat first), THEN take the page
-      .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt)
-      .slice(0, limit);
+      .sort(byActivity);
+    return pageCold(sorted, perWorkspace, totalMax);
   }
 
   /** One row in the shape list()/cold()/archived() produce, from a stored row. */
@@ -2233,10 +2250,17 @@ export class SessionManager {
   /** The cockpit CLI's read view (issue #15): the sessions the OPERATOR can see, in one list —
    *  live and cold, never 已归档 (that is the operator's shelf, not work in flight).
    *
-   *  Cold rows are capped by `cold()`'s own page size on purpose: an agent asking "what is going on"
-   *  gets the recent cockpit, not a scrollback of every session this install ever made. */
+   *  Cold rows are paged per workspace by `cold()`, deeper than the rail's own expand depth: an agent
+   *  asking "what is going on" is not browsing, and it filters by `--workspace` on top — but it still
+   *  must not receive a scrollback of every session this install ever made. */
   cockpitRows(): SessionInfo[] {
-    return [...this.list(), ...this.cold(50)];
+    return [...this.list(), ...this.cold(COLD_PER_WORKSPACE_COCKPIT)];
+  }
+
+  /** The cockpit's cold page together with what it left out, so `session list` can report
+   *  `capped` honestly instead of presenting a truncated view as the whole cockpit (#34). */
+  cockpitCold(): ColdPage<SessionInfo> {
+    return this.coldPage(COLD_PER_WORKSPACE_COCKPIT);
   }
 
   /** Approvals a session is WAITING on right now — the one fact worth waking another agent for. */
