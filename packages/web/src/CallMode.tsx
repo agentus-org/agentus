@@ -269,6 +269,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const baselineKeyRef = useRef("");
   /** Decided once per call: was the baseline known at boot, or is it history arriving later? */
   const bootLockedRef = useRef(false);
+  /** Did we dial INTO a turn that was already running? Then that in-flight message IS this turn's
+   *  reply and must be read from its start — the boot-history guard below must not swallow it. */
+  const joinedRef = useRef(false);
   const bootAtRef = useRef(Date.now());
   /** The transcript's last agent message, unfiltered — what the baseline is taken from. */
   const rawAgentKeyRef = useRef("");
@@ -317,6 +320,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         if (live?.busy) {
           if (dead) return;
           sentRef.current = true;             // a turn is already in flight
+          joinedRef.current = true;           // …and it is the reply we want to hear
           replyKeyRef.current = "";
           // …and that in-flight message IS this turn's reply, so it gets read from its start
           // (baseline stays empty). A session that is merely idle is the opposite case: the
@@ -563,7 +567,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     // there in the first seconds after dialling is history.
     if (!bootLockedRef.current) {
       bootLockedRef.current = true;
-      if (!baselineKeyRef.current && agentKey && Date.now() - bootAtRef.current < BOOT_GRACE_MS) {
+      if (!baselineKeyRef.current && !joinedRef.current && !sentRef.current
+        && agentKey && Date.now() - bootAtRef.current < BOOT_GRACE_MS) {
         baselineKeyRef.current = agentKey;
         return;
       }
