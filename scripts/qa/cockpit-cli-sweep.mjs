@@ -104,6 +104,19 @@ const purge = async (id) => {
   await api(`/api/sessions/${id}`, { method: "DELETE" }); // cold → purge
 };
 
+// #40: the cockpit hands agents the PATH of this file and expects `$AGENTUS_COCKPIT_BIN session list`
+// to run. In a checkout the blob was 100644, so that first command died with EACCES and the only way
+// out was spelling `node <path>` — which an agent cannot discover from the injection text.
+{
+  const onDisk = (fs.statSync(BIN).mode & 0o111) !== 0;
+  check("the cockpit bin is executable on disk (issue #40)", onDisk, `mode=${(fs.statSync(BIN).mode & 0o777).toString(8)}`);
+  const blob = execFileSync("git", ["ls-files", "-s", "bin/agentus.mjs"], { cwd: REPO, encoding: "utf8" }).split(/\s+/)[0];
+  check("…and the git blob carries the exec bit, so a fresh clone runs", blob === "100755", blob);
+  // Executed DIRECTLY (no `node` in front) — the shape the agent actually uses.
+  const direct = execFileSync(BIN, ["capabilities"], { cwd: REPO, encoding: "utf8", env: { ...process.env, AGENTUS_ENDPOINT: BASE, AGENTUS_TOKEN: token } });
+  check("…`$AGENTUS_COCKPIT_BIN capabilities` runs as a command, not via `node`", /schema_version/.test(direct), direct.slice(0, 60));
+}
+
 const before = (await api("/api/settings")).body.agent?.cockpitSend ?? false;
 const src = await mkSession("cockpit-cli src（自动删除）");
 const dst = await mkSession("cockpit-cli dst（自动删除）");
@@ -273,6 +286,11 @@ try {
   const off = cli(env, ["session", "send", dst.id, "应该被拒"]);
   check("with the gate OFF, send answers code:sends_disabled", off.code !== 0 && off.doc?.error?.code === "sends_disabled",
     JSON.stringify(off.doc?.error));
+  // #41: wake is the same intent as send, so the same switch must close it. A wake that slipped
+  // through a closed gate would let an agent pull processes up while it may not even talk to them.
+  const offWake = cli(env, ["session", "wake", (await api("/api/sessions")).body.cold?.[0]?.id ?? dst.id]);
+  check("with the gate OFF, wake also answers code:sends_disabled", offWake.code !== 0 && offWake.doc?.error?.code === "sends_disabled",
+    JSON.stringify(offWake.doc?.error));
 
   await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
   const okSend = cli(env, ["session", "send", dst.id, "来自 CLI：目标空闲"]);
@@ -311,11 +329,40 @@ try {
   const alias = cli(env, ["session", "ls"]);
   check("`session ls` is NOT an alias — one spelling per verb", alias.code !== 0, JSON.stringify(alias.doc?.error));
 
-  const coldTarget = (await api("/api/sessions")).body.cold?.[0]?.id;
+  // The cockpit CHANNEL is what must mark them: reading the operator API would test a different
+  // surface (and `/api/sessions` is not where an agent looks).
+  const coldRows = cli(env, ["session", "list", "--status", "cold", "--limit", "50"]).doc?.data?.sessions ?? [];
+  const coldTarget = coldRows[0]?.id;
+  const coldTarget2 = coldRows[1]?.id;
+  check("a cold row is marked wakeable (issue #41)", coldRows.length > 0 && coldRows.every((r) => r.wakeable === true),
+    `${coldRows.length} cold rows, wakeable=${JSON.stringify(coldRows.slice(0, 3).map((r) => r.wakeable))}`);
   if (coldTarget) {
     const coldSend = cli(env, ["session", "send", coldTarget, "冷槽位"]);
-    check("a COLD target answers code:target_cold (the cockpit does not wake it for you)",
+    check("a COLD target still answers code:target_cold (waking is never implicit)",
       coldSend.code !== 0 && coldSend.doc?.error?.code === "target_cold", JSON.stringify(coldSend.doc?.error));
+    check("…and the refusal names the way forward (--wake)",
+      /--wake/.test(JSON.stringify(coldSend.doc?.error ?? "")), JSON.stringify(coldSend.doc?.error));
+
+    const woke = cli(env, ["session", "wake", coldTarget]);
+    check("session wake starts a cold session", woke.code === 0 && woke.doc?.data?.woke === true,
+      JSON.stringify(woke.doc?.data ?? woke.doc?.error));
+    const afterWake = (await api("/api/sessions")).body;
+    check("…and the row is live afterwards (no longer cold)",
+      (afterWake.live ?? []).some((s) => s.id === coldTarget), `live=${(afterWake.live ?? []).length}`);
+
+    const again = cli(env, ["session", "wake", coldTarget]);
+    check("waking a live session is a no-op, not an error", again.code === 0 && again.doc?.data?.already_live === true,
+      JSON.stringify(again.doc?.data ?? again.doc?.error));
+
+    if (coldTarget2) {
+      const wakeSend = cli(env, ["session", "send", coldTarget2, "带唤醒的投递", "--wake"]);
+      check("send --wake wakes and delivers in one call", wakeSend.code === 0 && wakeSend.doc?.data?.delivered_after_wake === true,
+        JSON.stringify(wakeSend.doc?.data ?? wakeSend.doc?.error));
+      check("…and its note says the target was cold (the cost is spoken)",
+        /COLD/.test(String(wakeSend.doc?.meta?.note ?? "")), String(wakeSend.doc?.meta?.note));
+      await purge(coldTarget2);
+    }
+    await purge(coldTarget);
   }
   const nowhere = cli(env, ["session", "send", "sess_nope", "x"]);
   check("an out-of-scope target answers code:out_of_scope", nowhere.code !== 0 && nowhere.doc?.error?.code === "out_of_scope",

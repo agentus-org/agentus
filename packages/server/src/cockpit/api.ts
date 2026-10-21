@@ -56,6 +56,10 @@ export type CockpitSessionRow = {
   self?: boolean;
   /** no agent process: the message would have to wake it first */
   cold: boolean;
+  /** you MAY wake this row (issue #41): it is cold, not archived, so `session wake` / `send --wake`
+   *  can start it. Capability, not permission — whether waking is allowed at all is the operator's
+   *  驾驶舱互发消息 switch, reported once in `capabilities.scope.wake`. */
+  wakeable: boolean;
   /** on the operator's 已归档 shelf — OUT of scope for the cockpit channel */
   archived: boolean;
   /** last talked to (wall clock) */
@@ -97,7 +101,8 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       { name: "session show", args: ["<id>"], returns: "one session in detail, including any approval it is waiting on" },
       { name: "session messages", args: ["<id>", "--tail N"], returns: `the last N messages (default ${MESSAGES_TAIL_DEFAULT}, max ${MESSAGES_TAIL_MAX}), each cut to ${MESSAGE_CHARS} chars` },
       { name: "session plan", args: ["<id>"], returns: "the plan object the operator's card renders (title/items/explanation/terminal)" },
-      { name: "session send", args: ["<id>", "<text…>"], returns: "deliver a message into another session (text after the id, or on stdin)" },
+      { name: "session send", args: ["<id>", "<text…>", "--wake"], returns: "deliver a message into another session (text after the id, or on stdin). A COLD target answers cold_target unless you pass --wake" },
+      { name: "session wake", args: ["<id>"], returns: "start a cold session's agent process — the same thing the operator's rail does when they open it; the session then accepts send. Gated by the same 驾驶舱互发消息 switch as send" },
     ],
     truncation: {
       messages: `each message's text is cut to ${MESSAGE_CHARS} characters; a cut one ends with … and reports truncated:true`,
@@ -122,6 +127,13 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
         ? "ENABLED: you may deliver a message into another session in scope"
         : "DISABLED: the operator has not turned 驾驶舱互发消息 on; send answers code:sends_disabled",
       send_semantics: "delivered means the target agent RECEIVED the message and started a turn — never that it read it or agreed. Nothing is claimed about a reply.",
+      // #41: waking is a step with a COST (a process, its memory, a spot in the warm set), so it is
+      // never implicit. `send` to a cold target answers target_cold and names both ways forward; the
+      // caller decides whether the conversation is worth a process.
+      wake: sendEnabled
+        ? "ENABLED (same switch as send): `session wake <id>` starts a cold row, or `session send <id> --wake` wakes then delivers (answer carries delivered_after_wake). Rows carry `wakeable` — a cold, non-archived session. Wake sparingly: each one costs a process."
+        : "DISABLED: 驾驶舱互发消息 is off; wake answers code:sends_disabled (wake+send are one intent).",
+      cold_targets: "`session send` to a cold session answers code:target_cold — that is NOT a refusal of the conversation, only of the implicit process. Check `wakeable` on the row.",
     },
     discipline: [
       "read before you assert: call `context` instead of trusting your memory of another session",
@@ -148,6 +160,7 @@ export function sessionRow(
     workspace: info.workspace || info.cwd,
     createdAt: info.createdAt,...(info.titleBy ? { titleBy: info.titleBy } : {}),
     cold: Boolean(info.cold),
+    wakeable: Boolean(info.cold) && !info.archivedAt,
     archived: Boolean(info.archivedAt),
     lastAt: info.lastAt ?? info.createdAt,
     plan: {
@@ -409,6 +422,7 @@ export const COCKPIT_ERRORS = {
   sendsDisabled: "sends_disabled",
   targetBusy: "target_busy",
   targetCold: "target_cold",
+  wakeFailed: "wake_failed",
   rateLimited: "rate_limited",
   badRequest: "bad_request",
 } as const;

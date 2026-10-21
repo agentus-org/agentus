@@ -19,7 +19,8 @@ import { WorkspaceButton } from "./WorkspaceButton";
 import { ToolPanel } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
-import { onOpenLocalFile } from "./fileBus";
+import { onOpenLocalFile, openLocalFile } from "./fileBus";
+import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
 import { parseBgNotice, shortCommand } from "./bgNotice";
@@ -41,7 +42,7 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
-import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "../../shared/src/index";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
 export function App(): JSX.Element {
@@ -1750,11 +1751,14 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
   if (!tasks.length) return null;
   const running = tasks.filter((t) => t.status === "running");
   const exited = tasks.filter((t) => t.status !== "running");
+  // #39: a subagent is not a process — it has no pid and no command line, it has a GOAL. Counted
+  // separately so the head line can say 「其中 2 个子任务」 instead of pretending they are shell jobs.
+  const subs = running.reduce((n, t) => n + (t.kind === "delegation" ? (t.taskCount ?? 1) : 0), 0);
   // Every row that survives the server's filter is a WAKE-UP process (#35): the agent is not done,
   // it is waiting for this result to continue. Said in words because a number alone reads like
   // 「有个后台程序在跑，跟我没关系」.
   const head = running.length
-    ? `后台任务 ${running.length} 个运行中 · 完成后会唤醒会话`
+    ? `后台任务 ${running.length} 个运行中${subs ? `（含 ${subs} 个子任务）` : ""} · 完成后会唤醒会话`
     : `${exited.length} 个后台任务已结束`;
   return (
     <div className={`bg-row ${open ? "open" : ""}`} data-count={tasks.length}>
@@ -1776,20 +1780,33 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
       {open && (
         <ul className="bg-list">
           {tasks.map((t) => (
-            <li key={t.id} className="bg-item" data-state={t.status}>
+            <li key={t.id} className="bg-item" data-state={t.status} data-kind={t.kind ?? "process"}>
+              {t.kind === "delegation" ? <span className="bg-tag">子任务</span> : null}
               {/* Wrapped, not ellipsised. The command IS what the operator opens this row to read
                   (「它到底在跑什么、带什么参数」); a single truncated line answered a different question.
                   The agent caps the string it sends (200 chars until #23), so a very long pipeline can
-                  still arrive short — that is a producer limit, not this row's. */}
+                  still arrive short — that is a producer limit, not this row's. For a delegation the
+                  same slot holds the GOAL: there is no command line, only what the child was told to do. */}
               <pre className="bg-cmd-full">{t.command || t.id}</pre>
               <div className="bg-item-foot">
                 <span className="bg-meta">
-                  {t.pid ? `pid ${t.pid} · ` : ""}
-                  {t.status === "running"
-                    ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
-                    : `exit ${t.exitCode ?? "?"}`}
+                  {t.kind === "delegation" ? (
+                    <>
+                      {(t.taskCount ?? 1) > 1 ? `${t.taskCount} 个子代理 · ` : ""}
+                      {t.status === "running"
+                        ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}${t.phase === "stalling" ? " · 停滞中" : t.phase === "finalizing" ? " · 收尾中" : ""}`
+                        : "已结束"}
+                    </>
+                  ) : (
+                    <>
+                      {t.pid ? `pid ${t.pid} · ` : ""}
+                      {t.status === "running"
+                        ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
+                        : `exit ${t.exitCode ?? "?"}`}
+                    </>
+                  )}
                 </span>
-                {t.command ? <CopyButton text={t.command} what="这条命令" /> : null}
+                {t.command ? <CopyButton text={t.command} what={t.kind === "delegation" ? "这个目标" : "这条命令"} /> : null}
               </div>
             </li>
           ))}
@@ -1810,13 +1827,43 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
  *  `kind`（`note`），渲染成这行而不是气泡。**但它是落库的**（同一个 2026-10-18 的第二个决定）：
  *  「回忆了几条记忆」「上下文压缩过」「有警告」事后还有意义，刷新一次就消失是丢信息。真正的呼吸声
  *  （provider 倒计时、租约闲聊）不落库，仍然只活在 state.ts 的 `notes` 里，随回合结束消失。 */
-function StatusNoteRow({ n }: { n: Pick<StatusNote, "key" | "kind" | "text" | "at"> & { hits?: number } }): JSX.Element {
+function StatusNoteRow({ n }: {
+  n: Pick<StatusNote, "key" | "kind" | "text" | "at"> & { hits?: number; items?: StatusNoteItem[]; truncated?: boolean };
+}): JSX.Element {
   const clock = new Date(n.at);
   const hh = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}:${String(clock.getSeconds()).padStart(2, "0")}`;
+  // 「recalled 8 memories」只说记忆被用上了，没说用上的是哪几条 —— 展开就是这行唯一缺的那半句话
+  // （issue #37）。没有条目的行（压缩、警告、别家 agent 的状态行）保持原来那一行，一个像素都不变。
+  const items = n.items ?? [];
+  const [open, setOpen] = useState(false);
   return (
     <div className="status-note" data-kind={n.kind || "lifecycle"} role="note" title={clock.toLocaleString()}>
       <span className="status-note-time">{hh}</span>
       <span className="status-note-text">{n.text}</span>
+      {items.length ? (
+        <>
+          <button
+            type="button"
+            className="status-note-toggle"
+            aria-expanded={open}
+            aria-label={`${open ? "收起" : "展开"}这 ${items.length} 条记忆`}
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? "收起" : `${items.length} 条`}
+          </button>
+          {open ? (
+            <ol className="status-note-items">
+              {items.map((it, i) => (
+                <li key={i} className="status-note-item">
+                  <span className="status-note-item-text">{it.text}</span>
+                  {it.tags?.length ? <span className="status-note-item-tags">{it.tags.join(" · ")}</span> : null}
+                </li>
+              ))}
+              {n.truncated ? <li className="status-note-item more">…还有更多，已截断</li> : null}
+            </ol>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1840,6 +1887,10 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   const rows = foldWork(msgs);
   const out: JSX.Element[] = [];
   let n = 0;
+  // #38 文件变更：挂在**那次工具执行**旁边，不再攒到回合末尾（操作者 2026-10-21）。
+  // 原先的回合级 flush 有个真实的读法错误：一轮里改了 5 个文件、之后又跑了 20 分钟命令，
+  // 那块「N 个文件变更」落在回合尾巴，离改动已经隔了一屏工具卡，看的人以为最后那条命令改的。
+  // 现在每一段折叠（WorkRun）后紧跟它自己那几次调用改出的文件，位置就是执行的位置。
   while (n < notes.length && notes[n].afterKey === null) {
     out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
     n++;
@@ -1847,17 +1898,23 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   for (const row of rows) {
     if (row.kind === "work") {
       out.push(<WorkRun key={row.key} items={row.items} />);
+      out.push(<FileChangesPanel key={`fc-${row.key}`} msgs={row.items} />);
     } else if (row.m.kind === "note") {
       // 落库的状态行：它本来就是一条消息行（kind `note`），位置由 seq 定，所以直接画在这一行上，
       // 不需要 `afterKey` 锚点那套（那套是给内存里、没有 seq 的临时状态行用的）。
       out.push(
         <StatusNoteRow
           key={row.m.key}
-          n={{ key: row.m.key, kind: row.m.category, text: row.m.text, at: row.m.at ?? Date.now(), hits: row.m.hits }}
+          n={{
+            key: row.m.key, kind: row.m.category, text: row.m.text, at: row.m.at ?? Date.now(),
+            hits: row.m.hits, items: row.m.items, truncated: row.m.truncated,
+          }}
         />,
       );
     } else {
       out.push(<Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
+      // 不折叠的单条工具消息（夹在气泡之间、够不上一段）也把它的文件变更挂在自己下面。
+      if (row.m.kind === "tool") out.push(<FileChangesPanel key={`fc-${row.m.key}`} msgs={[row.m]} />);
     }
     const keys = new Set<string>(row.kind === "msg" ? [row.m.key] : row.items.map((i) => i.key));
     for (let cand = notes[n]; cand && cand.afterKey !== null && keys.has(cand.afterKey); cand = notes[n]) {
@@ -2940,70 +2997,28 @@ function PermOptions({ sid, req, onAnswered }: {
 
 /** Unified, hunk-only line diff of the agent's before/after.
  *
- *  Hermes' edit approval hands over the WHOLE file twice (`acp.tool_diff_content`: old_text and
- *  new_text are entire file contents), and the operator's question is never "what is in this
- *  file" — it is "what changes". So: drop the common head and tail, diff the middle, then keep
- *  only changed lines plus 3 lines of context and collapse the rest into a counted gap. */
-type DiffLine = { kind: "ctx" | "add" | "del" | "gap"; text: string; oldNo: number | null; newNo: number | null };
+ *  `diffLines` itself lives in `changes.ts` (#38) — the per-turn file-changes panel renders the
+ *  same lines, and two implementations of one diff would drift. The shape it replaced here:
+ *  Hermes' edit approval hands over the WHOLE file twice (`acp.tool_diff_content`), and the
+ *  operator's question is never "what is in this file" — it is "what changes". */
 
-function diffLines(oldText: string, newText: string): DiffLine[] {
-  const a = oldText.length ? oldText.replace(/\n$/, "").split("\n") : [];
-  const b = newText.length ? newText.replace(/\n$/, "").split("\n") : [];
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head]) head++;
-  let tail = 0;
-  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
-  const headCtx: DiffLine[] = [];
-  const CTX = 3;
-  if (head > CTX) headCtx.push({ kind: "gap", text: `⋯ 上面 ${head - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
-  for (let i = Math.max(0, head - CTX); i < head; i++) headCtx.push({ kind: "ctx", text: a[i], oldNo: i + 1, newNo: i + 1 });
-
-  const midA = a.slice(head, a.length - tail);
-  const midB = b.slice(head, b.length - tail);
-  const pairs: DiffLine[] = [];
-  // LCS over the middle; a pathological pair of files would blow up memory, so fall back to
-  // "the whole middle was replaced" — coarser, but still honest about what the request does.
-  if (midA.length * midB.length > 250_000) {
-    midA.forEach((t, i) => pairs.push({ kind: "del", text: t, oldNo: head + i + 1, newNo: null }));
-    midB.forEach((t, i) => pairs.push({ kind: "add", text: t, oldNo: null, newNo: head + i + 1 }));
-  } else {
-    const n = midA.length, m = midB.length;
-    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-    for (let i = n - 1; i >= 0; i--) {
-      for (let j = m - 1; j >= 0; j--) {
-        dp[i][j] = midA[i] === midB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-    let i = 0, j = 0;
-    while (i < n && j < m) {
-      if (midA[i] === midB[j]) { pairs.push({ kind: "ctx", text: midA[i], oldNo: head + i + 1, newNo: head + j + 1 }); i++; j++; }
-      else if (dp[i + 1][j] >= dp[i][j + 1]) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
-      else { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
-    }
-    while (i < n) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
-    while (j < m) { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
-  }
-  const tailCtx: DiffLine[] = [];
-  for (let i = 0; i < Math.min(tail, CTX); i++) {
-    tailCtx.push({ kind: "ctx", text: a[a.length - tail + i], oldNo: a.length - tail + i + 1, newNo: b.length - tail + i + 1 });
-  }
-  if (tail > CTX) tailCtx.push({ kind: "gap", text: `⋯ 下面 ${tail - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
-
-  // hunk selection over the middle: changed lines ±3, everything else becomes a counted gap
-  const keep = new Array(pairs.length).fill(false);
-  pairs.forEach((p, k) => {
-    if (p.kind === "ctx") return;
-    for (let c = Math.max(0, k - CTX); c <= Math.min(pairs.length - 1, k + CTX); c++) keep[c] = true;
-  });
-  const body: DiffLine[] = [];
-  let skipped = 0;
-  pairs.forEach((p, k) => {
-    if (!keep[k]) { skipped++; return; }
-    if (skipped) { body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null }); skipped = 0; }
-    body.push(p);
-  });
-  if (skipped) body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null });
-  return [...headCtx, ...body, ...tailCtx];
+/** The diff BODY — shared by the approval card and the per-turn file-changes panel (#38), so
+ *  the two render one diff the same way instead of drifting apart. */
+function DiffLines({ lines }: { lines: DiffLine[] }): JSX.Element {
+  return (
+    <div className="perm-diff" role="region" aria-label="变更内容">
+      {lines.map((l, i) => (l.kind === "gap" ? (
+        <div className="perm-diff-gap" key={i}>{l.text}</div>
+      ) : (
+        <div className={`perm-diff-line ${l.kind}`} key={i}>
+          <span className="no">{l.oldNo ?? ""}</span>
+          <span className="no">{l.newNo ?? ""}</span>
+          <span className="sig">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
+          <span className="txt">{l.text || " "}</span>
+        </div>
+      )))}
+    </div>
+  );
 }
 
 /** 「变更」 as a ROW you click, not a wall of text — the shape AionUi's FileChangesPanel uses
@@ -3035,23 +3050,101 @@ function PermChanges({ diff }: { diff: PermissionDiff }): JSX.Element {
         </span>
         <span className="perm-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
-      {open ? (
-        <div className="perm-diff" role="region" aria-label="变更内容">
-          {lines.map((l, i) => (l.kind === "gap" ? (
-            <div className="perm-diff-gap" key={i}>{l.text}</div>
-          ) : (
-            <div className={`perm-diff-line ${l.kind}`} key={i}>
-              <span className="no">{l.oldNo ?? ""}</span>
-              <span className="no">{l.newNo ?? ""}</span>
-              <span className="sig">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
-              <span className="txt">{l.text || " "}</span>
-            </div>
-          )))}
-        </div>
-      ) : null}
+      {open ? <DiffLines lines={lines} /> : null}
       {diff.truncated ? (
         <div className="perm-cut">agent 发来的是整份文件，这里只保留了改动附近的部分</div>
       ) : null}
+    </div>
+  );
+}
+
+/** 一个文件一条：#38 的「这一回合改了哪些文件」。
+ *
+ *  为什么挂在回合末尾而不是每条工具卡里：回合跑完，操作者第一个问题是「它到底改了我哪些
+ *  文件」——散在各条 tool_call 里的 diff 要一条条翻才能拼出来。这一块把同一回合的所有写文件
+ *  调用按 path 合并，一行一个文件，点计数看 diff、点文件名看现在的文件。
+ *
+ *  与审批无关：这里不看 permission、不看权限模式。`accept_edits` 模式下 agent 不问就写，
+ *  那种回合根本没有审批卡可翻 —— 恰恰最需要这一块。 */
+function FileChangeRow({ f }: { f: FileChange }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const isNew = f.oldText.length === 0 && f.newText.length > 0;
+  const canDiff = isNew || f.oldText.length > 0 || f.newText.length > 0;
+  const lines = useMemo(() => (canDiff ? diffLines(f.oldText, f.newText) : []), [canDiff, f.oldText, f.newText]);
+  // 目录单独一格、去掉末尾分隔符：直接拼在文件名后面会读成「app.ts/repo/src/」，像一条坏路径
+  const dir = f.path === f.name ? "" : f.path.slice(0, f.path.length - f.name.length).replace(/[\\/]+$/, "");
+  return (
+    <div className="fc-row">
+      <div className="fc-line">
+        <span className="fc-dot" aria-hidden="true" />
+        <button
+          type="button"
+          className="fc-name"
+          title={`在右侧面板打开 ${f.path}`}
+          onClick={() => openLocalFile({ path: f.path })}
+        >
+          {f.name}
+          {dir ? <span className="fc-dir">{dir}</span> : null}
+          {f.edits > 1 ? <span className="fc-edits">改了 {f.edits} 次</span> : null}
+        </button>
+        <button
+          type="button"
+          className="fc-counts"
+          aria-expanded={open}
+          aria-label={`${open ? "收起" : "查看"} ${f.path} 的变更`}
+          disabled={!canDiff}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {isNew ? <span className="add">新文件 · {f.insertions} 行</span> : (
+            <>
+              <span className="add">+{f.insertions}</span>
+              <span className="del">−{f.deletions}</span>
+            </>
+          )}
+        </button>
+      </div>
+      {open && canDiff ? <DiffLines lines={lines} /> : null}
+    </div>
+  );
+}
+
+/** 回合末尾那块：「N 个文件变更」。1 个文件就是一行（对齐 AionUi 的单文件形态），
+ *  ≥2 个文件才有一个可折叠的标题行 —— 一个文件还多画一个头，只是多一层点击。 */
+function FileChangesPanel({ msgs }: { msgs: MsgView[] }): JSX.Element | null {
+  const files = useMemo(() => {
+    const list: ToolChange[] = [];
+    for (const m of msgs) if (m.kind === "tool" && m.changes?.length) list.push(...m.changes);
+    return mergeChanges(list);
+  }, [msgs]);
+  const [open, setOpen] = useState(true);
+  if (!files.length) return null;
+  if (files.length === 1) {
+    return (
+      <div className="file-changes one">
+        <FileChangeRow f={files[0]} />
+      </div>
+    );
+  }
+  const total = files.reduce((n, f) => n + f.insertions, 0);
+  const gone = files.reduce((n, f) => n + f.deletions, 0);
+  return (
+    <div className="file-changes">
+      <button
+        type="button"
+        className="fc-head"
+        aria-expanded={open}
+        aria-label={`${open ? "收起" : "展开"} ${files.length} 个文件变更`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconFile size={13} />
+        <span className="fc-title">{files.length} 个文件变更</span>
+        <span className="fc-counts static">
+          <span className="add">+{total}</span>
+          <span className="del">−{gone}</span>
+        </span>
+        <span className="perm-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? files.map((f) => <FileChangeRow key={f.path} f={f} />) : null}
     </div>
   );
 }

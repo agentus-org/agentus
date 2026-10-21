@@ -268,6 +268,13 @@ button { font: inherit; }
 .bg-list { list-style: none; margin: 0; padding: 2px 8px 6px; border-top: 1px solid var(--line); max-height: 40vh; overflow: auto; }
 .bg-item { display: block; padding: 4px 0; border-top: 1px dashed var(--line); }
 .bg-item:first-child { border-top: 0; }
+/* #39: 子任务行要一眼和后台进程区分开 —— 它没有 pid、没有命令行，只有一句目标。 */
+.bg-tag {
+  display: inline-block; margin-bottom: 2px; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--accent); color: var(--accent-text, var(--accent));
+  font-size: 9.5px; line-height: 15px; letter-spacing: 0.02em;
+}
+.bg-item[data-kind="delegation"] .bg-cmd-full { color: var(--text); font-style: italic; }
 /* The command is the thing this row is opened for: wrap it, never ellipsise it — but cap the height and
    let it scroll, because a 4000-char one-liner must not push the composer off the screen. Reading it
    then feels like a terminal pane rather than a wall. (The operator's words: 「这个框可以滚动的」.) */
@@ -491,6 +498,44 @@ button { font: inherit; }
 /* 两种值得区分的语气：警告（降级/被拦截）与完成（压缩结束）。其余保持安静。 */
 .status-note[data-kind="warn"] { color: var(--warn, #c07a12); border-left-color: var(--warn, #c07a12); }
 .status-note[data-kind="compacted"] { color: var(--ok, #3f8f5f); border-left-color: var(--ok, #3f8f5f); }
+/* 记忆条目（#37）：`recalled 8 memories` 后面那个「4 条」按钮，点开是这 4 条记忆本身。
+   行本身是 flex，条目列表要整行铺开 —— `flex-basis:100%` + `wrap` 让它在下一行占满，
+   而不是被挤成右侧一条窄柱。句子不再抢满整行（`0 1 auto`）：否则短句 + 按钮会被拉开到
+   两头，屏幕上读成两件不相关的事。 */
+.status-note { flex-wrap: wrap; }
+.status-note-text { flex: 0 1 auto; }
+.status-note-toggle {
+  flex: 0 0 auto; padding: 0 5px; border-radius: 4px; margin-left: 2px;
+  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  font-size: 10.5px; line-height: 15px; cursor: pointer;
+}
+.status-note-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.status-note-items {
+  flex: 1 0 100%; margin: 5px 0 1px; padding: 5px; list-style: none;
+  display: flex; flex-direction: column; gap: 4px;
+  /* 定高 + 内部滚动（操作者 2026-10-21）：「一展开就是刷屏」—— 一轮召回常常几十条，
+     整块铺开会把刚才在看的回复顶出屏幕，展开的代价变成看不见上下文。定高之后开与不开
+     占的地方一样大，长的部分在这块里自己滚，转录的长度不受记忆条数影响。
+     `overscroll-behavior: contain` 防止滚到底后把滚动传给整个转录。 */
+  max-height: 216px; overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.04));
+  scrollbar-width: thin;
+}
+.status-note-item {
+  display: flex; gap: 6px; align-items: baseline;
+  padding: 3px 7px; border-radius: 4px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.06));
+  font-size: 11px; color: var(--text); line-height: 1.5;
+}
+.status-note-item-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* 标签读成徽章，不是又一段灰字：一条记忆的标签通常 2~4 个，串成一行字时和正文分不开。 */
+.status-note-item-tags {
+  flex: 0 0 auto; color: var(--text-dim); font-size: 9.5px; line-height: 15px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+  white-space: nowrap; max-width: 33%; overflow: hidden; text-overflow: ellipsis;
+}
+.status-note-item.more { color: var(--text-dim); background: transparent; font-style: italic; }
 
 .stream-spin {
   /* A ring has no baseline to align on, so it is pinned to the TOP of the row's first line instead —
@@ -853,6 +898,49 @@ code.inline {
   background: rgba(127, 127, 127, .06);
 }
 .perm-cut { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+/* ── 回合末尾的「N 个文件变更」（#38）────────────────────────────────────────────
+   一个回合跑完，操作者第一句话是「它改了我哪些文件」。挂在回合末尾、按 path 合并、一行一个
+   文件；计数点开看 diff（跟审批卡同一套 .perm-diff 渲染），文件名点开右侧面板看现在的文件。
+   与审批卡刻意长得像，但**不是**审批的一部分：accept_edits 那种不问就写的回合里只有这一块。 */
+.file-changes {
+  margin: 10px 0 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-raised);
+}
+.file-changes.one { padding: 2px 8px; }
+.fc-head {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; cursor: pointer;
+  padding: 4px 2px; border: 0; background: none; color: var(--text); font: inherit;
+}
+.fc-head:hover .fc-title { color: var(--accent-text); }
+.fc-title { flex: 1 1 auto; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-counts.static { cursor: default; }
+/* 一行 = `.fc-line`（flex），diff 是它的**兄弟**而不是 flex 项 —— 放在 row 里会被挤成
+   半个宽度贴在右边（2026-10-21 截图自查发现的那个形状）。 */
+.fc-row { padding: 4px 2px; border-top: 1px solid var(--line); min-width: 0; }
+.file-changes.one .fc-row { border-top: 0; }
+.fc-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fc-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--ok); }
+.fc-name {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1 1 auto; cursor: pointer;
+  border: 0; background: none; padding: 0; color: var(--accent-text);
+  font-family: var(--mono); font-size: 12px;
+}
+.fc-name:hover { text-decoration: underline; }
+.fc-dir { color: var(--text-dim); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-dir::before { content: "· "; }
+.fc-edits { color: var(--text-dim); font-size: 10.5px; flex: 0 0 auto; }
+.fc-edits::before { content: "· "; }
+.fc-counts {
+  display: flex; gap: 6px; flex: 0 0 auto; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; background: var(--bg);
+  color: var(--text);
+}
+.fc-counts:hover:not(:disabled) { border-color: var(--accent-dim); }
+.fc-counts:disabled { cursor: default; opacity: .6; }
+.fc-counts .add { color: var(--ok); }
+.fc-counts .del { color: var(--err); }
+.file-changes .perm-diff { margin: 2px 2px 6px; }
 /* "this page is running old code" — the one thing a WebView user cannot otherwise notice.
    Above every dialog layer (modal-bg is 35, the phone sheets 25–30): the point is to be seen. */
 .stale-banner {

@@ -451,6 +451,33 @@ const agent = () => ({
       }
     }
 
+    // `[recall]` — 记忆召回行带条目（issue #37）：与 `[status]` 同一个载体，多一个 `items`，
+    // 形状照 fork `acp_adapter/events.py:make_status_cb`。故意给一条带 tags、一条超长（验证展开后
+    // 换行而不是把行撑破），并用 `truncated` 说明后面还有 —— 界面上要能看出折叠、展开、截断三件事。
+    // `[recall:N]` 出 N 条（上限 60）：一轮召回几十条是线上的常态，而「展开就刷屏」只有在条目多到
+    // 超过定高时才看得出来 —— 3 条永远撑不满那个框（操作者 2026-10-21 要求定高可滚动）。
+    const recallM = /\[recall(?::(\d+))?\]/.exec(text);
+    if (/recall/.test(text)) { const fs = await import("node:fs"); fs.appendFileSync("/tmp/mock-recall.log", `text=${JSON.stringify(text)} m=${JSON.stringify(recallM && recallM[0])}\n`); }
+    if (recallM) {
+      const want = Math.min(Math.max(Number(recallM[1] ?? 3), 1), 60);
+      const seed = [
+        { text: "用户偏好：回复一律中文，技术术语可留英文" },
+        { text: "Agentus 的 live 端口是 8788，dev 是 8901，端口权威在 ~/.hermes/cache/agentus/ports.env", tags: ["port", "agentus"] },
+        { text: "发布红线：会重启 live 的改动必须等明确指令；纯前端可以直接 promote" + "（这段故意写得长一些，用来验证展开后的条目会换行而不是把行撑破）".repeat(2) },
+      ];
+      const items = Array.from({ length: want }, (_, i) => {
+        const base = seed[i % seed.length];
+        return i < seed.length ? base : { ...base, text: `第 ${i + 1} 条：${base.text}` };
+      });
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: `👁️ Hindsight — recalled ${want} memories`, items, truncated: true } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, Math.min(slow * 2, 900));
+    }
+
     // `[blank]` — the SAME carrier with its `_meta` stripped, i.e. the shape a status line takes when
     // the sentence is lost before us (measured 2026-10-17: hermes set `update._meta` while the ACP
     // model's field is `field_meta`, so every status shipped as a bare empty thought). The cockpit must
@@ -505,6 +532,40 @@ const agent = () => ({
       setTimeout(() => {
         void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
       }, runMs + 1200);
+    }
+
+    // `[bg-delegation]` — the OTHER producer of background frames (issue #39): a live
+    // `delegate_task(background=true)`. Same carrier as `[bg]`, but the row is a subagent: no pid, no
+    // command line, a GOAL, and `taskCount` children behind one row. This is what the fork's relay now
+    // sends; before the fix it sent nothing at all, so the cockpit had nothing to draw while two
+    // children ran for minutes.
+    if (/\[bg-delegation\]/.test(text)) {
+      const subId = `deleg-${sessionId}-1`;
+      const snapshot = (rows) => ({
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermes: { kind: "background", tasks: rows } },
+        content: { type: "text", text: "" },
+      });
+      const row = {
+        id: subId, kind: "delegation", command: "读一遍 packages/web 的检索链路，写出结论",
+        pid: null, status: "running", phase: "running", uptimeSeconds: 95,
+        notifyOnComplete: true, taskCount: 2,
+      };
+      void send(agent._conn, sessionId, snapshot([row])).catch(() => undefined);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: {
+            kind: "completion",
+            text: "委派的子任务已完成：读一遍 packages/web 的检索链路，写出结论",
+            processId: subId,
+          } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, 1600);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
+      }, 2800);
     }
 
     // `[bgquiet]` — a SILENT background process: running, no notify, no completion carrier. This is
@@ -702,6 +763,34 @@ const agent = () => ({
           rawOutput: chosen === "reject" || chosen === "deny"
             ? "rejected by the operator — nothing written"
             : `wrote 24 bytes to ./demo.txt (chosen option: ${chosen})`,
+        });
+      }
+    }
+
+    // `[tool-many]` — 一个回合改了三个文件（issue #38：回合末尾的「N 个文件变更」）。
+    // 三个刻意不同的形状：同一文件**改两刀**（合并成一条、edits=2）、一个 40 行文件只改中间
+    // 一行（必须走 hunk 折叠）、一个新文件（oldText 为空 → 不能编造删除行）。
+    // 这个 fixture **不发权限请求**，形状就是 accept_edits 那种「不问就写」的回合 —— 也正因此
+    // 它同时是「这一块不依赖审批」的证据：从审批路径拿不到任何 diff 的回合，面板照样得有内容。
+    if (/\[tool-many\]/.test(text)) {
+      const big = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n") + "\n";
+      const bigEdit = big.replace("export const line20 = 20;", "export const line20 = 'twenty';");
+      const calls = [
+        { id: `tc-many-1-${sessionId}`, path: "/repo/src/app.ts", oldText: "const x = 1;\nconst y = 2;\n", newText: "const x = 1;\nconst y = 20;\n" },
+        { id: `tc-many-2-${sessionId}`, path: "/repo/src/app.ts", oldText: "const x = 1;\nconst y = 20;\n", newText: "const x = 1;\nconst y = 20;\nconst z = 3;\n" },
+        { id: `tc-many-3-${sessionId}`, path: "/repo/src/big.ts", oldText: big, newText: bigEdit },
+        { id: `tc-many-4-${sessionId}`, path: "/repo/docs/new.md", oldText: "", newText: "# 新文件\n" },
+      ];
+      for (const c of calls) {
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call", toolCallId: c.id,
+          title: `Edit file: ${c.path}`, kind: "edit", status: "pending",
+          content: [{ type: "diff", path: c.path, oldText: c.oldText, newText: c.newText }],
+          rawInput: { tool: "patch", arguments: { path: c.path } },
+        });
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call_update", toolCallId: c.id,
+          status: "completed", rawOutput: `wrote ${c.path}`,
         });
       }
     }

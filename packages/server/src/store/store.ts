@@ -3,7 +3,7 @@
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { BackendId, PlanSnapshot, SessionStatus, StoredMessage } from "../../../shared/src/index.js";
+import type { BackendId, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 import { normalizeItems } from "../plan/plan.js";
 import { DEFAULT_NATIVE_PLAN_SOURCE } from "../acp/backends.js";
@@ -965,7 +965,11 @@ export class Store {
    * （说明这中间没有别的消息落下），就更新它，而不是再加一行；位置变了（新消息进来了）就另起一行。
    * 于是「压缩中 → 完成」收敛成一行（保留开始时间），一个回合一次回忆也只留一行。
    */
-  appendNote(sessionId: string, note: { category: string; text: string; createdAt?: number }): StoredMessage {
+  appendNote(sessionId: string, note: {
+    category: string; text: string; createdAt?: number;
+    /** memory 行的条目（issue #37）—— 只在 category==="memory" 时有意义。 */
+    items?: StatusNoteItem[]; truncated?: boolean;
+  }): StoredMessage {
     const createdAt = note.createdAt ?? Date.now();
     const edge = this.#db
       .prepare("select coalesce(max(seq),0) as seq from messages where session_id = ?")
@@ -974,9 +978,18 @@ export class Store {
       .prepare("select seq, payload, created_at from messages where session_id = ? and kind = 'note' order by seq desc limit 1")
       .get(sessionId) as { seq: number; payload: string; created_at: number } | undefined;
     if (last && last.seq === edge.seq) {
-      const prev = JSON.parse(last.payload) as { category?: string; text?: string; hits?: number };
+      const prev = JSON.parse(last.payload) as {
+        category?: string; text?: string; hits?: number; items?: StatusNoteItem[]; truncated?: boolean;
+      };
       if (prev.category === note.category) {
-        const payload = { category: note.category, text: note.text, hits: (prev.hits ?? 1) + 1 };
+        // 折叠只发生在「位置上没有别的消息插进来」时（压缩的开始/心跳/完成）。条目取**最新一次**：
+        // 折叠出来的是同一行，这行的内容是最后一次召回，而不是第一次的残留。
+        const payload: Record<string, unknown> = {
+          category: note.category, text: note.text, hits: (prev.hits ?? 1) + 1,
+        };
+        const items = note.items ?? prev.items;
+        if (items?.length) payload.items = items;
+        if (note.truncated ?? prev.truncated) payload.truncated = true;
         // `created_at` stays: it answers "这一轮什么时候开始回忆/压缩的", and the heartbeat is not news.
         this.#db
           .prepare("update messages set payload = ? where session_id = ? and seq = ?")
@@ -986,9 +999,10 @@ export class Store {
         };
       }
     }
-    const row = this.appendMessage({
-      sessionId, kind: "note", payload: { category: note.category, text: note.text, hits: 1 }, createdAt,
-    });
+    const payload: Record<string, unknown> = { category: note.category, text: note.text, hits: 1 };
+    if (note.items?.length) payload.items = note.items;
+    if (note.truncated) payload.truncated = true;
+    const row = this.appendMessage({ sessionId, kind: "note", payload, createdAt });
     // Bounded: a session left open for weeks must not keep every recall it ever did. 80 is well past
     // what any transcript page shows, and a note is ~120 bytes.
     const over = this.#db
