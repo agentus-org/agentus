@@ -375,13 +375,21 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       if (c.interruptMode === "keyword" && (phaseRef.current === "speaking" || phaseRef.current === "thinking")) {
         if (!mutedRef.current) dictation.setRelay(true);
         bargeRef.current = 0;
-        echoBaseRef.current = 0;
         const said = `${st.text || ""} ${st.interim || ""}`.trim();
-        if (!mutedRef.current && said && matchesWakePhrase(said, c.wakePhrase)
-          && Date.now() - lastBargeRef.current > BARGE_COOLDOWN_MS) {
+        const want = !mutedRef.current && said && matchesWakePhrase(said, c.wakePhrase);
+        // …and the words alone are not enough: our own loudspeaker is playing into this microphone
+        // (no echo cancellation on this path), so the transcript can contain the wake phrase simply
+        // because the agent SAID it. The same double-talk proof the voice barge uses settles that —
+        // a real voice rises above the echo's own level, a leak does not.
+        const voice = isBargeEvidence(mic, play, echoBaseRef.current, c.bargeSensitivity, micEchoCancelled());
+        if (want && (voice || !(play > 0.002)) && Date.now() - lastBargeRef.current > BARGE_COOLDOWN_MS) {
           lastBargeRef.current = Date.now();
           void bargeIn();
+          return;
         }
+        // Learn the echo while the gate is shut — same rule as the voice branch: feeding it the
+        // operator's own voice would teach it to ignore them.
+        if (play > 0.002 && !voice) echoBaseRef.current = echoBaseRef.current * 0.88 + mic * 0.12;
         return;
       }
       if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
@@ -405,6 +413,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
           // instead of refusing it. Without this the operator got "turn already running" for
           // doing exactly what a call invites.
           cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+          // The recogniser is cleared the moment the words leave: it keeps its committed text
+          // until told otherwise, and in 关键词 mode the next tick would read that leftover as
+          // "the operator just said the wake phrase" and cancel the turn it just started.
+          dictation.resetText();
         }
       } else if (phaseRef.current === "speaking") {
         // barge-in: the operator talking over the reply takes the floor back. Two things have
@@ -680,6 +692,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         baselineKeyRef.current = rawAgentKeyRef.current;     // the old answer is not the answer
         dictation.setRelay(false);
         cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+        dictation.resetText();   // see the auto-send branch: 关键词 must not re-hear this utterance
       }
       return;
     }
@@ -743,6 +756,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     baselineKeyRef.current = rawAgentKeyRef.current;
     dictation.setRelay(false);
     cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+    dictation.resetText();     // same reason as the other two send paths
   };
 
   const pttEnd = (): void => {

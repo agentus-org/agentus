@@ -497,7 +497,7 @@ function pickCall(raw: unknown): CallSettings {
     const mode = (raw as Record<string, unknown>).interruptMode;
     if (INTERRUPT_MODES.includes(mode as InterruptMode)) out.interruptMode = mode as InterruptMode;
     const wake = (raw as Record<string, unknown>).wakePhrase;
-    if (typeof wake === "string") out.wakePhrase = wake.replace(/\s+/g, " ").trim().slice(0, 24);
+    if (typeof wake === "string") out.wakePhrase = [...wake.replace(/\s+/g, " ").trim()].slice(0, 24).join("");
     for (const k of CALL_NUMERIC) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
@@ -731,9 +731,11 @@ export function saveCall(patch: Record<string, unknown>): Settings {
   }
   if ("wakePhrase" in patch) {
     if (typeof patch.wakePhrase !== "string") throw new Error("invalid wakePhrase: expected a string");
+    // Truncated, not rejected: this field arrives in the same body as the sliders, and refusing it
+    // would throw away the operator's OTHER changes with it (and the panel would then say "saved
+    // locally, not on the server" for a phrase nobody was trying to abuse). Same rule as pickCall.
     const wake = patch.wakePhrase.replace(/\s+/g, " ").trim();
-    if (wake.length > 24) throw new Error("invalid wakePhrase: too long (max 24 characters)");
-    c.wakePhrase = wake;
+    c.wakePhrase = [...wake].slice(0, 24).join("");
   }
   for (const key of CALL_NUMERIC) {
     if (!(key in patch)) continue;

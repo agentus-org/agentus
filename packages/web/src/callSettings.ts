@@ -194,8 +194,13 @@ export function normalizeCall(raw: unknown): CallSettings {
 /** The wake phrase as it is stored: trimmed, single-spaced, at most 24 characters. Long enough for
  *  「hey agent」 or 「小灵同学」, short enough that it cannot become a sentence. */
 export function normalizeWakePhrase(raw: unknown): string {
-  return String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
+  // Code points, not UTF-16 units: `slice(0, 24)` counts an emoji as two and can cut one in half,
+  // leaving a lone surrogate that SQLite stores as U+FFFD — a wake phrase silently corrupted.
+  return [...String(raw ?? "").replace(/\s+/g, " ").trim()].slice(0, WAKE_MAX).join("");
 }
+
+/** Longest wake phrase, in code points. Enforced identically on both sides (server settings.ts). */
+export const WAKE_MAX = 24;
 
 /** Does `heard` contain the wake phrase? Compared on a **stripped** form on both sides — no spaces,
  *  no punctuation, no case — because a recogniser writes 「小 灵」, 「小灵，」 and 「小灵。」 for the
