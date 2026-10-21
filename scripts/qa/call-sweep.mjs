@@ -448,7 +448,12 @@ try {
   check("an interrupting prompt never lands in the failure path (no refusal was logged)",
     refusals() === 1, `refusals=${refusals()}`);
   // The mock echoes the prompt text back, so grepping for words proves nothing: the observable
-  // is that the transcript STOPS GROWING once the interrupted turn has ended.
+  // is that the transcript STOPS GROWING once the interrupted turn has ended. Wait for THAT turn to
+  // end first — the interrupting prompt starts a turn of its own and its reply arrives late enough
+  // that sampling straight away measured its growth and read it as 「the cancelled turn is still
+  // streaming」 (observed as a one-off 4 -> 6 with nothing wrong in the server).
+  for (let i = 0; i < 80; i++) { if (!(await busyOf(slow.id))) break; await sleep(250); }
+  await sleep(400);                        // a straggler frame must not land inside the measurement
   const n1 = (await msgsOf(slow.id)).length;
   await sleep(2500);
   const n2 = (await msgsOf(slow.id)).length;
