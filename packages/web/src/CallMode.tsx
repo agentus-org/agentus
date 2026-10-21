@@ -94,6 +94,12 @@ const PREFETCH_SENTENCES = 1;
  *  turn in flight before it declares itself starved and hands the floor back. The state is checked,
  *  not the cause: every known way to go mute mid-call (#44) lands in exactly this state. */
 const STARVE_MS = 4000;
+/** …and the OTHER way a call goes quiet: the speaker says it is speaking and no sound has come out
+ *  for this long. A synthesis request that never answers, a `<audio>` element stuck on a dead
+ *  stream, a browser voice that silently refuses — all of them hang `speak()` forever, which the
+ *  starve check above cannot see (the queue is non-empty and the speaker is "busy"). Measured
+ *  ordinary sentences are seconds long, so 15 s of silence inside one sentence is already a fault. */
+const MUTE_MS = 15000;
 
 /** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
  *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
@@ -207,6 +213,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const clipAtRef = useRef(0);
   const playAtRef = useRef(0);
   const quietRef = useRef(0);          // last tick's playback level, to notice the rise
+  /** Last moment the loudspeaker was actually producing sound. The mute watchdog compares against
+   *  it: "speaking" is a claim, this is the evidence. */
+  const audibleRef = useRef(0);
   /** When the floor last changed hands by voice — the cooldown that keeps the tail of an
    *  interruption (and the recogniser catching up with it) from firing a second one. */
   const lastBargeRef = useRef(0);
@@ -332,6 +341,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       // back to the echo baseline it learns from the microphone itself.
       const play = playbackRms();
       if (play > 0.004 && quietRef.current <= 0.004) playAtRef.current = Date.now();
+      if (play > 0.004) audibleRef.current = Date.now();
       quietRef.current = play;
       // A relay that could not be replaced AT ALL is a real failure, and the call is the one surface
       // where the transcript's own error line is invisible (it renders in the composer, behind the
@@ -565,6 +575,16 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     const iv = window.setInterval(() => {
       const p = phaseRef.current;
       if (p !== "speaking" && p !== "thinking") { starveRef.current = 0; return; }
+      // Claimed-speech-that-is-silent: the speaker is busy but nothing has come out for MUTE_MS.
+      // Its own promise will never settle in that state, so the call has to let go of it.
+      if (phaseRef.current === "speaking" && spokenRef.current.speaking
+        && Date.now() - Math.max(audibleRef.current, clipAtRef.current) > MUTE_MS) {
+        starveRef.current = 0;
+        if (spokenRef.current.error) setErr(spokenRef.current.error);
+        speaker.stop();
+        void backToListening(false);
+        return;
+      }
       const idle = !queueRunRef.current && !queueRef.current.length
         && !spokenRef.current.speaking && !busyRef.current;
       if (!idle) { starveRef.current = 0; return; }
@@ -604,6 +624,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     setPhase("listening");
     setReply("");
     setHeard("");
@@ -689,6 +710,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     setPhase("listening");
     setReply("");
     setHeard("");
