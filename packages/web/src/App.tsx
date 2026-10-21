@@ -1751,11 +1751,14 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
   if (!tasks.length) return null;
   const running = tasks.filter((t) => t.status === "running");
   const exited = tasks.filter((t) => t.status !== "running");
+  // #39: a subagent is not a process — it has no pid and no command line, it has a GOAL. Counted
+  // separately so the head line can say 「其中 2 个子任务」 instead of pretending they are shell jobs.
+  const subs = running.reduce((n, t) => n + (t.kind === "delegation" ? (t.taskCount ?? 1) : 0), 0);
   // Every row that survives the server's filter is a WAKE-UP process (#35): the agent is not done,
   // it is waiting for this result to continue. Said in words because a number alone reads like
   // 「有个后台程序在跑，跟我没关系」.
   const head = running.length
-    ? `后台任务 ${running.length} 个运行中 · 完成后会唤醒会话`
+    ? `后台任务 ${running.length} 个运行中${subs ? `（含 ${subs} 个子任务）` : ""} · 完成后会唤醒会话`
     : `${exited.length} 个后台任务已结束`;
   return (
     <div className={`bg-row ${open ? "open" : ""}`} data-count={tasks.length}>
@@ -1777,20 +1780,33 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
       {open && (
         <ul className="bg-list">
           {tasks.map((t) => (
-            <li key={t.id} className="bg-item" data-state={t.status}>
+            <li key={t.id} className="bg-item" data-state={t.status} data-kind={t.kind ?? "process"}>
+              {t.kind === "delegation" ? <span className="bg-tag">子任务</span> : null}
               {/* Wrapped, not ellipsised. The command IS what the operator opens this row to read
                   (「它到底在跑什么、带什么参数」); a single truncated line answered a different question.
                   The agent caps the string it sends (200 chars until #23), so a very long pipeline can
-                  still arrive short — that is a producer limit, not this row's. */}
+                  still arrive short — that is a producer limit, not this row's. For a delegation the
+                  same slot holds the GOAL: there is no command line, only what the child was told to do. */}
               <pre className="bg-cmd-full">{t.command || t.id}</pre>
               <div className="bg-item-foot">
                 <span className="bg-meta">
-                  {t.pid ? `pid ${t.pid} · ` : ""}
-                  {t.status === "running"
-                    ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
-                    : `exit ${t.exitCode ?? "?"}`}
+                  {t.kind === "delegation" ? (
+                    <>
+                      {(t.taskCount ?? 1) > 1 ? `${t.taskCount} 个子代理 · ` : ""}
+                      {t.status === "running"
+                        ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}${t.phase === "stalling" ? " · 停滞中" : t.phase === "finalizing" ? " · 收尾中" : ""}`
+                        : "已结束"}
+                    </>
+                  ) : (
+                    <>
+                      {t.pid ? `pid ${t.pid} · ` : ""}
+                      {t.status === "running"
+                        ? `运行 ${durationWords((t.uptimeSeconds ?? 0) * 1000)}`
+                        : `exit ${t.exitCode ?? "?"}`}
+                    </>
+                  )}
                 </span>
-                {t.command ? <CopyButton text={t.command} what="这条命令" /> : null}
+                {t.command ? <CopyButton text={t.command} what={t.kind === "delegation" ? "这个目标" : "这条命令"} /> : null}
               </div>
             </li>
           ))}
@@ -1871,15 +1887,10 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   const rows = foldWork(msgs);
   const out: JSX.Element[] = [];
   let n = 0;
-  // #38 回合级文件变更：一个回合 = 上一条用户消息之后到这条用户消息之前。回合末尾挂一块
-  // 「N 个文件变更」，而不是散在每条工具卡里等人自己拼。用户消息是唯一的回合边界
-  // （agent 的消息/思考/工具/计划都发生在同一次 prompt 之内），所以到边界就 flush 一次。
-  let turn: MsgView[] = [];
-  const flushTurn = (): void => {
-    if (!turn.length) return;
-    out.push(<FileChangesPanel key={`fc-${turn[0].key}-${turn.length}`} msgs={turn} />);
-    turn = [];
-  };
+  // #38 文件变更：挂在**那次工具执行**旁边，不再攒到回合末尾（操作者 2026-10-21）。
+  // 原先的回合级 flush 有个真实的读法错误：一轮里改了 5 个文件、之后又跑了 20 分钟命令，
+  // 那块「N 个文件变更」落在回合尾巴，离改动已经隔了一屏工具卡，看的人以为最后那条命令改的。
+  // 现在每一段折叠（WorkRun）后紧跟它自己那几次调用改出的文件，位置就是执行的位置。
   while (n < notes.length && notes[n].afterKey === null) {
     out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
     n++;
@@ -1887,7 +1898,7 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   for (const row of rows) {
     if (row.kind === "work") {
       out.push(<WorkRun key={row.key} items={row.items} />);
-      turn.push(...row.items);
+      out.push(<FileChangesPanel key={`fc-${row.key}`} msgs={row.items} />);
     } else if (row.m.kind === "note") {
       // 落库的状态行：它本来就是一条消息行（kind `note`），位置由 seq 定，所以直接画在这一行上，
       // 不需要 `afterKey` 锚点那套（那套是给内存里、没有 seq 的临时状态行用的）。
@@ -1901,17 +1912,16 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
         />,
       );
     } else {
-      if (row.m.kind === "user") flushTurn();   // 新的回合开始 → 上一回合的变更面板落在它前面
       out.push(<Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
+      // 不折叠的单条工具消息（夹在气泡之间、够不上一段）也把它的文件变更挂在自己下面。
+      if (row.m.kind === "tool") out.push(<FileChangesPanel key={`fc-${row.m.key}`} msgs={[row.m]} />);
     }
-    if (row.kind === "msg" && row.m.kind !== "user") turn.push(row.m);
     const keys = new Set<string>(row.kind === "msg" ? [row.m.key] : row.items.map((i) => i.key));
     for (let cand = notes[n]; cand && cand.afterKey !== null && keys.has(cand.afterKey); cand = notes[n]) {
       out.push(<StatusNoteRow key={cand.key} n={cand} />);
       n++;
     }
   }
-  flushTurn();
   while (n < notes.length) {
     out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
     n++;

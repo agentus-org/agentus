@@ -268,6 +268,13 @@ button { font: inherit; }
 .bg-list { list-style: none; margin: 0; padding: 2px 8px 6px; border-top: 1px solid var(--line); max-height: 40vh; overflow: auto; }
 .bg-item { display: block; padding: 4px 0; border-top: 1px dashed var(--line); }
 .bg-item:first-child { border-top: 0; }
+/* #39: 子任务行要一眼和后台进程区分开 —— 它没有 pid、没有命令行，只有一句目标。 */
+.bg-tag {
+  display: inline-block; margin-bottom: 2px; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--accent); color: var(--accent-text, var(--accent));
+  font-size: 9.5px; line-height: 15px; letter-spacing: 0.02em;
+}
+.bg-item[data-kind="delegation"] .bg-cmd-full { color: var(--text); font-style: italic; }
 /* The command is the thing this row is opened for: wrap it, never ellipsise it — but cap the height and
    let it scroll, because a 4000-char one-liner must not push the composer off the screen. Reading it
    then feels like a terminal pane rather than a wall. (The operator's words: 「这个框可以滚动的」.) */
@@ -504,16 +511,30 @@ button { font: inherit; }
 }
 .status-note-toggle:hover { color: var(--text); border-color: var(--text-dim); }
 .status-note-items {
-  flex: 1 0 100%; margin: 4px 0 1px; padding: 0; list-style: none;
-  display: flex; flex-direction: column; gap: 3px;
+  flex: 1 0 100%; margin: 5px 0 1px; padding: 5px; list-style: none;
+  display: flex; flex-direction: column; gap: 4px;
+  /* 定高 + 内部滚动（操作者 2026-10-21）：「一展开就是刷屏」—— 一轮召回常常几十条，
+     整块铺开会把刚才在看的回复顶出屏幕，展开的代价变成看不见上下文。定高之后开与不开
+     占的地方一样大，长的部分在这块里自己滚，转录的长度不受记忆条数影响。
+     `overscroll-behavior: contain` 防止滚到底后把滚动传给整个转录。 */
+  max-height: 216px; overflow-y: auto; overscroll-behavior: contain;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.04));
+  scrollbar-width: thin;
 }
 .status-note-item {
   display: flex; gap: 6px; align-items: baseline;
-  padding: 3px 7px; border-radius: 4px; background: var(--panel-2, rgba(127, 127, 127, 0.06));
-  font-size: 11px; color: var(--text);
+  padding: 3px 7px; border-radius: 4px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.06));
+  font-size: 11px; color: var(--text); line-height: 1.5;
 }
 .status-note-item-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.status-note-item-tags { flex: 0 0 auto; color: var(--text-dim); font-size: 10px; }
+/* 标签读成徽章，不是又一段灰字：一条记忆的标签通常 2~4 个，串成一行字时和正文分不开。 */
+.status-note-item-tags {
+  flex: 0 0 auto; color: var(--text-dim); font-size: 9.5px; line-height: 15px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+  white-space: nowrap; max-width: 33%; overflow: hidden; text-overflow: ellipsis;
+}
 .status-note-item.more { color: var(--text-dim); background: transparent; font-style: italic; }
 
 .stream-spin {

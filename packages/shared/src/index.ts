@@ -263,6 +263,16 @@ export interface BackgroundTask {
   status: "running" | "exited";
   uptimeSeconds?: number;
   exitCode?: number | null;
+  /** What this row IS (issue #39). `process` = a `terminal(background=true)` child in the process
+   *  registry; `delegation` = a live `delegate_task(background=true)` subagent, which never appears
+   *  there. Absent on frames from an older agent, and absent must read as `process`: that is what
+   *  every field above has always meant. */
+  kind?: "process" | "delegation";
+  /** Delegations only: the ledger's own phase (`running` / `stalling` / `finalizing`). `status`
+   *  stays the host's two-state vocabulary, so a `finalizing` child still reads as running. */
+  phase?: string;
+  /** Delegations only: how many children one row stands for (a batch of N counts N). */
+  taskCount?: number;
   /** Does this process OWE the session a wake-up (`notify_on_complete`)? Issue #35: that is the
    *  difference between 「agent 已经收工」 and 「agent 还在等这次唤醒才能继续」. Optional — an
    *  older agent never sends it, and `undefined` must read as "silent", never as "unknown so

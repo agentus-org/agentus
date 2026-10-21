@@ -1,13 +1,18 @@
-// QA (issue #38) — 回合末尾的「N 个文件变更」面板，页面级。
+// QA (issue #38) — 「改了什么文件」面板，页面级。位置契约（2026-10-21 操作者反馈后改）：
+//   面板挂在**那次工具执行**的下面，不再攒到回合末尾。
+//   原先一回合一块、落在回合尾巴：一轮里改了 5 个文件之后又跑了 20 分钟命令，那块「N 个文件变更」
+//   离改动隔了一屏工具卡，读起来像最后那条命令改的。现在每次写文件的调用后面紧跟它自己那一行。
 //
-// 这条要证明的是「回合跑完，操作者一眼看到它改了哪些文件」，和审批**无关**：
-//   · mock 的 `[tool-many]` 一回合改三个文件，**不发权限请求**（= accept_edits 那种不问就写的
-//     回合）→ 面板照样出现，这就是「不依赖审批」的证据；
-//   · 同一文件改两刀 → 合并成一条，行上写「改了 2 次」，计数是累计 diff；
+// 这条证明的事：
+//   · mock 的 `[tool-many]` 一回合改三个文件、**不发权限请求**（accept_edits 那种不问就写的回合）
+//     → 面板照样出现，与审批无关；
+//   · 每一块面板的**前一个兄弟节点就是那次工具调用的卡片**（位置契约）；
+//   · 面板不在回合尾巴：它后面还有内容（否则又是「一回合一块」）；
+//   · 同一文件改两刀 → 两行，各自是那一次的计数（不再合并成回合尾巴一条）；
 //   · 40 行文件只改一行 → 点开是 hunk 折叠的 diff（有 gap 行），不是 40 行全量；
 //   · 新文件 → 不编造删除行；
-//   · `[tool]`（只写、不给 diff）的回合 → 没有面板（不draw 一个空壳）；
-//   · 下一回合再说一句话 → 老面板不重复出现（一回合一块）。
+//   · `[tool]`（只写、不给 diff）的回合 → 没有新增面板（不画空壳）；
+//   · 刷新后仍在（落库的不是内存状态）。
 //
 // Usage: PORT=8901 node scripts/qa/file-changes-sweep.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
@@ -66,40 +71,60 @@ const prompt = async (text) => ev(`fetch('/api/sessions/${sid}/prompt',{method:'
 await ev(`location.href = ${JSON.stringify(BASE + "/?session=" + sid)}`);
 await sleep(3200);
 
-const panel = () => ev(`(() => {
-  const p = document.querySelector('.file-changes');
-  if (!p) return null;
-  return {
-    one: p.classList.contains('one'),
-    head: (p.querySelector('.fc-title')?.textContent || '').trim(),
-    rows: [...p.querySelectorAll('.fc-row')].map((r) => ({
-      name: (r.querySelector('.fc-name')?.textContent || '').replace(/\\s+/g, ' ').trim(),
-      counts: (r.querySelector('.fc-counts')?.textContent || '').replace(/\\s+/g, ' ').trim(),
-      disabled: r.querySelector('.fc-counts')?.disabled ?? null,
-      open: r.querySelector('.fc-counts')?.getAttribute('aria-expanded'),
-      diffLines: r.querySelectorAll('.perm-diff-line').length,
-      gaps: r.querySelectorAll('.perm-diff-gap').length,
-    })),
-    count: document.querySelectorAll('.file-changes').length,
-  };
+/** Every block in the stream, with where it sits and what it says. */
+const blocks = () => ev(`(() => {
+  const inner = document.querySelector('.stream-inner');
+  if (!inner) return null;
+  const kids = [...inner.children];
+  const rowsOf = (p) => [...p.querySelectorAll('.fc-row')].map((r) => ({
+    name: (r.querySelector('.fc-name')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+    counts: (r.querySelector('.fc-counts')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+    disabled: r.querySelector('.fc-counts')?.disabled ?? null,
+    open: r.querySelector('.fc-counts')?.getAttribute('aria-expanded'),
+    diffLines: r.querySelectorAll('.perm-diff-line').length,
+    gaps: r.querySelectorAll('.perm-diff-gap').length,
+  }));
+  return kids.map((k, i) => ({
+    i,
+    cls: k.className,
+    isFc: k.classList.contains('file-changes'),
+    one: k.classList.contains('one'),
+    head: (k.querySelector('.fc-title')?.textContent || '').trim(),
+    rows: k.classList.contains('file-changes') ? rowsOf(k) : [],
+    // 位置契约：这一块的前一个兄弟必须是承载那次工具调用的卡片（或包含它的折叠段）。
+    prevCls: i > 0 ? kids[i - 1].className : null,
+    prevHasWork: i > 0 ? kids[i - 1].querySelectorAll('.work-run').length > 0 : false,
+  }));
 })()`);
+
+const allRows = (snap) => snap.filter((p) => p.isFc).flatMap((p) => p.rows);
 
 // --- 1. 一回合改三个文件（不发审批） -------------------------------------------------------
 check("发送 [tool-many] 回合", (await prompt("[tool-many] 改三个文件")) === 202);
 await idle();
-await sleep(600);
+await sleep(700);
 
-let snap = await panel();
-check("回合末尾出现了文件变更面板", Boolean(snap), snap ? "" : "no .file-changes");
-check("标题是「3 个文件变更」", snap?.head === "3 个文件变更", snap?.head ?? "");
-check("一个文件一条（3 条）", snap?.rows.length === 3, String(snap?.rows.length));
-const app = snap?.rows.find((r) => r.name.startsWith("app.ts"));
-const big = snap?.rows.find((r) => r.name.startsWith("big.ts"));
-const neu = snap?.rows.find((r) => r.name.startsWith("new.md"));
-check("同一文件改两刀 → 合并成一条并注明次数", (app?.name || "").includes("改了 2 次"), app?.name ?? "");
-check("app.ts 计数 = 累计 diff（+2 −1）", (app?.counts || "").includes("+2") && (app?.counts || "").includes("−1"), app?.counts ?? "");
-check("新文件写「新文件 · 2 行」而不是 −0", (neu?.counts || "").includes("新文件"), neu?.counts ?? "");
-check("三个文件的计数按钮都可点", snap?.rows.every((r) => r.disabled === false), JSON.stringify(snap?.rows.map((r) => r.disabled)));
+let snap = await blocks();
+let fc = snap.filter((p) => p.isFc);
+check("出现了文件变更面板", fc.length > 0, `${fc.length} 块`);
+check("每块都在自己那次工具调用下面（前一个兄弟是工具卡/折叠段）",
+  fc.every((p) => /msg/.test(p.prevCls || "") || p.prevHasWork),
+  JSON.stringify(fc.map((p) => [p.prevCls, p.prevHasWork])));
+check("面板不在回合尾巴（每块后面都还有内容）",
+  fc.every((p) => p.i < snap.length - 1), JSON.stringify(fc.map((p) => [p.i, snap.length])));
+
+let rows = allRows(snap);
+check("三次写文件调用 → 四条行（app.ts 改两刀 = 两行）",
+  rows.length === 4, `${rows.length} 行：${rows.map((r) => r.name).join(", ")}`);
+const appRows = rows.filter((r) => r.name.startsWith("app.ts"));
+const neuRow = rows.find((r) => r.name.startsWith("new.md"));
+check("app.ts 的两刀各占一行（位置跟随执行，不合并到回合尾巴）", appRows.length === 2, String(appRows.length));
+check("行上是那次改动自己的计数（不是回合累计）",
+  (appRows[0]?.counts || "").includes("−1") && (appRows[1]?.counts || "").includes("−0"),
+  JSON.stringify(appRows.map((r) => r.counts)));
+check("新文件写「新文件 · N 行」而不是 −0", (neuRow?.counts || "").includes("新文件"), neuRow?.counts ?? "");
+check("计数按钮可点（不是 disabled 的空壳）", rows.every((r) => r.disabled === false), JSON.stringify(rows.map((r) => r.disabled)));
+check("单文件块不带多余的头行", fc.every((p) => p.one === true && !p.head), JSON.stringify(fc.map((p) => [p.one, p.head])));
 
 // --- 2. 点开计数 = 逐行 diff；大文件走 hunk 折叠 ------------------------------------------
 await ev(`(() => {
@@ -108,8 +133,8 @@ await ev(`(() => {
   big?.querySelector('.fc-counts')?.click();
 })()`);
 await sleep(300);
-snap = await panel();
-const bigOpen = snap?.rows.find((r) => r.name.startsWith("big.ts"));
+snap = await blocks();
+const bigOpen = allRows(snap).find((r) => r.name.startsWith("big.ts"));
 check("点开 big.ts 有 diff 行", (bigOpen?.diffLines ?? 0) > 0, String(bigOpen?.diffLines));
 check("40 行文件只改一行 → 有折叠 gap", (bigOpen?.gaps ?? 0) >= 1, `${bigOpen?.gaps} 个 gap`);
 check("不是把 40 行全画出来", (bigOpen?.diffLines ?? 99) < 20, String(bigOpen?.diffLines));
@@ -120,24 +145,36 @@ await ev(`(() => {
   app?.querySelector('.fc-counts')?.click();
 })()`);
 await sleep(300);
-snap = await panel();
-const appOpen = snap?.rows.find((r) => r.name.startsWith("app.ts"));
-check("app.ts 点开：latest 的 +1 那行在 diff 里", (appOpen?.diffLines ?? 0) >= 3, String(appOpen?.diffLines));
+snap = await blocks();
+const appOpen = allRows(snap).find((r) => r.name.startsWith("app.ts"));
+check("app.ts 点开：+1 那行在 diff 里", (appOpen?.diffLines ?? 0) >= 3, String(appOpen?.diffLines));
 
 // --- 3. 刷新页面后仍在（落库的不是内存状态） ------------------------------------------------
+// 注意：刷新/重放后相邻的工具卡会被折进一段 WorkRun，四块单文件面板合理地合成「一段一块」。
+// 所以这里断言的是「文件行还在、位置契约还在」，不是「块数不变」——否则测的是折叠策略，不是落库。
+const before = fc.length;
 await ev(`location.reload()`);
 await sleep(3400);
-snap = await panel();
-check("刷新页面后面板还在（历史回放）", snap?.rows.length === 3, String(snap?.rows.length));
-check("刷新后仍只有一块", snap?.count === 1, String(snap?.count));
+snap = await blocks();
+fc = snap.filter((p) => p.isFc);
+const namesAfter = new Set(allRows(snap).map((r) => r.name.split("/")[0]));
+check("刷新页面后面板还在（历史回放）", fc.length > 0, String(fc.length));
+check("刷新后三个文件都还在", ["app.ts", "big.ts", "new.md"].every((n) => namesAfter.has(n)), [...namesAfter].join(", "));
+check("刷新后位置契约不变（每块都跟在工具卡/折叠段后面）",
+  fc.every((p) => /msg/.test(p.prevCls || "") || p.prevHasWork), JSON.stringify(fc.map((p) => p.prevCls)));
 
-// --- 4. 下一个回合：老面板不重复，新回合不给 diff 就不画 ------------------------------------
+// --- 4. 下一个回合：新回合不给 diff 就不画 --------------------------------------------------
+// `[tool]` 会发权限请求（写 ./demo.txt 但 content 不带 diff），所以先把卡点掉再看。
 check("发送一个没有 diff 的回合", (await prompt("[tool] 只写不报 diff")) === 202);
-await idle();
-await sleep(600);
-snap = await panel();
-check("仍然只有一块面板（一回合一块）", snap?.count === 1, String(snap?.count));
-check("无 diff 的回合没有往面板里塞行", snap?.rows.length === 3, String(snap?.rows.length));
+await sleep(1500);
+const dismissed = await ev(`(() => { const b = document.querySelector('.perm-dialog .btn.allow, .perm-dialog button'); if (b) { b.click(); return true; } return false; })()`);
+await idle(30000);
+await sleep(800);
+snap = await blocks();
+const namesNow = [...new Set(allRows(snap).map((r) => r.name.split("/")[0]))].sort();
+check("无 diff 的回合没有多出文件行（demo.txt 不该出现）", !namesNow.includes("demo.txt"), namesNow.join(", "));
+check("面板块数没有增长", snap.filter((p) => p.isFc).length <= before, `${snap.filter((p) => p.isFc).length} vs ${before}`);
+if (dismissed) console.log("  note [tool] 回合的审批卡已点掉");
 
 // --- 5. 一回合只改一个文件：单文件形态（没有多余的头行） --------------------------------------
 const sess2 = await ev(`fetch('/api/sessions',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:'/tmp',title:'file-changes one'})}).then(r=>r.json())`);
@@ -147,9 +184,10 @@ await ev(`fetch('/api/sessions/${sess2.id}/prompt',{method:'POST',credentials:'s
 await sleep(1200);
 const dismiss = await ev(`(() => { const b = document.querySelector('.perm-dialog .btn.allow, .perm-dialog button'); if (b) { b.click(); return true; } return false; })()`);
 await sleep(3000);
-snap = await panel();
-check("单文件回合：面板是单行形态", snap?.one === true, String(snap?.one));
-check("单文件没有「N 个文件变更」标题行", !snap?.head, snap?.head ?? "(no head)");
+snap = await blocks();
+const one = snap.filter((p) => p.isFc);
+check("单文件回合：面板是单行形态", one.length === 1 && one[0].one === true, JSON.stringify(one.map((p) => [p.one, p.head])));
+check("单文件没有「N 个文件变更」标题行", !one[0]?.head, one[0]?.head ?? "(no head)");
 if (dismiss) console.log("  note 单文件回合出现过审批卡，已点掉（不影响断言）");
 
 console.log(`\n${fail === 0 ? "OK" : "FAILED"} — ${pass} passed, ${fail} failed`);

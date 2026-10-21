@@ -2727,6 +2727,11 @@ export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] 
       // old agent that does not send it must land on `false` (silent) rather than a third state
       // nobody renders.
       notifyOnComplete: r.notifyOnComplete === true,
+      // #39: subagents ride the same frame. `kind` defaults to `process` — the page renders the
+      // legacy shape unchanged for every agent that never sends it.
+      kind: r.kind === "delegation" ? "delegation" : "process",
+      phase: typeof r.phase === "string" ? r.phase : undefined,
+      taskCount: typeof r.taskCount === "number" ? r.taskCount : undefined,
     });
   }
   return out;

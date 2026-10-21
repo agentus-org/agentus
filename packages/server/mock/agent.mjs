@@ -454,16 +454,25 @@ const agent = () => ({
     // `[recall]` — 记忆召回行带条目（issue #37）：与 `[status]` 同一个载体，多一个 `items`，
     // 形状照 fork `acp_adapter/events.py:make_status_cb`。故意给一条带 tags、一条超长（验证展开后
     // 换行而不是把行撑破），并用 `truncated` 说明后面还有 —— 界面上要能看出折叠、展开、截断三件事。
-    if (/\[recall\]/.test(text)) {
-      const items = [
+    // `[recall:N]` 出 N 条（上限 60）：一轮召回几十条是线上的常态，而「展开就刷屏」只有在条目多到
+    // 超过定高时才看得出来 —— 3 条永远撑不满那个框（操作者 2026-10-21 要求定高可滚动）。
+    const recallM = /\[recall(?::(\d+))?\]/.exec(text);
+    if (/recall/.test(text)) { const fs = await import("node:fs"); fs.appendFileSync("/tmp/mock-recall.log", `text=${JSON.stringify(text)} m=${JSON.stringify(recallM && recallM[0])}\n`); }
+    if (recallM) {
+      const want = Math.min(Math.max(Number(recallM[1] ?? 3), 1), 60);
+      const seed = [
         { text: "用户偏好：回复一律中文，技术术语可留英文" },
         { text: "Agentus 的 live 端口是 8788，dev 是 8901，端口权威在 ~/.hermes/cache/agentus/ports.env", tags: ["port", "agentus"] },
         { text: "发布红线：会重启 live 的改动必须等明确指令；纯前端可以直接 promote" + "（这段故意写得长一些，用来验证展开后的条目会换行而不是把行撑破）".repeat(2) },
       ];
+      const items = Array.from({ length: want }, (_, i) => {
+        const base = seed[i % seed.length];
+        return i < seed.length ? base : { ...base, text: `第 ${i + 1} 条：${base.text}` };
+      });
       setTimeout(() => {
         void send(agent._conn, sessionId, {
           sessionUpdate: "agent_thought_chunk",
-          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: "👁️ Hindsight — recalled 3 memories", items, truncated: true } },
+          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: `👁️ Hindsight — recalled ${want} memories`, items, truncated: true } },
           content: { type: "text", text: "" },
         }).catch(() => undefined);
       }, Math.min(slow * 2, 900));
@@ -523,6 +532,40 @@ const agent = () => ({
       setTimeout(() => {
         void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
       }, runMs + 1200);
+    }
+
+    // `[bg-delegation]` — the OTHER producer of background frames (issue #39): a live
+    // `delegate_task(background=true)`. Same carrier as `[bg]`, but the row is a subagent: no pid, no
+    // command line, a GOAL, and `taskCount` children behind one row. This is what the fork's relay now
+    // sends; before the fix it sent nothing at all, so the cockpit had nothing to draw while two
+    // children ran for minutes.
+    if (/\[bg-delegation\]/.test(text)) {
+      const subId = `deleg-${sessionId}-1`;
+      const snapshot = (rows) => ({
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermes: { kind: "background", tasks: rows } },
+        content: { type: "text", text: "" },
+      });
+      const row = {
+        id: subId, kind: "delegation", command: "读一遍 packages/web 的检索链路，写出结论",
+        pid: null, status: "running", phase: "running", uptimeSeconds: 95,
+        notifyOnComplete: true, taskCount: 2,
+      };
+      void send(agent._conn, sessionId, snapshot([row])).catch(() => undefined);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: {
+            kind: "completion",
+            text: "委派的子任务已完成：读一遍 packages/web 的检索链路，写出结论",
+            processId: subId,
+          } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, 1600);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
+      }, 2800);
     }
 
     // `[bgquiet]` — a SILENT background process: running, no notify, no completion carrier. This is
