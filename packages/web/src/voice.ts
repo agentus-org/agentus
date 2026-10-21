@@ -895,6 +895,8 @@ class Dictation {
    *  fire at all: a loud reply clamped BOTH meters at 1.0, and 0.45 × 1.0 stayed above any voice. */
   #rms = 0;
   #wave = new Float32Array(256);
+  /** Set while a call wants its 16 kHz frames scored (see `setVadTap`). */
+  #vadTap: ((samples: Float32Array) => void) | null = null;
   #relay = true;
   /** The streaming path's own coordinates, kept so a dead socket can be REPLACED without
    *  rebuilding the capture: the call holds the microphone for minutes, and the upstream ends a
@@ -938,6 +940,10 @@ class Dictation {
   };
   /** Newest input snapshot for the waveform (a flat line while not capturing). */
   wave = (): Float32Array => this.#wave;
+  /** Hand every 16 kHz microphone frame to a detector (the call's Silero VAD).
+   *  A tap, not a stored queue: the detector owns its own buffering, and a call that hangs up leaves
+   *  nothing behind once the sink is nulled. */
+  setVadTap = (fn: ((samples: Float32Array) => void) | null): void => { this.#vadTap = fn; };
   /** While false the mic stays OPEN (levels keep flowing, barge-in keeps working) but PCM
    *  is not relayed to the recogniser — the call speaks without feeding our own TTS back
    *  into the ASR.
@@ -994,6 +1000,9 @@ class Dictation {
       : this.#level * 0.72 + target * 0.28;
     // …and the same frame in real units, smoothed the same way, for the barge gate
     this.#rms = rms > this.#rms ? this.#rms + (rms - this.#rms) * 0.6 : this.#rms * 0.72 + rms * 0.28;
+    // The detector wants the FULL 16 kHz frame, not the downsampled display waveform: Silero's own
+    // frame is 512 samples, and feeding it every other sample is how a detector invents a cadence.
+    this.#vadTap?.(chan);
     const step = Math.max(1, Math.floor(chan.length / this.#wave.length));
     for (let j = 0, i = 0; j < this.#wave.length && i < chan.length; j++, i += step) this.#wave[j] = chan[i];
   }

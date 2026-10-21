@@ -297,6 +297,22 @@ try {
   check("the call starts SPEAKING when the reply streams in", spoke, `upstream=${upstreamHits}`);
   check("the reply really reached the TTS endpoint", upstreamHits > hitsBefore, `${hitsBefore} → ${upstreamHits}`);
 
+  // The speech detector is a real model in this page (Silero through onnxruntime-web). Its two assets
+  // are only fetched by `silero.load()`, which only runs once the call is actually listening — so their
+  // presence in the resource timeline is the proof that the wiring is live and that BOTH paths (the
+  // model at /vad/*.onnx and the wasm runtime copied out of node_modules) resolve in the built app.
+  // Without this, a build that quietly stopped copying the wasm would just fall back to the level gate
+  // and every other check here would still pass.
+  let vadAssets = { model: false, wasm: false };
+  for (let i = 0; i < 60; i++) {
+    vadAssets = await ev(`(() => { const n = performance.getEntriesByType('resource').map((e) => e.name);
+      return { model: n.some((x) => x.includes('/vad/silero_vad.onnx')), wasm: n.some((x) => x.includes('ort-wasm')) }; })()`);
+    if (vadAssets.model && vadAssets.wasm) break;
+    await sleep(250);
+  }
+  check("the call loads the Silero model and the ONNX wasm runtime onto the page",
+    vadAssets.model === true && vadAssets.wasm === true, JSON.stringify(vadAssets));
+
   // the animation must be driven by that audio, and the waveform must be a real trace
   const speakSigA = await ev(`window.__sig('.call-orb-canvas', true)`);
   // the phase flips to speaking when a SENTENCE is queued; the audio lands a fetch later —

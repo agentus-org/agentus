@@ -31,6 +31,7 @@ import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playb
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import { vadStep, newVad, type VadState } from "./vad";
+import { silero } from "./silero";
 import {
   IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconRefresh, IconSend,
   IconSettings, IconStop, IconSubtitles,
@@ -344,6 +345,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         if (dead) return;
         if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
         setPhase("listening");
+        // The speech detector: Silero in the page, on this microphone's own 16 kHz frames. Lazy and
+        // non-blocking — the call is already listening above, and every path below falls back to the
+        // measured-floor gate (`vadStep`) while the model is loading or if it never loads at all.
+        void silero.load("/vad/silero_vad.onnx").then((ok) => {
+          if (dead || !ok) return;
+          silero.reset();
+          dictation.setVadTap((s) => silero.push(s));
+        });
       } catch (e) {
         if (dead) return;
         setErr(String((e as Error)?.message ?? e));
@@ -353,6 +362,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     void boot();
     return () => {
       dead = true;
+      dictation.setVadTap(null);
+      silero.reset();
       aliveRef.current = false;     // covers 改用键盘 and the parent closing the call
       speaker.stop();
       dictation.stop();
@@ -457,7 +468,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       // 「他在说话吗」 is now a step over the MEASURED room floor with a hangover, not an absolute
       // 0.010: a quiet voice used to fall under it (「我说完了它还等着」) and a phone's own speaker
       // used to sit over it (the call interrupting itself). See vad.ts.
-      const speechNow = phaseRef.current === "listening" ? vadStep(vadRef.current, mic, Date.now()) : false;
+      // Silero when it is loaded, the measured-floor gate otherwise (see vad.ts / silero.ts).
+      const speechNow = phaseRef.current === "listening"
+        ? (silero.ready ? silero.st.speech : vadStep(vadRef.current, mic, Date.now()))
+        : false;
       if (phaseRef.current === "listening" && (speechNow || mic > VOICE_RMS)) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
