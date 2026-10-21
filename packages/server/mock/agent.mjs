@@ -451,6 +451,24 @@ const agent = () => ({
       }
     }
 
+    // `[recall]` — 记忆召回行带条目（issue #37）：与 `[status]` 同一个载体，多一个 `items`，
+    // 形状照 fork `acp_adapter/events.py:make_status_cb`。故意给一条带 tags、一条超长（验证展开后
+    // 换行而不是把行撑破），并用 `truncated` 说明后面还有 —— 界面上要能看出折叠、展开、截断三件事。
+    if (/\[recall\]/.test(text)) {
+      const items = [
+        { text: "用户偏好：回复一律中文，技术术语可留英文" },
+        { text: "Agentus 的 live 端口是 8788，dev 是 8901，端口权威在 ~/.hermes/cache/agentus/ports.env", tags: ["port", "agentus"] },
+        { text: "发布红线：会重启 live 的改动必须等明确指令；纯前端可以直接 promote" + "（这段故意写得长一些，用来验证展开后的条目会换行而不是把行撑破）".repeat(2) },
+      ];
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: { kind: "status", statusKind: "lifecycle", text: "👁️ Hindsight — recalled 3 memories", items, truncated: true } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, Math.min(slow * 2, 900));
+    }
+
     // `[blank]` — the SAME carrier with its `_meta` stripped, i.e. the shape a status line takes when
     // the sentence is lost before us (measured 2026-10-17: hermes set `update._meta` while the ACP
     // model's field is `field_meta`, so every status shipped as a bare empty thought). The cockpit must

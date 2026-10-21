@@ -10,6 +10,7 @@ import type {
   PromptAttachment,
   ServerEvent,
   SessionInfo,
+  StatusNoteItem,
   StoredMessage,
   TurnTrace,
 } from "../../shared/src/index";
@@ -79,7 +80,12 @@ export type MsgView =
   /** 一条状态行（`messages.kind = "note"`）：不是谁说过的话，是过程 —— 「这一轮回忆了几条记忆」
    *  「上下文压缩过」「有个警告」。它现在是**落库的行**（操作者 2026-10-18），所以刷新、重连、
    *  换设备之后都还在；`category` 是家族，`hits` 是折叠掉的次数（压缩会心跳十几条）。 */
-  | { key: string; kind: "note"; category: string; text: string; hits?: number; at?: number }
+  | {
+      key: string; kind: "note"; category: string; text: string; hits?: number; at?: number;
+      /** memory 行的条目（issue #37）：`recalled N memories` 说的是哪几条。server 只对 memory
+       *  行带它，压缩/警告行没有。`truncated` 说明 agent 那边已经把后面的截掉了。 */
+      items?: StatusNoteItem[]; truncated?: boolean;
+    }
   /** 审批请求落库的那一行（`messages.kind = "approval"`）。请求到达时写入，决定随后补进同一行 ——
    *  于是「问过什么、我答了什么、还是超时作废了」在聊天记录里留得住，而不是只活在那张弹窗里。
    *  `decision === null` 表示还没答；是否仍在等由 `v.perms` 说了算（服务端重启后可能已经不在了）。 */
@@ -2351,6 +2357,10 @@ class Cockpit {
         const row: MsgView = {
           key, kind: "note", category: String(p.category ?? ""),
           text: typeof p.text === "string" ? p.text : "", hits, at,
+          items: Array.isArray(p.items)
+            ? (p.items as StatusNoteItem[]).filter((i) => i && typeof i.text === "string" && i.text.trim())
+            : undefined,
+          truncated: p.truncated === true,
         };
         const at0 = index.get(key);
         if (at0 !== undefined && list[at0]?.kind === "note") list[at0] = row;

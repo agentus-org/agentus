@@ -491,6 +491,30 @@ button { font: inherit; }
 /* 两种值得区分的语气：警告（降级/被拦截）与完成（压缩结束）。其余保持安静。 */
 .status-note[data-kind="warn"] { color: var(--warn, #c07a12); border-left-color: var(--warn, #c07a12); }
 .status-note[data-kind="compacted"] { color: var(--ok, #3f8f5f); border-left-color: var(--ok, #3f8f5f); }
+/* 记忆条目（#37）：`recalled 8 memories` 后面那个「4 条」按钮，点开是这 4 条记忆本身。
+   行本身是 flex，条目列表要整行铺开 —— `flex-basis:100%` + `wrap` 让它在下一行占满，
+   而不是被挤成右侧一条窄柱。句子不再抢满整行（`0 1 auto`）：否则短句 + 按钮会被拉开到
+   两头，屏幕上读成两件不相关的事。 */
+.status-note { flex-wrap: wrap; }
+.status-note-text { flex: 0 1 auto; }
+.status-note-toggle {
+  flex: 0 0 auto; padding: 0 5px; border-radius: 4px; margin-left: 2px;
+  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  font-size: 10.5px; line-height: 15px; cursor: pointer;
+}
+.status-note-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.status-note-items {
+  flex: 1 0 100%; margin: 4px 0 1px; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.status-note-item {
+  display: flex; gap: 6px; align-items: baseline;
+  padding: 3px 7px; border-radius: 4px; background: var(--panel-2, rgba(127, 127, 127, 0.06));
+  font-size: 11px; color: var(--text);
+}
+.status-note-item-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.status-note-item-tags { flex: 0 0 auto; color: var(--text-dim); font-size: 10px; }
+.status-note-item.more { color: var(--text-dim); background: transparent; font-style: italic; }
 
 .stream-spin {
   /* A ring has no baseline to align on, so it is pinned to the TOP of the row's first line instead —

@@ -434,6 +434,18 @@ export type ClientCommand =
       signature?: string; // "<kind>:<toolCallTitle>" for always-allow memory
     };
 
+/** 一条记忆召回条目 —— `note` 行 `payload.items` 的元素（issue #37）。
+ *
+ *  「recalled 8 memories」只说记忆被用上了，没说用上的是哪几条，于是「召回错了/召回旧了」和
+ *  「召回得好」在屏幕上长得一模一样。条目由 provider 侧截断（200 字符/条、6K/轮），server 再按
+ *  自己的上限（20 条 / 300 字符）限一次，因为这条数据来自 agent 进程并且要落库。
+ */
+export interface StatusNoteItem {
+  text: string;
+  tags?: string[];
+  type?: string;
+}
+
 export interface StoredMessage {
   seq: number; // monotonic per session — reconnect dedup anchor
   sessionId: string;

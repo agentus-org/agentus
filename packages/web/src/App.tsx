@@ -42,7 +42,7 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
-import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, TurnTrace, UsageView } from "../../shared/src/index";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
 export function App(): JSX.Element {
@@ -1811,13 +1811,43 @@ function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
  *  `kind`（`note`），渲染成这行而不是气泡。**但它是落库的**（同一个 2026-10-18 的第二个决定）：
  *  「回忆了几条记忆」「上下文压缩过」「有警告」事后还有意义，刷新一次就消失是丢信息。真正的呼吸声
  *  （provider 倒计时、租约闲聊）不落库，仍然只活在 state.ts 的 `notes` 里，随回合结束消失。 */
-function StatusNoteRow({ n }: { n: Pick<StatusNote, "key" | "kind" | "text" | "at"> & { hits?: number } }): JSX.Element {
+function StatusNoteRow({ n }: {
+  n: Pick<StatusNote, "key" | "kind" | "text" | "at"> & { hits?: number; items?: StatusNoteItem[]; truncated?: boolean };
+}): JSX.Element {
   const clock = new Date(n.at);
   const hh = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}:${String(clock.getSeconds()).padStart(2, "0")}`;
+  // 「recalled 8 memories」只说记忆被用上了，没说用上的是哪几条 —— 展开就是这行唯一缺的那半句话
+  // （issue #37）。没有条目的行（压缩、警告、别家 agent 的状态行）保持原来那一行，一个像素都不变。
+  const items = n.items ?? [];
+  const [open, setOpen] = useState(false);
   return (
     <div className="status-note" data-kind={n.kind || "lifecycle"} role="note" title={clock.toLocaleString()}>
       <span className="status-note-time">{hh}</span>
       <span className="status-note-text">{n.text}</span>
+      {items.length ? (
+        <>
+          <button
+            type="button"
+            className="status-note-toggle"
+            aria-expanded={open}
+            aria-label={`${open ? "收起" : "展开"}这 ${items.length} 条记忆`}
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? "收起" : `${items.length} 条`}
+          </button>
+          {open ? (
+            <ol className="status-note-items">
+              {items.map((it, i) => (
+                <li key={i} className="status-note-item">
+                  <span className="status-note-item-text">{it.text}</span>
+                  {it.tags?.length ? <span className="status-note-item-tags">{it.tags.join(" · ")}</span> : null}
+                </li>
+              ))}
+              {n.truncated ? <li className="status-note-item more">…还有更多，已截断</li> : null}
+            </ol>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1864,7 +1894,10 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
       out.push(
         <StatusNoteRow
           key={row.m.key}
-          n={{ key: row.m.key, kind: row.m.category, text: row.m.text, at: row.m.at ?? Date.now(), hits: row.m.hits }}
+          n={{
+            key: row.m.key, kind: row.m.category, text: row.m.text, at: row.m.at ?? Date.now(),
+            hits: row.m.hits, items: row.m.items, truncated: row.m.truncated,
+          }}
         />,
       );
     } else {

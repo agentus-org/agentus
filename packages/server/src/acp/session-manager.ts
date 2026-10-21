@@ -43,6 +43,7 @@ import type {
   ServerEvent,
   SessionInfo,
   SessionModeState,
+  StatusNoteItem,
   TurnTrace,
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
@@ -1979,7 +1980,10 @@ export class SessionManager {
         // 落库（操作者 2026-10-18 选的 A 档）：刷新页面、重连、换设备之后，这行还在。
         // 折叠在 store 里做（见 Store.appendNote），因为「压缩开始 → 心跳 → 完成」和每回合的
         // 一次回忆都必须收敛成一行 —— 客户端折只治屏幕噪音，库里照样长心跳。
-        const row = this.#store.appendNote(live.info.id, { category, text: statusText });
+        const detail = category === "memory" ? statusItemsOf(u) : undefined;
+        const row = this.#store.appendNote(live.info.id, {
+          category, text: statusText, items: detail?.items, truncated: detail?.truncated,
+        });
         this.#emit({ t: "message", message: row });
       } else {
         // 剩下的（provider 等待的倒计时、租约闲聊）本来就是一秒就作废的呼吸声：只走 live 通道。
@@ -2739,6 +2743,38 @@ export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] 
  *  live child (the exact orphan #22 removed). So: store everything, hide at the wire. */
 export function visibleBackgroundTasks(tasks: BackgroundTask[]): BackgroundTask[] {
   return agentSettings().showSilentBackground ? tasks : tasks.filter((t) => t.notifyOnComplete === true);
+}
+
+/** 一帧状态自带的条目（`_meta.hermes.items`），只有 memory 行用得上 —— issue #37。
+ *
+ *  形状（fork `acp_adapter/events.py:make_status_cb`）：与状态句同一条 thought 帧，
+ *  `items: [{text, tags?, type?}]`、`truncated` 说明 agent 侧已经截断过。**在这里限一次量**
+ *  是因为这串东西来自 agent 进程、还要落库：provider 已经按 200 字符/条、6K/轮截过，但那是
+ *  agent 的承诺，不是我们的保证。上限与前端展开的容量对齐，绝不把一帧 200KB 的 memory 写进 SQLite。
+ */
+export const NOTE_ITEMS_MAX = 20;
+export const NOTE_ITEM_CHARS = 300;
+
+export function statusItemsOf(u: Record<string, unknown>): { items: StatusNoteItem[]; truncated: boolean } | undefined {
+  const raw = hermesPayload(u).items;
+  if (!Array.isArray(raw)) return undefined;
+  const items: StatusNoteItem[] = [];
+  for (const entry of raw) {
+    if (items.length >= NOTE_ITEMS_MAX) break;
+    const text = typeof entry === "object" && entry ? (entry as { text?: unknown }).text : undefined;
+    if (typeof text !== "string" || !text.trim()) continue;
+    const item: StatusNoteItem = { text: text.trim().slice(0, NOTE_ITEM_CHARS) };
+    const tags = (entry as { tags?: unknown }).tags;
+    if (Array.isArray(tags)) {
+      const clean = tags.filter((t): t is string => typeof t === "string" && !!t).slice(0, 8);
+      if (clean.length) item.tags = clean;
+    }
+    const kind = (entry as { type?: unknown }).type;
+    if (typeof kind === "string" && kind) item.type = kind;
+    items.push(item);
+  }
+  if (!items.length) return undefined;
+  return { items, truncated: hermesPayload(u).truncated === true || raw.length > items.length };
 }
 
 function statusKindOf(u: Record<string, unknown>): string | undefined {
