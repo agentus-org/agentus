@@ -19,7 +19,8 @@ import { WorkspaceButton } from "./WorkspaceButton";
 import { ToolPanel } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
-import { onOpenLocalFile } from "./fileBus";
+import { onOpenLocalFile, openLocalFile } from "./fileBus";
+import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
 import { parseBgNotice, shortCommand } from "./bgNotice";
@@ -1840,6 +1841,15 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   const rows = foldWork(msgs);
   const out: JSX.Element[] = [];
   let n = 0;
+  // #38 回合级文件变更：一个回合 = 上一条用户消息之后到这条用户消息之前。回合末尾挂一块
+  // 「N 个文件变更」，而不是散在每条工具卡里等人自己拼。用户消息是唯一的回合边界
+  // （agent 的消息/思考/工具/计划都发生在同一次 prompt 之内），所以到边界就 flush 一次。
+  let turn: MsgView[] = [];
+  const flushTurn = (): void => {
+    if (!turn.length) return;
+    out.push(<FileChangesPanel key={`fc-${turn[0].key}-${turn.length}`} msgs={turn} />);
+    turn = [];
+  };
   while (n < notes.length && notes[n].afterKey === null) {
     out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
     n++;
@@ -1847,6 +1857,7 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
   for (const row of rows) {
     if (row.kind === "work") {
       out.push(<WorkRun key={row.key} items={row.items} />);
+      turn.push(...row.items);
     } else if (row.m.kind === "note") {
       // 落库的状态行：它本来就是一条消息行（kind `note`），位置由 seq 定，所以直接画在这一行上，
       // 不需要 `afterKey` 锚点那套（那套是给内存里、没有 seq 的临时状态行用的）。
@@ -1857,14 +1868,17 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
         />,
       );
     } else {
+      if (row.m.kind === "user") flushTurn();   // 新的回合开始 → 上一回合的变更面板落在它前面
       out.push(<Bubble key={row.m.key} m={row.m} sid={sid} backend={backend} busy={busy} last={row.tail} live={row.live} base={base} />);
     }
+    if (row.kind === "msg" && row.m.kind !== "user") turn.push(row.m);
     const keys = new Set<string>(row.kind === "msg" ? [row.m.key] : row.items.map((i) => i.key));
     for (let cand = notes[n]; cand && cand.afterKey !== null && keys.has(cand.afterKey); cand = notes[n]) {
       out.push(<StatusNoteRow key={cand.key} n={cand} />);
       n++;
     }
   }
+  flushTurn();
   while (n < notes.length) {
     out.push(<StatusNoteRow key={notes[n].key} n={notes[n]} />);
     n++;
@@ -2940,70 +2954,28 @@ function PermOptions({ sid, req, onAnswered }: {
 
 /** Unified, hunk-only line diff of the agent's before/after.
  *
- *  Hermes' edit approval hands over the WHOLE file twice (`acp.tool_diff_content`: old_text and
- *  new_text are entire file contents), and the operator's question is never "what is in this
- *  file" — it is "what changes". So: drop the common head and tail, diff the middle, then keep
- *  only changed lines plus 3 lines of context and collapse the rest into a counted gap. */
-type DiffLine = { kind: "ctx" | "add" | "del" | "gap"; text: string; oldNo: number | null; newNo: number | null };
+ *  `diffLines` itself lives in `changes.ts` (#38) — the per-turn file-changes panel renders the
+ *  same lines, and two implementations of one diff would drift. The shape it replaced here:
+ *  Hermes' edit approval hands over the WHOLE file twice (`acp.tool_diff_content`), and the
+ *  operator's question is never "what is in this file" — it is "what changes". */
 
-function diffLines(oldText: string, newText: string): DiffLine[] {
-  const a = oldText.length ? oldText.replace(/\n$/, "").split("\n") : [];
-  const b = newText.length ? newText.replace(/\n$/, "").split("\n") : [];
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head]) head++;
-  let tail = 0;
-  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
-  const headCtx: DiffLine[] = [];
-  const CTX = 3;
-  if (head > CTX) headCtx.push({ kind: "gap", text: `⋯ 上面 ${head - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
-  for (let i = Math.max(0, head - CTX); i < head; i++) headCtx.push({ kind: "ctx", text: a[i], oldNo: i + 1, newNo: i + 1 });
-
-  const midA = a.slice(head, a.length - tail);
-  const midB = b.slice(head, b.length - tail);
-  const pairs: DiffLine[] = [];
-  // LCS over the middle; a pathological pair of files would blow up memory, so fall back to
-  // "the whole middle was replaced" — coarser, but still honest about what the request does.
-  if (midA.length * midB.length > 250_000) {
-    midA.forEach((t, i) => pairs.push({ kind: "del", text: t, oldNo: head + i + 1, newNo: null }));
-    midB.forEach((t, i) => pairs.push({ kind: "add", text: t, oldNo: null, newNo: head + i + 1 }));
-  } else {
-    const n = midA.length, m = midB.length;
-    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-    for (let i = n - 1; i >= 0; i--) {
-      for (let j = m - 1; j >= 0; j--) {
-        dp[i][j] = midA[i] === midB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-    let i = 0, j = 0;
-    while (i < n && j < m) {
-      if (midA[i] === midB[j]) { pairs.push({ kind: "ctx", text: midA[i], oldNo: head + i + 1, newNo: head + j + 1 }); i++; j++; }
-      else if (dp[i + 1][j] >= dp[i][j + 1]) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
-      else { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
-    }
-    while (i < n) { pairs.push({ kind: "del", text: midA[i], oldNo: head + i + 1, newNo: null }); i++; }
-    while (j < m) { pairs.push({ kind: "add", text: midB[j], oldNo: null, newNo: head + j + 1 }); j++; }
-  }
-  const tailCtx: DiffLine[] = [];
-  for (let i = 0; i < Math.min(tail, CTX); i++) {
-    tailCtx.push({ kind: "ctx", text: a[a.length - tail + i], oldNo: a.length - tail + i + 1, newNo: b.length - tail + i + 1 });
-  }
-  if (tail > CTX) tailCtx.push({ kind: "gap", text: `⋯ 下面 ${tail - CTX} 行未变 ⋯`, oldNo: null, newNo: null });
-
-  // hunk selection over the middle: changed lines ±3, everything else becomes a counted gap
-  const keep = new Array(pairs.length).fill(false);
-  pairs.forEach((p, k) => {
-    if (p.kind === "ctx") return;
-    for (let c = Math.max(0, k - CTX); c <= Math.min(pairs.length - 1, k + CTX); c++) keep[c] = true;
-  });
-  const body: DiffLine[] = [];
-  let skipped = 0;
-  pairs.forEach((p, k) => {
-    if (!keep[k]) { skipped++; return; }
-    if (skipped) { body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null }); skipped = 0; }
-    body.push(p);
-  });
-  if (skipped) body.push({ kind: "gap", text: `⋯ 中间 ${skipped} 行未变 ⋯`, oldNo: null, newNo: null });
-  return [...headCtx, ...body, ...tailCtx];
+/** The diff BODY — shared by the approval card and the per-turn file-changes panel (#38), so
+ *  the two render one diff the same way instead of drifting apart. */
+function DiffLines({ lines }: { lines: DiffLine[] }): JSX.Element {
+  return (
+    <div className="perm-diff" role="region" aria-label="变更内容">
+      {lines.map((l, i) => (l.kind === "gap" ? (
+        <div className="perm-diff-gap" key={i}>{l.text}</div>
+      ) : (
+        <div className={`perm-diff-line ${l.kind}`} key={i}>
+          <span className="no">{l.oldNo ?? ""}</span>
+          <span className="no">{l.newNo ?? ""}</span>
+          <span className="sig">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
+          <span className="txt">{l.text || " "}</span>
+        </div>
+      )))}
+    </div>
+  );
 }
 
 /** 「变更」 as a ROW you click, not a wall of text — the shape AionUi's FileChangesPanel uses
@@ -3035,23 +3007,101 @@ function PermChanges({ diff }: { diff: PermissionDiff }): JSX.Element {
         </span>
         <span className="perm-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
-      {open ? (
-        <div className="perm-diff" role="region" aria-label="变更内容">
-          {lines.map((l, i) => (l.kind === "gap" ? (
-            <div className="perm-diff-gap" key={i}>{l.text}</div>
-          ) : (
-            <div className={`perm-diff-line ${l.kind}`} key={i}>
-              <span className="no">{l.oldNo ?? ""}</span>
-              <span className="no">{l.newNo ?? ""}</span>
-              <span className="sig">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
-              <span className="txt">{l.text || " "}</span>
-            </div>
-          )))}
-        </div>
-      ) : null}
+      {open ? <DiffLines lines={lines} /> : null}
       {diff.truncated ? (
         <div className="perm-cut">agent 发来的是整份文件，这里只保留了改动附近的部分</div>
       ) : null}
+    </div>
+  );
+}
+
+/** 一个文件一条：#38 的「这一回合改了哪些文件」。
+ *
+ *  为什么挂在回合末尾而不是每条工具卡里：回合跑完，操作者第一个问题是「它到底改了我哪些
+ *  文件」——散在各条 tool_call 里的 diff 要一条条翻才能拼出来。这一块把同一回合的所有写文件
+ *  调用按 path 合并，一行一个文件，点计数看 diff、点文件名看现在的文件。
+ *
+ *  与审批无关：这里不看 permission、不看权限模式。`accept_edits` 模式下 agent 不问就写，
+ *  那种回合根本没有审批卡可翻 —— 恰恰最需要这一块。 */
+function FileChangeRow({ f }: { f: FileChange }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const isNew = f.oldText.length === 0 && f.newText.length > 0;
+  const canDiff = isNew || f.oldText.length > 0 || f.newText.length > 0;
+  const lines = useMemo(() => (canDiff ? diffLines(f.oldText, f.newText) : []), [canDiff, f.oldText, f.newText]);
+  // 目录单独一格、去掉末尾分隔符：直接拼在文件名后面会读成「app.ts/repo/src/」，像一条坏路径
+  const dir = f.path === f.name ? "" : f.path.slice(0, f.path.length - f.name.length).replace(/[\\/]+$/, "");
+  return (
+    <div className="fc-row">
+      <div className="fc-line">
+        <span className="fc-dot" aria-hidden="true" />
+        <button
+          type="button"
+          className="fc-name"
+          title={`在右侧面板打开 ${f.path}`}
+          onClick={() => openLocalFile({ path: f.path })}
+        >
+          {f.name}
+          {dir ? <span className="fc-dir">{dir}</span> : null}
+          {f.edits > 1 ? <span className="fc-edits">改了 {f.edits} 次</span> : null}
+        </button>
+        <button
+          type="button"
+          className="fc-counts"
+          aria-expanded={open}
+          aria-label={`${open ? "收起" : "查看"} ${f.path} 的变更`}
+          disabled={!canDiff}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {isNew ? <span className="add">新文件 · {f.insertions} 行</span> : (
+            <>
+              <span className="add">+{f.insertions}</span>
+              <span className="del">−{f.deletions}</span>
+            </>
+          )}
+        </button>
+      </div>
+      {open && canDiff ? <DiffLines lines={lines} /> : null}
+    </div>
+  );
+}
+
+/** 回合末尾那块：「N 个文件变更」。1 个文件就是一行（对齐 AionUi 的单文件形态），
+ *  ≥2 个文件才有一个可折叠的标题行 —— 一个文件还多画一个头，只是多一层点击。 */
+function FileChangesPanel({ msgs }: { msgs: MsgView[] }): JSX.Element | null {
+  const files = useMemo(() => {
+    const list: ToolChange[] = [];
+    for (const m of msgs) if (m.kind === "tool" && m.changes?.length) list.push(...m.changes);
+    return mergeChanges(list);
+  }, [msgs]);
+  const [open, setOpen] = useState(true);
+  if (!files.length) return null;
+  if (files.length === 1) {
+    return (
+      <div className="file-changes one">
+        <FileChangeRow f={files[0]} />
+      </div>
+    );
+  }
+  const total = files.reduce((n, f) => n + f.insertions, 0);
+  const gone = files.reduce((n, f) => n + f.deletions, 0);
+  return (
+    <div className="file-changes">
+      <button
+        type="button"
+        className="fc-head"
+        aria-expanded={open}
+        aria-label={`${open ? "收起" : "展开"} ${files.length} 个文件变更`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconFile size={13} />
+        <span className="fc-title">{files.length} 个文件变更</span>
+        <span className="fc-counts static">
+          <span className="add">+{total}</span>
+          <span className="del">−{gone}</span>
+        </span>
+        <span className="perm-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? files.map((f) => <FileChangeRow key={f.path} f={f} />) : null}
     </div>
   );
 }

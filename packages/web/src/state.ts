@@ -14,6 +14,7 @@ import type {
   TurnTrace,
 } from "../../shared/src/index";
 import { blockKeyOf, foldTextRow, reindexBlocks } from "./transcript";
+import { changesOfTool, type ToolChange } from "./changes";
 import { webNotify } from "./webNotify";
 
 /** Plan step: ACP's own shape (content/status), plus the cockpit's terminal stamp. */
@@ -58,6 +59,10 @@ export type MsgView =
       detail: string;
       /** tool input as the agent reported it (rawArgs/title-adjacent metadata) */
       input: string;
+      /** 这一调用改到的文件（#38）：回合末尾那块「N 个文件变更」就是从这些行聚合的。
+       *  在 ingest 处抽一次，而不是渲染时再翻 payload —— 视图层拿不到 payload（只留了
+       *  title/detail/input 这几个字符串），而聚合是纯函数，见 changes.ts。 */
+      changes?: ToolChange[];
       at?: number;
     }
   | {
@@ -2404,6 +2409,11 @@ class Cockpit {
         ) as Extract<MsgView, { kind: "tool" }> | undefined;
         const detail = extractToolDetail(p);
         const input = extractToolInput(p);
+        // 文件变更（#38）：后面几帧可能补上 diff 内容，所以是追加，不是覆盖。
+        // 同一 path + 同样的 old/new 再来一遍不追加 —— 否则一次调用会被数成「改了 2 次」。
+        const seenChange = new Set((existing?.changes ?? []).map((c) => `${c.path}\u0000${c.oldText ?? ""}\u0000${c.newText ?? ""}\u0000${c.diffText ?? ""}`));
+        const fresh = changesOfTool(p).filter((c) => !seenChange.has(`${c.path}\u0000${c.oldText ?? ""}\u0000${c.newText ?? ""}\u0000${c.diffText ?? ""}`));
+        const changes = fresh.length ? [...(existing?.changes ?? []), ...fresh] : existing?.changes;
         // upsert semantics (design.md §8-5): update, never append a second bubble
         if (existing) {
           // Replace, never write through (same reason as foldTextRow): a tool card whose status or
@@ -2416,13 +2426,14 @@ class Cockpit {
             // output grows across tool_call_update frames — replace, never append twice
             detail: detail ?? existing.detail,
             input: input ?? existing.input,
+            changes,
           };
           if (ai >= 0) list[ai] = next;
         } else {
           list.push({
             key: `tc-${tcId}`, kind: "tool", toolCallId: tcId, at,
             title: String(p.title ?? "tool call"), status: String(p.status ?? "pending"),
-            kind2: String(p.kind ?? ""), detail, input,
+            kind2: String(p.kind ?? ""), detail, input, changes,
           });
         }
         break;

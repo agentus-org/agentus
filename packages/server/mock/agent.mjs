@@ -706,6 +706,34 @@ const agent = () => ({
       }
     }
 
+    // `[tool-many]` — 一个回合改了三个文件（issue #38：回合末尾的「N 个文件变更」）。
+    // 三个刻意不同的形状：同一文件**改两刀**（合并成一条、edits=2）、一个 40 行文件只改中间
+    // 一行（必须走 hunk 折叠）、一个新文件（oldText 为空 → 不能编造删除行）。
+    // 这个 fixture **不发权限请求**，形状就是 accept_edits 那种「不问就写」的回合 —— 也正因此
+    // 它同时是「这一块不依赖审批」的证据：从审批路径拿不到任何 diff 的回合，面板照样得有内容。
+    if (/\[tool-many\]/.test(text)) {
+      const big = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n") + "\n";
+      const bigEdit = big.replace("export const line20 = 20;", "export const line20 = 'twenty';");
+      const calls = [
+        { id: `tc-many-1-${sessionId}`, path: "/repo/src/app.ts", oldText: "const x = 1;\nconst y = 2;\n", newText: "const x = 1;\nconst y = 20;\n" },
+        { id: `tc-many-2-${sessionId}`, path: "/repo/src/app.ts", oldText: "const x = 1;\nconst y = 20;\n", newText: "const x = 1;\nconst y = 20;\nconst z = 3;\n" },
+        { id: `tc-many-3-${sessionId}`, path: "/repo/src/big.ts", oldText: big, newText: bigEdit },
+        { id: `tc-many-4-${sessionId}`, path: "/repo/docs/new.md", oldText: "", newText: "# 新文件\n" },
+      ];
+      for (const c of calls) {
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call", toolCallId: c.id,
+          title: `Edit file: ${c.path}`, kind: "edit", status: "pending",
+          content: [{ type: "diff", path: c.path, oldText: c.oldText, newText: c.newText }],
+          rawInput: { tool: "patch", arguments: { path: c.path } },
+        });
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "tool_call_update", toolCallId: c.id,
+          status: "completed", rawOutput: `wrote ${c.path}`,
+        });
+      }
+    }
+
     // `[plan-long]` — the same frame with steps long enough to wrap on a phone. The operator's
     // complaint (2026-10-18) is about exactly this: a step that runs onto a second line on a 360px
     // screen. Short English steps hide it, so the fixture has to carry the long shape.
