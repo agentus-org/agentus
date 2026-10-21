@@ -197,6 +197,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const [ccAtBottom, setCcAtBottom] = useState(true);
   const ccRef = useRef<HTMLDivElement | null>(null);
   const [cfgErr, setCfgErr] = useState("");
+  /** The wake-phrase box edits a DRAFT, not the setting. Writing through on every keystroke both ate
+   *  the space in 「hey agent」 (normalisation trims, and the controlled input follows the stored value
+   *  back) and fired one PUT per character whose out-of-order replies could roll the text back by a
+   *  keystroke. Commit on blur / Enter — that is when the operator has finished a phrase. */
+  const [wakeDraft, setWakeDraft] = useState<string | null>(null);
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
   const applyCfg = (patch: Partial<CallSettings>): void => {
@@ -1488,13 +1493,19 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
               <label className="call-knob">
                 <span className="call-knob-top">
                   <span className="call-knob-name">唤醒词</span>
-                  <span className="call-knob-val">{cfg.wakePhrase ? cfg.wakePhrase : "未设置"}</span>
+                  <span className="call-knob-val">{(wakeDraft ?? cfg.wakePhrase) || "未设置"}</span>
                 </span>
                 <input
                   type="text"
-                  value={cfg.wakePhrase}
+                  value={wakeDraft ?? cfg.wakePhrase}
                   placeholder="例如：小灵 / hey agent"
-                  onChange={(e) => applyCfg({ wakePhrase: normalizeWakePhrase(e.target.value) })}
+                  onChange={(e) => setWakeDraft(e.target.value)}
+                  onBlur={() => {
+                    if (wakeDraft === null) return;
+                    applyCfg({ wakePhrase: normalizeWakePhrase(wakeDraft) });
+                    setWakeDraft(null);
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
                   aria-label="唤醒词"
                 />
                 <span className="call-knob-hint">

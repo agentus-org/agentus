@@ -154,6 +154,23 @@ export const PREFS_DEFAULT: PrefsSettings = {
   planHint: { on: true, everyTurn: true, instruction: "" },
 };
 
+/** The longest wake phrase, in CODE POINTS (an emoji is one, not two). One number, one place — the
+ *  web side has its own copy (`WAKE_MAX` in callSettings.ts) and the two must keep saying 24. */
+const WAKE_MAX = 24;
+
+/** Drop half-pairs left by a client that counted UTF-16 units and cut in the middle of an emoji.
+ *  `for...of` walks code points, so a lone surrogate arrives as a one-character string and is easy
+ *  to spot; storing it would put U+FFFD in the database. */
+function stripLone(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;   // a surrogate that did not pair with its other half
+    out += ch;
+  }
+  return out;
+}
+
 export const CALL_DEFAULT: CallSettings = {
   /* 说完停顿 1.5s (was 1.2): the operator reads a pause as "it stopped listening" before 1.2 s,
      and a long sentence with a breath in the middle got cut. Both ends of the range still let
@@ -497,7 +514,11 @@ function pickCall(raw: unknown): CallSettings {
     const mode = (raw as Record<string, unknown>).interruptMode;
     if (INTERRUPT_MODES.includes(mode as InterruptMode)) out.interruptMode = mode as InterruptMode;
     const wake = (raw as Record<string, unknown>).wakePhrase;
-    if (typeof wake === "string") out.wakePhrase = [...wake.replace(/\s+/g, " ").trim()].slice(0, 24).join("");
+    // NOT length-capped here on purpose: this is what somebody ELSE stored (curl, a script, a previous
+    // version). Cutting it on the way out would then be written straight back by the `persist()` that
+    // runs at boot — silently destroying the operator's phrase with no log and nothing on screen.
+    // Length belongs to the write path (`saveCall`), which is where a human typed it.
+    if (typeof wake === "string") out.wakePhrase = wake.replace(/\s+/g, " ").trim();
     for (const k of CALL_NUMERIC) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
@@ -734,8 +755,14 @@ export function saveCall(patch: Record<string, unknown>): Settings {
     // Truncated, not rejected: this field arrives in the same body as the sliders, and refusing it
     // would throw away the operator's OTHER changes with it (and the panel would then say "saved
     // locally, not on the server" for a phrase nobody was trying to abuse). Same rule as pickCall.
-    const wake = patch.wakePhrase.replace(/\s+/g, " ").trim();
-    c.wakePhrase = [...wake].slice(0, 24).join("");
+    const wake = stripLone(patch.wakePhrase.replace(/\s+/g, " ").trim());   // an old client can slice a surrogate in half
+    const kept = [...wake];
+    if (kept.length > WAKE_MAX) {
+      // Truncated rather than refused, but never silently: one line in the log is the difference
+      // between 「我设过这个词」 and 「它自己变短了」 when a script writes 40 characters.
+      console.warn(`[agentus] wakePhrase truncated: ${kept.length} → ${WAKE_MAX} characters`);
+    }
+    c.wakePhrase = kept.slice(0, WAKE_MAX).join("");
   }
   for (const key of CALL_NUMERIC) {
     if (!(key in patch)) continue;

@@ -196,7 +196,11 @@ export function normalizeCall(raw: unknown): CallSettings {
 export function normalizeWakePhrase(raw: unknown): string {
   // Code points, not UTF-16 units: `slice(0, 24)` counts an emoji as two and can cut one in half,
   // leaving a lone surrogate that SQLite stores as U+FFFD — a wake phrase silently corrupted.
-  return [...String(raw ?? "").replace(/\s+/g, " ").trim()].slice(0, WAKE_MAX).join("");
+  const kept = [...String(raw ?? "").replace(/\s+/g, " ").trim()].slice(0, WAKE_MAX).join("");
+  // A phrase made only of symbols (emoji, «★») strips to nothing in `matchesWakePhrase`, so it could
+  // never fire — it would sit in the panel looking configured while the mode did nothing. Store the
+  // empty string instead: the panel then says 「未设置」, which is the truth.
+  return kept.replace(/[\s\p{P}\p{S}]/gu, "") === "" ? "" : kept;
 }
 
 /** Longest wake phrase, in code points. Enforced identically on both sides (server settings.ts). */

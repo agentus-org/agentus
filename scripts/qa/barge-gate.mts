@@ -15,7 +15,7 @@
 // Run: npm run barge-gate   (tsx; no browser, no server)
 import {
   BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, INTERRUPT_MODES, bargeFloorRms,
-  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase, wakeArmed, WAKE_FRESH_MS,
+  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase, wakeArmed, WAKE_FRESH_MS, WAKE_MAX,
 } from "../../packages/web/src/callSettings.ts";
 
 let pass = 0, fail = 0;
@@ -106,8 +106,21 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
     && matchesWakePhrase("", "") === false);
   check("switching to keyword without typing a phrase changes nothing",
     normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "");
-  check("the stored phrase is trimmed and capped at 24 characters",
-    normalizeWakePhrase("  小  灵  ") === "小 灵" && normalizeWakePhrase("x".repeat(40)).length === 24);
+  check("the stored phrase is trimmed and capped at 24 CODE POINTS",
+    normalizeWakePhrase("  小  灵  ") === "小 灵" && [...normalizeWakePhrase("x".repeat(40))].length === WAKE_MAX);
+  // A cap counted in UTF-16 units would cut an emoji in half and store a lone surrogate (U+FFFD in
+  // SQLite) — a phrase silently corrupted, and a box the operator can never type into again.
+  const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  // A phrase with letters in it AND emoji at the cut point: 24 code points must not slice one in half.
+  const emoji = normalizeWakePhrase("小灵" + "😀".repeat(30));
+  check("an emoji-bearing phrase keeps 24 whole code points and never half of one",
+    [...emoji].length === WAKE_MAX && !LONE.test(emoji) && emoji.startsWith("小灵😀"), `${[...emoji].length} cp`);
+  check("the 24th code point being an emoji is kept whole",
+    normalizeWakePhrase("a".repeat(23) + "😀" + "z") === "a".repeat(23) + "😀");
+  // Symbols strip to nothing in matchesWakePhrase, so such a phrase could never fire — it must read as
+  // 「未设置」 rather than sit in the panel pretending to be configured.
+  check("a phrase of only symbols is refused, not stored as a dud",
+    normalizeWakePhrase("😀".repeat(6)) === "" && normalizeWakePhrase("★☆") === "");
   check("keyword is a real interrupt mode the server also accepts",
     INTERRUPT_MODES.some((m) => m.id === "keyword"));
 }
