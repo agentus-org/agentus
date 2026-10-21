@@ -62,7 +62,7 @@ export const THEME_DEFAULT: ThemeSettings = { mode: "system", accent: "" };
  *  what a phone's own loudspeaker leaks back into its microphone is nothing like a headset
  *  in a quiet room — so the defaults are a starting point, not a truth. The call page owns
  *  the panel; the settings page reads the same numbers. */
-export type InterruptMode = "voice" | "button";
+export type InterruptMode = "voice" | "button" | "keyword";
 
 export interface CallSettings {
   /** WHO gets to interrupt the agent, and the operator picks:
@@ -85,6 +85,10 @@ export interface CallSettings {
    *  as a turn (1 = no limit). A tap on the orb always sends what is there — that gesture
    *  is an explicit instruction, not a guess about where a sentence ended. */
   minChars: number;
+  /** 关键词打断 — the phrase that must be HEARD before the floor changes hands (opt-in; empty means
+   *  the mode is inert). No shipped default on purpose: nobody should be able to interrupt this
+   *  agent by guessing a word we chose for them. */
+  wakePhrase: string;
 }
 
 /** How the operator wants to TALK to the agent. These were browser-local (localStorage) and
@@ -150,14 +154,32 @@ export const PREFS_DEFAULT: PrefsSettings = {
   planHint: { on: true, everyTurn: true, instruction: "" },
 };
 
+/** The longest wake phrase, in CODE POINTS (an emoji is one, not two). One number, one place — the
+ *  web side has its own copy (`WAKE_MAX` in callSettings.ts) and the two must keep saying 24. */
+const WAKE_MAX = 24;
+
+/** Drop half-pairs left by a client that counted UTF-16 units and cut in the middle of an emoji.
+ *  `for...of` walks code points, so a lone surrogate arrives as a one-character string and is easy
+ *  to spot; storing it would put U+FFFD in the database. */
+function stripLone(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue;   // a surrogate that did not pair with its other half
+    out += ch;
+  }
+  return out;
+}
+
 export const CALL_DEFAULT: CallSettings = {
   /* 说完停顿 1.5s (was 1.2): the operator reads a pause as "it stopped listening" before 1.2 s,
      and a long sentence with a breath in the middle got cut. Both ends of the range still let
      the room decide — this is only where a fresh install starts. */
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
+  wakePhrase: "",
 };
 
-export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button"];
+export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button", "keyword"];
 
 /** How the cockpit treats AGENT PROCESSES — as opposed to what a conversation contains. AionUi
  *  ships the same knob in 设置 → 系统 as 「Agent 空闲超时（分钟）」 (default 5, 1–60, step 5) with the
@@ -369,7 +391,11 @@ function callAtShippedDefaults(r: Record<string, unknown>): boolean {
   // The mode counts too: a row that only says `interruptMode: "button"` IS a deliberate choice and
   // must not be reset along with a section that happens to still carry the old numbers.
   const modeShipped = r.interruptMode === undefined || r.interruptMode === CALL_DEFAULT.interruptMode;
-  return sens && modeShipped && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
+  // …and a stored wake phrase is a deliberate choice too: without this, setting one and switching
+  // back to 语音打断 would make the whole section look untouched and the phrase would be dropped.
+  const wakeShipped = r.wakePhrase === undefined || r.wakePhrase === CALL_DEFAULT.wakePhrase;
+  return sens && modeShipped && wakeShipped
+    && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
 }
 
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
@@ -503,6 +529,12 @@ function pickCall(raw: unknown): CallSettings {
     if (callAtShippedDefaults(raw as Record<string, unknown>)) return out;
     const mode = (raw as Record<string, unknown>).interruptMode;
     if (INTERRUPT_MODES.includes(mode as InterruptMode)) out.interruptMode = mode as InterruptMode;
+    const wake = (raw as Record<string, unknown>).wakePhrase;
+    // NOT length-capped here on purpose: this is what somebody ELSE stored (curl, a script, a previous
+    // version). Cutting it on the way out would then be written straight back by the `persist()` that
+    // runs at boot — silently destroying the operator's phrase with no log and nothing on screen.
+    // Length belongs to the write path (`saveCall`), which is where a human typed it.
+    if (typeof wake === "string") out.wakePhrase = wake.replace(/\s+/g, " ").trim();
     for (const k of CALL_NUMERIC) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
@@ -734,9 +766,23 @@ export function saveCall(patch: Record<string, unknown>): Settings {
   if ("interruptMode" in patch) {
     const mode = patch.interruptMode;
     if (!INTERRUPT_MODES.includes(mode as InterruptMode)) {
-      throw new Error(`invalid interruptMode: ${JSON.stringify(mode)} (expected voice|button)`);
+      throw new Error(`invalid interruptMode: ${JSON.stringify(mode)} (expected voice|button|keyword)`);
     }
     c.interruptMode = mode as InterruptMode;
+  }
+  if ("wakePhrase" in patch) {
+    if (typeof patch.wakePhrase !== "string") throw new Error("invalid wakePhrase: expected a string");
+    // Truncated, not rejected: this field arrives in the same body as the sliders, and refusing it
+    // would throw away the operator's OTHER changes with it (and the panel would then say "saved
+    // locally, not on the server" for a phrase nobody was trying to abuse). Same rule as pickCall.
+    const wake = stripLone(patch.wakePhrase.replace(/\s+/g, " ").trim());   // an old client can slice a surrogate in half
+    const kept = [...wake];
+    if (kept.length > WAKE_MAX) {
+      // Truncated rather than refused, but never silently: one line in the log is the difference
+      // between 「我设过这个词」 and 「它自己变短了」 when a script writes 40 characters.
+      console.warn(`[agentus] wakePhrase truncated: ${kept.length} → ${WAKE_MAX} characters`);
+    }
+    c.wakePhrase = kept.slice(0, WAKE_MAX).join("");
   }
   for (const key of CALL_NUMERIC) {
     if (!(key in patch)) continue;

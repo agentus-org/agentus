@@ -14,7 +14,8 @@
 //
 // Run: npm run barge-gate   (tsx; no browser, no server)
 import {
-  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, bargeFloorRms, isBargeEvidence,
+  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, INTERRUPT_MODES, bargeFloorRms,
+  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase, wakeArmed, WAKE_FRESH_MS, WAKE_MAX,
 } from "../../packages/web/src/callSettings.ts";
 
 let pass = 0, fail = 0;
@@ -90,6 +91,62 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
   check("the rise threshold is above unity (echo may wobble) and reachable by a voice",
     ECHO_RISE > 1.2 && ECHO_RISE < 2.2, `${ECHO_RISE}`);
 }
+
+// 8. 关键词打断 (#42's comment): the confirmation is a WORD, not a level. The recogniser writes the
+//    same two syllables differently every time (`小灵`, `小 灵`, `小灵，`, `小灵。`), so both sides of
+//    the comparison are stripped of spaces/punctuation/case before the match.
+{
+  check("a phrase match needs no spaces and survives punctuation",
+    matchesWakePhrase("小灵，停一下", "小灵") && matchesWakePhrase("小 灵", "小灵"));
+  check("…and the operator's capitalisation does not matter",
+    matchesWakePhrase("Hey Agent, stop", "hey agent"));
+  check("a phrase that was NOT said does not take the floor",
+    matchesWakePhrase("你好呀，今天天气不错", "小灵") === false);
+  check("an empty phrase is INERT, never 'always on'", matchesWakePhrase("小灵", "") === false
+    && matchesWakePhrase("", "") === false);
+  check("switching to keyword without typing a phrase changes nothing",
+    normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "");
+  check("the stored phrase is trimmed and capped at 24 CODE POINTS",
+    normalizeWakePhrase("  小  灵  ") === "小 灵" && [...normalizeWakePhrase("x".repeat(40))].length === WAKE_MAX);
+  // A cap counted in UTF-16 units would cut an emoji in half and store a lone surrogate (U+FFFD in
+  // SQLite) — a phrase silently corrupted, and a box the operator can never type into again.
+  const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  // A phrase with letters in it AND emoji at the cut point: 24 code points must not slice one in half.
+  const emoji = normalizeWakePhrase("小灵" + "😀".repeat(30));
+  check("an emoji-bearing phrase keeps 24 whole code points and never half of one",
+    [...emoji].length === WAKE_MAX && !LONE.test(emoji) && emoji.startsWith("小灵😀"), `${[...emoji].length} cp`);
+  check("the 24th code point being an emoji is kept whole",
+    normalizeWakePhrase("a".repeat(23) + "😀" + "z") === "a".repeat(23) + "😀");
+  // Symbols strip to nothing in matchesWakePhrase, so such a phrase could never fire — it must read as
+  // 「未设置」 rather than sit in the panel pretending to be configured.
+  check("a phrase of only symbols is refused, not stored as a dud",
+    normalizeWakePhrase("😀".repeat(6)) === "" && normalizeWakePhrase("★☆") === "");
+  check("keyword is a real interrupt mode the server also accepts",
+    INTERRUPT_MODES.some((m) => m.id === "keyword"));
+}
+
+// ---- 关键词打断的四道闸 (the pure decision behind CallMode's keyword branch) ----------------
+// Each leg kills a false positive a browser sweep cannot provoke on demand, which is why it is here.
+// The one that bit: the agent said the wake word out loud, the recogniser heard it, and the call
+// cancelled itself mid-answer. NOTE the argument order of `check` here is (name, ok).
+const wakeBase = {
+  heard: "小灵，停一下", own: "", heardAgoMs: 300, phrase: "小灵",
+  graceOpen: true, evidence: true, playRms: 0.02, muted: false,
+};
+check("a fresh phrase over the echo takes the floor", wakeArmed(wakeBase) === true);
+check("the phrase inside OUR OWN sentence is echo, not the operator",
+  wakeArmed({ ...wakeBase, own: "好的，小灵在这里等你" }) === false);
+check("a phrase heard long ago is stale, not armed",
+  wakeArmed({ ...wakeBase, heardAgoMs: WAKE_FRESH_MS + 1 }) === false);
+check("nothing during a clip's attack transient / grace window",
+  wakeArmed({ ...wakeBase, graceOpen: false }) === false);
+check("measurable output with no double-talk evidence is a leak",
+  wakeArmed({ ...wakeBase, evidence: false, playRms: 0.03 }) === false);
+check("unmeasurable output (browser voice) leans on the other guards",
+  wakeArmed({ ...wakeBase, evidence: false, playRms: -1 }) === true);
+check("muted never barges", wakeArmed({ ...wakeBase, muted: true }) === false);
+check("an empty phrase is inert here too", wakeArmed({ ...wakeBase, phrase: "" }) === false);
+check("words without the phrase do nothing", wakeArmed({ ...wakeBase, heard: "今天几号" }) === false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

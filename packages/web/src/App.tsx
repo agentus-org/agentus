@@ -23,7 +23,7 @@ import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
-import { parseBgNotice, shortCommand } from "./bgNotice";
+import { delegSummary, parseBgNotice, parseDelegNotice, shortCommand, type DelegNotice } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens } from "./tokens";
 import {
@@ -2308,21 +2308,81 @@ function BgNoticeBlock({ text }: { text: string }): JSX.Element {
     <div className={`bg-notice ${open ? "open" : ""}`} data-ok={notice.ok ? "ok" : "fail"}>
       <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className="bg-notice-dot" aria-hidden="true" />
-        <span className="bg-notice-title">后台任务完成</span>
+        <span className="bg-notice-title">{notice.kind === "watch" ? "后台任务命中" : "后台任务完成"}</span>
         <code className="bg-notice-cmd" title={notice.command}>{shortCommand(notice.command)}</code>
-        <span className="bg-notice-code">exit {notice.exitCode}</span>
+        {/* A watch match has no exit code; the pattern it hit is the fact worth one line. */}
+        {notice.kind === "watch" ? (
+          <code className="bg-notice-code" title={notice.pattern}>「{shortCommand(notice.pattern, 28)}」</code>
+        ) : notice.exitCode === null ? (
+          // A shape we do not know the code for is still a notice — never print "exit null".
+          <span className="bg-notice-code">已结束</span>
+        ) : (
+          <span className="bg-notice-code">exit {notice.exitCode}</span>
+        )}
         <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
       {open ? (
         <div className="bg-notice-body">
           <div className="bg-notice-label">命令</div>
           <pre className="bg-notice-pre">{notice.command || "(未报告)"}</pre>
-          <div className="bg-notice-label">输出{notice.output ? "" : "（空）"}</div>
+          <div className="bg-notice-label">
+            {notice.kind === "watch" ? "命中行" : "输出"}{notice.output ? "" : "（空）"}
+          </div>
           {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+/**
+ * A DELEGATION wake (`delegate_task(background=true)` finishing), folded to one line.
+ *
+ * The operator's complaint was about exactly this row: a batch of subagents reports their whole
+ * findings as one prompt, so the transcript showed hundreds of lines of other agents' prose between
+ * two of their own sentences — 「全部展开占的空间很大，应该做成默认折叠」. Folded, the row answers
+ * the question a wake actually raises (回来了？几个？成没成？多久？) in one line; every report is one
+ * click away, and nothing is thrown away — the copy button still yields the carrier's text verbatim.
+ */
+function DelegNoticeBlock({ d, base }: { d: DelegNotice; base?: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const bad = d.tasks.filter((t) => !t.ok).length;
+  return (
+    <div className={`bg-notice deleg-notice ${open ? "open" : ""}`} data-ok={bad ? "fail" : "ok"}>
+      <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-notice-dot" aria-hidden="true" />
+        <span className="bg-notice-title">子代理回来了</span>
+        <code className="bg-notice-cmd" title={d.tasks.map((t) => t.goal).join("\n")}>{delegSummary(d)}</code>
+        <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="bg-notice-body">
+          {d.dispatched ? (
+            <div className="bg-notice-label">
+              派发于 {d.dispatched}{d.role ? ` · ${d.role}` : ""}{d.total ? ` · 合计 ${d.total}` : ""} · {d.id}
+            </div>
+          ) : null}
+          {d.tasks.map((t) => (
+            <div key={t.index} className="deleg-task" data-ok={t.ok ? "ok" : "fail"}>
+              <div className="deleg-task-head">
+                <span className="deleg-mark" aria-hidden="true">{t.ok ? "✓" : "✗"}</span>
+                <span className="deleg-goal">{t.goal || `任务 ${t.index}`}</span>
+                <span className="deleg-meta">{t.status}{t.meta ? ` · ${t.meta}` : ""}</span>
+              </div>
+              {t.body ? <div className="deleg-body"><Markdown text={t.body} base={base} /></div> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A machine-written notice in a user row: fold it if we recognise it, otherwise show the text. */
+function NoticeBlock({ text, base }: { text: string; base?: string }): JSX.Element {
+  const deleg = parseDelegNotice(text);
+  if (deleg) return <DelegNoticeBlock d={deleg} base={base} />;
+  return <BgNoticeBlock text={text} />;
 }
 
 function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: string; backend: string; last: boolean; busy: boolean; live?: boolean; base?: string }): JSX.Element | null {
@@ -2347,7 +2407,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
                 ))}
               </div>
             ) : null}
-            {m.from ? <BgNoticeBlock text={m.text} /> : m.text}
+            <NoticeBlock text={m.text} base={base} />
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
               <CopyButton text={m.text} what="这条消息" />

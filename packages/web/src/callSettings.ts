@@ -12,7 +12,7 @@
 // instead of the defaults — the same dance theme.ts does.
 import { useSyncExternalStore } from "react";
 
-export type InterruptMode = "voice" | "button";
+export type InterruptMode = "voice" | "button" | "keyword";
 
 export interface CallSettings {
   /** WHO gets to interrupt the agent. This one is a SWITCH ON THE CALL, not a knob in the panel:
@@ -31,20 +31,27 @@ export interface CallSettings {
   silenceMs: number;
   /** an automatic send shorter than this many characters is dropped (1 = no limit) */
   minChars: number;
+  /** 关键词打断 (opt-in, `interruptMode: "keyword"`): the utterance that has to be HEARD before the
+   *  floor changes hands — e.g. 「小灵」. Empty means the mode is inert, which is deliberate: no
+   *  default wake word, so switching the mode without typing one changes nothing (#42's comment). */
+  wakePhrase: string;
 }
 
 export const CALL_DEFAULT: CallSettings = {
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
+  wakePhrase: "",
 };
 
-/** The switch's two ends, in the operator's words. */
+/** The switch's ends, in the operator's words. */
 export const INTERRUPT_MODES: { id: InterruptMode; label: string; hint: string }[] = [
   { id: "voice", label: "语音打断", hint: "说一句就能打断它（灵敏度、持续时间在设置里调）" },
+  { id: "keyword", label: "关键词打断", hint: "要先说出你设的那句话才算打断（设置里填），比语音打断稳、不用碰屏幕" },
   { id: "button", label: "按键打断", hint: "只认按钮：它说话的时候麦克风关着，不识别、不抢话——外放串音、环境吵的时候用它" },
 ];
 
-/** The NUMERIC knobs (slider ends live here). `interruptMode` is a two-way choice, not a slider. */
-export type CallKnobKey = Exclude<keyof CallSettings, "interruptMode">;
+/** The NUMERIC knobs (slider ends live here). `interruptMode` is a three-way choice and
+ *  `wakePhrase` is text, so neither is a slider. */
+export type CallKnobKey = Exclude<keyof CallSettings, "interruptMode" | "wakePhrase">;
 
 /** The slider ends. The server validates against the same ranges (settings.ts CALL_RANGE). */
 export const CALL_RANGE: Record<CallKnobKey, [number, number]> = {
@@ -180,7 +187,68 @@ export function normalizeCall(raw: unknown): CallSettings {
   const r = raw as Record<string, unknown>;
   if (INTERRUPT_MODES.some((m) => m.id === r.interruptMode)) out.interruptMode = r.interruptMode as InterruptMode;
   for (const k of NUMERIC) if (k in r) out[k] = clamp(k, r[k]);
+  if ("wakePhrase" in r) out.wakePhrase = normalizeWakePhrase(r.wakePhrase);
   return out;
+}
+
+/** The wake phrase as it is stored: trimmed, single-spaced, at most 24 characters. Long enough for
+ *  「hey agent」 or 「小灵同学」, short enough that it cannot become a sentence. */
+export function normalizeWakePhrase(raw: unknown): string {
+  // Code points, not UTF-16 units: `slice(0, 24)` counts an emoji as two and can cut one in half,
+  // leaving a lone surrogate that SQLite stores as U+FFFD — a wake phrase silently corrupted.
+  const kept = [...String(raw ?? "").replace(/\s+/g, " ").trim()].slice(0, WAKE_MAX).join("");
+  // A phrase made only of symbols (emoji, «★») strips to nothing in `matchesWakePhrase`, so it could
+  // never fire — it would sit in the panel looking configured while the mode did nothing. Store the
+  // empty string instead: the panel then says 「未设置」, which is the truth.
+  return kept.replace(/[\s\p{P}\p{S}]/gu, "") === "" ? "" : kept;
+}
+
+/** Longest wake phrase, in code points. Enforced identically on both sides (server settings.ts). */
+export const WAKE_MAX = 24;
+
+/** Does `heard` contain the wake phrase? Compared on a **stripped** form on both sides — no spaces,
+ *  no punctuation, no case — because a recogniser writes 「小 灵」, 「小灵，」 and 「小灵。」 for the
+ *  same two syllables, and the operator should not have to guess which one it chose today. */
+export function matchesWakePhrase(heard: string, phrase: string): boolean {
+  const norm = (s: string): string => String(s ?? "").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
+  const needle = norm(phrase);
+  if (!needle) return false;                     // no phrase set: the mode is inert, not "always on"
+  return norm(heard).includes(needle);
+}
+
+/** How recently the wake phrase must have been HEARD. The recogniser only appends during a relay, so
+ *  a hit from earlier in the reply would otherwise stay armed for its whole tail and fire on the next
+ *  gap between sentences — 「它念到一半忽然自己停了」 with nothing said. */
+export const WAKE_FRESH_MS = 2500;
+
+/**
+ * The 关键词 decision as one pure function — every leg kills a specific false positive, and none of
+ * them can be checked without a microphone, so they are checked here instead:
+ *  · `own`      — the sentence the speaker is reading right now. Our loudspeaker plays into this
+ *                 microphone, so a phrase the AGENT said arrives as if the operator said it;
+ *  · fresh      — see WAKE_FRESH_MS;
+ *  · graceOpen  — attack transient + echo convergence at the start of a clip;
+ *  · evidence   — where our output level is measurable, a real voice rises over the echo and a leak
+ *                 does not. **Unmeasurable (-1) is not evidence**: it only means the browser voice
+ *                 cannot be tapped, and then the guards above are what is left.
+ */
+export function wakeArmed(o: {
+  heard: string;
+  own: string;
+  heardAgoMs: number;
+  phrase: string;
+  graceOpen: boolean;
+  evidence: boolean;
+  playRms: number;
+  muted: boolean;
+}): boolean {
+  if (o.muted || !o.heard || !o.phrase) return false;
+  if (!o.graceOpen) return false;
+  if (!(o.heardAgoMs <= WAKE_FRESH_MS)) return false;
+  if (o.own && matchesWakePhrase(o.own, o.phrase)) return false;
+  if (!matchesWakePhrase(o.heard, o.phrase)) return false;
+  if (o.playRms >= 0 && !o.evidence) return false;
+  return true;
 }
 
 function loadLocal(): CallSettings {

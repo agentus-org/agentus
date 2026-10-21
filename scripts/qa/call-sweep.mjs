@@ -297,6 +297,22 @@ try {
   check("the call starts SPEAKING when the reply streams in", spoke, `upstream=${upstreamHits}`);
   check("the reply really reached the TTS endpoint", upstreamHits > hitsBefore, `${hitsBefore} → ${upstreamHits}`);
 
+  // The speech detector is a real model in this page (Silero through onnxruntime-web). Its two assets
+  // are only fetched by `silero.load()`, which only runs once the call is actually listening — so their
+  // presence in the resource timeline is the proof that the wiring is live and that BOTH paths (the
+  // model at /vad/*.onnx and the wasm runtime copied out of node_modules) resolve in the built app.
+  // Without this, a build that quietly stopped copying the wasm would just fall back to the level gate
+  // and every other check here would still pass.
+  let vadAssets = { model: false, wasm: false };
+  for (let i = 0; i < 60; i++) {
+    vadAssets = await ev(`(() => { const n = performance.getEntriesByType('resource').map((e) => e.name);
+      return { model: n.some((x) => x.includes('/vad/silero_vad.onnx')), wasm: n.some((x) => x.includes('ort-wasm')) }; })()`);
+    if (vadAssets.model && vadAssets.wasm) break;
+    await sleep(250);
+  }
+  check("the call loads the Silero model and the ONNX wasm runtime onto the page",
+    vadAssets.model === true && vadAssets.wasm === true, JSON.stringify(vadAssets));
+
   // the animation must be driven by that audio, and the waveform must be a real trace
   const speakSigA = await ev(`window.__sig('.call-orb-canvas', true)`);
   // the phase flips to speaking when a SENTENCE is queued; the audio lands a fetch later —
@@ -448,7 +464,12 @@ try {
   check("an interrupting prompt never lands in the failure path (no refusal was logged)",
     refusals() === 1, `refusals=${refusals()}`);
   // The mock echoes the prompt text back, so grepping for words proves nothing: the observable
-  // is that the transcript STOPS GROWING once the interrupted turn has ended.
+  // is that the transcript STOPS GROWING once the interrupted turn has ended. Wait for THAT turn to
+  // end first — the interrupting prompt starts a turn of its own and its reply arrives late enough
+  // that sampling straight away measured its growth and read it as 「the cancelled turn is still
+  // streaming」 (observed as a one-off 4 -> 6 with nothing wrong in the server).
+  for (let i = 0; i < 80; i++) { if (!(await busyOf(slow.id))) break; await sleep(250); }
+  await sleep(400);                        // a straggler frame must not land inside the measurement
   const n1 = (await msgsOf(slow.id)).length;
   await sleep(2500);
   const n2 = (await msgsOf(slow.id)).length;
@@ -778,9 +799,12 @@ try {
   const modes = await modesOf();
   check("the interrupt-mode switch lives on the CALL (always visible), not inside the settings sheet",
     modes.present === true && modes.inSheet === false, JSON.stringify(modes));
-  check("both ends are named and the active one is marked",
-    JSON.stringify(modes.labels) === JSON.stringify(["语音打断", "按键打断"]) && modes.on === "语音打断"
-      && JSON.stringify(modes.pressed) === JSON.stringify(["true", "false"]), JSON.stringify(modes));
+  // Three modes since #42's keyword request: a keyword is a third answer, and the sweep pins the
+  // whole row (labels AND aria-pressed) so a mode that silently disappears is caught here.
+  check("all three interrupt modes are offered and the active one is marked",
+    JSON.stringify(modes.labels) === JSON.stringify(["语音打断", "关键词打断", "按键打断"])
+      && modes.on === "语音打断"
+      && JSON.stringify(modes.pressed) === JSON.stringify(["true", "false", "false"]), JSON.stringify(modes));
 
   check("a fresh reply is being read out (so a barge is a real claim)", (await speakWindow()) === true, `phase=${await phase2()}`);
   // flip WHILE it is talking: this is the situation the switch exists for, and the whole reason it

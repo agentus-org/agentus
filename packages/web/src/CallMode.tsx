@@ -30,12 +30,15 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
+import { vadStep, newVad, type VadState } from "./vad";
+import { silero } from "./silero";
 import {
   IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconRefresh, IconSend,
   IconSettings, IconStop, IconSubtitles,
 } from "./Icons";
 import {
   BARGE_COOLDOWN_MS, BARGE_GRACE_MS, bargeFloorRms, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES,
+  matchesWakePhrase, normalizeWakePhrase, wakeArmed, WAKE_FRESH_MS,
   isBargeEvidence, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
@@ -89,6 +92,23 @@ function charCount(text: string): number {
  *  different hat. The next sentence is also the only one that matters: it is the boundary the
  *  operator hears. */
 const PREFETCH_SENTENCES = 1;
+/** How long the call may sit in `thinking`/`speaking` with an empty queue, nothing playing and no
+ *  turn in flight before it declares itself starved and hands the floor back. The state is checked,
+ *  not the cause: every known way to go mute mid-call (#44) lands in exactly this state. */
+const STARVE_MS = 4000;
+/** …and the OTHER way a call goes quiet: the speaker says it is speaking and no sound has come out
+ *  for this long. A synthesis request that never answers, a `<audio>` element stuck on a dead
+ *  stream, a browser voice that silently refuses — all of them hang `speak()` forever, which the
+ *  starve check above cannot see (the queue is non-empty and the speaker is "busy"). Measured
+ *  ordinary sentences are seconds long, so 15 s of silence inside one sentence is already a fault. */
+const MUTE_MS = 15000;
+/** The same idea for a sentence we cannot meter at all (the browser voice and the `<audio>` fallback
+ *  expose no level — `playbackRms()` is -1 there). Without an analyser there is no honest way to tell
+ *  「在出声」 from 「卡住了」, so this is deliberately generous: one glued sentence is ~20–27 s of
+ *  speech, and skipping a sentence the operator was hearing is worse than a late recovery. */
+const STUCK_MS = 45000;
+/** How long after dialling a late-arriving transcript still counts as history (see bootLockedRef). */
+const BOOT_GRACE_MS = 3000;
 
 /** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
  *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
@@ -152,6 +172,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const [muted, setMuted] = useState(false);
   const [err, setErr] = useState("");
   const [heard, setHeard] = useState("");     // what the recogniser has so far
+  /** When the wake phrase was last HEARD — the call has to answer 「我听见了」 or a working wake
+   *  word is indistinguishable from a dead one (that was the operator's report). */
+  const [wakeHit, setWakeHit] = useState(0);
   const [holding, setHolding] = useState(false);   // push-to-talk is down (the label follows it)
   const [reply, setReply] = useState("");     // what the agent is saying right now
   // The tunables (callSettings.ts) live in the call, not in a settings page: a threshold
@@ -178,6 +201,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const [ccAtBottom, setCcAtBottom] = useState(true);
   const ccRef = useRef<HTMLDivElement | null>(null);
   const [cfgErr, setCfgErr] = useState("");
+  /** The wake-phrase box edits a DRAFT, not the setting. Writing through on every keystroke both ate
+   *  the space in 「hey agent」 (normalisation trims, and the controlled input follows the stored value
+   *  back) and fired one PUT per character whose out-of-order replies could roll the text back by a
+   *  keystroke. Commit on blur / Enter — that is when the operator has finished a phrase. */
+  const [wakeDraft, setWakeDraft] = useState<string | null>(null);
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
   const applyCfg = (patch: Partial<CallSettings>): void => {
@@ -194,6 +222,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const ringsRef = useRef<{ born: number; strength: number }[]>([]);
   const lastPeakRef = useRef(0);
   const voiceAtRef = useRef(0);        // last moment the operator was audible
+  /** The room's own noise floor, measured instead of configured (see vad.ts). `VOICE_RMS` was the
+   *  old absolute bar; it is only the fallback for the very first frames now. */
+  const vadRef = useRef<VadState>(newVad());
   const bargeRef = useRef(0);          // how long we have been above the barge threshold
   /** When the sentence now being read was handed to the speaker, and when our own output was
    *  last seen to rise from silence. Both arm the grace window in the loop: the first frames of
@@ -202,6 +233,21 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const clipAtRef = useRef(0);
   const playAtRef = useRef(0);
   const quietRef = useRef(0);          // last tick's playback level, to notice the rise
+  /** Last moment the loudspeaker was actually producing sound. The mute watchdog compares against
+   *  it: "speaking" is a claim, this is the evidence. */
+  const audibleRef = useRef(0);
+  /** The clip the speaker is on right now, verbatim — 关键词 needs it to answer 「这句话是它自己念的
+   *  吗」, and the mute watchdog needs to know a clip is in flight. */
+  const spokenTextRef = useRef("");
+  /** How to abandon THAT clip from the outside. `speak()` settles on its own normally; when it does
+   *  not (a synthesis request that never answers, an `<audio>` element on a dead stream) the loop
+   *  must be able to skip the sentence instead of awaiting forever — and skipping is not hanging up. */
+  const abandonRef = useRef<null | (() => void)>(null);
+  /** Last playback level we could measure; -1 means 「不可测」 (see STUCK_MS), never 「静音」. */
+  const playRmsRef = useRef(-1);
+  /** When the wake phrase was last HEARD to change in the transcript (see WAKE_FRESH_MS). */
+  const saidAtRef = useRef(0);
+  const lastSaidRef = useRef("");
   /** When the floor last changed hands by voice — the cooldown that keeps the tail of an
    *  interruption (and the recogniser catching up with it) from firing a second one. */
   const lastBargeRef = useRef(0);
@@ -218,12 +264,28 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** The reply that was playing when the operator took the floor. Its key must never reach the
+   *  speaker again — without this, loosening the gate off the phase (so a typed prompt gets read)
+   *  would also re-read the tail of the answer we just interrupted: 「打断它以后它又自己念了一遍」. */
+  const cutKeyRef = useRef("");
+  /** The same fact as `cutKeyRef`, expressed in TIME. The key alone is not enough: when the floor is
+   *  taken during `thinking`, `rawAgentKeyRef` still points at the PREVIOUS answer, and the cancelled
+   *  turn can still flush a brand-new block afterwards — new key, not the baseline, not the cut key,
+   *  so it would be read out as 「the reply to this turn」. Anything stamped before this moment is
+   *  what the operator interrupted. */
+  const cutAtRef = useRef(0);
   /** The reply that was ALREADY in the transcript when this turn began — usually the answer to
    *  the previous question. The transcript is not synchronous with our own send: for a moment
    *  after `prompt`, the last agent message is still the old answer (the user message has not
    *  been broadcast yet), and reading it out is precisely the reported bug. Anything carrying
    *  this key is history and is never spoken. */
   const baselineKeyRef = useRef("");
+  /** Decided once per call: was the baseline known at boot, or is it history arriving later? */
+  const bootLockedRef = useRef(false);
+  /** Did we dial INTO a turn that was already running? Then that in-flight message IS this turn's
+   *  reply and must be read from its start — the boot-history guard below must not swallow it. */
+  const joinedRef = useRef(false);
+  const bootAtRef = useRef(Date.now());
   /** The transcript's last agent message, unfiltered — what the baseline is taken from. */
   const rawAgentKeyRef = useRef("");
   /** The call is over the moment it closes. The sentence queue is an async loop that outlives
@@ -271,6 +333,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         if (live?.busy) {
           if (dead) return;
           sentRef.current = true;             // a turn is already in flight
+          joinedRef.current = true;           // …and it is the reply we want to hear
           replyKeyRef.current = "";
           // …and that in-flight message IS this turn's reply, so it gets read from its start
           // (baseline stays empty). A session that is merely idle is the opposite case: the
@@ -285,6 +348,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         if (dead) return;
         if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
         setPhase("listening");
+        // The speech detector: Silero in the page, on this microphone's own 16 kHz frames. Lazy and
+        // non-blocking — the call is already listening above, and every path below falls back to the
+        // measured-floor gate (`vadStep`) while the model is loading or if it never loads at all.
+        void silero.load("/vad/silero_vad.onnx").then((ok) => {
+          if (dead || !ok) return;
+          silero.reset();
+          dictation.setVadTap((s) => silero.push(s));
+        });
       } catch (e) {
         if (dead) return;
         setErr(String((e as Error)?.message ?? e));
@@ -294,6 +365,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     void boot();
     return () => {
       dead = true;
+      dictation.setVadTap(null);
+      silero.reset();
       aliveRef.current = false;     // covers 改用键盘 and the parent closing the call
       speaker.stop();
       dictation.stop();
@@ -306,6 +379,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     // prefs/sessionId are fixed for the lifetime of a call on purpose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The wake confirmation is a FLASH, not a new permanent state: left standing it would answer every
+  // later question with 「听到「小灵」了」 and hide the ordinary guidance.
+  useEffect(() => {
+    if (!wakeHit) return;
+    const t = window.setTimeout(() => setWakeHit(0), 2600);
+    return () => window.clearTimeout(t);
+  }, [wakeHit]);
 
   // ---- the conversation loop ------------------------------------------------------------
   // listening → (silence after speech) → thinking → speaking → listening …
@@ -322,8 +403,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       // (<audio> fallback / the browser voice cannot be tapped): no echo model, so the gate falls
       // back to the echo baseline it learns from the microphone itself.
       const play = playbackRms();
+      playRmsRef.current = play;
       if (play > 0.004 && quietRef.current <= 0.004) playAtRef.current = Date.now();
+      if (play > 0.004) audibleRef.current = Date.now();
       quietRef.current = play;
+      // When what we HEAR last changed. 关键词 compares freshly heard words, not the whole accumulated
+      // transcript: the recogniser only appends during a relay, so one stale hit used to stay armed.
+      const heardNow = `${st.text || ""} ${st.interim || ""}`.trim();
+      if (heardNow !== lastSaidRef.current) { lastSaidRef.current = heardNow; saidAtRef.current = Date.now(); }
       // A relay that could not be replaced AT ALL is a real failure, and the call is the one surface
       // where the transcript's own error line is invisible (it renders in the composer, behind the
       // full-screen call). Say it on the call instead of sitting in `listening` with a microphone
@@ -346,10 +433,69 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         echoBaseRef.current = 0;
         return;
       }
-      if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
+      // 关键词打断: the floor changes hands on a WORD, not on a level. Two consequences:
+      //  · the recogniser keeps running while the reply plays (the same relay the listening phase
+      //    uses) — the phrase has to be *heard*, and nothing else is listening;
+      //  · the confirmation is `matchesWakePhrase` over what was heard, so a colleague talking at
+      //    normal volume cannot take the floor by being loud. Level plays no part at all here.
+      //  An empty phrase makes the mode inert on purpose: switching the mode without typing one
+      //  changes nothing, so this cannot turn into an accidental always-on wake word.
+      if (c.interruptMode === "keyword" && (phaseRef.current === "speaking" || phaseRef.current === "thinking")) {
+        if (!mutedRef.current) dictation.setRelay(true);
+        bargeRef.current = 0;
+        const now = Date.now();
+        const said = heardNow;
+        // Our own loudspeaker plays into this microphone (no echo cancellation on this path), so the
+        // transcript can contain the wake phrase simply because the AGENT said it. Two defences:
+        //  · we never barge on words that are part of the sentence we are reading right now;
+        //  · the phrase must have been heard in the last couple of seconds — the recogniser only
+        //    appends, so a hit from earlier in the reply would otherwise stay armed for its whole tail.
+        // Same two timing guards the voice barge uses: the attack transient + echo convergence at the
+        // start of a clip, and the cooldown after an interruption. A 120 ms pop must not take the floor.
+        const armed = Math.max(clipAtRef.current, playAtRef.current);
+        const open = now - armed > BARGE_GRACE_MS && now - lastBargeRef.current > BARGE_COOLDOWN_MS;
+        const voice = isBargeEvidence(mic, play, echoBaseRef.current, c.bargeSensitivity, micEchoCancelled());
+        const want = wakeArmed({
+          heard: said,
+          own: spokenTextRef.current,
+          heardAgoMs: now - saidAtRef.current,
+          phrase: c.wakePhrase,
+          graceOpen: open,
+          evidence: voice,
+          playRms: play,
+          muted: mutedRef.current,
+        });
+        if (want) {
+          lastBargeRef.current = now;
+          dictation.resetText();   // a hit that stays in the transcript would re-fire on the next gap
+          void bargeIn();
+          return;
+        }
+        // Learn the echo while the gate is shut — same rule as the voice branch: feeding it the
+        // operator's own voice would teach it to ignore them. A tick that MATCHED is never learned.
+        if (play > 0.002 && !voice && !want) echoBaseRef.current = echoBaseRef.current * 0.88 + mic * 0.12;
+        return;
+      }
+      // 「他在说话吗」 is now a step over the MEASURED room floor with a hangover, not an absolute
+      // 0.010: a quiet voice used to fall under it (「我说完了它还等着」) and a phone's own speaker
+      // used to sit over it (the call interrupting itself). See vad.ts.
+      // Silero when it is loaded, the measured-floor gate otherwise (see vad.ts / silero.ts).
+      const speechNow = phaseRef.current === "listening"
+        ? (silero.ready ? silero.st.speech : vadStep(vadRef.current, mic, Date.now()))
+        : false;
+      if (phaseRef.current === "listening" && (speechNow || mic > VOICE_RMS)) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
+        // 唤醒词在「听」的时候也必须被回应。以前关键词闸只在 speaking/thinking 张开，操作者对着
+        // 已经说完的它连喊「小灵」毫无反应 —— 既没有打断，也没有任何「我听见了」的回音，读起来
+        // 就是功能坏了。听见了就清空并且亮一下，同时这一句不再当成问题发出去。
+        if (c.interruptMode === "keyword" && !mutedRef.current && text && matchesWakePhrase(text, c.wakePhrase)) {
+          dictation.resetText();
+          setWakeHit(Date.now());
+          voiceAtRef.current = 0;
+          return;
+        }
         const quietFor = Date.now() - voiceAtRef.current;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
@@ -367,6 +513,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
           // instead of refusing it. Without this the operator got "turn already running" for
           // doing exactly what a call invites.
           cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+          // The recogniser is cleared the moment the words leave: it keeps its committed text
+          // until told otherwise, and in 关键词 mode the next tick would read that leftover as
+          // "the operator just said the wake phrase" and cancel the turn it just started.
+          dictation.resetText();
         }
       } else if (phaseRef.current === "speaking") {
         // barge-in: the operator talking over the reply takes the floor back. Two things have
@@ -422,6 +572,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   rawAgentKeyRef.current = lastAgentIdx >= 0 ? (msgs[lastAgentIdx] as { key?: string }).key ?? "" : "";
   const replyMsg = lastAgentIdx > lastUserIdx ? msgs[lastAgentIdx] : undefined;
   const agentText = replyMsg?.kind === "agent" ? replyMsg.text : "";
+  const agentAt = replyMsg ? (replyMsg as { at?: number }).at ?? 0 : 0;
   const agentKey = replyMsg?.key ?? "";
   // A turn that ends without text (tool-only, or failed) must not leave the call stuck in
   // "thinking" with no explanation: the newest meta line after the prompt is the server's own
@@ -441,10 +592,34 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   };
 
   useEffect(() => {
-    if (phaseRef.current !== "thinking" && phaseRef.current !== "speaking") return;
+    // A reply is read whenever one ARRIVES — not only while the call happens to be in
+    // thinking/speaking. A prompt typed into the composer while a call is up starts a turn while the
+    // call still sits in `listening` (the auto-send that would flip it only exists in 语音打断 mode),
+    // so a phase gate here left that reply silent forever: text rendered, no voice, and every
+    // following turn in the same call stayed mute (#44).
+    const p = phaseRef.current;
+    if (p === "connecting" || p === "error") return;
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
     // message this turn actually produced.
     if (!agentKey || agentKey === baselineKeyRef.current) return;
+    // The reply we interrupted: its message keeps streaming after the cancel, so the store still
+    // hands us new text for it. Speaking that is the call talking to itself.
+    if (agentKey && agentKey === cutKeyRef.current) return;
+    // …and the same thing in time, for the block the cancelled turn flushed after the interruption
+    // (its key is new, so the check above cannot see it).
+    if (cutAtRef.current && agentAt && agentAt <= cutAtRef.current) return;
+    // A call dialled onto a session whose transcript had not landed yet (cold start, deep link,
+    // switching session then tapping the phone): boot saw no agent message, so the baseline stayed
+    // empty and the first history page to arrive looked like a fresh reply. Whatever was already
+    // there in the first seconds after dialling is history.
+    if (!bootLockedRef.current) {
+      bootLockedRef.current = true;
+      if (!baselineKeyRef.current && !joinedRef.current && !sentRef.current
+        && agentKey && Date.now() - bootAtRef.current < BOOT_GRACE_MS) {
+        baselineKeyRef.current = agentKey;
+        return;
+      }
+    }
     if (NON_ANSWER_RE.test(agentText.trim())) {      // a refusal, not an answer: never speak it
       setErr("刚才那句没被处理（这个会话正被另一个 Hermes 进程占用），再说一次即可。");
       void backToListening(false);
@@ -461,7 +636,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       queuedRef.current = done.length;
       queueRef.current.push(...fresh);
       setReply((r) => `${r}${r ? " " : ""}${fresh.join(" ")}`);
-      if (phaseRef.current === "thinking") setPhase("speaking");
+      if (phaseRef.current !== "speaking") setPhase("speaking");
       warmQueue();                                   // ask for it the moment it exists
     }
     if (!busy && tail) {                             // turn over: flush the last fragment
@@ -485,25 +660,98 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (phaseRef.current !== "speaking" || queueRunRef.current) return;
     queueRunRef.current = true;
     void (async () => {
-      while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
-        const sentence = queueRef.current.shift() as string;
-        // Generate the NEXT sentences while this one plays. Sequentially, the call went silent
-        // between sentences for as long as the next one took to synthesise and arrive
-        // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
-        warmQueue();
-        clipAtRef.current = Date.now();       // arms the grace window for THIS clip
-        echoBaseRef.current = 0;              // this clip's echo is not the last one's
-        await speaker.speak(sentence, "call", prefs);
-        // barged in, hung up, or the call is gone: never hand another sentence to the speaker
-        if (!aliveRef.current || phaseRef.current !== "speaking") break;
-      }
-      queueRunRef.current = false;
-      if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
-        void backToListening(false);
+      // try/finally, because `queueRunRef` is the only lock this loop has: a rejection that escapes
+      // would leave it `true` for the rest of the call and no sentence would ever be handed to the
+      // speaker again — a mute call with no error anywhere (#44's 「打着打着突然不播放了」).
+      try {
+        while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
+          const sentence = queueRef.current.shift() as string;
+          // Generate the NEXT sentences while this one plays. Sequentially, the call went silent
+          // between sentences for as long as the next one took to synthesise and arrive
+          // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
+          warmQueue();
+          clipAtRef.current = Date.now();       // arms the grace window for THIS clip
+          echoBaseRef.current = 0;              // this clip's echo is not the last one's
+          spokenTextRef.current = sentence;
+          try {
+            // Race, because `speak()` has TWO ways to never settle: a synthesis request that stops
+            // answering, and an `<audio>` element on a stream that went dead. Awaiting it plainly is
+            // what made the call go permanently silent (#44) — and now the watchdog needs a way to
+            // say 「skip this one」 without hanging up.
+            await new Promise<void>((resolve, reject) => {
+              abandonRef.current = () => reject(new Error("clip abandoned"));
+              void speaker.speak(sentence, "call", prefs).then(resolve, reject);
+            });
+          } catch {
+            /* this clip failed or was abandoned; the sentences behind it still get their turn */
+          } finally {
+            abandonRef.current = null;
+            spokenTextRef.current = "";
+          }
+          // barged in, hung up, or the call is gone: never hand another sentence to the speaker
+          if (!aliveRef.current || phaseRef.current !== "speaking") break;
+        }
+      } catch {
+        /* speak() reports its own failures; a throw here must not kill the loop's lock */
+      } finally {
+        queueRunRef.current = false;
+        if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
+          void backToListening(false);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, reply, busy]);
+
+  // ---- watchdog: the call is never left mute ---------------------------------------------
+  // 「打着打着，他突然不播放了」 has no single cause — a reply that reached the queue through a path
+  // the gate did not cover, a speaker run that ended between sentences, a TTS that failed every
+  // sentence. All of them end in the SAME observable state: phase speaking/thinking, nothing queued,
+  // nothing playing, no turn in flight. So the state is what gets checked, not the cause, and the
+  // call hands the floor back instead of sitting silent until it is hung up and reopened.
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  const spokenRef = useRef(spoken);
+  spokenRef.current = spoken;
+  const starveRef = useRef(0);
+  useEffect(() => {
+    const iv = window.setInterval(() => {
+      const p = phaseRef.current;
+      if (p !== "speaking" && p !== "thinking") { starveRef.current = 0; return; }
+      // Claimed-speech-that-is-silent. Two budgets, because the honest evidence differs:
+      //  · metered playback (server TTS + an analyser): 「speaking」 with no audible output for
+      //    MUTE_MS is a fault — nothing that is really playing is silent for 15 s;
+      //  · unmetered playback (browser voice / `<audio>`): there is NO level to read, so the only
+      //    fact available is 「this clip has been in flight for absurdly long」 → STUCK_MS.
+      // Either way the recovery is 「skip this clip」, never 「hand the floor back」: dropping the rest
+      // of the reply is the very symptom being fixed, and re-reading the turn from the top is worse.
+      if (phaseRef.current === "speaking" && spokenRef.current.speaking) {
+        const metered = playRmsRef.current >= 0;
+        const silentFor = Date.now() - Math.max(audibleRef.current, clipAtRef.current);
+        const stuck = metered ? silentFor > MUTE_MS : silentFor > STUCK_MS;
+        if (stuck) {
+          starveRef.current = 0;
+          setErr(spokenRef.current.error
+            || (metered ? "这一句卡住了（合成或播放没有响应），已跳过它继续往下念。" : "这一句卡住了，已跳过它继续往下念。"));
+          abandonRef.current?.();
+          speaker.stop();
+          return;
+        }
+      }
+      const idle = !queueRunRef.current && !queueRef.current.length
+        && !spokenRef.current.speaking && !busyRef.current;
+      if (!idle) { starveRef.current = 0; return; }
+      if (!starveRef.current) { starveRef.current = Date.now(); return; }
+      if (Date.now() - starveRef.current < STARVE_MS) return;
+      starveRef.current = 0;
+      // Say it when the speaker knows why: a recovery the operator can see is worth more than a
+      // silent one, and 「为什么它不说话了」 needs an answer on the call itself.
+      if (spokenRef.current.error) setErr(spokenRef.current.error);
+      void backToListening(false);
+    }, 1000);
+    return () => window.clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   /** Talking over the agent: drop our playback, cancel ITS turn, listen again.
    *
@@ -514,6 +762,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *  turn-lease admission with the refusal notice above (the server refuses the same cancel too, as
    *  a second line of defence). */
   const bargeIn = async (): Promise<void> => {
+    cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // this reply is over
+    cutAtRef.current = Date.now();
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });
@@ -528,6 +778,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     setPhase("listening");
     setReply("");
     setHeard("");
@@ -583,6 +834,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         baselineKeyRef.current = rawAgentKeyRef.current;     // the old answer is not the answer
         dictation.setRelay(false);
         cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+        dictation.resetText();   // see the auto-send branch: 关键词 must not re-hear this utterance
       }
       return;
     }
@@ -605,6 +857,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (pttRef.current || !aliveRef.current) return;
     pttRef.current = true;
     setHolding(true);
+    cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // hold-to-talk takes the floor
+    cutAtRef.current = Date.now();
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });
@@ -612,6 +866,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     setPhase("listening");
     setReply("");
     setHeard("");
@@ -644,6 +899,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     baselineKeyRef.current = rawAgentKeyRef.current;
     dictation.setRelay(false);
     cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
+    dictation.resetText();     // same reason as the other two send paths
   };
 
   const pttEnd = (): void => {
@@ -964,14 +1220,22 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   // …and it stays on screen: the reason a short utterance was not sent has to be visible
   // while the words themselves are, or the silence is unexplained.
   const tooShort = phase === "listening" && heardCount > 0 && heardCount < cfg.minChars;
-  const hint = phase === "listening"
+  // 关键词模式要有回音：设了唤醒词却什么都没发生时，操作者无法区分「没听见」和「听见了但不匹配」。
+  // 所以这不只是提示文案，是这条链路唯一的观测点 —— 听见什么、唤醒词是什么，都摆在屏幕上。
+  const kwHint = cfg.interruptMode === "keyword"
+    ? `唤醒词「${cfg.wakePhrase || "未设置"}」${heard ? ` · 听到：${heard.slice(-18)}` : ""}`
+    : "";
+  const hint = (phase === "listening" && wakeHit)
+    ? `听到「${cfg.wakePhrase}」了`
+    : phase === "listening"
     ? (heard
       ? (heardCount < cfg.minChars
         ? `太短了（少于 ${cfg.minChars} 字，不会自动发送）——继续说，或点一下圆球直接发送`
         : "点一下直接发送，或说完停一下")
-      : muted ? "麦克风已静音" : "说点什么…")
-    : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
-      : phase === "thinking" ? "点一下停止它" : "";
+      : muted ? "麦克风已静音" : (kwHint || "说点什么…"))
+    : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以"
+      : cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下圆球打断，然后自己说")
+      : phase === "thinking" ? (cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下停止它") : "";
 
   /** The transcript view's two floor controls.
    *
@@ -1129,6 +1393,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                 </div>
               ) : null}
               {err ? <p className="call-err">{err}</p> : null}
+              {/* The speaker's own failure, which used to be visible only in the composer — i.e.
+                  never during a call. A call that stops talking must say why. */}
+              {!err && spoken.error ? <p className="call-err">{spoken.error}</p> : null}
               {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
               {(!heard && !msgs.length) || tooShort ? <p className="call-hint">{hint}</p> : null}
             </div>
@@ -1181,6 +1448,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
             {heard ? <p className="call-heard">{heard}</p> : null}
             {reply ? <p className="call-reply">{reply}</p> : null}
             {err ? <p className="call-err">{err}</p> : null}
+            {!err && spoken.error ? <p className="call-err">{spoken.error}</p> : null}
             {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
             {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
           </div>
@@ -1263,6 +1531,31 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                 所以灵敏度和持续时间这会儿不起作用（切回「语音打断」就恢复）。
               </p>
             ) : null}
+            {cfg.interruptMode === "keyword" ? (
+              <label className="call-knob">
+                <span className="call-knob-top">
+                  <span className="call-knob-name">唤醒词</span>
+                  <span className="call-knob-val">{(wakeDraft ?? cfg.wakePhrase) || "未设置"}</span>
+                </span>
+                <input
+                  type="text"
+                  value={wakeDraft ?? cfg.wakePhrase}
+                  placeholder="例如：小灵 / hey agent"
+                  onChange={(e) => setWakeDraft(e.target.value)}
+                  onBlur={() => {
+                    if (wakeDraft === null) return;
+                    applyCfg({ wakePhrase: normalizeWakePhrase(wakeDraft) });
+                    setWakeDraft(null);
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                  aria-label="唤醒词"
+                />
+                <span className="call-knob-hint">
+                  只有听到这句话才抢话（关键词打断）。空着 = 这个模式不生效，不会误触发。
+                  灵敏度在这一档仍然有用：它决定「多大声才算压过外放的回声」；持续时间不起作用。
+                </span>
+              </label>
+            ) : null}
             {/* What the capture ACTUALLY turned on — read from the live track, not from the
                 constraint we asked for. When echo cancellation is not running, the reply leaves the
                 loudspeaker and comes straight back into the microphone, which is how a call ends up
@@ -1276,7 +1569,16 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                   : "回声消除：这台设备没报告（浏览器语音路径）——抢话按「比回复更响」判断"}
             </p>
             {CALL_KNOBS.map((k) => (
-              <label className={`call-knob ${cfg.interruptMode === "button" && k.key.startsWith("barge") ? "off" : ""}`} key={k.key}>
+              // Which knob is actually read, per mode: 按键打断 reads neither (the mic is closed),
+              // 关键词打断 reads the sensitivity (it is the echo floor for `isBargeEvidence`) but not
+              // the hold time — the wake word IS the proof, so there is nothing to hold. The panel says
+              // exactly that next to the wake-phrase box.
+              <label
+                className={`call-knob ${k.key === "bargeMs"
+                  ? (cfg.interruptMode !== "voice" ? "off" : "")
+                  : (cfg.interruptMode === "button" ? "off" : "")}`}
+                key={k.key}
+              >
                 <span className="call-knob-top">
                   <span className="call-knob-name">{k.label}</span>
                   <span className="call-knob-val">{k.show(cfg[k.key])}</span>
@@ -1289,7 +1591,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                   value={cfg[k.key]}
                   onChange={(e) => applyCfg({ [k.key]: Number(e.target.value) } as Partial<CallSettings>)}
                   aria-label={k.label}
-                  disabled={cfg.interruptMode === "button" && k.key.startsWith("barge")}
+                  disabled={cfg.interruptMode !== "voice" && k.key.startsWith("barge")}
                 />
                 <span className="call-knob-ends"><span>{k.ends[0]}</span><span>{k.ends[1]}</span></span>
                 <span className="call-knob-hint">{k.hint}</span>
