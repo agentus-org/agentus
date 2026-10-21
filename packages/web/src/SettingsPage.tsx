@@ -93,7 +93,7 @@ interface SettingsView {
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
-  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean };
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
   /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
   observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number };
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
@@ -107,10 +107,12 @@ interface SettingsView {
   summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
   observerIntervalRange?: [number, number];
-  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
+  agentRecallItemRange?: [number, number];
+  agentRecallTotalRange?: [number, number];
   /** The plan-tool hint (settings.prefs.planHint): whether the cockpit tells the agent about the
    *  plan MCP mounted on the session, how often, and in whose words. Server-read per prompt, so
    *  this applies to the very next turn. */
@@ -200,6 +202,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [warmSlots, setWarmSlots] = useState<number | null>(null);
   const [warmTtl, setWarmTtl] = useState<number | null>(null);
   const [warmMsg, setWarmMsg] = useState("");
+  // 记忆召回条目的两个上限（issue #37 的容量）：单条多少字、一轮总共多少字。不是格式化偏好 ——
+  // 这两个数决定「每轮往库和 wire 里放多少字节」，所以放在设置里而不是写死在代码里。
+  const [recallItem, setRecallItem] = useState<number | null>(null);
+  const [recallTotal, setRecallTotal] = useState<number | null>(null);
+  const [recallMsg, setRecallMsg] = useState("");
   const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean; instruction: string } | null>(null);
   const [planHintMsg, setPlanHintMsg] = useState("");
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
@@ -237,6 +244,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.idleKillMin === "number") setIdleKill(data.agent.idleKillMin);
       if (typeof data.agent?.warmSlots === "number") setWarmSlots(data.agent.warmSlots);
       if (typeof data.agent?.warmTtlHours === "number") setWarmTtl(data.agent.warmTtlHours);
+      if (typeof data.agent?.recallItemChars === "number") setRecallItem(data.agent.recallItemChars);
+      if (typeof data.agent?.recallTotalChars === "number") setRecallTotal(data.agent.recallTotalChars);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
       if (typeof data.agent?.showSilentBackground === "boolean") setShowSilentBg(data.agent.showSilentBackground);
@@ -324,6 +333,33 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       );
     } catch (e) {
       setWarmMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** 召回条目的两个上限同样是一次保存：单条字数与一轮总量是一对（总量才是闸门），半存一半会让
+   *  界面上的「12K」和实际生效的数对不上。范围在页面和 server 两边都夹一次。 */
+  const saveRecall = async (): Promise<void> => {
+    if (recallItem == null && recallTotal == null) return;
+    const [ilo, ihi] = view?.agentRecallItemRange ?? [80, 2000];
+    const [tlo, thi] = view?.agentRecallTotalRange ?? [2000, 60000];
+    const i = Math.max(ilo, Math.min(ihi, Math.round(recallItem ?? view?.agentDefaults?.recallItemChars ?? 400)));
+    const t = Math.max(tlo, Math.min(thi, Math.round(recallTotal ?? view?.agentDefaults?.recallTotalChars ?? 12000)));
+    setRecallItem(i);
+    setRecallTotal(t);
+    setRecallMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { recallItemChars: i, recallTotalChars: t } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setRecallMsg(`已保存：单条最多 ${i} 字、一轮最多 ${t} 字（下一个回合生效）。`);
+    } catch (e) {
+      setRecallMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -812,6 +848,43 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
           {idleMsg ? <p className="set-hint">{idleMsg}</p> : null}
           {warmMsg ? <p className="set-hint">{warmMsg}</p> : null}
+          <div className="set-row">
+            <label>召回条目：单条字数</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.agentRecallItemRange?.[0] ?? 80}
+                max={view?.agentRecallItemRange?.[1] ?? 2000}
+                step={50}
+                value={recallItem ?? view?.agentDefaults?.recallItemChars ?? 400}
+                onChange={(e) => setRecallItem(Number(e.target.value))}
+                onBlur={() => void saveRecall()}
+              />
+              <span className="set-hint">
+                展开「N 条」后每条最多 {recallItem ?? view?.agentDefaults?.recallItemChars ?? 400} 字，超了截断
+              </span>
+            </div>
+          </div>
+          <div className="set-row">
+            <label>召回条目：一轮总字数</label>
+            <div className="set-pair">
+              <input
+                className="set-num"
+                type="number"
+                min={view?.agentRecallTotalRange?.[0] ?? 2000}
+                max={view?.agentRecallTotalRange?.[1] ?? 60000}
+                step={1000}
+                value={recallTotal ?? view?.agentDefaults?.recallTotalChars ?? 12000}
+                onChange={(e) => setRecallTotal(Number(e.target.value))}
+                onBlur={() => void saveRecall()}
+              />
+              <span className="set-hint">
+                不按条数限制，只按这个总量截：短记忆能多进几条，长记忆少进几条
+              </span>
+            </div>
+          </div>
+          {recallMsg ? <p className="set-hint">{recallMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-plan" data-setgroup="agent">

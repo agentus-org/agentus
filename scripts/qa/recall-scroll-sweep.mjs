@@ -2,10 +2,10 @@
 //
 // 操作者 2026-10-21 的原话：「召回的信息展示用定高的框上下可滚动，要不然一展开就是刷屏了，
 // 还有就是展示效果不好」。所以这条测两件事，都是**量出来的**，不是看着像：
-//   · 展开后 `.status-note-items` 有上限高度（216px）且 overflow-y:auto，内容比框高 →
+//   · 展开后 `.status-note-items` 有上限高度（200px）且 overflow-y:auto，内容比框高 →
 //     真的能滚（scrollHeight > clientHeight，scrollTop 写得进去）；
 //   · 展开让整个转录只长了「那个框」那么多（<= 300px），而不是条目总高（20 条 > 1000px）。
-// 另外断言标签是徽章（圆角胶囊）而不是一行灰字，以及折叠状态下不渲染条目。
+// 另外断言标签是正文下面的注脚小字（0.8.1 版式：不再是行尾胶囊），以及折叠状态下不渲染条目。
 //
 // Usage: PORT=8901 node scripts/qa/recall-scroll-sweep.mjs [--shot /tmp/recall.png]
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
@@ -86,8 +86,8 @@ const state = () => ev(`(() => {
 
 const collapsed = await state();
 check("召回行出现了", Boolean(collapsed), collapsed ? "" : "no .status-note");
-// 服务端把一帧的条目限到 20 条（NOTE_ITEMS_MAX），所以 20 是「我能拿到的最多」——
-// 这正好是线上 budget 高时一轮召回的量级。
+// 条数不设上限（2026-10-21：只按 12K 总量截），这里的 20 条是**测试自己放进去的量** ——
+// 线上 budget 高时一轮召回就是这个量级，够量出「装不下 → 可滚」。多几条也照样成立。
 check("折叠时写着「20 条」", (collapsed?.toggle || "").includes("20 条"), collapsed?.toggle ?? "");
 check("折叠时不渲染条目", collapsed?.items === 0 && collapsed?.box === null, `items=${collapsed?.items}`);
 const tallBefore = collapsed?.streamHeight ?? 0;
@@ -97,7 +97,7 @@ await sleep(350);
 const open = await state();
 check("展开后 aria-expanded=true", open?.expanded === "true", String(open?.expanded));
 check("展开出 20 条（截断提示单独一行，不算一条记忆）", open?.items === 20 && open?.more === 1, `${open?.items} 条 + ${open?.more} 行提示`);
-check("条目框是定高（216px）", open?.box?.maxHeight === "216px", String(open?.box?.maxHeight));
+check("条目框是定高（200px）", open?.box?.maxHeight === "200px", String(open?.box?.maxHeight));
 check("条目框竖向滚动", open?.box?.overflowY === "auto", String(open?.box?.overflowY));
 check("框高没有超过上限", (open?.box?.height ?? 9999) <= 220, String(open?.box?.height?.toFixed(1)));
 check("内容比框高（20 条装不下 → 必须滚）", (open?.box?.scrollHeight ?? 0) > (open?.box?.clientHeight ?? 0) + 40,
@@ -113,8 +113,10 @@ const scrolled = await ev(`(() => {
   return { top: box.scrollTop, maxTop: box.scrollHeight - box.clientHeight };
 })()`);
 check("框内滚动真的生效（scrollTop 写得进去）", scrolled.top > 0, JSON.stringify(scrolled));
-const tag = await ev(`(() => { const t = document.querySelector('.status-note-item-tags'); return t ? { radius: getComputedStyle(t).borderRadius, text: t.textContent } : null; })()`);
-check("标签渲染成徽章（胶囊圆角）", parseFloat(tag?.radius || "0") >= 100, JSON.stringify(tag));
+const tag = await ev(`(() => { const t = document.querySelector('.status-note-item-tags'); if (!t) return null; const cs = getComputedStyle(t); const body = t.closest('.status-note-item-body'); return { radius: cs.borderRadius, size: cs.fontSize, dim: cs.color !== getComputedStyle(document.body).color, text: t.textContent, below: body ? t.getBoundingClientRect().top >= body.querySelector('.status-note-item-text').getBoundingClientRect().bottom - 1 : null }; })()`);
+// 0.8.1 的版式：标签是正文下面一行小字（不是行尾胶囊）。判据是「没有圆角 + 比正文小 + 在正文下方」，
+// 而不是「圆角够不够大」—— 那正是操作者说「展示效果不好」时被换掉的那一版。
+check("标签是正文下面的注脚小字（不再是胶囊）", Boolean(tag) && parseFloat(tag.radius || "0") < 4 && parseFloat(tag.size || "99") <= 10.5 && tag.below === true, JSON.stringify(tag));
 
 await ev(`(() => { const s = document.querySelector('.stream'); if (s) s.scrollTop = s.scrollHeight; })()`);
 await sleep(200);

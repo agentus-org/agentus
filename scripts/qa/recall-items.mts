@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-const { statusItemsOf, NOTE_ITEMS_MAX, NOTE_ITEM_CHARS } = await import("../../packages/server/src/acp/session-manager.ts");
+const { statusItemsOf, NOTE_ITEM_CHARS, NOTE_TOTAL_CHARS } = await import("../../packages/server/src/acp/session-manager.ts");
 const { Store } = await import("../../packages/server/src/store/store.ts");
 
 let pass = 0, fail = 0;
@@ -37,11 +37,20 @@ check("有条目被丢掉 → truncated=true（不静默）", dropped?.truncated
 
 const longOne = statusItemsOf(frame({ items: [{ text: "x".repeat(NOTE_ITEM_CHARS + 500) }] }));
 check(`单条被截到 ${NOTE_ITEM_CHARS} 字符`, longOne?.items[0]?.text.length === NOTE_ITEM_CHARS, String(longOne?.items[0]?.text.length));
+check("…单条被截也算 truncated", longOne?.truncated === true, String(longOne?.truncated));
 
-const overflow = statusItemsOf(frame({ items: Array.from({ length: NOTE_ITEMS_MAX + 12 }, (_, i) => ({ text: `m${i}` })) }));
-check(`条目数被限到 ${NOTE_ITEMS_MAX}`, overflow?.items.length === NOTE_ITEMS_MAX, String(overflow?.items.length));
-check("…被砍掉的部分算 truncated（不静默）", overflow?.truncated === true, String(overflow?.truncated));
-check("…保留的是前 N 条，不是随机/最后几条", overflow?.items[0]?.text === "m0" && overflow?.items.at(-1)?.text === `m${NOTE_ITEMS_MAX - 1}`, String(overflow?.items.at(-1)?.text));
+// 条数**不设上限**：短记忆本来就该多进来几条。60 条短句远低于 12K，必须一条不少地到齐 ——
+// 按条数截会在预算还没用完时就把整条记忆丢掉（操作者 2026-10-21 的原始要求）。
+const manyShort = statusItemsOf(frame({ items: Array.from({ length: 60 }, (_, i) => ({ text: `m${i}` })) }));
+check("条数不设上限：60 条短记忆全部保留", manyShort?.items.length === 60, String(manyShort?.items.length));
+check("…没被截就不报 truncated", manyShort?.truncated === false, String(manyShort?.truncated));
+
+// 闸门是总字符数：一条长记忆装满后，后面的一律不再收，并且明说截了。
+const heavy = statusItemsOf(frame({ items: Array.from({ length: 40 }, () => ({ text: "y".repeat(NOTE_ITEM_CHARS) })) }));
+const heavyChars = (heavy?.items ?? []).reduce((n, i) => n + i.text.length, 0);
+check(`一轮总量被限在 ${NOTE_TOTAL_CHARS} 字符内`, heavyChars <= NOTE_TOTAL_CHARS, String(heavyChars));
+check("…总量到顶算 truncated（不静默）", heavy?.truncated === true, String(heavy?.truncated));
+check("…保留的是前几条，不是随机/最后几条", heavy?.items[0]?.text.startsWith("y") === true && (heavy?.items.length ?? 0) > 0, String(heavy?.items.length));
 
 const withMeta = statusItemsOf(frame({ items: [{ text: "pref", tags: ["a", 2, "", "b"], type: "preference" }] }));
 check("tags 只留字符串、type 照抄", JSON.stringify(withMeta?.items[0]) === JSON.stringify({ text: "pref", tags: ["a", "b"], type: "preference" }), JSON.stringify(withMeta?.items[0]));
@@ -75,6 +84,27 @@ const rows = store.messagesTail("s1", 100).messages.filter((m: { kind: string })
 const memRows = rows.filter((m: { payload: unknown }) => (m.payload as { category?: string }).category === "memory");
 check("memory 行按 seq 排在库里", memRows.length === 2, String(memRows.length));
 check("…最新那行读回来仍带 items", ((memRows.at(-1)!.payload as { items?: unknown[] }).items ?? []).length === 1);
+
+// --- 4. 两个上限是可配的设置（操作者 2026-10-21：「支持设置中可配」） -----------------------
+// 这一段必须走真实的 settings 存储 + 真实的 `statusItemsOf`，否则「设置能改」只是页面上的一个输入框。
+const { initSettings, saveAgent, AGENT_DEFAULT, AGENT_RECALL_ITEM_RANGE, AGENT_RECALL_TOTAL_RANGE } =
+  await import("../../packages/server/src/settings.ts");
+check("默认就是 400 字/条、12K/轮", AGENT_DEFAULT.recallItemChars === 400 && AGENT_DEFAULT.recallTotalChars === 12000,
+  `${AGENT_DEFAULT.recallItemChars}/${AGENT_DEFAULT.recallTotalChars}`);
+
+initSettings(dir, store);
+saveAgent({ recallItemChars: 500, recallTotalChars: 2000 });
+const tuned = statusItemsOf(frame({ items: Array.from({ length: 10 }, () => ({ text: "z".repeat(300) })) }));
+check("改设置后单条上限生效（300 字不再被截）", tuned?.items[0]?.text.length === 300, String(tuned?.items[0]?.text.length));
+check("改设置后总量上限生效（2000 字只装得下 6 条）", tuned?.items.length === 6, String(tuned?.items.length));
+check("…并且报了 truncated", tuned?.truncated === true, String(tuned?.truncated));
+
+let rejected = "";
+try { saveAgent({ recallItemChars: 0 }); } catch (e) { rejected = String((e as Error)?.message ?? e); }
+check("0 不算「关掉截断」，直接拒绝（否则就是关掉闸门）", rejected.includes("recallItemChars"), rejected);
+check("范围是给页面用的同一对值", AGENT_RECALL_ITEM_RANGE[0] === 80 && AGENT_RECALL_TOTAL_RANGE[1] === 60000,
+  `${AGENT_RECALL_ITEM_RANGE}/${AGENT_RECALL_TOTAL_RANGE}`);
+
 
 console.log(`\n${fail ? "FAILED" : "OK"} — ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

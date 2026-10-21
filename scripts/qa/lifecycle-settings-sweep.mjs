@@ -109,11 +109,17 @@ console.log("== ① 设置 → 槽位回收与热备 ==");
     "the 设置 button opens the page");
   check(await until(`Boolean(document.querySelector('#set-lifecycle'))`, 15000), "the 槽位回收与热备 card is there");
   const rows = await card();
-  check(rows.length === 3, "it holds three controls: 空闲超时 / 热备槽位 / 热备最长闲置", `${rows.length} row(s)`);
+  check(rows.length === 5, "it holds five controls: 空闲超时 / 热备槽位 / 热备最长闲置 / 召回单条字数 / 召回一轮总量",
+    `${rows.length} row(s)`);
   check(/空闲超时/.test(rows[0]?.label ?? ""), "the first is 空闲超时（分钟）", rows[0]?.label);
   check(/热备槽位/.test(rows[1]?.label ?? ""), "the second is 热备槽位（最近 N 个）", rows[1]?.label);
   check(/热备最长闲置/.test(rows[2]?.label ?? ""), "the third is 热备最长闲置（小时）", rows[2]?.label);
+  check(/召回条目：单条字数/.test(rows[3]?.label ?? ""), "the fourth is 召回条目：单条字数", rows[3]?.label);
+  check(/召回条目：一轮总字数/.test(rows[4]?.label ?? ""), "the fifth is 召回条目：一轮总字数", rows[4]?.label);
   const a = await settings();
+  check(rows[3]?.value === String(a.recallItemChars) && rows[4]?.value === String(a.recallTotalChars),
+    "…and the recall inputs show the server's own 400 / 12000",
+    JSON.stringify({ item: rows[3]?.value, total: rows[4]?.value, api: [a.recallItemChars, a.recallTotalChars] }));
   check(rows[0]?.value === String(a.idleKillMin), "…and each input shows the server's own value",
     JSON.stringify({ idle: rows[0]?.value, warm: rows[1]?.value, ttl: rows[2]?.value, api: a }));
   check(await ev(`[...document.querySelectorAll('#set-lifecycle p.set-hint')].some((p) => /保底，不是上限/.test(p.textContent))`),
@@ -156,14 +162,33 @@ console.log("== ④ 超范围：服务端夹住 ==");
     "…and the input shows the clamped value", await ev(`document.querySelectorAll('#set-lifecycle .set-num')[1].value`));
 }
 
+// ---- ④b 召回条目的两个上限：页面改 = 服务端存 = 下一个回合生效 ------------------------------
+// 这两个数不是格式偏好：它们决定每轮往 wire 和 SQLite 里放多少字节（操作者 2026-10-21 的要求）。
+console.log("== ④b 召回条目：单条字数 / 一轮总量 ==");
+{
+  check(await setField(3, 600), "typed 600 into 召回条目：单条字数");
+  check(await until(agentIs("a.recallItemChars === 600"), 10000), "…the server took it");
+  check(await setField(4, 20000), "typed 20000 into 召回条目：一轮总字数");
+  check(await until(agentIs("a.recallTotalChars === 20000"), 10000), "…the server took it");
+  check(/每条最多 600 字/.test((await card())[3]?.hint ?? ""), "…and the hint follows the number", (await card())[3]?.hint);
+  // 0 不是「关掉截断」：那是关掉闸门。页面把它夹到下限（80），服务端再夹一次 —— 结果必须是一个
+  // 真实生效的上限，绝不能是 0 或 undefined。
+  check(await setField(3, 0), "typed 0 into 召回条目：单条字数");
+  check(await until(agentIs("a.recallItemChars === 80"), 10000),
+    "…0 lands on the range's floor (80), never stored as \"off\"",
+    JSON.stringify(await settings()));
+}
+
 // ---- ⑤ leave it as we found it --------------------------------------------------------------------
 console.log("== ⑤ 还原默认 ==");
 {
   await setField(1, 5);
   await setField(2, 24);
+  await setField(3, 400);
+  await setField(4, 12000);
   const back = await until(`(async () => { const a = (await fetch('/api/settings', { credentials: 'same-origin' }).then((r) => r.json())).agent;
-    return a.warmSlots === 5 && a.warmTtlHours === 24 })()`, 10000);
-  check(back, "热备槽位 5 / 热备最长闲置 24 restored", JSON.stringify(await settings()));
+    return a.warmSlots === 5 && a.warmTtlHours === 24 && a.recallItemChars === 400 && a.recallTotalChars === 12000 })()`, 10000);
+  check(back, "热备槽位 5 / 热备最长闲置 24 / 召回 400·12000 restored", JSON.stringify(await settings()));
   const final = await card();
   check(/最近 5 个会话即使空闲也不回收/.test(final[1]?.hint ?? "") && /闲置超过 24 小时/.test(final[2]?.hint ?? ""),
     "…and the hints agree", `${final[1]?.hint} | ${final[2]?.hint}`);

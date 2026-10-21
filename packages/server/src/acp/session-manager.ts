@@ -49,7 +49,7 @@ import type {
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
-import { PREFS_DEFAULT, agentSettings, type PlanHintSettings } from "../settings.js";
+import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, type PlanHintSettings } from "../settings.js";
 
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
@@ -1334,12 +1334,18 @@ export class SessionManager {
    *  these three. Rendering it into a prompt, an `echo`, or a `ps` line is the one thing the CLI's own
    *  `capabilities` forbids, and the token is worth nothing once this process is gone. */
   #cockpitEnv(env: NodeJS.ProcessEnv, sessionId: string, token: string): NodeJS.ProcessEnv {
+    // 召回条目的两个上限跟着设置一起下发给 agent（issue #37 的容量）：provider 读这两个环境变量，
+    // 与 server 的 `statusItemsOf` 同源。只在这一处传，是因为「一轮发多少字」是**宿主**的存储决定，
+    // 不该要求用户去改 agent 自己的 config.json，也不该让两边各有一套默认值。
+    const agent = agentSettings();
     return {
       ...env,
       AGENTUS_COCKPIT_ENDPOINT: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}`,
       AGENTUS_COCKPIT_TOKEN: token,
       AGENTUS_COCKPIT_SESSION: sessionId,
       AGENTUS_COCKPIT_BIN: COCKPIT_BIN,
+      HINDSIGHT_RECALL_ITEM_CHARS: String(agent.recallItemChars || AGENT_DEFAULT.recallItemChars),
+      HINDSIGHT_RECALL_TOTAL_CHARS: String(agent.recallTotalChars || AGENT_DEFAULT.recallTotalChars),
     };
   }
 
@@ -2765,21 +2771,38 @@ export function visibleBackgroundTasks(tasks: BackgroundTask[]): BackgroundTask[
  *
  *  形状（fork `acp_adapter/events.py:make_status_cb`）：与状态句同一条 thought 帧，
  *  `items: [{text, tags?, type?}]`、`truncated` 说明 agent 侧已经截断过。**在这里限一次量**
- *  是因为这串东西来自 agent 进程、还要落库：provider 已经按 200 字符/条、6K/轮截过，但那是
- *  agent 的承诺，不是我们的保证。上限与前端展开的容量对齐，绝不把一帧 200KB 的 memory 写进 SQLite。
- */
-export const NOTE_ITEMS_MAX = 20;
-export const NOTE_ITEM_CHARS = 300;
+ *  是因为这串东西来自 agent 进程、还要落库：provider 也会截，但那是 agent 的承诺，不是我们的保证，
+ *  上限与前端展开的容量对齐，绝不把一帧 200KB 的 memory 写进 SQLite。
+ *
+ *  闸门是**总字符数**，不是条数（操作者 2026-10-21：「条数不限制，按照 12K 总数来」）：按条数截会
+ *  在预算还没用完时就把整条短记忆丢掉，而真正花 wire 和 SQLite 的是字节。两个数都可配
+ *  （`agent.recallItemChars` / `agent.recallTotalChars`），并且以环境变量交给 agent 侧的 provider，
+ *  让两边同源 —— 否则界面说 12K、agent 按 6K 发，用户永远对不上。 */
+export const NOTE_ITEM_CHARS = AGENT_DEFAULT.recallItemChars;
+export const NOTE_TOTAL_CHARS = AGENT_DEFAULT.recallTotalChars;
 
 export function statusItemsOf(u: Record<string, unknown>): { items: StatusNoteItem[]; truncated: boolean } | undefined {
   const raw = hermesPayload(u).items;
   if (!Array.isArray(raw)) return undefined;
+  const caps = agentSettings();
+  const itemCap = caps.recallItemChars > 0 ? caps.recallItemChars : NOTE_ITEM_CHARS;
+  const totalCap = caps.recallTotalChars > 0 ? caps.recallTotalChars : NOTE_TOTAL_CHARS;
   const items: StatusNoteItem[] = [];
+  let used = 0;
+  let cut = false;
   for (const entry of raw) {
-    if (items.length >= NOTE_ITEMS_MAX) break;
     const text = typeof entry === "object" && entry ? (entry as { text?: unknown }).text : undefined;
     if (typeof text !== "string" || !text.trim()) continue;
-    const item: StatusNoteItem = { text: text.trim().slice(0, NOTE_ITEM_CHARS) };
+    let body = text.trim();
+    if (body.length > itemCap) {
+      body = body.slice(0, itemCap);
+      cut = true;
+    }
+    if (used + body.length > totalCap) {
+      cut = true;
+      break;
+    }
+    const item: StatusNoteItem = { text: body };
     const tags = (entry as { tags?: unknown }).tags;
     if (Array.isArray(tags)) {
       const clean = tags.filter((t): t is string => typeof t === "string" && !!t).slice(0, 8);
@@ -2788,9 +2811,10 @@ export function statusItemsOf(u: Record<string, unknown>): { items: StatusNoteIt
     const kind = (entry as { type?: unknown }).type;
     if (typeof kind === "string" && kind) item.type = kind;
     items.push(item);
+    used += body.length;
   }
   if (!items.length) return undefined;
-  return { items, truncated: hermesPayload(u).truncated === true || raw.length > items.length };
+  return { items, truncated: cut || hermesPayload(u).truncated === true || raw.length > items.length };
 }
 
 function statusKindOf(u: Record<string, unknown>): string | undefined {

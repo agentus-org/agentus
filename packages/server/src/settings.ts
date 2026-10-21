@@ -194,15 +194,26 @@ export interface AgentSettings {
    *  agent knows it is there, the operator does not need to. Turned ON, every running process
    *  shows, which is what the fork's original "a snapshot is the only witness" design wanted. */
   showSilentBackground: boolean;
+  /** 记忆召回条目：单条最多多少字符（issue #37 的容量）。These items are a per-turn status frame
+   *  that also lands in SQLite, so the number is a cost knob, not a formatting preference: it is
+   *  handed to the agent as `HINDSIGHT_RECALL_ITEM_CHARS`, and the server applies the same limit
+   *  when it re-caps what arrives. 400 = the operator's 2026-10-21 decision (was 200). */
+  recallItemChars: number;
+  /** 记忆召回条目：一轮最多多少字符。**这是唯一的条数闸门** —— 不按条数截，短记忆本来就该多
+   *  进来几条，按条数截会连预算都没用完就把整条记忆丢掉。Handed to the agent as
+   *  `HINDSIGHT_RECALL_TOTAL_CHARS`（12K = 操作者 2026-10-21 的决定，原来是 6K）。 */
+  recallTotalChars: number;
 }
 
 export const AGENT_DEFAULT: AgentSettings = {
   idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false, completionWake: true,
-  showSilentBackground: false,
+  showSilentBackground: false, recallItemChars: 400, recallTotalChars: 12000,
 };
 
 /** The numeric half of `AgentSettings` — the keys the range-checked helpers may write. */
-type AgentNumberKey = "idleKillMin" | "warmSlots" | "warmTtlHours";
+type AgentNumberKey =
+  | "idleKillMin" | "warmSlots" | "warmTtlHours" | "recallItemChars" | "recallTotalChars";
+
 
 /** What the settings page may offer: the ends of the number field. Server-side enforcement uses
  *  the same pair, so a hand-written request cannot store a nonsense value. */
@@ -212,6 +223,11 @@ export const AGENT_IDLE_RANGE: [number, number] = [0, 60];
 export const AGENT_WARM_RANGE: [number, number] = [0, 20];
 /** 0 = 不过期; a week is the longest span worth offering on the page. */
 export const AGENT_WARM_TTL_RANGE: [number, number] = [0, 168];
+/** 召回条目单条字符数：下限是为了别把一条记忆截成半句话，上限是「一整帧别超过一次 prompt 的量」。
+ *  与 provider 的默认同值（400），页面改这里，spawn 时用环境变量覆盖 agent 侧同一对常量。 */
+export const AGENT_RECALL_ITEM_RANGE: [number, number] = [80, 2000];
+/** 一轮条目的总字符数。这就是条数闸门本身，所以下限不能太小（2000 ≈ 5 条长记忆）。 */
+export const AGENT_RECALL_TOTAL_RANGE: [number, number] = [2000, 60000];
 
 /** 观察智能体 (`工作播报`, issue #16): ONE long-lived ACP session per observed session, spawned by the
  *  cockpit, in its own scratch directory, read-only, out of the rail. It is the thing that turns
@@ -514,6 +530,8 @@ function pickAgent(raw: unknown): AgentSettings {
     take("idleKillMin", AGENT_IDLE_RANGE);
     take("warmSlots", AGENT_WARM_RANGE);
     take("warmTtlHours", AGENT_WARM_TTL_RANGE);
+    take("recallItemChars", AGENT_RECALL_ITEM_RANGE);
+    take("recallTotalChars", AGENT_RECALL_TOTAL_RANGE);
     if (typeof r.cockpitSend === "boolean") out.cockpitSend = r.cockpitSend;
     if (typeof r.completionWake === "boolean") out.completionWake = r.completionWake;
     if (typeof r.showSilentBackground === "boolean") out.showSilentBackground = r.showSilentBackground;
@@ -631,6 +649,8 @@ export function publicSettings(): Record<string, unknown> {
     agentIdleRange: AGENT_IDLE_RANGE,
     agentWarmRange: AGENT_WARM_RANGE,
     agentWarmTtlRange: AGENT_WARM_TTL_RANGE,
+    agentRecallItemRange: AGENT_RECALL_ITEM_RANGE,
+    agentRecallTotalRange: AGENT_RECALL_TOTAL_RANGE,
     observer: cache.observer,
     observerDefaults: OBSERVER_DEFAULT,
     observerPromptDefault: OBSERVER_PROMPT_DEFAULT,
@@ -823,6 +843,8 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
   set("idleKillMin", AGENT_IDLE_RANGE, "minutes", "0 = off");
   set("warmSlots", AGENT_WARM_RANGE, "slots", "0 = off");
   set("warmTtlHours", AGENT_WARM_TTL_RANGE, "hours", "0 = never expires");
+  set("recallItemChars", AGENT_RECALL_ITEM_RANGE, "chars", "no 0 — a cap must stay a cap");
+  set("recallTotalChars", AGENT_RECALL_TOTAL_RANGE, "chars", "no 0 — a cap must stay a cap");
   // A boolean next to three numbers: spelled out rather than forced through the numeric `set`.
   if ("cockpitSend" in patch) {
     if (typeof patch.cockpitSend !== "boolean") throw new Error("invalid cockpitSend: expected true or false");
