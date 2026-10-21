@@ -302,6 +302,25 @@ button { font: inherit; }
 @media (max-width: 720px) {
   .bg-notice-cmd { font-size: 11px; }
 }
+/* 子代理回来的唤醒 (#44 之后一轮): same folded row as the terminal notice, but its body is a stack
+   of reports rather than one command. Each report scrolls INSIDE a fixed box — a batch of two
+   subagents is easily three screens of prose, and letting it push the conversation up is the exact
+   thing the operator asked to stop. */
+.deleg-notice .bg-notice-cmd { font-variant-numeric: normal; }
+.deleg-task { margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.deleg-task:first-of-type { margin-top: 4px; padding-top: 0; border-top: 0; }
+.deleg-task-head { display: flex; align-items: baseline; gap: 6px; }
+.deleg-mark { flex: 0 0 auto; font-size: 11.5px; color: var(--accent); }
+.deleg-task[data-ok="fail"] .deleg-mark { color: var(--err); }
+.deleg-goal { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text); word-break: break-word; }
+.deleg-meta { flex: 0 0 auto; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.deleg-body { margin: 3px 0 0 13px; max-height: 340px; overflow: auto; overscroll-behavior: contain; font-size: 12.5px; }
+.deleg-body > :first-child { margin-top: 0; }
+.deleg-body > :last-child { margin-bottom: 0; }
+@media (max-width: 720px) {
+  .deleg-body { max-height: 55vh; }
+  .deleg-meta { display: none; }
+}
 @media (max-width: 720px) {
   /* Phones: the hint is the first thing to go — the count already says it, and three items on one line
      is what squeezed the turn line (§134/§137). */
