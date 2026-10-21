@@ -761,7 +761,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(to);
         if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
-        if (target.cold) return send(res, 409, { error: COCKPIT_ERRORS.targetCold });
+        // #41: a cold target used to end the conversation here. Waking is now EXPLICIT (`--wake`),
+        // because it costs a process — but refusing every cold send made cross-session work
+        // unusable, since the idle reaper keeps targets cold by design.
+        const wantWake = body.wake === true;
+        let woke = false;
+        if (target.cold) {
+          if (!wantWake) {
+            return send(res, 409, {
+              error: COCKPIT_ERRORS.targetCold,
+              message: "the target has no running process; pass --wake (wake:true) to start it, then the message is delivered in the same call",
+              wakeable: !target.archivedAt,
+            });
+          }
+          try {
+            await mgr.resume(to);
+            woke = true;
+          } catch (e) {
+            return send(res, 409, { error: COCKPIT_ERRORS.wakeFailed, message: String((e as Error)?.message ?? e) });
+          }
+        }
         // Deliberately NOT `interrupt`: a cross-session message must never take the floor from a turn
         // the OPERATOR started. A busy target answers `target_busy` and the caller reports it as such.
         try {
@@ -775,7 +794,24 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const why = String((e as Error)?.message ?? e);
           return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
         }
-        return send(res, 200, { delivered: true, to, code: "delivered" });
+        return send(res, 200, { delivered: true, to, code: "delivered", ...(woke ? { delivered_after_wake: true } : {}) });
+      }
+      if (url.pathname === "/api/cockpit/wake" && req.method === "POST") {
+        const body = await readJson(req);
+        const id = String(body.id ?? "");
+        if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        // Same gate as send (#41): waking is what makes a send possible, so the two answers must
+        // never disagree about whether an agent may pull another session's process up.
+        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        const target = rowOf(id);
+        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, woke: false, already_live: true, id });
+        try {
+          const info = await mgr.resume(id);
+          return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, woke: true, id, status: info.status });
+        } catch (e) {
+          return send(res, 409, { error: COCKPIT_ERRORS.wakeFailed, message: String((e as Error)?.message ?? e) });
+        }
       }
       return send(res, 404, { error: "unknown cockpit command" });
     }

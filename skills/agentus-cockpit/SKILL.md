@@ -69,7 +69,7 @@ here can be reproduced by hand.
 | `--waiting` | sessions with an approval outstanding — **the operator's queue** |
 | `--since 30m` \| `2h` \| `1d` \| `2w` \| `2026-10-17[T14:30]` | activity inside that window |
 | `--created-since <same grammar>` | creation inside that window (a separate clock) |
-| `--status running\|ready\|cold` | state; `cold` = no process, so `send` would answer `target_cold` |
+| `--status running\|ready\|cold` | state; `cold` = no process, so `send` answers `target_cold` unless you add `--wake` (the row's `wakeable` says whether waking is possible) |
 | `--grep <text>` | title substring only — there is no transcript search here (see below) |
 | `--sort last\|created\|name` | default `last` |
 | `--limit N` | default 20, max 200; `meta.total`/`capped` tell you what you did not see |
@@ -119,7 +119,7 @@ clean stdout is not an accident.
 | `unreachable` | the cockpit did not answer | one retry, then carry on without it |
 | `sends_disabled` | the operator has 驾驶舱互发消息 off | report it; do not work around it |
 | `target_busy` | the target is mid-turn — **it saw nothing** | do not retry in a loop; say so plainly |
-| `target_cold` | the target has no process (cold slot) | the cockpit will not wake it for you |
+| `target_cold` | the target has no process (cold slot) | pass `--wake`, or `session wake <id>` first — waking is explicit because it costs a process |
 | `out_of_scope` | not a session you may see (archived / unknown) | stop; do not probe ids |
 | `bad_request` | missing/empty `to` or `message`, or bad JSON | fix the call |
 

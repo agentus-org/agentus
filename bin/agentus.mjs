@@ -49,7 +49,9 @@ Commands (client side — they need the identity the cockpit gives an agent it s
   agentus session show <id>            one session in detail + any approval it waits on
   agentus session messages <id> [--tail N]
   agentus session plan <id>
-  agentus session send <id> <text…>    deliver a message into another session (operator-gated)
+  agentus session send <id> <text…>    deliver a message into another session (operator-gated);
+                                       add --wake to also start a cold target
+  agentus session wake <id>            start a cold session's process (same switch as send)
   agentus capabilities                 the CLI's contract, self-describing
   agentus skill [--path]               the CLI's manual, as shipped in the package
 

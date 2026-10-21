@@ -54,7 +54,10 @@ another one
   agentus session messages <id> [--tail N]
                                       the last N messages, each cut to the documented size
   agentus session plan <id>           the plan object the operator's card renders
-  agentus session send <id> <text…>   deliver a message into another session (stdin if no text)
+  agentus session send <id> <text…> [--wake]
+                                       deliver a message into another session (stdin if no text);
+                                       --wake also starts the target when it is cold
+  agentus session wake <id>            start a cold session's process (same switch as send)
 
   agentus capabilities                the contract: commands, fields, truncation, scope, send state
   agentus skill [--path]              this CLI's manual, as shipped in the package
@@ -292,7 +295,7 @@ if (cmd === "capabilities") {
     // The text is the plain words after the id — an agent writing a sentence should not have to
     // build JSON to say it. With no words, stdin is accepted: either a JSON `{"message": "…"}` (what
     // older callers sent) or the raw text.
-    let message = args.slice(1).join(" ").trim();
+    let message = args.slice(1).filter((a) => a !== "--wake").join(" ").trim();
     if (!message) {
       const raw = await readStdin();
       if (raw) {
@@ -310,7 +313,7 @@ if (cmd === "capabilities") {
       res = await fetch(`${EP}/api/cockpit/send`, {
         method: "POST",
         headers: headers(true),
-        body: JSON.stringify({ to: id, message }),
+        body: JSON.stringify({ to: id, message, ...(args.includes("--wake") ? { wake: true } : {}) }),
       });
     } catch (e) {
       fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
@@ -319,14 +322,46 @@ if (cmd === "capabilities") {
     if (!res.ok) {
       // The refusal meanings a model must not blur (see `capabilities.discipline`): none of these is
       // "delivered", and target_busy specifically means the target saw NOTHING.
-      fail(String(body?.error ?? `http_${res.status}`), String(body?.error ?? `the cockpit answered HTTP ${res.status}`));
+      // The refusal's MESSAGE is the part a model can act on (it names --wake, or that a box is
+      // archived); the code stays the stable token. Dropping the message made `target_cold` a dead
+      // end that looked identical to a true prohibition.
+      fail(String(body?.error ?? `http_${res.status}`),
+        String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
     }
     out({
       success: true,
       data: body,
       meta: {
         schema_version: 1,
-        note: "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
+        note: body?.delivered_after_wake
+          ? "the target was COLD: this call woke it (a process now exists) and then delivered. delivered means it received the message and started a turn — not that it read or agreed."
+          : "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
+      },
+    });
+  } else if (verb === "wake") {
+    // #41: the explicit, gated version of what opening a cold session in the rail does. Kept separate
+    // from send because it is a DECISION with a cost (a process, its memory) — an agent must be able
+    // to say 「I woke it」 without also having said something.
+    if (!id) fail("bad_request", "usage: agentus session wake <id>");
+    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: agentus session wake <id>)`);
+    let res;
+    try {
+      res = await fetch(`${EP}/api/cockpit/wake`, { method: "POST", headers: headers(true), body: JSON.stringify({ id }) });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      fail(String(body?.error ?? `http_${res.status}`), String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    }
+    out({
+      success: true,
+      data: body,
+      meta: {
+        schema_version: 1,
+        note: body?.woke
+          ? "the target now has a process and accepts send. Waking costs one process — do it for work you actually need."
+          : "the target was already live: nothing was started.",
       },
     });
   } else {

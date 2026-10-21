@@ -3,6 +3,7 @@
 // loop, event fan-out with monotonic seq, permission pending-map with timeout,
 // mode/config plumbing. UI holds zero intelligence (red line D): we only relay.
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -58,6 +59,16 @@ import { PREFS_DEFAULT, agentSettings, type PlanHintSettings } from "../settings
 // implementation is `bin/cockpit.mjs`, but that file is the subcommand, not a product name: agents
 // never see it, so it must not become a second thing users have to learn.)
 const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/agentus.mjs");
+
+// #40: a git checkout keeps `bin/agentus.mjs` at mode 100644 (the blob has no exec bit), so the very
+// first thing an agent does with the path we hand it — `$AGENTUS_COCKPIT_BIN session list` — dies with
+// `Permission denied`, and there is no npm shim to fall back on in a checkout (that is the deployment
+// form this project recommends). Fix the mode where we resolve the path: idempotent, best effort (a
+// read-only install stays usable — the agent just has to spell `node <path>`), and it also covers the
+// copies that lose the bit in tar/CI caches. The blob mode is fixed too, so a fresh clone is correct.
+try {
+  if ((fs.statSync(COCKPIT_BIN).mode & 0o111) === 0) fs.chmodSync(COCKPIT_BIN, 0o755);
+} catch { /* read-only tree: not fatal, only a worse error message for the agent */ }
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
