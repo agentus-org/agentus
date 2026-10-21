@@ -212,6 +212,41 @@ export function matchesWakePhrase(heard: string, phrase: string): boolean {
   return norm(heard).includes(needle);
 }
 
+/** How recently the wake phrase must have been HEARD. The recogniser only appends during a relay, so
+ *  a hit from earlier in the reply would otherwise stay armed for its whole tail and fire on the next
+ *  gap between sentences — 「它念到一半忽然自己停了」 with nothing said. */
+export const WAKE_FRESH_MS = 2500;
+
+/**
+ * The 关键词 decision as one pure function — every leg kills a specific false positive, and none of
+ * them can be checked without a microphone, so they are checked here instead:
+ *  · `own`      — the sentence the speaker is reading right now. Our loudspeaker plays into this
+ *                 microphone, so a phrase the AGENT said arrives as if the operator said it;
+ *  · fresh      — see WAKE_FRESH_MS;
+ *  · graceOpen  — attack transient + echo convergence at the start of a clip;
+ *  · evidence   — where our output level is measurable, a real voice rises over the echo and a leak
+ *                 does not. **Unmeasurable (-1) is not evidence**: it only means the browser voice
+ *                 cannot be tapped, and then the guards above are what is left.
+ */
+export function wakeArmed(o: {
+  heard: string;
+  own: string;
+  heardAgoMs: number;
+  phrase: string;
+  graceOpen: boolean;
+  evidence: boolean;
+  playRms: number;
+  muted: boolean;
+}): boolean {
+  if (o.muted || !o.heard || !o.phrase) return false;
+  if (!o.graceOpen) return false;
+  if (!(o.heardAgoMs <= WAKE_FRESH_MS)) return false;
+  if (o.own && matchesWakePhrase(o.own, o.phrase)) return false;
+  if (!matchesWakePhrase(o.heard, o.phrase)) return false;
+  if (o.playRms >= 0 && !o.evidence) return false;
+  return true;
+}
+
 function loadLocal(): CallSettings {
   try {
     return normalizeCall(JSON.parse(localStorage.getItem(KEY) ?? "null"));

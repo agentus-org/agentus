@@ -15,7 +15,7 @@
 // Run: npm run barge-gate   (tsx; no browser, no server)
 import {
   BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, INTERRUPT_MODES, bargeFloorRms,
-  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase,
+  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase, wakeArmed, WAKE_FRESH_MS,
 } from "../../packages/web/src/callSettings.ts";
 
 let pass = 0, fail = 0;
@@ -111,6 +111,29 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
   check("keyword is a real interrupt mode the server also accepts",
     INTERRUPT_MODES.some((m) => m.id === "keyword"));
 }
+
+// ---- 关键词打断的四道闸 (the pure decision behind CallMode's keyword branch) ----------------
+// Each leg kills a false positive a browser sweep cannot provoke on demand, which is why it is here.
+// The one that bit: the agent said the wake word out loud, the recogniser heard it, and the call
+// cancelled itself mid-answer. NOTE the argument order of `check` here is (name, ok).
+const wakeBase = {
+  heard: "小灵，停一下", own: "", heardAgoMs: 300, phrase: "小灵",
+  graceOpen: true, evidence: true, playRms: 0.02, muted: false,
+};
+check("a fresh phrase over the echo takes the floor", wakeArmed(wakeBase) === true);
+check("the phrase inside OUR OWN sentence is echo, not the operator",
+  wakeArmed({ ...wakeBase, own: "好的，小灵在这里等你" }) === false);
+check("a phrase heard long ago is stale, not armed",
+  wakeArmed({ ...wakeBase, heardAgoMs: WAKE_FRESH_MS + 1 }) === false);
+check("nothing during a clip's attack transient / grace window",
+  wakeArmed({ ...wakeBase, graceOpen: false }) === false);
+check("measurable output with no double-talk evidence is a leak",
+  wakeArmed({ ...wakeBase, evidence: false, playRms: 0.03 }) === false);
+check("unmeasurable output (browser voice) leans on the other guards",
+  wakeArmed({ ...wakeBase, evidence: false, playRms: -1 }) === true);
+check("muted never barges", wakeArmed({ ...wakeBase, muted: true }) === false);
+check("an empty phrase is inert here too", wakeArmed({ ...wakeBase, phrase: "" }) === false);
+check("words without the phrase do nothing", wakeArmed({ ...wakeBase, heard: "今天几号" }) === false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
