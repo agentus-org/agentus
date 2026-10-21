@@ -36,6 +36,7 @@ import {
 } from "./Icons";
 import {
   BARGE_COOLDOWN_MS, BARGE_GRACE_MS, bargeFloorRms, CALL_DEFAULT, CALL_KNOBS, CALL_RANGE, INTERRUPT_MODES,
+  matchesWakePhrase,
   isBargeEvidence, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
@@ -89,6 +90,10 @@ function charCount(text: string): number {
  *  different hat. The next sentence is also the only one that matters: it is the boundary the
  *  operator hears. */
 const PREFETCH_SENTENCES = 1;
+/** How long the call may sit in `thinking`/`speaking` with an empty queue, nothing playing and no
+ *  turn in flight before it declares itself starved and hands the floor back. The state is checked,
+ *  not the cause: every known way to go mute mid-call (#44) lands in exactly this state. */
+const STARVE_MS = 4000;
 
 /** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
  *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
@@ -346,6 +351,25 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         echoBaseRef.current = 0;
         return;
       }
+      // 关键词打断: the floor changes hands on a WORD, not on a level. Two consequences:
+      //  · the recogniser keeps running while the reply plays (the same relay the listening phase
+      //    uses) — the phrase has to be *heard*, and nothing else is listening;
+      //  · the confirmation is `matchesWakePhrase` over what was heard, so a colleague talking at
+      //    normal volume cannot take the floor by being loud. Level plays no part at all here.
+      //  An empty phrase makes the mode inert on purpose: switching the mode without typing one
+      //  changes nothing, so this cannot turn into an accidental always-on wake word.
+      if (c.interruptMode === "keyword" && (phaseRef.current === "speaking" || phaseRef.current === "thinking")) {
+        if (!mutedRef.current) dictation.setRelay(true);
+        bargeRef.current = 0;
+        echoBaseRef.current = 0;
+        const said = `${st.text || ""} ${st.interim || ""}`.trim();
+        if (!mutedRef.current && said && matchesWakePhrase(said, c.wakePhrase)
+          && Date.now() - lastBargeRef.current > BARGE_COOLDOWN_MS) {
+          lastBargeRef.current = Date.now();
+          void bargeIn();
+        }
+        return;
+      }
       if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
@@ -441,7 +465,13 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   };
 
   useEffect(() => {
-    if (phaseRef.current !== "thinking" && phaseRef.current !== "speaking") return;
+    // A reply is read whenever one ARRIVES — not only while the call happens to be in
+    // thinking/speaking. A prompt typed into the composer while a call is up starts a turn while the
+    // call still sits in `listening` (the auto-send that would flip it only exists in 语音打断 mode),
+    // so a phase gate here left that reply silent forever: text rendered, no voice, and every
+    // following turn in the same call stayed mute (#44).
+    const p = phaseRef.current;
+    if (p === "connecting" || p === "error") return;
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
     // message this turn actually produced.
     if (!agentKey || agentKey === baselineKeyRef.current) return;
@@ -461,7 +491,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       queuedRef.current = done.length;
       queueRef.current.push(...fresh);
       setReply((r) => `${r}${r ? " " : ""}${fresh.join(" ")}`);
-      if (phaseRef.current === "thinking") setPhase("speaking");
+      if (phaseRef.current !== "speaking") setPhase("speaking");
       warmQueue();                                   // ask for it the moment it exists
     }
     if (!busy && tail) {                             // turn over: flush the last fragment
@@ -485,25 +515,63 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (phaseRef.current !== "speaking" || queueRunRef.current) return;
     queueRunRef.current = true;
     void (async () => {
-      while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
-        const sentence = queueRef.current.shift() as string;
-        // Generate the NEXT sentences while this one plays. Sequentially, the call went silent
-        // between sentences for as long as the next one took to synthesise and arrive
-        // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
-        warmQueue();
-        clipAtRef.current = Date.now();       // arms the grace window for THIS clip
-        echoBaseRef.current = 0;              // this clip's echo is not the last one's
-        await speaker.speak(sentence, "call", prefs);
-        // barged in, hung up, or the call is gone: never hand another sentence to the speaker
-        if (!aliveRef.current || phaseRef.current !== "speaking") break;
-      }
-      queueRunRef.current = false;
-      if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
-        void backToListening(false);
+      // try/finally, because `queueRunRef` is the only lock this loop has: a rejection that escapes
+      // would leave it `true` for the rest of the call and no sentence would ever be handed to the
+      // speaker again — a mute call with no error anywhere (#44's 「打着打着突然不播放了」).
+      try {
+        while (aliveRef.current && queueRef.current.length && phaseRef.current !== "error") {
+          const sentence = queueRef.current.shift() as string;
+          // Generate the NEXT sentences while this one plays. Sequentially, the call went silent
+          // between sentences for as long as the next one took to synthesise and arrive
+          // (0.5–1.5 s measured) — the operator hears that as "播报很慢".
+          warmQueue();
+          clipAtRef.current = Date.now();       // arms the grace window for THIS clip
+          echoBaseRef.current = 0;              // this clip's echo is not the last one's
+          await speaker.speak(sentence, "call", prefs);
+          // barged in, hung up, or the call is gone: never hand another sentence to the speaker
+          if (!aliveRef.current || phaseRef.current !== "speaking") break;
+        }
+      } catch {
+        /* speak() reports its own failures; a throw here must not kill the loop's lock */
+      } finally {
+        queueRunRef.current = false;
+        if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
+          void backToListening(false);
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, reply, busy]);
+
+  // ---- watchdog: the call is never left mute ---------------------------------------------
+  // 「打着打着，他突然不播放了」 has no single cause — a reply that reached the queue through a path
+  // the gate did not cover, a speaker run that ended between sentences, a TTS that failed every
+  // sentence. All of them end in the SAME observable state: phase speaking/thinking, nothing queued,
+  // nothing playing, no turn in flight. So the state is what gets checked, not the cause, and the
+  // call hands the floor back instead of sitting silent until it is hung up and reopened.
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  const spokenRef = useRef(spoken);
+  spokenRef.current = spoken;
+  const starveRef = useRef(0);
+  useEffect(() => {
+    const iv = window.setInterval(() => {
+      const p = phaseRef.current;
+      if (p !== "speaking" && p !== "thinking") { starveRef.current = 0; return; }
+      const idle = !queueRunRef.current && !queueRef.current.length
+        && !spokenRef.current.speaking && !busyRef.current;
+      if (!idle) { starveRef.current = 0; return; }
+      if (!starveRef.current) { starveRef.current = Date.now(); return; }
+      if (Date.now() - starveRef.current < STARVE_MS) return;
+      starveRef.current = 0;
+      // Say it when the speaker knows why: a recovery the operator can see is worth more than a
+      // silent one, and 「为什么它不说话了」 needs an answer on the call itself.
+      if (spokenRef.current.error) setErr(spokenRef.current.error);
+      void backToListening(false);
+    }, 1000);
+    return () => window.clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   /** Talking over the agent: drop our playback, cancel ITS turn, listen again.
    *
@@ -1129,6 +1197,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                 </div>
               ) : null}
               {err ? <p className="call-err">{err}</p> : null}
+              {/* The speaker's own failure, which used to be visible only in the composer — i.e.
+                  never during a call. A call that stops talking must say why. */}
+              {!err && spoken.error ? <p className="call-err">{spoken.error}</p> : null}
               {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
               {(!heard && !msgs.length) || tooShort ? <p className="call-hint">{hint}</p> : null}
             </div>
@@ -1181,6 +1252,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
             {heard ? <p className="call-heard">{heard}</p> : null}
             {reply ? <p className="call-reply">{reply}</p> : null}
             {err ? <p className="call-err">{err}</p> : null}
+            {!err && spoken.error ? <p className="call-err">{spoken.error}</p> : null}
             {!err && spoken.note ? <p className="call-note">{spoken.note}</p> : null}
             {(!heard && !reply && !err) || tooShort ? <p className="call-hint">{hint}</p> : null}
           </div>
@@ -1263,6 +1335,26 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                 所以灵敏度和持续时间这会儿不起作用（切回「语音打断」就恢复）。
               </p>
             ) : null}
+            {cfg.interruptMode === "keyword" ? (
+              <label className="call-knob">
+                <span className="call-knob-top">
+                  <span className="call-knob-name">唤醒词</span>
+                  <span className="call-knob-val">{cfg.wakePhrase ? cfg.wakePhrase : "未设置"}</span>
+                </span>
+                <input
+                  type="text"
+                  value={cfg.wakePhrase}
+                  maxLength={24}
+                  placeholder="例如：小灵 / hey agent"
+                  onChange={(e) => applyCfg({ wakePhrase: e.target.value })}
+                  aria-label="唤醒词"
+                />
+                <span className="call-knob-hint">
+                  只有听到这句话才抢话（关键词打断）。空着 = 这个模式不生效，不会误触发。
+                  抢话灵敏度和持续时间在这一档不起作用 —— 判定靠的是「听到了什么」，不是「有多大声」。
+                </span>
+              </label>
+            ) : null}
             {/* What the capture ACTUALLY turned on — read from the live track, not from the
                 constraint we asked for. When echo cancellation is not running, the reply leaves the
                 loudspeaker and comes straight back into the microphone, which is how a call ends up
@@ -1276,7 +1368,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                   : "回声消除：这台设备没报告（浏览器语音路径）——抢话按「比回复更响」判断"}
             </p>
             {CALL_KNOBS.map((k) => (
-              <label className={`call-knob ${cfg.interruptMode === "button" && k.key.startsWith("barge") ? "off" : ""}`} key={k.key}>
+              <label className={`call-knob ${cfg.interruptMode !== "voice" && k.key.startsWith("barge") ? "off" : ""}`} key={k.key}>
                 <span className="call-knob-top">
                   <span className="call-knob-name">{k.label}</span>
                   <span className="call-knob-val">{k.show(cfg[k.key])}</span>
@@ -1289,7 +1381,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                   value={cfg[k.key]}
                   onChange={(e) => applyCfg({ [k.key]: Number(e.target.value) } as Partial<CallSettings>)}
                   aria-label={k.label}
-                  disabled={cfg.interruptMode === "button" && k.key.startsWith("barge")}
+                  disabled={cfg.interruptMode !== "voice" && k.key.startsWith("barge")}
                 />
                 <span className="call-knob-ends"><span>{k.ends[0]}</span><span>{k.ends[1]}</span></span>
                 <span className="call-knob-hint">{k.hint}</span>

@@ -62,7 +62,7 @@ export const THEME_DEFAULT: ThemeSettings = { mode: "system", accent: "" };
  *  what a phone's own loudspeaker leaks back into its microphone is nothing like a headset
  *  in a quiet room — so the defaults are a starting point, not a truth. The call page owns
  *  the panel; the settings page reads the same numbers. */
-export type InterruptMode = "voice" | "button";
+export type InterruptMode = "voice" | "button" | "keyword";
 
 export interface CallSettings {
   /** WHO gets to interrupt the agent, and the operator picks:
@@ -85,6 +85,10 @@ export interface CallSettings {
    *  as a turn (1 = no limit). A tap on the orb always sends what is there — that gesture
    *  is an explicit instruction, not a guess about where a sentence ended. */
   minChars: number;
+  /** 关键词打断 — the phrase that must be HEARD before the floor changes hands (opt-in; empty means
+   *  the mode is inert). No shipped default on purpose: nobody should be able to interrupt this
+   *  agent by guessing a word we chose for them. */
+  wakePhrase: string;
 }
 
 /** How the operator wants to TALK to the agent. These were browser-local (localStorage) and
@@ -155,9 +159,10 @@ export const CALL_DEFAULT: CallSettings = {
      and a long sentence with a breath in the middle got cut. Both ends of the range still let
      the room decide — this is only where a fresh install starts. */
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
+  wakePhrase: "",
 };
 
-export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button"];
+export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button", "keyword"];
 
 /** How the cockpit treats AGENT PROCESSES — as opposed to what a conversation contains. AionUi
  *  ships the same knob in 设置 → 系统 as 「Agent 空闲超时（分钟）」 (default 5, 1–60, step 5) with the
@@ -487,6 +492,8 @@ function pickCall(raw: unknown): CallSettings {
     if (callAtShippedDefaults(raw as Record<string, unknown>)) return out;
     const mode = (raw as Record<string, unknown>).interruptMode;
     if (INTERRUPT_MODES.includes(mode as InterruptMode)) out.interruptMode = mode as InterruptMode;
+    const wake = (raw as Record<string, unknown>).wakePhrase;
+    if (typeof wake === "string") out.wakePhrase = wake.replace(/\s+/g, " ").trim().slice(0, 24);
     for (const k of CALL_NUMERIC) {
       const v = Number((raw as Record<string, unknown>)[k]);
       const [lo, hi] = CALL_RANGE[k];
@@ -714,9 +721,15 @@ export function saveCall(patch: Record<string, unknown>): Settings {
   if ("interruptMode" in patch) {
     const mode = patch.interruptMode;
     if (!INTERRUPT_MODES.includes(mode as InterruptMode)) {
-      throw new Error(`invalid interruptMode: ${JSON.stringify(mode)} (expected voice|button)`);
+      throw new Error(`invalid interruptMode: ${JSON.stringify(mode)} (expected voice|button|keyword)`);
     }
     c.interruptMode = mode as InterruptMode;
+  }
+  if ("wakePhrase" in patch) {
+    if (typeof patch.wakePhrase !== "string") throw new Error("invalid wakePhrase: expected a string");
+    const wake = patch.wakePhrase.replace(/\s+/g, " ").trim();
+    if (wake.length > 24) throw new Error("invalid wakePhrase: too long (max 24 characters)");
+    c.wakePhrase = wake;
   }
   for (const key of CALL_NUMERIC) {
     if (!(key in patch)) continue;

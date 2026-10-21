@@ -2658,6 +2658,13 @@ body.pane-dragging * { cursor: col-resize !important; }
   background: var(--call-tone, #38bdf8); color: #0b1220; font-weight: 600;
   box-shadow: 0 0 12px color-mix(in srgb, var(--call-tone, #38bdf8) 40%, transparent);
 }
+/* Three modes now (语音 / 关键词 / 按键). On a narrow phone the pill would push past the header,
+   so it tightens instead of scrolling: the mode is a thing you flip mid-call, and a control you
+   have to scroll to is a control you cannot reach while the agent is talking. */
+@media (max-width: 400px) {
+  .call-modes { flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+  .call-mode-btn { min-height: 26px; padding: 0 8px; font-size: 11.5px; }
+}
 
 .call-controls { display: flex; align-items: center; gap: 16px; margin-top: 2px; }
 .call-btn {

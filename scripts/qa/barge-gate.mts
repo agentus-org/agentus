@@ -14,7 +14,8 @@
 //
 // Run: npm run barge-gate   (tsx; no browser, no server)
 import {
-  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, bargeFloorRms, isBargeEvidence,
+  BARGE_COOLDOWN_MS, BARGE_GRACE_MS, CALL_DEFAULT, ECHO, ECHO_RISE, INTERRUPT_MODES, bargeFloorRms,
+  isBargeEvidence, matchesWakePhrase, normalizeCall, normalizeWakePhrase,
 } from "../../packages/web/src/callSettings.ts";
 
 let pass = 0, fail = 0;
@@ -89,6 +90,26 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
     `aec ${ECHO.aec} raw ${ECHO.raw}`);
   check("the rise threshold is above unity (echo may wobble) and reachable by a voice",
     ECHO_RISE > 1.2 && ECHO_RISE < 2.2, `${ECHO_RISE}`);
+}
+
+// 8. 关键词打断 (#42's comment): the confirmation is a WORD, not a level. The recogniser writes the
+//    same two syllables differently every time (`小灵`, `小 灵`, `小灵，`, `小灵。`), so both sides of
+//    the comparison are stripped of spaces/punctuation/case before the match.
+{
+  check("a phrase match needs no spaces and survives punctuation",
+    matchesWakePhrase("小灵，停一下", "小灵") && matchesWakePhrase("小 灵", "小灵"));
+  check("…and the operator's capitalisation does not matter",
+    matchesWakePhrase("Hey Agent, stop", "hey agent"));
+  check("a phrase that was NOT said does not take the floor",
+    matchesWakePhrase("你好呀，今天天气不错", "小灵") === false);
+  check("an empty phrase is INERT, never 'always on'", matchesWakePhrase("小灵", "") === false
+    && matchesWakePhrase("", "") === false);
+  check("switching to keyword without typing a phrase changes nothing",
+    normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "");
+  check("the stored phrase is trimmed and capped at 24 characters",
+    normalizeWakePhrase("  小  灵  ") === "小 灵" && normalizeWakePhrase("x".repeat(40)).length === 24);
+  check("keyword is a real interrupt mode the server also accepts",
+    INTERRUPT_MODES.some((m) => m.id === "keyword"));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

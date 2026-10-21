@@ -12,7 +12,7 @@
 // instead of the defaults — the same dance theme.ts does.
 import { useSyncExternalStore } from "react";
 
-export type InterruptMode = "voice" | "button";
+export type InterruptMode = "voice" | "button" | "keyword";
 
 export interface CallSettings {
   /** WHO gets to interrupt the agent. This one is a SWITCH ON THE CALL, not a knob in the panel:
@@ -31,20 +31,27 @@ export interface CallSettings {
   silenceMs: number;
   /** an automatic send shorter than this many characters is dropped (1 = no limit) */
   minChars: number;
+  /** 关键词打断 (opt-in, `interruptMode: "keyword"`): the utterance that has to be HEARD before the
+   *  floor changes hands — e.g. 「小灵」. Empty means the mode is inert, which is deliberate: no
+   *  default wake word, so switching the mode without typing one changes nothing (#42's comment). */
+  wakePhrase: string;
 }
 
 export const CALL_DEFAULT: CallSettings = {
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
+  wakePhrase: "",
 };
 
-/** The switch's two ends, in the operator's words. */
+/** The switch's ends, in the operator's words. */
 export const INTERRUPT_MODES: { id: InterruptMode; label: string; hint: string }[] = [
   { id: "voice", label: "语音打断", hint: "说一句就能打断它（灵敏度、持续时间在设置里调）" },
+  { id: "keyword", label: "关键词打断", hint: "要先说出你设的那句话才算打断（设置里填），比语音打断稳、不用碰屏幕" },
   { id: "button", label: "按键打断", hint: "只认按钮：它说话的时候麦克风关着，不识别、不抢话——外放串音、环境吵的时候用它" },
 ];
 
-/** The NUMERIC knobs (slider ends live here). `interruptMode` is a two-way choice, not a slider. */
-export type CallKnobKey = Exclude<keyof CallSettings, "interruptMode">;
+/** The NUMERIC knobs (slider ends live here). `interruptMode` is a three-way choice and
+ *  `wakePhrase` is text, so neither is a slider. */
+export type CallKnobKey = Exclude<keyof CallSettings, "interruptMode" | "wakePhrase">;
 
 /** The slider ends. The server validates against the same ranges (settings.ts CALL_RANGE). */
 export const CALL_RANGE: Record<CallKnobKey, [number, number]> = {
@@ -180,7 +187,24 @@ export function normalizeCall(raw: unknown): CallSettings {
   const r = raw as Record<string, unknown>;
   if (INTERRUPT_MODES.some((m) => m.id === r.interruptMode)) out.interruptMode = r.interruptMode as InterruptMode;
   for (const k of NUMERIC) if (k in r) out[k] = clamp(k, r[k]);
+  if ("wakePhrase" in r) out.wakePhrase = normalizeWakePhrase(r.wakePhrase);
   return out;
+}
+
+/** The wake phrase as it is stored: trimmed, single-spaced, at most 24 characters. Long enough for
+ *  「hey agent」 or 「小灵同学」, short enough that it cannot become a sentence. */
+export function normalizeWakePhrase(raw: unknown): string {
+  return String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
+}
+
+/** Does `heard` contain the wake phrase? Compared on a **stripped** form on both sides — no spaces,
+ *  no punctuation, no case — because a recogniser writes 「小 灵」, 「小灵，」 and 「小灵。」 for the
+ *  same two syllables, and the operator should not have to guess which one it chose today. */
+export function matchesWakePhrase(heard: string, phrase: string): boolean {
+  const norm = (s: string): string => String(s ?? "").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
+  const needle = norm(phrase);
+  if (!needle) return false;                     // no phrase set: the mode is inert, not "always on"
+  return norm(heard).includes(needle);
 }
 
 function loadLocal(): CallSettings {
