@@ -1,91 +1,91 @@
 {
- "name": "agentus",
- "version": "0.8.0",
- "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
- "license": "Apache-2.0",
- "repository": {
-  "type": "git",
-  "url": "git+https://github.com/agentus-org/agentus.git"
- },
- "homepage": "https://github.com/agentus-org/agentus#readme",
- "bugs": {
-  "url": "https://github.com/agentus-org/agentus/issues"
- },
- "bin": {
-  "agentus": "bin/agentus.mjs"
- },
- "files": [
-  "skills/",
-  "bin/",
-  "packages/server/src/",
-  "packages/server/mock/",
-  "packages/server/mcp/",
-  "packages/server/package.json",
-  "packages/shared/src/",
-  "packages/shared/package.json",
-  "packages/web/dist/",
-  "docs/",
-  "NOTICE"
- ],
- "dependencies": {
-  "@agentclientprotocol/sdk": "1.5.1",
-  "tsx": "^4.19.0",
-  "ws": "^8.22.0",
-  "yaml": "^2.9.1"
- },
- "workspaces": [
-  "packages/*"
- ],
- "scripts": {
-  "dev": "npm run dev -w @agentus/server & npm run dev -w @agentus/web & wait",
-  "dev:server": "npm run dev -w @agentus/server",
-  "dev:web": "npm run dev -w @agentus/web",
-  "build": "npm run build -ws --if-present",
-  "typecheck": "npm run typecheck -ws --if-present",
-  "lint": "npm run lint -ws --if-present",
-  "test": "npm run test -ws --if-present",
-  "start": "bash scripts/start.sh",
-  "agentus": "node bin/agentus.mjs",
-  "prepack": "npm run build -w @agentus/web",
-  "package-smoke": "node scripts/qa/package-install.mjs",
-  "smoke": "node scripts/smoke.mjs",
-  "backend-smoke": "node scripts/backend-registry-smoke.mjs",
-  "auth-smoke": "node scripts/auth-smoke.mjs",
-  "workspace-smoke": "node scripts/workspace-smoke.mjs",
-  "voice-smoke": "node scripts/voice-smoke.mjs",
-  "sentence-units": "tsx scripts/qa/sentence-units.mts",
-  "barge-gate": "tsx scripts/qa/barge-gate.mts",
-  "token-format": "tsx scripts/qa/token-format.mts",
-  "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
-  "android-trust-merge": "node scripts/qa/android-trust-merge.mjs",
-  "cards-persist": "node scripts/qa/cards-persist.mjs",
-  "cold-paging": "tsx scripts/qa/cold-paging.mts",
-  "plan-hint-sweep": "node scripts/qa/plan-hint-sweep.mjs",
-  "plan-service-sweep": "node scripts/qa/plan-service-sweep.mjs",
-  "plan-mcp-sweep": "node scripts/qa/plan-mcp-sweep.mjs",
-  "plan-v2-sweep": "tsx scripts/qa/plan-v2-sweep.mts",
-  "notify-testbed": "tsx scripts/notify-testbed.mts",
-  "notify-smoke": "tsx scripts/notify-smoke.mts",
-  "web-notify-rules": "tsx scripts/qa/web-notify-rules.mts",
-  "notify-chime": "tsx scripts/qa/notify-chime.mts",
-  "ws-send-ack": "node scripts/qa/ws-send-ack.mjs",
-  "send-ack": "node scripts/qa/send-ack-page.mjs",
-  "composer-input": "node scripts/qa/composer-input-sweep.mjs",
-  "web-notify-sweep": "node scripts/qa/web-notify-sweep.mjs",
-  "apk": "bash scripts/build-apk.sh",
-  "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
-  "store-fold": "tsx scripts/qa/store-fold.mts",
-  "live-stream": "tsx scripts/qa/live-stream.mts",
-  "open-target": "tsx scripts/qa/open-target.mts",
-  "rail-recent": "tsx scripts/qa/rail-recent.mts",
-  "permission-echo": "node scripts/qa/permission-echo.mjs",
-  "turn-pulse": "tsx scripts/qa/turn-pulse.mts",
-  "resume-tail": "tsx scripts/qa/resume-tail.mts",
-  "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
-  "replay-window": "node scripts/qa/replay-window.mjs",
-  "think-cadence": "node scripts/qa/think-cadence.mjs"
- },
- "engines": {
-  "node": ">=22.5"
- }
+  "name": "agentus",
+  "version": "0.8.1",
+  "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentus-org/agentus.git"
+  },
+  "homepage": "https://github.com/agentus-org/agentus#readme",
+  "bugs": {
+    "url": "https://github.com/agentus-org/agentus/issues"
+  },
+  "bin": {
+    "agentus": "bin/agentus.mjs"
+  },
+  "files": [
+    "skills/",
+    "bin/",
+    "packages/server/src/",
+    "packages/server/mock/",
+    "packages/server/mcp/",
+    "packages/server/package.json",
+    "packages/shared/src/",
+    "packages/shared/package.json",
+    "packages/web/dist/",
+    "docs/",
+    "NOTICE"
+  ],
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.5.1",
+    "tsx": "^4.19.0",
+    "ws": "^8.22.0",
+    "yaml": "^2.9.1"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @agentus/server & npm run dev -w @agentus/web & wait",
+    "dev:server": "npm run dev -w @agentus/server",
+    "dev:web": "npm run dev -w @agentus/web",
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "lint": "npm run lint -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "start": "bash scripts/start.sh",
+    "agentus": "node bin/agentus.mjs",
+    "prepack": "npm run build -w @agentus/web",
+    "package-smoke": "node scripts/qa/package-install.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "backend-smoke": "node scripts/backend-registry-smoke.mjs",
+    "auth-smoke": "node scripts/auth-smoke.mjs",
+    "workspace-smoke": "node scripts/workspace-smoke.mjs",
+    "voice-smoke": "node scripts/voice-smoke.mjs",
+    "sentence-units": "tsx scripts/qa/sentence-units.mts",
+    "barge-gate": "tsx scripts/qa/barge-gate.mts",
+    "token-format": "tsx scripts/qa/token-format.mts",
+    "terminal-palette": "tsx scripts/qa/terminal-palette.mts",
+    "android-trust-merge": "node scripts/qa/android-trust-merge.mjs",
+    "cards-persist": "node scripts/qa/cards-persist.mjs",
+    "cold-paging": "tsx scripts/qa/cold-paging.mts",
+    "plan-hint-sweep": "node scripts/qa/plan-hint-sweep.mjs",
+    "plan-service-sweep": "node scripts/qa/plan-service-sweep.mjs",
+    "plan-mcp-sweep": "node scripts/qa/plan-mcp-sweep.mjs",
+    "plan-v2-sweep": "tsx scripts/qa/plan-v2-sweep.mts",
+    "notify-testbed": "tsx scripts/notify-testbed.mts",
+    "notify-smoke": "tsx scripts/notify-smoke.mts",
+    "web-notify-rules": "tsx scripts/qa/web-notify-rules.mts",
+    "notify-chime": "tsx scripts/qa/notify-chime.mts",
+    "ws-send-ack": "node scripts/qa/ws-send-ack.mjs",
+    "send-ack": "node scripts/qa/send-ack-page.mjs",
+    "composer-input": "node scripts/qa/composer-input-sweep.mjs",
+    "web-notify-sweep": "node scripts/qa/web-notify-sweep.mjs",
+    "apk": "bash scripts/build-apk.sh",
+    "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
+    "store-fold": "tsx scripts/qa/store-fold.mts",
+    "live-stream": "tsx scripts/qa/live-stream.mts",
+    "open-target": "tsx scripts/qa/open-target.mts",
+    "rail-recent": "tsx scripts/qa/rail-recent.mts",
+    "permission-echo": "node scripts/qa/permission-echo.mjs",
+    "turn-pulse": "tsx scripts/qa/turn-pulse.mts",
+    "resume-tail": "tsx scripts/qa/resume-tail.mts",
+    "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
+    "replay-window": "node scripts/qa/replay-window.mjs",
+    "think-cadence": "node scripts/qa/think-cadence.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
 }
