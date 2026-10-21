@@ -223,6 +223,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** The reply that was playing when the operator took the floor. Its key must never reach the
+   *  speaker again — without this, loosening the gate off the phase (so a typed prompt gets read)
+   *  would also re-read the tail of the answer we just interrupted: 「打断它以后它又自己念了一遍」. */
+  const cutKeyRef = useRef("");
   /** The reply that was ALREADY in the transcript when this turn began — usually the answer to
    *  the previous question. The transcript is not synchronous with our own send: for a moment
    *  after `prompt`, the last agent message is still the old answer (the user message has not
@@ -475,6 +479,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
     // message this turn actually produced.
     if (!agentKey || agentKey === baselineKeyRef.current) return;
+    // The reply we interrupted: its message keeps streaming after the cancel, so the store still
+    // hands us new text for it. Speaking that is the call talking to itself.
+    if (agentKey && agentKey === cutKeyRef.current) return;
     if (NON_ANSWER_RE.test(agentText.trim())) {      // a refusal, not an answer: never speak it
       setErr("刚才那句没被处理（这个会话正被另一个 Hermes 进程占用），再说一次即可。");
       void backToListening(false);
@@ -582,6 +589,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *  turn-lease admission with the refusal notice above (the server refuses the same cancel too, as
    *  a second line of defence). */
   const bargeIn = async (): Promise<void> => {
+    cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // this reply is over
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });
@@ -673,6 +681,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (pttRef.current || !aliveRef.current) return;
     pttRef.current = true;
     setHolding(true);
+    cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // hold-to-talk takes the floor
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });

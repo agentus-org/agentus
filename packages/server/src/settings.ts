@@ -358,7 +358,11 @@ function callAtShippedDefaults(r: Record<string, unknown>): boolean {
   // The mode counts too: a row that only says `interruptMode: "button"` IS a deliberate choice and
   // must not be reset along with a section that happens to still carry the old numbers.
   const modeShipped = r.interruptMode === undefined || r.interruptMode === CALL_DEFAULT.interruptMode;
-  return sens && modeShipped && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
+  // …and a stored wake phrase is a deliberate choice too: without this, setting one and switching
+  // back to 语音打断 would make the whole section look untouched and the phrase would be dropped.
+  const wakeShipped = r.wakePhrase === undefined || r.wakePhrase === CALL_DEFAULT.wakePhrase;
+  return sens && modeShipped && wakeShipped
+    && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
 }
 
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
