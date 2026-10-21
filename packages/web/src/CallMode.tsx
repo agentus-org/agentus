@@ -380,6 +380,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The wake confirmation is a FLASH, not a new permanent state: left standing it would answer every
+  // later question with 「听到「小灵」了」 and hide the ordinary guidance.
+  useEffect(() => {
+    if (!wakeHit) return;
+    const t = window.setTimeout(() => setWakeHit(0), 2600);
+    return () => window.clearTimeout(t);
+  }, [wakeHit]);
+
   // ---- the conversation loop ------------------------------------------------------------
   // listening → (silence after speech) → thinking → speaking → listening …
   useEffect(() => {

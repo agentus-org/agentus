@@ -2313,6 +2313,9 @@ function BgNoticeBlock({ text }: { text: string }): JSX.Element {
         {/* A watch match has no exit code; the pattern it hit is the fact worth one line. */}
         {notice.kind === "watch" ? (
           <code className="bg-notice-code" title={notice.pattern}>「{shortCommand(notice.pattern, 28)}」</code>
+        ) : notice.exitCode === null ? (
+          // A shape we do not know the code for is still a notice — never print "exit null".
+          <span className="bg-notice-code">已结束</span>
         ) : (
           <span className="bg-notice-code">exit {notice.exitCode}</span>
         )}
