@@ -30,6 +30,7 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
+import { vadStep, newVad, type VadState } from "./vad";
 import {
   IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconRefresh, IconSend,
   IconSettings, IconStop, IconSubtitles,
@@ -212,6 +213,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const ringsRef = useRef<{ born: number; strength: number }[]>([]);
   const lastPeakRef = useRef(0);
   const voiceAtRef = useRef(0);        // last moment the operator was audible
+  /** The room's own noise floor, measured instead of configured (see vad.ts). `VOICE_RMS` was the
+   *  old absolute bar; it is only the fallback for the very first frames now. */
+  const vadRef = useRef<VadState>(newVad());
   const bargeRef = useRef(0);          // how long we have been above the barge threshold
   /** When the sentence now being read was handed to the speaker, and when our own output was
    *  last seen to rise from silence. Both arm the grace window in the loop: the first frames of
@@ -445,7 +449,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         if (play > 0.002 && !voice && !want) echoBaseRef.current = echoBaseRef.current * 0.88 + mic * 0.12;
         return;
       }
-      if (phaseRef.current === "listening" && mic > VOICE_RMS) voiceAtRef.current = Date.now();
+      // 「他在说话吗」 is now a step over the MEASURED room floor with a hangover, not an absolute
+      // 0.010: a quiet voice used to fall under it (「我说完了它还等着」) and a phone's own speaker
+      // used to sit over it (the call interrupting itself). See vad.ts.
+      const speechNow = phaseRef.current === "listening" ? vadStep(vadRef.current, mic, Date.now()) : false;
+      if (phaseRef.current === "listening" && (speechNow || mic > VOICE_RMS)) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
