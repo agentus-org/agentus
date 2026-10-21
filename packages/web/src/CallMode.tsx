@@ -172,6 +172,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   const [muted, setMuted] = useState(false);
   const [err, setErr] = useState("");
   const [heard, setHeard] = useState("");     // what the recogniser has so far
+  /** When the wake phrase was last HEARD — the call has to answer 「我听见了」 or a working wake
+   *  word is indistinguishable from a dead one (that was the operator's report). */
+  const [wakeHit, setWakeHit] = useState(0);
   const [holding, setHolding] = useState(false);   // push-to-talk is down (the label follows it)
   const [reply, setReply] = useState("");     // what the agent is saying right now
   // The tunables (callSettings.ts) live in the call, not in a settings page: a threshold
@@ -476,6 +479,15 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
         const text = (st.text || st.interim).trim();
+        // 唤醒词在「听」的时候也必须被回应。以前关键词闸只在 speaking/thinking 张开，操作者对着
+        // 已经说完的它连喊「小灵」毫无反应 —— 既没有打断，也没有任何「我听见了」的回音，读起来
+        // 就是功能坏了。听见了就清空并且亮一下，同时这一句不再当成问题发出去。
+        if (c.interruptMode === "keyword" && !mutedRef.current && text && matchesWakePhrase(text, c.wakePhrase)) {
+          dictation.resetText();
+          setWakeHit(Date.now());
+          voiceAtRef.current = 0;
+          return;
+        }
         const quietFor = Date.now() - voiceAtRef.current;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
@@ -1200,14 +1212,22 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   // …and it stays on screen: the reason a short utterance was not sent has to be visible
   // while the words themselves are, or the silence is unexplained.
   const tooShort = phase === "listening" && heardCount > 0 && heardCount < cfg.minChars;
-  const hint = phase === "listening"
+  // 关键词模式要有回音：设了唤醒词却什么都没发生时，操作者无法区分「没听见」和「听见了但不匹配」。
+  // 所以这不只是提示文案，是这条链路唯一的观测点 —— 听见什么、唤醒词是什么，都摆在屏幕上。
+  const kwHint = cfg.interruptMode === "keyword"
+    ? `唤醒词「${cfg.wakePhrase || "未设置"}」${heard ? ` · 听到：${heard.slice(-18)}` : ""}`
+    : "";
+  const hint = (phase === "listening" && wakeHit)
+    ? `听到「${cfg.wakePhrase}」了`
+    : phase === "listening"
     ? (heard
       ? (heardCount < cfg.minChars
         ? `太短了（少于 ${cfg.minChars} 字，不会自动发送）——继续说，或点一下圆球直接发送`
         : "点一下直接发送，或说完停一下")
-      : muted ? "麦克风已静音" : "说点什么…")
-    : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以" : "点一下圆球打断，然后自己说")
-      : phase === "thinking" ? "点一下停止它" : "";
+      : muted ? "麦克风已静音" : (kwHint || "说点什么…"))
+    : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以"
+      : cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下圆球打断，然后自己说")
+      : phase === "thinking" ? (cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下停止它") : "";
 
   /** The transcript view's two floor controls.
    *
