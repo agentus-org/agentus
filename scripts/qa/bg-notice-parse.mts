@@ -108,5 +108,21 @@ check(parseDelegNotice("[ASYNC DELEGATION BATCH COMPLETE — deleg_z]") === null
 check(parseDelegNotice("[IMPORTANT: Background process proc_x completed normally (exit code 0).]") === null,
   "a terminal notice is not a delegation wake");
 
+// 10. The WATCH shape — no exit code at all. Verbatim from the live wake that printed the whole block
+//     unfolded (session 3143c27c, proc_a0124b2bc374, 2026-10-21): the agent asked to be woken when a
+//     line appeared, not when the process ended, so the header carries a pattern instead of a code.
+const WATCH = `[IMPORTANT: Background process proc_a0124b2bc374 matched watch pattern "Application startup complete".
+Command: cd ~ && exec /Users/liang/.cache/uv/bin/hindsight-api --idle-timeout 300 --port 9177
+Matched output:
+INFO:     Application startup complete.]`;
+const w = parseBgNotice(WATCH);
+check(!!w, "a watch match parses (it used to fall through to raw text and dump the block)");
+check(w?.kind === "watch", "reads as a watch match", String(w?.kind));
+check(w?.pattern === "Application startup complete", "pattern captured", String(w?.pattern));
+check(w?.exitCode === null, "no invented exit code", String(w?.exitCode));
+check(w?.ok === true, "a matched pattern is not a failure");
+check(w?.output === "INFO:     Application startup complete.", "matched output, carrier bracket dropped", JSON.stringify(w?.output));
+check(parseBgNotice(REAL)?.kind === "exit", "an exit notice is still an exit notice");
+
 console.log(fail ? `\n RED — ${pass} passed, ${fail} failed` : `\n GREEN — ${pass} passed, 0 failed`);
 process.exit(fail ? 1 : 0);

@@ -2308,16 +2308,23 @@ function BgNoticeBlock({ text }: { text: string }): JSX.Element {
     <div className={`bg-notice ${open ? "open" : ""}`} data-ok={notice.ok ? "ok" : "fail"}>
       <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className="bg-notice-dot" aria-hidden="true" />
-        <span className="bg-notice-title">后台任务完成</span>
+        <span className="bg-notice-title">{notice.kind === "watch" ? "后台任务命中" : "后台任务完成"}</span>
         <code className="bg-notice-cmd" title={notice.command}>{shortCommand(notice.command)}</code>
-        <span className="bg-notice-code">exit {notice.exitCode}</span>
+        {/* A watch match has no exit code; the pattern it hit is the fact worth one line. */}
+        {notice.kind === "watch" ? (
+          <code className="bg-notice-code" title={notice.pattern}>「{shortCommand(notice.pattern, 28)}」</code>
+        ) : (
+          <span className="bg-notice-code">exit {notice.exitCode}</span>
+        )}
         <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
       {open ? (
         <div className="bg-notice-body">
           <div className="bg-notice-label">命令</div>
           <pre className="bg-notice-pre">{notice.command || "(未报告)"}</pre>
-          <div className="bg-notice-label">输出{notice.output ? "" : "（空）"}</div>
+          <div className="bg-notice-label">
+            {notice.kind === "watch" ? "命中行" : "输出"}{notice.output ? "" : "（空）"}
+          </div>
           {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
         </div>
       ) : null}

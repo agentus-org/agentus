@@ -12,6 +12,15 @@
  *     hi
  *     ]
  *
+ * The same channel also carries WATCH matches — the agent asked to be woken when a line appeared
+ * rather than when the process ended (that shape has no exit code, so a parser that requires one
+ * dropped the whole card and printed the raw block: 「有些后台任务完成了提醒，还是把整个内容写上去了」):
+ *
+ *     [IMPORTANT: Background process proc_abc matched watch pattern "Application startup complete".
+ *     Command: … serve …
+ *     Matched output:
+ *     INFO:     Application startup complete.]
+ *
  * Rendered raw it is nine lines of shell noise for the one fact the operator wants (「跑完了，成功」).
  * So the roster keeps the original text (copy still yields it verbatim) and only the VIEW is folded:
  * a header line, and the command/output behind a caret. Parsing fails → the raw text renders exactly
@@ -23,10 +32,15 @@ export interface BgNotice {
   id: string;
   /** The command the agent ran, verbatim. */
   command: string;
+  /** `null` for a watch match — that carrier never prints an exit code. */
   exitCode: number | null;
   /** ``completed normally`` — anything else (non-zero, killed, timed out) reads as a failure. */
   ok: boolean;
-  /** Everything after ``Output:``, minus the carrier's trailing ``]``. */
+  /** `exit` = the process ended; `watch` = one of its output lines matched the agent's pattern. */
+  kind: "exit" | "watch";
+  /** The watch pattern the agent registered, for `kind === "watch"` (empty otherwise). */
+  pattern: string;
+  /** Everything after ``Output:`` / ``Matched output:``, minus the carrier's trailing ``]``. */
   output: string;
 }
 
@@ -37,14 +51,18 @@ export function parseBgNotice(text: string): BgNotice | null {
   const all = text.trim();
   if (!all.startsWith(MARK)) return null;
   const lines = all.split("\n");
-  const head = /^\[IMPORTANT: Background process (\S+) (.*?)\(exit code (-?\d+)\)\.?\]?$/.exec(lines[0] ?? "");
+  // No exit-code group: a watch match has none, and requiring one silently un-folded the whole card.
+  const head = /^\[IMPORTANT: Background process (\S+) (.+?)\.?\]?$/.exec(lines[0] ?? "");
   if (!head) return null;
-  const verdict = head[2].trim();
+  const raw = head[2].trim();
+  const code = /\(exit code (-?\d+)\)/.exec(raw);
+  const verdict = raw.replace(/\(exit code -?\d+\)/, "").replace(/\.$/, "").trim();
+  const watch = /matched watch pattern\s+"(.*)"/.exec(verdict);
   let command = "";
   let outputAt = -1;
   for (let i = 1; i < lines.length; i++) {
     if (lines[i].startsWith("Command: ")) command = lines[i].slice("Command: ".length).trim();
-    else if (lines[i].trim() === "Output:") { outputAt = i + 1; break; }
+    else if (/^(Matched output|Output):$/.test(lines[i].trim())) { outputAt = i + 1; break; }
   }
   let output = outputAt >= 0 ? lines.slice(outputAt).join("\n") : "";
   // The carrier closes with `]` on its own line. Drop it — and only it: a `]` inside real output stays.
@@ -52,8 +70,11 @@ export function parseBgNotice(text: string): BgNotice | null {
   return {
     id: head[1],
     command,
-    exitCode: Number(head[3]),
-    ok: /^completed normally$/i.test(verdict),
+    exitCode: code ? Number(code[1]) : null,
+    // A matched pattern is the event the agent asked for — not a failure.
+    ok: watch ? true : /^completed normally$/i.test(verdict),
+    kind: watch ? "watch" : "exit",
+    pattern: watch ? watch[1] : "",
     output: output.replace(/\s+$/, ""),
   };
 }
