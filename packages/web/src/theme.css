@@ -510,32 +510,64 @@ button { font: inherit; }
   font-size: 10.5px; line-height: 15px; cursor: pointer;
 }
 .status-note-toggle:hover { color: var(--text); border-color: var(--text-dim); }
-.status-note-items {
-  flex: 1 0 100%; margin: 5px 0 1px; padding: 5px; list-style: none;
-  display: flex; flex-direction: column; gap: 4px;
-  /* 定高 + 内部滚动（操作者 2026-10-21）：「一展开就是刷屏」—— 一轮召回常常几十条，
-     整块铺开会把刚才在看的回复顶出屏幕，展开的代价变成看不见上下文。定高之后开与不开
-     占的地方一样大，长的部分在这块里自己滚，转录的长度不受记忆条数影响。
-     `overscroll-behavior: contain` 防止滚到底后把滚动传给整个转录。 */
-  max-height: 216px; overflow-y: auto; overscroll-behavior: contain;
-  border: 1px solid var(--line); border-radius: 6px;
+/* 展开出来的抽屉（#37 的第二版，操作者 2026-10-21：「展示效果不好」）。
+   第一版直接把 20 条平铺在全宽转录里：一行 100+ 字、标签甩在最右边离正文半屏远、最后一条被
+   max-height 切一半且没有任何可滚的暗示 —— 读起来既不像列表也不像能翻。这一版三件事：
+     ① 抽屉自己画框和「共 N 条」表头，和上面那行状态记录分开，不再是凭空多出的一块；
+     ② 条目带序号、去掉每条的电平底色，改用 1px 分隔线 —— 20 个色块叠起来只剩噪点；
+     ③ 标签降到正文下面一行的小字，跟着它所属的那条走，不再浮到行尾。
+   定高仍然是操作者的原始要求（「一展开就是刷屏」）：高度固定，长的部分在框里自己滚。 */
+.status-note-drawer-wrap { flex: 0 0 100%; min-width: 0; }
+.status-note-drawer {
+  /* 满宽壳子负责换行（见 App.tsx 同名注释），抽屉自己只负责收口：一行 120 字读不动。 */
+  width: 100%; max-width: 78ch;
+  position: relative; margin: 5px 0 1px;
+  border: 1px solid var(--line); border-radius: 7px;
   background: var(--panel-2, rgba(127, 127, 127, 0.04));
+  overflow: hidden;
+}
+.status-note-drawer-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 3px 9px; border-bottom: 1px solid var(--line);
+  font-size: 10px; line-height: 16px; color: var(--text-dim); opacity: 0.72;
+}
+.status-note-drawer-hint { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* 只有真的滚得动（JS 量出来的 `data-scroll="1"`）才给底部渐隐：装得下却画一道阴影，
+   等于告诉人「下面还有」然后什么都不发生。 */
+.status-note-drawer[data-scroll="1"]::after {
+  content: ""; position: absolute; left: 1px; right: 1px; bottom: 1px; height: 20px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.status-note-items {
+  margin: 0; padding: 3px 5px 5px; list-style: none;
+  display: flex; flex-direction: column;
+  max-height: 200px; overflow-y: auto; overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 .status-note-item {
-  display: flex; gap: 6px; align-items: baseline;
-  padding: 3px 7px; border-radius: 4px;
-  background: var(--panel-2, rgba(127, 127, 127, 0.06));
-  font-size: 11px; color: var(--text); line-height: 1.5;
+  display: flex; gap: 7px; align-items: baseline;
+  padding: 4px 5px; font-size: 11px; line-height: 1.52; color: var(--text);
 }
-.status-note-item-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-/* 标签读成徽章，不是又一段灰字：一条记忆的标签通常 2~4 个，串成一行字时和正文分不开。 */
+.status-note-item + .status-note-item { border-top: 1px solid var(--line); }
+.status-note-item-n {
+  flex: 0 0 auto; width: 15px; text-align: right;
+  font-size: 9.5px; line-height: 1.9; color: var(--text-dim); opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+.status-note-item-body {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto;
+}
+.status-note-item-text { overflow-wrap: anywhere; }
+/* 标签读成正文下面的一行注脚，不是行尾的胶囊：一条记忆的标签通常 2~4 个，串成小字跟着它走。 */
 .status-note-item-tags {
-  flex: 0 0 auto; color: var(--text-dim); font-size: 9.5px; line-height: 15px;
-  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
-  white-space: nowrap; max-width: 33%; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text-dim); font-size: 9.5px; line-height: 14px; opacity: 0.8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%;
 }
-.status-note-item.more { color: var(--text-dim); background: transparent; font-style: italic; }
+.status-note-item.more {
+  border-top: 0; padding-left: 27px;
+  color: var(--text-dim); font-style: italic;
+}
 
 .stream-spin {
   /* A ring has no baseline to align on, so it is pinned to the TOP of the row's first line instead —

@@ -1836,6 +1836,22 @@ function StatusNoteRow({ n }: {
   // （issue #37）。没有条目的行（压缩、警告、别家 agent 的状态行）保持原来那一行，一个像素都不变。
   const items = n.items ?? [];
   const [open, setOpen] = useState(false);
+  // 定高之后多了一个新问题（操作者 2026-10-21 的第二遍反馈：「展示效果不好」）：216px 的框里最后一
+  // 条被切一半，没有任何「下面还有」的暗示 —— 看上去更像渲染坏了，而不是可以滚。所以滚不滚得动要
+  // 量出来（`scrollHeight > clientHeight`），量到了才给底部渐隐和「共 N 条 · 滚轮查看」这句提示。
+  // 不能按条数猜：窄屏一条记忆就能折三行，宽屏八条也装得下。
+  const list = useRef<HTMLOListElement | null>(null);
+  const [more, setMore] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) { setMore(false); return; }
+    const el = list.current;
+    if (!el) return;
+    const measure = () => setMore(el.scrollHeight - el.clientHeight > 4);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, items.length]);
   return (
     <div className="status-note" data-kind={n.kind || "lifecycle"} role="note" title={clock.toLocaleString()}>
       <span className="status-note-time">{hh}</span>
@@ -1852,15 +1868,30 @@ function StatusNoteRow({ n }: {
             {open ? "收起" : `${items.length} 条`}
           </button>
           {open ? (
-            <ol className="status-note-items">
-              {items.map((it, i) => (
-                <li key={i} className="status-note-item">
-                  <span className="status-note-item-text">{it.text}</span>
-                  {it.tags?.length ? <span className="status-note-item-tags">{it.tags.join(" · ")}</span> : null}
-                </li>
-              ))}
-              {n.truncated ? <li className="status-note-item more">…还有更多，已截断</li> : null}
-            </ol>
+            /* 抽屉必须**独占一行**，所以要套一层满宽壳子：flex 的行分割用的是夹紧到 max-width
+               之后的假设主尺寸，抽屉自己带 `max-width: 78ch` + `flex-basis: 100%` 会被夹成 538px
+               而「装得下」，于是挤在状态句右边各占半屏（实测两次）。壳子没有 max-width，基尺寸
+               就是满宽 → 必然换行；收口放在壳子里面的抽屉上。 */
+            <div className="status-note-drawer-wrap">
+              <div className="status-note-drawer" data-scroll={more ? "1" : "0"}>
+                <div className="status-note-drawer-head">
+                  <span>共 {items.length} 条</span>
+                  {more ? <span className="status-note-drawer-hint">滚轮查看</span> : null}
+                </div>
+                <ol className="status-note-items" ref={list}>
+                  {items.map((it, i) => (
+                    <li key={i} className="status-note-item">
+                      <span className="status-note-item-n">{i + 1}</span>
+                      <span className="status-note-item-body">
+                        <span className="status-note-item-text">{it.text}</span>
+                        {it.tags?.length ? <span className="status-note-item-tags">{it.tags.join(" · ")}</span> : null}
+                      </span>
+                    </li>
+                  ))}
+                  {n.truncated ? <li className="status-note-item more">…还有更多，已截断</li> : null}
+                </ol>
+              </div>
+            </div>
           ) : null}
         </>
       ) : null}
