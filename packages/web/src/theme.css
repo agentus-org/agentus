@@ -1393,36 +1393,60 @@ code.inline {
    `compact` is a 60px strip: the backend avatar of every session is still there (so 「which
    backend / is it running」 remains readable at a glance), and everything that needs width —
    titles, timestamps, badges, group names, search — is gone rather than squeezed into an
-   8px column. `hidden` gives the transcript the whole window; the same button brings it back. */
-.sidebar.compact { --rail-w: 60px; }
-.sidebar.compact header { padding: 12px 0 8px; justify-content: center; gap: 0; }
-.sidebar.compact header .logo { font-size: 0; gap: 0; }        /* the mark stays, the word goes */
-.sidebar.compact header .tagline,
-.sidebar.compact .rail-search-wrap,
-.sidebar.compact .rail-error,
-.sidebar.compact .rail-section span,
-.sidebar.compact .rail-placeholder,
-.sidebar.compact footer,
-.sidebar.compact .rail-group-name,
-.sidebar.compact .rail-group-count,
-.sidebar.compact .group-add,
-.sidebar.compact .rail-more,
-.sidebar.compact .session-item .title,
-.sidebar.compact .session-item .rail-at,
-.sidebar.compact .session-item .badge,
-.sidebar.compact .session-item .unread-dot,
-.sidebar.compact .session-item .row-menu,
-.sidebar.compact .new-btn .new-label { display: none; }
-.sidebar.compact .new-btn { margin: 0 auto 10px; width: 40px; height: 36px; padding: 0;
-  display: flex; align-items: center; justify-content: center; }
-.sidebar.compact .rail-section { justify-content: center; padding: 4px 0; min-height: 22px; }
-.sidebar.compact .rail-group-head { justify-content: center; padding-left: 0; padding-right: 0; }
-.sidebar.compact .rail-group-row { padding: 0 4px; }
-.sidebar.compact .session-item { justify-content: center; padding: 6px 0; }
-.sidebar.compact > .pane-handle { display: none; }   /* nothing to size a 60px strip against */
+   8px column. `hidden` gives the transcript the whole window; the same button brings it back.
+   BOTH states are wide-screen only (#47). On a phone the rail IS the drawer, and the same-origin
+   localStorage that a tablet/foldable set to `compact` used to follow the user into the 320px
+   drawer: every row shrank to a 40x36 square, titles/search/footer (logout included) were hidden,
+   and the drawer opened as an empty shell — #47's acceptance criterion 3. `hidden` was worse: it
+   removed the drawer from the render tree entirely, so the hamburger set drawer=true, the scrim
+   painted, and the list never appeared. Both are scoped to the breakpoint that defines them; the
+   narrow block below re-exhibits the drawer whatever the stored mode says. */
+@media (min-width: 721px) {
 
-.sidebar.hidden { display: none; }
-.sidebar.hidden > .pane-handle { display: none; }
+  .sidebar.compact { --rail-w: 60px; }
+  .sidebar.compact header { padding: 12px 0 8px; justify-content: center; gap: 0; }
+  .sidebar.compact header .logo { font-size: 0; gap: 0; }        /* the mark stays, the word goes */
+  .sidebar.compact header .tagline,
+  .sidebar.compact .rail-search-wrap,
+  .sidebar.compact .rail-error,
+  .sidebar.compact .rail-empty,
+  .sidebar.compact .rail-section span,
+  .sidebar.compact .rail-placeholder,
+  .sidebar.compact footer,
+  .sidebar.compact .rail-group-name,
+  .sidebar.compact .rail-group-count,
+  .sidebar.compact .group-add,
+  .sidebar.compact .rail-more,
+  .sidebar.compact .session-item .title,
+  .sidebar.compact .session-item .rail-at,
+  .sidebar.compact .session-item .badge,
+  .sidebar.compact .session-item .unread-dot,
+  .sidebar.compact .session-item .row-menu,
+  .sidebar.compact .new-btn .new-label { display: none; }
+  .sidebar.compact .new-btn { margin: 0 auto 10px; width: 40px; height: 36px; padding: 0;
+    display: flex; align-items: center; justify-content: center; }
+  .sidebar.compact .rail-section { justify-content: center; padding: 4px 0; min-height: 22px; }
+  .sidebar.compact .rail-group-head { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sidebar.compact .rail-group-row { padding: 0 4px; }
+  /* The group body's 28px indent belongs to the expanded rail: inside a 60px strip it left ~16px of
+     usable width, so the ACTIVE row's background/border box shrank to a sliver beside the avatar
+     instead of wrapping it (#47). Zero the indent and give the row a square of its own. */
+  .sidebar.compact .rail-group-body { padding-left: 0; }
+  .sidebar.compact .session-item {
+    justify-content: center; padding: 6px 0;
+    /* auto, not a hard 40px: the strip's content box is ~43px once the 8px list padding and border
+       are taken off, so a fixed width left 3–4px of slack and a classic 15px scrollbar gutter
+       overflowed it. A block-level flex row fills what it is given. */
+    display: flex; align-items: center; width: auto; margin: 0 2px 4px;
+  }
+  .sidebar.compact > .pane-handle { display: none; }   /* nothing to size a 60px strip against */
+  /* Baseline-hidden is correct for every width this media query covers; the narrow block restores
+     `display: flex` for the drawer, so a fractional layout width (720.5px) can never fall between
+     the two breakpoints and leave a static rail behind. */
+  .sidebar.hidden { display: none; }
+  .sidebar.hidden > .pane-handle { display: none; }
+}
+
 
 
 /* ---- narrow screens: drawer sidebar, bigger touch targets ---- */
@@ -1432,6 +1456,9 @@ code.inline {
     transform: translateX(-105%); transition: transform 0.22s ease;
   }
   .sidebar.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0, 0, 0, 0.6); }
+  /* The drawer is not a place for the wide-screen rail modes (#47): whatever `compact`/`hidden`
+     was stored on a bigger screen, a phone gets the full list. `.open` still drives the slide. */
+  .sidebar.compact, .sidebar.hidden { display: flex; }
   /* The drawer is 82vw wide at most and the brand already says the name: the tagline is pure
      decoration that wrapped into 4–5 lines and pushed the session list off the first screen
      (issue #33, comment). Gone here, ellipsised everywhere else. */

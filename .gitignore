@@ -16,3 +16,6 @@ auth.token
 
 # a worktree may borrow a sibling tree's modules through a symlink (it is not "node_modules/")
 node_modules
+
+# QA screenshots (scripts/qa/*.mjs default SHOTS dir)
+.qa-shots/

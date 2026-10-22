@@ -111,7 +111,10 @@ try {
   check("the probe turn really is in flight (fixture precondition for the shortcut check)", running);
   await sleep(500); // one publish + one paint
   const busyPh = await ev(`document.querySelector('.composer textarea')?.placeholder ?? '(no textarea)'`);
-  check("a busy composer says how to 插话 (discoverability, #14)", /插话直发/.test(busyPh), busyPh);
+  // Assert the BEHAVIOUR the hint advertises, not one wording: it must name the interrupt shortcut
+  // AND the queueing fallback, on whichever viewport this run has (headless defaults to wide).
+  check("a busy composer says how to 插话 (discoverability, #14)",
+    /Enter interrupts/.test(busyPh) && /Enter queues/.test(busyPh), busyPh);
 
   // Type through the real input path (React's onChange sees a native input event), then press the key.
   await ev(`document.querySelector('.composer textarea').focus()`);

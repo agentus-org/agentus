@@ -4191,7 +4191,9 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
   // Never say 「queued」 as a state: an empty box is not queued, and announcing a status the operator
   // never asked for reads as a stuck message. The queue row below carries the real state.
   const modKey = /Mac|iPhone|iPad/.test(navigator.platform ?? "") ? "⌘" : "Ctrl+";
-  const busyHint = window.innerWidth < 720 ? "message… (Enter queues)" : `message… (${modKey}Enter interrupts · Enter queues)`;
+  // `<= 720`, matching the CSS drawer breakpoint (`max-width: 720px`): `< 720` made 720px itself
+  // advertise the desktop shortcut while the layout had already switched to the drawer.
+  const busyHint = window.innerWidth <= 720 ? "message… (Enter queues)" : `message… (${modKey}Enter interrupts · Enter queues)`;
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
   // clicking outside hides the palette without eating the "/..." the operator typed
   const [paletteHidden, setPaletteHidden] = useState(false);
