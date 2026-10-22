@@ -1269,6 +1269,17 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // like the other head controls) but lives in the composer, so the state sits here:
   // the head opens it, the composer renders it and can hand the keyboard back.
   const [call, setCall] = useState(false);
+  // 通话的进入/退出要**立刻**报一次 presence，不能等 30 秒的节拍（issue #48）：服务端就是靠这条
+  // presence 判定「在打电话」，晚 30 秒等于通话开头几句仍按文字场景答（表格、代码块被念出来）。
+  // 用同一个接口直接报，不把 App 的 reportPresence 再往下传一层。
+  useEffect(() => {
+    void fetch("/api/notify/presence", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: active?.info.id ?? null, visible: true, call }),
+    }).catch(() => { /* presence is a hint, never a requirement */ });
+  }, [call, active?.info.id]);
   // Voice capabilities are fetched once; the buttons fall back to browser-only until
   // the answer arrives.
   useEffect(() => { void loadVoiceCaps(); }, []);

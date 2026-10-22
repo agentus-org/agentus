@@ -464,6 +464,12 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   // behaviour); the switch exists because a synthetic turn spends tokens the operator may not want
   // spent at 3am — and it is read live, so flipping it applies to the next completion.
   mgr.setCompletionWakeSource(() => agentSettings().completionWake);
+  // 语音通话（issue #48）: 「在打电话」 has exactly one authority in this process (the notify centre's
+  // presence, which the page already reports every 30 s), so the voice-mode block and the thinking
+  // dial derive from it instead of adding a second client→server state channel. The presence
+  // listener turns each report into the transitions the manager records.
+  mgr.setCallLiveSource(() => notify.callLiveSession());
+  notify.onPresenceChange(() => { void mgr.syncCallState(); });
   mgr.startIdleReaper({
     idleMs: () => envIdleMs ?? agentSettings().idleKillMin * 60_000,
     warmSlots: () => envWarm ?? agentSettings().warmSlots,

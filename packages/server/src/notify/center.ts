@@ -238,6 +238,13 @@ export class NotifyCenter {
     return next;
   }
 
+  /** Called after EVERY presence report (issue #48 wires it to the voice-mode transitions). Kept as
+   *  a listener rather than a direct call so the notify centre stays free of session knowledge. */
+  #onPresence?: (p: Presence) => void;
+  onPresenceChange(fn: (p: Presence) => void): void {
+    this.#onPresence = fn;
+  }
+
   /** The cockpit says which session it is looking at; null/visible=false means "nobody is". */
   setPresence(sessionId: string | null, visible: boolean, call = false): Presence {
     this.presence = {
@@ -254,6 +261,9 @@ export class NotifyCenter {
     if (this.presence.sessionId && (this.presence.visible || this.presence.call)) {
       this.onFocus?.(this.presence.sessionId);
     }
+    // Announce AFTER the fields are settled: a listener asking `callLiveSession()` must see the
+    // report it was just told about, not the previous one.
+    try { this.#onPresence?.(this.presence); } catch { /* presence is a hint, never a requirement */ }
     return this.presence;
   }
 
@@ -271,6 +281,15 @@ export class NotifyCenter {
    */
   private onCall(): boolean {
     return Boolean(this.presence.call) && Date.now() - this.presence.at < NotifyCenter.WATCH_TTL_MS;
+  }
+
+  /** WHICH session is on a call right now, or null. The public form of `onCall()` for issue #48:
+   *  the voice-mode block and the thinking-dial switch need the session id, not just a boolean, and
+   *  they must agree with the notification rules about what "on a call" means (one presence, one TTL,
+   *  one answer). */
+  callLiveSession(): string | null {
+    if (!this.onCall()) return null;
+    return this.presence.sessionId;
   }
 
   /** True when a notification for this session would interrupt the operator looking at it. */

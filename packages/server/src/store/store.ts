@@ -267,6 +267,29 @@ interface RawPlanRow {
   updated_at: number;
 }
 
+/** 语音通话状态的一行（issue #48）—— 见 `voice_mode` 表。 */
+export interface VoiceRow {
+  sessionId: string;
+  inCall: boolean;
+  boundary: "enter" | "exit" | null;
+  turns: number;
+  thoughtBefore: string | null;
+  thoughtTouched: boolean;
+  updatedAt: number;
+}
+
+export type VoiceModePatch = Partial<Omit<VoiceRow, "sessionId" | "updatedAt">>;
+
+interface RawVoiceRow {
+  session_id: string;
+  in_call: number;
+  boundary: string | null;
+  turns: number;
+  thought_before: string | null;
+  thought_touched: number;
+  updated_at: number;
+}
+
 /** What a plan write carries. `explanation: undefined` means "keep the remark that is there"
  *  (only an agent writes one, and most plan updates carry none) — see `upsertPlan`. */
 export interface PlanPatch {
@@ -350,6 +373,19 @@ export class Store {
         session_id text primary key, revision integer not null default 0,
         items text not null, title text, explanation text, source text not null,
         terminal text, updated_at integer not null
+      );
+      -- 语音通话模式（issue #48）. The two boundaries must SURVIVE a reload, an idle-reap and a
+      -- cold start: if the exit boundary were only in memory, a page refresh after hanging up would
+      -- leave the model believing it is still on a call (the transcript's last turns all sound like
+      -- one). Same待遇 as the plan row: state the cockpit owns, not something the transcript records.
+      create table if not exists voice_mode (
+        session_id text primary key,
+        in_call integer not null default 0,
+        boundary text,                    -- 'enter' | 'exit' | null (owed, rides the next prompt)
+        turns integer not null default 0, -- prompts spoken inside this call (the exit block quotes it)
+        thought_before text,              -- thinking depth to restore on hang-up (null = none taken)
+        thought_touched integer not null default 0, -- operator changed depth during the call
+        updated_at integer not null
       );
     `);
     // The DB now holds the speech endpoint's key, so it is the operator's secret material:
@@ -911,6 +947,65 @@ export class Store {
         Date.now(),
       );
     return this.getPlan(sessionId) as PlanSnapshot;
+  }
+
+  /** 语音通话状态（issue #48）—— 读一行，缺省即「没在通话、没有欠着的边界」。 */
+  getVoiceMode(sessionId: string): VoiceRow {
+    const row = this.#db
+      .prepare("select session_id, in_call, boundary, turns, thought_before, thought_touched, updated_at from voice_mode where session_id = ?")
+      .get(sessionId) as RawVoiceRow | undefined;
+    return row
+      ? {
+          sessionId: row.session_id,
+          inCall: Boolean(row.in_call),
+          boundary: row.boundary === "enter" || row.boundary === "exit" ? row.boundary : null,
+          turns: row.turns ?? 0,
+          thoughtBefore: row.thought_before ?? null,
+          thoughtTouched: Boolean(row.thought_touched),
+          updatedAt: row.updated_at,
+        }
+      : { sessionId, inCall: false, boundary: null, turns: 0, thoughtBefore: null, thoughtTouched: false, updatedAt: 0 };
+  }
+
+  /** Write the parts that changed; undefined keeps the stored value (the plan patch's rule). */
+  upsertVoiceMode(sessionId: string, patch: VoiceModePatch): VoiceRow {
+    const prev = this.getVoiceMode(sessionId);
+    const next: VoiceRow = {
+      sessionId,
+      inCall: patch.inCall ?? prev.inCall,
+      boundary: patch.boundary === undefined ? prev.boundary : patch.boundary,
+      turns: patch.turns ?? prev.turns,
+      thoughtBefore: patch.thoughtBefore === undefined ? prev.thoughtBefore : patch.thoughtBefore,
+      thoughtTouched: patch.thoughtTouched ?? prev.thoughtTouched,
+      updatedAt: Date.now(),
+    };
+    this.#db
+      .prepare(
+        `insert into voice_mode (session_id, in_call, boundary, turns, thought_before, thought_touched, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?)
+         on conflict(session_id) do update set
+           in_call = excluded.in_call, boundary = excluded.boundary, turns = excluded.turns,
+           thought_before = excluded.thought_before, thought_touched = excluded.thought_touched,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        sessionId,
+        next.inCall ? 1 : 0,
+        next.boundary,
+        next.turns,
+        next.thoughtBefore,
+        next.thoughtTouched ? 1 : 0,
+        next.updatedAt,
+      );
+    return next;
+  }
+
+  /** Every session the store still believes is on a call — the list a hang-up has to sweep. */
+  listInCall(): VoiceRow[] {
+    const rows = this.#db
+      .prepare("select session_id from voice_mode where in_call = 1")
+      .all() as { session_id: string }[];
+    return rows.map((r) => this.getVoiceMode(r.session_id));
   }
 
   appendMessage(m: Omit<StoredMessage, "seq">): StoredMessage {
