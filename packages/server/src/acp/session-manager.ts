@@ -320,6 +320,8 @@ export class SessionManager {
   #callLive: () => string | null = () => null;
   /** Serialises call-state transitions (see syncCallState). */
   #callSync: Promise<void> = Promise.resolve();
+  /** Per-session call generation (see #callGen). */
+  #callGens = new Map<string, number>();
   setCallLiveSource(read: () => string | null): void {
     this.#callLive = read;
   }
@@ -470,6 +472,7 @@ export class SessionManager {
   }
 
   async #beginCall(id: string): Promise<void> {
+    this.#bumpCallGen(id);
     const prev = this.#store.getVoiceMode(id);
     if (prev.inCall) return; // idempotent: a second presence beat for the same call changes nothing
     if (!this.#store.getSession(id)) return; // a call with a session this store has never seen
@@ -498,6 +501,7 @@ export class SessionManager {
   }
 
   async #endCall(id: string): Promise<void> {
+    this.#bumpCallGen(id);
     const v = this.#store.getVoiceMode(id);
     // Nothing was actually said (no prompt ever rode this call): owe nothing. An exit block here
     // would tell the agent "the conversation above was spoken", which is false — and it is cheap to
@@ -532,11 +536,25 @@ export class SessionManager {
     // leave it alone (the new call will restore it on ITS hang-up).
     if (this.#store.getVoiceMode(id).inCall) return false;
     // `setConfig` reports a rejected value by emitting, not by throwing: verify against what the
-    // agent actually advertises before declaring the level restored (review round 2, A-m1).
+    // agent actually advertises before declaring the level restored (review round 2, A-m1). The
+    // knob must still be the SAME one (a model/mode switch changes the list) and an answer without
+    // `currentValue` proves nothing — in both cases keep the snapshot rather than silently staying
+    // on the call level (review r3 A-③).
     const now = thinkingOptionOf(s.info.configOptions);
-    if (now && now.current && now.current !== v.thoughtBefore) return false;
+    if (!now || now.id !== choice.id || !now.current) return false;
+    if (now.current !== v.thoughtBefore) return false;
     this.#store.upsertVoiceMode(id, { thoughtBefore: null, thoughtTouched: false });
     return true;
+  }
+
+  /** Monotonic per-session call generation: every begin/end is a new one. Used to make sure a
+   *  settle() only touches the call it was created in (review r3 A-②). */
+  #callGen(id: string): number {
+    return this.#callGens.get(id) ?? 0;
+  }
+
+  #bumpCallGen(id: string): void {
+    this.#callGens.set(id, (this.#callGens.get(id) ?? 0) + 1);
   }
 
   /** Run a restore on the call-state chain instead of behind its back. */
@@ -549,9 +567,9 @@ export class SessionManager {
   /** Attach this prompt's voice block, and settle what it settles. Synchronous on purpose: it runs
    *  inside the send path, and a slow store write must not delay the operator's words.
    *
-   *  Returns a settle() to call once the turn is actually delivered: a prompt that threw before the
-   *  agent saw it must not consume a boundary or count as a spoken turn (review m1). */
-  #applyVoiceMode(s: LiveSession, blocks: unknown[], opts: { operator: boolean }): (delivered: boolean) => void {
+   *  Returns a settle() to call once the turn has been dispatched: before that point the boundary is
+   *  still owed, so a failed send does not burn it (review m1). */
+  #applyVoiceMode(s: LiveSession, blocks: unknown[], opts: { operator: boolean }): () => void {
     // A background-completion wake is not a spoken turn: letting it consume the boundary injected
     // "the call is over" into a synthetic turn nobody reads, so the operator's next real message
     // never learned it, and each wake inflated the turn count (review M1).
@@ -581,17 +599,16 @@ export class SessionManager {
     // said or it owes no exit boundary (review round 2, A-M1). A prompt that never reaches the agent
     // rolls the count back.
     if (counted) this.#store.upsertVoiceMode(s.info.id, { turns: v.turns + 1 });
-    return (delivered: boolean) => {
-      if (!delivered) {
-        if (counted) {
-          const now = this.#store.getVoiceMode(s.info.id);
-          if (now.inCall && now.turns > 0) this.#store.upsertVoiceMode(s.info.id, { turns: now.turns - 1 });
-        }
-        return;
-      }
-      // Clear only the boundary this turn actually carried: a hang-up during the turn may have
-      // replaced it with an exit boundary the operator still needs to hear (review r2 A-M1).
-      if (seenBoundary) {
+    // No rollback on a thrown prompt, deliberately: "the frame went out and the answer never came
+    // back" cannot be told apart from "the frame never went out", and the two mistakes are not
+    // symmetric — over-counting costs one extra sentence in the exit block, under-counting means the
+    // exit boundary is never owed at all and the agent keeps answering text in spoken-word style
+    // (review r3 A-①).
+    // The generation guards against a same-shaped boundary that arrived AFTER this turn started:
+    // consume the enter boundary, hang up and dial again → the new call's enter must survive.
+    const gen = this.#callGen(s.info.id);
+    return () => {
+      if (seenBoundary && this.#callGen(s.info.id) === gen) {
         const cur = this.#store.getVoiceMode(s.info.id);
         if (cur.boundary === seenBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
       }
@@ -1367,9 +1384,8 @@ export class SessionManager {
         prompt: blocks as any,
       });
       const terminalState = res?.stopReason === "cancelled" ? "interrupted" : "ended";
-      // The agent has the block (a cancelled turn still received it): NOW the boundary is spent and
-      // the turn counts.
-      settleVoice(true);
+      // The agent has the block (a cancelled turn still received it): NOW the boundary is spent.
+      settleVoice();
       this.#finalizePlan(sessionId, terminalState);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
