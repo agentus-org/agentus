@@ -256,6 +256,35 @@ async function main() {
   check(rv?.in_call === 0 && (rv?.thought_before ?? null) === null,
     "收尾状态干净：不在通话、没有遗留快照", JSON.stringify(rv));
 
+  // ---- 10. 第一轮还在跑时挂断（最常见的收尾动作）-----------------------------------------------
+  console.log("\n[10] 说完一句、agent 还在答就挂断：退出边界必须仍欠着");
+  const inflight = await createSession(port, "voice-inflight-sweep");
+  await presence(port, inflight, true);
+  await sleep(500);
+  const sent = await api(port, token(), `/api/sessions/${inflight}/prompt`, {
+    method: "POST", body: JSON.stringify({ text: "[slow] 用三句话介绍一下你自己。" }),
+  });
+  check(sent.status === 200 || sent.status === 202, "慢回合已受理", String(sent.status));
+  await sleep(400); // 回合在飞：此时挂断
+  await presence(port, inflight, false);
+  await sleep(500);
+  v = voiceRow(inflight);
+  check(v?.in_call === 0, "落库：in_call = 0");
+  check(v?.boundary === "exit", "回合还在飞时挂断：退出边界照样欠着（review r2 A-M1）", String(v?.boundary));
+  check((v?.turns ?? 0) >= 1, "轮数已经算上这一轮（不是 0）", String(v?.turns));
+  // 等这句答完，再发一条文字提问：它必须带 exit 块，然后彻底恢复
+  for (let i = 0; i < 200; i++) {
+    const row = ((await api(port, token(), "/api/sessions")).json().live ?? []).find((x) => x.id === inflight);
+    if (row && row.status === "ready") break;
+    await sleep(150);
+  }
+  check(voiceRow(inflight)?.boundary === "exit", "回合结束后退出边界仍在（没被回落吃掉）",
+    String(voiceRow(inflight)?.boundary));
+  await prompt(port, inflight, "[echo] 把它写成表格");
+  check(voiceRow(inflight)?.boundary === null, "下一条文字提问消费掉退出边界");
+  check((await thinkingValue(port, inflight)) === "medium", "档位已还原",
+    String(await thinkingValue(port, inflight)));
+
   console.log(`\n[voice-call] ${passed} passed, ${failures.length} failed`);
   if (failures.length) {
     for (const f of failures) console.log(`  FAIL ${f}`);

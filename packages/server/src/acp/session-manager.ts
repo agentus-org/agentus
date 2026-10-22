@@ -482,7 +482,10 @@ export class SessionManager {
     this.#store.upsertVoiceMode(id, {
       inCall: true, boundary: "enter", turns: 0,
       thoughtBefore: before,
-      thoughtTouched: prev.thoughtBefore ? prev.thoughtTouched : false,
+      // A new call starts untouched even if the PREVIOUS call ended with the operator's own pick
+      // still recorded: that pick was already honoured (by not restoring it), and inheriting the
+      // flag here would skip the lowering for this whole call (review round 2, A-m2).
+      thoughtTouched: false,
     });
     // A call is full-duplex: waiting 20 s for a first token reads as a dead line to the operator.
     // Lower the dial for the call and put the operator's own choice back on hang-up (see #restoreThought).
@@ -525,8 +528,22 @@ export class SessionManager {
     } catch {
       return false;
     }
+    // A new call may have started while this round-trip was in flight: it needs the snapshot, so
+    // leave it alone (the new call will restore it on ITS hang-up).
+    if (this.#store.getVoiceMode(id).inCall) return false;
+    // `setConfig` reports a rejected value by emitting, not by throwing: verify against what the
+    // agent actually advertises before declaring the level restored (review round 2, A-m1).
+    const now = thinkingOptionOf(s.info.configOptions);
+    if (now && now.current && now.current !== v.thoughtBefore) return false;
     this.#store.upsertVoiceMode(id, { thoughtBefore: null, thoughtTouched: false });
     return true;
+  }
+
+  /** Run a restore on the call-state chain instead of behind its back. */
+  #queueRestore(id: string): void {
+    this.#callSync = this.#callSync
+      .then(() => this.#restoreThought(id))
+      .then(() => undefined, () => undefined);
   }
 
   /** Attach this prompt's voice block, and settle what it settles. Synchronous on purpose: it runs
@@ -547,19 +564,37 @@ export class SessionManager {
     if (v.inCall && live !== s.info.id) {
       const owed = v.turns > 0;
       v = this.#store.upsertVoiceMode(s.info.id, { inCall: false, boundary: owed ? "exit" : null, ...(owed ? {} : { turns: 0 }) });
-      void this.#restoreThought(s.info.id);
+      // On the SAME chain as every other transition: a fire-and-forget restore could finish after a
+      // new call had already pressed the level down, clear the snapshot, and strand the session on
+      // the call level (review round 2, A-M2).
+      this.#queueRestore(s.info.id);
     } else if (!v.inCall && live === s.info.id) {
       v = this.#store.upsertVoiceMode(s.info.id, { inCall: true, boundary: v.boundary ?? "enter", turns: 0 });
     }
     const block = voiceModeBlock(s.info.id, { inCall: v.inCall, boundary: v.boundary, turns: v.turns });
     if (block) blocks.push(block);
-    const hadBoundary = Boolean(v.boundary);
+    const seenBoundary = v.boundary;
     const counted = v.inCall;
-    if (!hadBoundary && !counted) return () => { /* steady state, nothing to settle */ };
+    if (!seenBoundary && !counted) return () => { /* steady state, nothing to settle */ };
+    // The turn is counted NOW, not when the prompt returns: hanging up while the agent is still
+    // answering is the ordinary way a call ends, and `#endCall` must already see that something was
+    // said or it owes no exit boundary (review round 2, A-M1). A prompt that never reaches the agent
+    // rolls the count back.
+    if (counted) this.#store.upsertVoiceMode(s.info.id, { turns: v.turns + 1 });
     return (delivered: boolean) => {
-      if (!delivered) return;
-      if (hadBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
-      if (counted) this.#store.upsertVoiceMode(s.info.id, { turns: this.#store.getVoiceMode(s.info.id).turns + 1 });
+      if (!delivered) {
+        if (counted) {
+          const now = this.#store.getVoiceMode(s.info.id);
+          if (now.inCall && now.turns > 0) this.#store.upsertVoiceMode(s.info.id, { turns: now.turns - 1 });
+        }
+        return;
+      }
+      // Clear only the boundary this turn actually carried: a hang-up during the turn may have
+      // replaced it with an exit boundary the operator still needs to hear (review r2 A-M1).
+      if (seenBoundary) {
+        const cur = this.#store.getVoiceMode(s.info.id);
+        if (cur.boundary === seenBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
+      }
     };
   }
 
