@@ -51,7 +51,7 @@ PORT="${PORT:-8788}"
 # DETACHED launcher (no AGENTUS_FOREGROUND). launchd's KeepAlive respawns into EADDRINUSE for ever,
 # and every failed respawn runs reclaimOrphans(), SIGKILLing the live agent slots: the promotion looks
 # successful here (healthz ok, new pid) while the cockpit is in a crash loop. Measured 2026-10-22,
-# see track §91. The port must match, so a scratch instance's relaunch is never diverted to live.
+# see track §155. The port must match, so a scratch instance's relaunch is never diverted to live.
 if [ -z "$LAUNCHD" ]; then
   _cand="${AGENTUS_LAUNCHD:-ai.hermes.agentus}"
   if launchctl print "gui/$(id -u)/$_cand" >/dev/null 2>&1; then
