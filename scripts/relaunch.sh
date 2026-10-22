@@ -45,6 +45,26 @@ PORT="${PORT:-8788}"
 [ -f "$LAUNCHER" ] || { echo "[relaunch] launcher not found: $LAUNCHER" >&2; exit 2; }
 [ -n "$TREE" ] || TREE="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Auto-detect the supervising launchd job when the caller forgot --launchd.
+# Why: a hand-written release script that calls this without --launchd takes the branch below that
+# SIGTERMs whatever holds the port — which is the launchd job's own process — and then starts a
+# DETACHED launcher (no AGENTUS_FOREGROUND). launchd's KeepAlive respawns into EADDRINUSE for ever,
+# and every failed respawn runs reclaimOrphans(), SIGKILLing the live agent slots: the promotion looks
+# successful here (healthz ok, new pid) while the cockpit is in a crash loop. Measured 2026-10-22,
+# see track §91. The port must match, so a scratch instance's relaunch is never diverted to live.
+if [ -z "$LAUNCHD" ]; then
+  _cand="${AGENTUS_LAUNCHD:-ai.hermes.agentus}"
+  if launchctl print "gui/$(id -u)/$_cand" >/dev/null 2>&1; then
+    _jl="$(launchctl print "gui/$(id -u)/$_cand" 2>/dev/null | tr -d '"')"
+    _jp="$(printf '%s\n' "$_jl" | sed -n 's/^[[:space:]]*AGENTUS_PORT => *\([0-9][0-9]*\).*/\1/p' | head -1)"
+    [ -n "$_jp" ] || _jp="$(sed -n 's/^AGENTUS_PORT=\([0-9][0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
+    if [ "$_jp" = "$PORT" ]; then
+      LAUNCHD="$_cand"
+      echo "[relaunch] auto-detected launchd job $_cand serving :$PORT (no --launchd given)"
+    fi
+  fi
+fi
+
 listen_pid() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
 old="$(listen_pid "$PORT")"
