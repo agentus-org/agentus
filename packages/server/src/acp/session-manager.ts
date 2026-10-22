@@ -15,6 +15,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
+import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
 import {
   byActivity,
   coldPage as pageCold,
@@ -287,10 +288,17 @@ export class SessionManager {
    *  to hibernate. Default ON — this is the CLI/gateway behaviour, and the whole point is that the
    *  agent takes its own result instead of the operator noticing a stale screen. */
   #completionWake: () => boolean = () => true;
+  /** The data directory this server owns, and the id of THIS run. Both come from the instance lock
+   *  in index.ts; together they are the only evidence that a recorded pid is an agent OF THIS STORE
+   *  from a PREVIOUS run — see `agent-owner.ts` and the 2026-10-22 incident. */
+  #dataDir: string | null = null;
+  #instanceId = "";
 
-  constructor(store: Store, emit: Emitter) {
+  constructor(store: Store, emit: Emitter, opts: { dataDir?: string | null; instanceId?: string } = {}) {
     this.#store = store;
     this.#emit = emit;
+    this.#dataDir = opts.dataDir ?? null;
+    this.#instanceId = opts.instanceId ?? "";
   }
 
   /** Wire the operator's 「后台任务完成唤醒」 switch in (index.ts → settings.agent.completionWake). */
@@ -361,17 +369,44 @@ export class SessionManager {
     return this.#sessions.get(id)?.busy ?? false;
   }
 
-  /** Reclaim orphans from a previous server run (AC5): kill recorded pids. */
+  /** Reclaim orphans from a previous server run (AC5): kill recorded pids — but only the ones that are
+   *  provably agents of THIS data dir (see `agent-owner.ts`).
+   *
+   *  A pid in the database is a claim, not proof. Three things it can be:
+   *    · an agent of this store that outlived the previous server → kill it, it holds the browser's
+   *      session id and nothing will ever answer through it again;
+   *    · a pid that died with the previous server and got recycled by something else → leave it alone,
+   *      say so in the log, and drop it from the row;
+   *    · an agent of ANOTHER server on the same data dir (the 2026-10-22 accident: a second instance
+   *      that could not even listen reclaimed the live cockpit's slots on every retry) → leave it
+   *      alone. The instance lock in index.ts refuses that second server outright; this is the second
+   *      line of defence, for the case where the claim was lost or hand-edited.
+   *
+   *  Never throws: the boot must not fail because one row is odd. */
   reclaimOrphans(): number {
     let killed = 0;
+    let skipped = 0;
     for (const row of this.#store.listSessions(true)) {
       if (row.pid == null) continue;
-      try {
-        process.kill(row.pid, 0); // alive?
-        process.kill(row.pid, "SIGKILL");
-        killed++;
-      } catch {
-        /* already gone */
+      const pid = row.pid;
+      const verdict = verifyAgentOwner(this.#dataDir, pid, row.id, this.#instanceId);
+      if (verdict.kill) {
+        try {
+          process.kill(pid, "SIGKILL");
+          killed++;
+          forgetAgentOwner(this.#dataDir, pid);
+          console.log(`[agentus] reclaim: killed pid ${pid} (session ${row.id}) — ${verdict.why}`);
+        } catch (err) {
+          console.log(`[agentus] reclaim: pid ${pid} (session ${row.id}) was gone before the kill — ${(err as Error).message}`);
+        }
+      } else if (verdict.gone) {
+        console.log(`[agentus] reclaim: nothing to kill for session ${row.id} — ${verdict.why}`);
+        forgetAgentOwner(this.#dataDir, pid);
+      } else {
+        // Alive but not provably ours. Do NOT kill; do drop the pid so the next boot does not
+        // re-examine (and re-endanger) the same number.
+        skipped++;
+        console.warn(`[agentus] reclaim: SKIPPED pid ${pid} (session ${row.id}) — ${verdict.why}`);
       }
       if (row.status !== "closed") {
         // Only a turn that was ACTUALLY in flight can be reported as interrupted. A `ready` session
@@ -385,7 +420,21 @@ export class SessionManager {
         if (wasRunning) this.#finalizePlan(row.id, "interrupted");
       }
     }
+    if (skipped) {
+      console.warn(
+        `[agentus] reclaim: ${skipped} recorded pid(s) left running — they are not this data dir's agents`
+        + ` (${this.#dataDir ?? "no data dir"})`,
+      );
+    }
     return killed;
+  }
+
+  /** Bind a freshly spawned agent to (this data dir, this session, this server run). Bookkeeping only:
+   *  a failure here makes a later reclaim more conservative, never a session fail. */
+  #stampAgentReceipt(pid: number, sessionId: string, cmd: string): void {
+    recordAgentOwner(this.#dataDir, {
+      pid, sessionId, startedAt: Date.now(), serverInstance: this.#instanceId, cmd,
+    });
   }
 
   /** Last stderr lines from a session's agent (for diagnosing failed turns). */
@@ -528,6 +577,12 @@ export class SessionManager {
       });
       throw new Error(why);
     }
+
+    const pid: number = child.pid;
+
+    // The receipt that makes a later reclaim provable (agent-owner.ts). Written BEFORE the handshake,
+    // because the handshake can fail and leave a running process behind.
+    this.#stampAgentReceipt(pid, id, `${spec.cmd} ${args.join(" ")}`);
 
     const live: LiveSession = {
       info: {
@@ -708,6 +763,8 @@ export class SessionManager {
       });
       throw new Error(why);
     }
+
+    this.#stampAgentReceipt(child.pid, id, `${spec.cmd} ${args.join(" ")}`);
 
     const live: LiveSession = {
       info: {
@@ -2202,6 +2259,8 @@ export class SessionManager {
   }
 
   #onChildExit(live: LiveSession, code: number | null, sig: string | null): void {
+    // The process is gone, so is its claim: leave no receipt that a later boot would try to honour.
+    forgetAgentOwner(this.#dataDir, live.child?.pid ?? live.info.pid);
     // If we initiated close, session was already removed — ignore.
     if (!this.#sessions.has(live.info.id)) return;
     // …and if we are REPLACING this slot's process (restart), the exit is the one we asked for: the

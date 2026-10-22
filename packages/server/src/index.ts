@@ -17,6 +17,7 @@ import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
+import { acquireInstanceLock, humanAge } from "./instance-lock.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
@@ -133,6 +134,33 @@ if (process.env.AGENTUS_PRINT_PATHS) {
 }
 
 fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); // 0700: credentials live here
+
+// ---- one data directory, ONE server (incident 2026-10-22, incident-20261022-orphan-reclaim.md §7) ----
+// Claimed BEFORE the store is opened and long before anything reclaims or listens. The reclaim below
+// kills the agent processes this database remembers, so a second instance on the same data dir is not
+// a "port conflict" — it is the destruction of a running cockpit. Refuse, and touch nothing.
+// A dead owner (crash, SIGKILL, reboot) is replaced, so a stale claim never bricks an install.
+const instanceLock = acquireInstanceLock(DATA_DIR, { port: PORT });
+if (!instanceLock.ok) {
+  const h = instanceLock.holder;
+  console.error(`[agentus] refusing to start: this data directory already has an owner`);
+  console.error(`[agentus]   data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
+  if (h) {
+    console.error(`[agentus]   owner:    pid ${h.pid}${h.port ? ` on port ${h.port}` : ""}, up ${humanAge(Date.now() - h.startedAt)}`);
+  }
+  console.error(`[agentus]   reason:   ${instanceLock.why}`);
+  console.error(`[agentus]   two servers on one data dir reclaim each other's agents — stop that instance first,`);
+  console.error(`[agentus]   or give this one its own directory:  AGENTUS_DATA=/some/other/dir`);
+  process.exit(1);
+}
+if (instanceLock.tookOver) {
+  const prev = instanceLock.tookOver;
+  console.log(
+    `[agentus] instance lock: took over ${DATA_DIR} from pid ${prev.pid}`
+    + ` (gone or recycled; up ${humanAge(Date.now() - (prev.startedAt || Date.now()))})`,
+  );
+}
+
 const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 // M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
 // the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
@@ -203,7 +231,12 @@ function emit(evt: ServerEvent): void {
   notify.observe(evt);
 }
 
-const mgr = new SessionManager(store, emit);
+// The data dir and this run's instance id travel into the manager: they are what lets a reclaim tell
+// "an agent of THIS directory from a previous run" from "some pid the database still remembers".
+const mgr = new SessionManager(store, emit, {
+  dataDir: DATA_DIR,
+  instanceId: instanceLock.holder.instanceId,
+});
 
 /** 工作播报 (issue #16). Constructed AFTER the manager so it can spawn observers through it, and
  *  wired into `emit` above through this mutable handle — the hub itself is not in the broadcast
@@ -494,7 +527,9 @@ function installSafetyNet(): void {
   });
 }
 
-// AC5: reclaim orphans from previous run before serving anything.
+// AC5: reclaim orphans from a previous run — only reachable once the instance lock above proved this
+// process is the single owner of DATA_DIR, and only killing agents that receipt proves are ours
+// (incident 2026-10-22: a second instance used to execute the live cockpit's slots here, every 10 s).
 const killed = mgr.reclaimOrphans();
 if (killed) console.log(`[agentus] reclaimed ${killed} orphan agent process(es)`);
 
