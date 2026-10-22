@@ -53,10 +53,11 @@ depth**, a permission mode that survives a restart, the **context-budget** field
 channel** (memory recall/save hints in the message stream), per-process skill roots, **project
 skills made visible and switchable** (a repo's `.agents/skills` shows up as a `project_skills`
 option instead of being skipped in silence), **background-job completion wake-ups** (a finished
-background process comes back as a turn of its own), and a **DeepSeek web backend** (search +
+background process comes back as a turn of its own), an **ACP session that writes its own log files** (`agent.log`/`errors.log`, so a
+cockpit-side failure is diagnosable afterwards), and a **DeepSeek web backend** (search +
 extract on the model key) — come from the fork's integration build instead. That is a five-line install:
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
-`agentus/v0.22.0/merge-20261021-1400`, on Hermes `v0.22.0`.
+`agentus/v0.22.0/merge-20261022-2226`, on Hermes `v0.22.0`.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
