@@ -222,6 +222,40 @@ async function main() {
   check((await thinkingValue(port, plain)) === "high", "挂断后保留操作者选的 high（不还原成 medium）",
     String(await thinkingValue(port, plain)));
 
+  // ---- 8. 0 轮通话（开麦即挂 / 麦克风被拒）-------------------------------------------------------
+  console.log("\n[8] 0 轮通话：什么都不欠（不许说「刚才那段是通话内容」）");
+  const zero = await createSession(port, "voice-zero-sweep");
+  await presence(port, zero, true);
+  await sleep(500);
+  check((await thinkingValue(port, zero)) === "low", "进入通话照常压档", String(await thinkingValue(port, zero)));
+  await presence(port, zero, false);
+  await sleep(600);
+  v = voiceRow(zero);
+  check(v?.in_call === 0, "落库：in_call = 0");
+  check(v?.boundary === null, "一个字没说就挂断：不欠退出边界（review B3）", String(v?.boundary));
+  check((await thinkingValue(port, zero)) === "medium", "档位照样还原成 medium",
+    String(await thinkingValue(port, zero)));
+  await prompt(port, zero, "[echo] 纯文字问题");
+  v = voiceRow(zero);
+  check(v?.boundary === null && v?.turns === 0, "下一轮文字 prompt：不注入任何通话文本", JSON.stringify(v));
+
+  // ---- 9. 快速开关通话（B2 竞态）-----------------------------------------------------------------
+  console.log("\n[9] 快速开关：不被后来的压低覆盖（档位必须回到原值）");
+  const race = await createSession(port, "voice-race-sweep");
+  for (let i = 0; i < 3; i++) {
+    await presence(port, race, true);
+    await sleep(30);
+    await presence(port, race, false);
+    await sleep(30);
+  }
+  await sleep(1200);
+  check((await thinkingValue(port, race)) === "medium",
+    "三次「秒开秒关」之后档位仍是 medium（不被压低的写入覆盖，review B2）",
+    String(await thinkingValue(port, race)));
+  const rv = voiceRow(race);
+  check(rv?.in_call === 0 && (rv?.thought_before ?? null) === null,
+    "收尾状态干净：不在通话、没有遗留快照", JSON.stringify(rv));
+
   console.log(`\n[voice-call] ${passed} passed, ${failures.length} failed`);
   if (failures.length) {
     for (const f of failures) console.log(`  FAIL ${f}`);

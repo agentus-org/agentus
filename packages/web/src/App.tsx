@@ -644,8 +644,13 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
     watchingNow({ visible: document.visibilityState === "visible", lastInputAt: lastInput.current, now: Date.now() });
   /** Are we ON A CALL with the session on screen? A call is not "watching": the hands are free and the
    *  screen is not being touched, so the idle rule above would drop presence mid-conversation — and the
-   *  completion card ("跑完了") then arrived WITH A SOUND, into the microphone the agent is listening on. */
-  const amOnCall = (): boolean => isCallActive() && document.visibilityState === "visible";
+   *  completion card ("跑完了") then arrived WITH A SOUND, into the microphone the agent is listening on.
+   *
+   *  Deliberately NOT gated on `visibilityState`: locking the phone or switching tabs during a call is
+   *  not hanging up. Reporting "no call" there made the server derive a hang-up, spend the exit
+   *  boundary on a turn nobody heard, and treat the pressed-down thinking level as the operator's own
+   *  on the next begin (review B1). The call ends when the overlay closes, and that is the only signal. */
+  const amOnCall = (): boolean => isCallActive();
   const reportPresence = (sessionId: string | null, visible: boolean, keepalive = false, call = false): void => {
     void fetch("/api/notify/presence", {
       method: "POST",
@@ -1273,11 +1278,16 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // presence 判定「在打电话」，晚 30 秒等于通话开头几句仍按文字场景答（表格、代码块被念出来）。
   // 用同一个接口直接报，不把 App 的 reportPresence 再往下传一层。
   useEffect(() => {
+    // 通话状态变化要**立刻**报（见上），但可见性必须按页面真实状态算：隐藏的标签页里切换会话
+    // 不能冒充「正在看」（会压掉本该响的通知，也给空闲回收续命）。通话中视作「在看」是有意的：
+    // 服务端只需要知道这场通话还活着。
+    const onCall = call && isCallActive();
+    const visible = document.visibilityState === "visible";
     void fetch("/api/notify/presence", {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: active?.info.id ?? null, visible: true, call }),
+      body: JSON.stringify({ sessionId: active?.info.id ?? null, visible: visible || onCall, call: onCall }),
     }).catch(() => { /* presence is a hint, never a requirement */ });
   }, [call, active?.info.id]);
   // Voice capabilities are fetched once; the buttons fall back to browser-only until

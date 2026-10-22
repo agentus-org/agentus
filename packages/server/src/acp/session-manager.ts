@@ -16,7 +16,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
 import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
-import { thinkingOptionOf, voiceModeBlock } from "./voice-mode.js";
+import { thinkingOptionOf, voiceAppliesToPrompt, voiceModeBlock } from "./voice-mode.js";
 import {
   byActivity,
   coldPage as pageCold,
@@ -318,6 +318,8 @@ export class SessionManager {
    *  answer in this process, and a second source would drift. Optional: with nothing wired the
    *  manager never injects anything, which is the pre-#48 behaviour. */
   #callLive: () => string | null = () => null;
+  /** Serialises call-state transitions (see syncCallState). */
+  #callSync: Promise<void> = Promise.resolve();
   setCallLiveSource(read: () => string | null): void {
     this.#callLive = read;
   }
@@ -449,6 +451,17 @@ export class SessionManager {
    *  answer 「好的，我了解了」 into the microphone. The block rides the next real prompt.
    */
   async syncCallState(): Promise<void> {
+    // Serialised: presence arrives on a 30 s beat AND on every visibility/enter/leave event, and two
+    // overlapping runs used to interleave the dial switch — a hang-up that restored the operator's
+    // level could be overtaken by the lowering of the call that had just ended, leaving the session
+    // stuck on the lowest level with its snapshot already cleared (review B2).
+    this.#callSync = this.#callSync
+      .then(() => this.#syncCallStateOnce())
+      .catch(() => { /* presence is a hint: never break the caller */ });
+    return this.#callSync;
+  }
+
+  async #syncCallStateOnce(): Promise<void> {
     const live = this.#callLive();
     for (const v of this.#store.listInCall()) {
       if (v.sessionId !== live) await this.#endCall(v.sessionId);
@@ -457,49 +470,97 @@ export class SessionManager {
   }
 
   async #beginCall(id: string): Promise<void> {
+    const prev = this.#store.getVoiceMode(id);
+    if (prev.inCall) return; // idempotent: a second presence beat for the same call changes nothing
     if (!this.#store.getSession(id)) return; // a call with a session this store has never seen
     const s = this.#sessions.get(id);
     const choice = s ? thinkingOptionOf(s.info.configOptions) : null;
+    // A snapshot left behind by an earlier call (the restore could not run: slot was cold, or the
+    // process died) is still the operator's real level — never overwrite it with the pressed-down
+    // value we may have persisted onto the session row (review B1).
+    const before = prev.thoughtBefore ?? choice?.current ?? null;
     this.#store.upsertVoiceMode(id, {
       inCall: true, boundary: "enter", turns: 0,
-      thoughtBefore: choice?.current ?? null, thoughtTouched: false,
+      thoughtBefore: before,
+      thoughtTouched: prev.thoughtBefore ? prev.thoughtTouched : false,
     });
     // A call is full-duplex: waiting 20 s for a first token reads as a dead line to the operator.
-    // Lower the dial for the call and put the operator's own choice back on hang-up (see #endCall).
-    if (s && choice && choice.lowest && choice.current !== choice.lowest) {
+    // Lower the dial for the call and put the operator's own choice back on hang-up (see #restoreThought).
+    if (s && choice && choice.lowest && before !== choice.lowest && !this.#store.getVoiceMode(id).thoughtTouched) {
       await this.setConfig(id, choice.id, choice.lowest, { internal: true }).catch(() => { /* the block still goes out */ });
+      // A hang-up can land while the switch is in flight: if the call is already over, put it back
+      // now rather than leaving the session on the pressed-down level.
+      if (!this.#store.getVoiceMode(id).inCall) await this.#restoreThought(id);
     }
   }
 
   async #endCall(id: string): Promise<void> {
     const v = this.#store.getVoiceMode(id);
-    this.#store.upsertVoiceMode(id, { inCall: false, boundary: "exit" });
+    // Nothing was actually said (no prompt ever rode this call): owe nothing. An exit block here
+    // would tell the agent "the conversation above was spoken", which is false — and it is cheap to
+    // trigger (opening the call overlay and closing it, a denied microphone) (review B3).
+    const owed = v.turns > 0;
+    this.#store.upsertVoiceMode(id, { inCall: false, boundary: owed ? "exit" : null, ...(owed ? {} : { turns: 0 }) });
+    await this.#restoreThought(id);
+  }
+
+  /** Put the operator's thinking level back after a call. Clears the snapshot ONLY when the level
+   *  really went back — a slot that is no longer in memory (idle reap, restart) or a rejected value
+   *  keeps it, so the next resume can finish the job instead of silently staying on the call level
+   *  (review M2). */
+  async #restoreThought(id: string): Promise<boolean> {
+    const v = this.#store.getVoiceMode(id);
+    if (!v.thoughtBefore) return true; // nothing to put back
+    if (v.thoughtTouched) {
+      // The operator picked a level during the call: theirs wins, the snapshot is moot.
+      this.#store.upsertVoiceMode(id, { thoughtBefore: null, thoughtTouched: false });
+      return true;
+    }
     const s = this.#sessions.get(id);
-    // The operator's explicit pick wins: if they changed the dial DURING the call, do not undo it.
-    if (s && v.thoughtBefore && !v.thoughtTouched) {
-      const choice = thinkingOptionOf(s.info.configOptions);
-      if (choice) await this.setConfig(id, choice.id, v.thoughtBefore, { internal: true }).catch(() => { /* keep going */ });
+    if (!s) return false;
+    const choice = thinkingOptionOf(s.info.configOptions);
+    if (!choice || !choice.lowest) return false;
+    try {
+      await this.setConfig(id, choice.id, v.thoughtBefore, { internal: true });
+    } catch {
+      return false;
     }
     this.#store.upsertVoiceMode(id, { thoughtBefore: null, thoughtTouched: false });
+    return true;
   }
 
   /** Attach this prompt's voice block, and settle what it settles. Synchronous on purpose: it runs
-   *  inside the send path, and a slow store write must not delay the operator's words. */
-  #applyVoiceMode(s: LiveSession, blocks: unknown[]): void {
+   *  inside the send path, and a slow store write must not delay the operator's words.
+   *
+   *  Returns a settle() to call once the turn is actually delivered: a prompt that threw before the
+   *  agent saw it must not consume a boundary or count as a spoken turn (review m1). */
+  #applyVoiceMode(s: LiveSession, blocks: unknown[], opts: { operator: boolean }): (delivered: boolean) => void {
+    // A background-completion wake is not a spoken turn: letting it consume the boundary injected
+    // "the call is over" into a synthetic turn nobody reads, so the operator's next real message
+    // never learned it, and each wake inflated the turn count (review M1).
+    if (!opts.operator) return () => { /* nothing owed to a synthetic turn */ };
     const live = this.#callLive();
     let v = this.#store.getVoiceMode(s.info.id);
     // Converge on the ONE authority (presence) in both directions: a page that closed mid-call never
     // reports a hang-up, so the exit boundary must be derived here or the model stays on a call for
     // ever; and a call that started while this slot was cold has no enter boundary recorded.
     if (v.inCall && live !== s.info.id) {
-      v = this.#store.upsertVoiceMode(s.info.id, { inCall: false, boundary: "exit" });
+      const owed = v.turns > 0;
+      v = this.#store.upsertVoiceMode(s.info.id, { inCall: false, boundary: owed ? "exit" : null, ...(owed ? {} : { turns: 0 }) });
+      void this.#restoreThought(s.info.id);
     } else if (!v.inCall && live === s.info.id) {
       v = this.#store.upsertVoiceMode(s.info.id, { inCall: true, boundary: v.boundary ?? "enter", turns: 0 });
     }
     const block = voiceModeBlock(s.info.id, { inCall: v.inCall, boundary: v.boundary, turns: v.turns });
     if (block) blocks.push(block);
-    if (v.boundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
-    if (v.inCall) this.#store.upsertVoiceMode(s.info.id, { turns: v.turns + 1 });
+    const hadBoundary = Boolean(v.boundary);
+    const counted = v.inCall;
+    if (!hadBoundary && !counted) return () => { /* steady state, nothing to settle */ };
+    return (delivered: boolean) => {
+      if (!delivered) return;
+      if (hadBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
+      if (counted) this.#store.upsertVoiceMode(s.info.id, { turns: this.#store.getVoiceMode(s.info.id).turns + 1 });
+    };
   }
 
   /** Bind a freshly spawned agent to (this data dir, this session, this server run). Bookkeeping only:
@@ -978,7 +1039,8 @@ export class SessionManager {
         }
       }
       // 通话中 resume（页面刷新、空闲回收后再唤起）：把通话档位重新压下去，否则「恢复的会话」会带着
-      // 用户平时的高思考档沉默十几秒 —— 正是 issue #48 要消除的那种卡死手感。
+      // 用户平时的高思考档沉默十几秒 —— 正是 issue #48 要消除的那种卡死手感。反过来，通话已经结束却
+      // 留着快照（挂断时会话不在内存，还原没跑成）就要在这里补还原，否则会话永远停在通话档（review M2）。
       {
         const vm = this.#store.getVoiceMode(id);
         if (vm.inCall) {
@@ -986,6 +1048,8 @@ export class SessionManager {
           if (knob && knob.current !== knob.lowest) {
             await this.setConfig(id, knob.id, knob.lowest, { internal: true }).catch(() => { /* keep going */ });
           }
+        } else if (vm.thoughtBefore && !vm.thoughtTouched) {
+          await this.#restoreThought(id);
         }
       }
       live.info.status = "ready";
@@ -1228,8 +1292,9 @@ export class SessionManager {
     // 语音通话模式（issue #48）: entering, staying in, and leaving a call each owe the agent one
     // sentence it cannot infer — that its output is being SPOKEN, or that the speaking is over.
     // Rides the same `_meta`-tagged resource channel as the plan reminder; the operator's own words
-    // are untouched (the transcript stores `text`, never the blocks).
-    this.#applyVoiceMode(s, blocks);
+    // are untouched (the transcript stores `text`, never the blocks). A background wake (`origin`)
+    // is not a spoken turn and must not consume a boundary.
+    const settleVoice = this.#applyVoiceMode(s, blocks, { operator: voiceAppliesToPrompt(opts) });
     s.turnSeq += 1;
     s.busy = true;
     // The operator has spoken: from here anything the agent says is an ANSWER, not its own history
@@ -1267,6 +1332,9 @@ export class SessionManager {
         prompt: blocks as any,
       });
       const terminalState = res?.stopReason === "cancelled" ? "interrupted" : "ended";
+      // The agent has the block (a cancelled turn still received it): NOW the boundary is spent and
+      // the turn counts.
+      settleVoice(true);
       this.#finalizePlan(sessionId, terminalState);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
@@ -1404,15 +1472,6 @@ export class SessionManager {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
     const requested = String(value);
-    // 通话中操作者自己调了思考档位 → 以他为准，挂断时不再还原（issue #48）。`internal` marks the
-    // cockpit's own lowering/restoring, which must NOT count as the operator's choice.
-    if (!opts.internal) {
-      const vm = this.#store.getVoiceMode(sessionId);
-      if (vm.inCall) {
-        const knob = thinkingOptionOf(s.info.configOptions);
-        if (knob && knob.id === configId) this.#store.upsertVoiceMode(sessionId, { thoughtTouched: true });
-      }
-    }
     let actual = requested;
     let rejected = false;
     try {
@@ -1451,6 +1510,17 @@ export class SessionManager {
         const payload = { ...cur.payload, state: actual };
         cur.payload = payload;
         this.#settleRow(s, cur.seq, payload);
+      }
+    }
+    // 通话中操作者自己调了思考档位 → 以他为准，挂断时不再还原（issue #48）。`internal` marks the
+    // cockpit's own lowering/restoring, which must NOT count as the operator's choice. Only a pick the
+    // AGENT actually accepted counts: a rejected value would otherwise make the hang-up skip the
+    // restore and strand the session on the call's level (review m4).
+    if (!opts.internal && !rejected && actual === requested) {
+      const vm = this.#store.getVoiceMode(sessionId);
+      if (vm.inCall) {
+        const knob = thinkingOptionOf(s.info.configOptions);
+        if (knob && knob.id === configId) this.#store.upsertVoiceMode(sessionId, { thoughtTouched: true });
       }
     }
     if (rejected) {

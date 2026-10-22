@@ -77,10 +77,16 @@ export function voiceModeBlock(sessionId: string, st: VoiceState): unknown | nul
   };
 }
 
-/** Is this a block we injected (as opposed to something the operator typed)? */
-export function isVoiceBlock(block: unknown): boolean {
-  const meta = (block as { _meta?: Record<string, unknown> } | null)?._meta;
-  return Boolean(meta && meta[VOICE_META_KEY] === true);
+/**
+ * Does this prompt get the call treatment at all?
+ *
+ * Only an OPERATOR prompt does. A background-completion wake rides the same `prompt()` with an
+ * `origin`, and it is a synthetic turn nobody reads: letting it carry the block burned the pending
+ * exit boundary into it (so the operator's next real message never learned the call had ended) and
+ * inflated the turn count that the exit block quotes.
+ */
+export function voiceAppliesToPrompt(opts: { origin?: unknown }): boolean {
+  return !opts.origin;
 }
 
 export interface ThinkingChoice {
@@ -98,6 +104,11 @@ export interface ThinkingChoice {
  * signals that survive across backends (Hermes, the mock, and the adapters we have seen) are the
  * semantic `category: "thought_level"` and an id/name containing think/reason/effort. If neither is
  * present the session simply has no such knob and call mode must not invent one.
+ *
+ * The LOWEST level must also be recognised. ACP puts no ordering on the value list, so falling back
+ * to `options[0]` is a coin flip that can pick "3 档" or `true` — i.e. a call could make the agent
+ * SLOWER, which is the exact failure mode call mode exists to remove (review M3). If no value looks
+ * cheapest, report no knob: worse to press an unknown dial than to leave it alone.
  */
 export function thinkingOptionOf(options: unknown): ThinkingChoice | null {
   if (!Array.isArray(options)) return null;
@@ -112,15 +123,23 @@ export function thinkingOptionOf(options: unknown): ThinkingChoice | null {
   const values = (Array.isArray(found.options) ? found.options : [])
     .map((o) => {
       const v = o as { value?: unknown; name?: unknown };
-      return { value: typeof v.value === "string" ? v.value : "", name: typeof v.name === "string" ? v.name : "" };
+      return {
+        value: typeof v.value === "string" ? v.value : typeof v.value === "number" ? String(v.value) : "",
+        name: typeof v.name === "string" ? v.name : "",
+      };
     })
     .filter((o) => o.value);
   if (values.length < 2) return null;
-  const lowest = values.find((v) => /^(off|none|disabled|min|minimal|low)$/i.test(v.value)
-    || /^(off|none|disabled|low|最低|关闭)$/i.test(v.name))?.value ?? values[0].value;
+  const lowValue = /^(off|none|disabled|min|minimal|low|lowest|quick|fast|1)$/i;
+  const lowName = /^(off|none|disabled|low|lowest|quick|fast|最低|低|关闭|关|快速|最快|1\s*档?)$/i;
+  const pick = values.find((v) => lowValue.test(v.value.trim()) || lowName.test(v.name.trim()));
+  if (!pick) return null;
+  const currentRaw = found.currentValue;
   return {
     id: found.id as string,
-    current: typeof found.currentValue === "string" ? found.currentValue : "",
-    lowest,
+    current: typeof currentRaw === "string"
+      ? currentRaw
+      : typeof currentRaw === "number" || typeof currentRaw === "boolean" ? String(currentRaw) : "",
+    lowest: pick.value,
   };
 }
