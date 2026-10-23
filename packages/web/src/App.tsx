@@ -42,6 +42,7 @@ import {
   IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
+import { stripEmoTags } from "./nomiMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
@@ -2487,7 +2488,11 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
           </div>
         </div>
       );
-    case "agent":
+    case "agent": {
+      // 情绪标签是控制信号，不是内容：模型按提示词写的 [emo:happy] 只该驱动那张脸，
+      // 不该出现在气泡里、被复制走、或被朗读出来。转录/朗读各自也剥一次（见 CallMode），
+      // 这里是**主会话页**那一条，不然带标签的回复在历史里一直是脏的。
+      const shown = stripEmoTags(m.text);
       return (
         <div className="msg agent">
           <div className="role with-mark">
@@ -2495,11 +2500,11 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
             {markOf(backend).label || "AGENT"}
           </div>
           <div className="bubble">
-            <Markdown text={m.text} base={base} />
+            <Markdown text={shown} base={base} />
             <div className="bubble-actions">
               {m.at ? <span className="msg-at" title={stamp(m.at)}>{messageTime(m.at)}</span> : null}
-              <CopyButton text={m.text} what="这条回复" />
-              <SpeakButton id={m.key} text={m.text} sid={sid} />
+              <CopyButton text={shown} what="这条回复" />
+              <SpeakButton id={m.key} text={shown} sid={sid} />
               {last && !busy ? <ForkHere sid={sid} busy={busy} /> : null}
             </div>
             {/* inside the bubble, under the action row: 「它念了什么」 belongs to this message */}
@@ -2507,6 +2512,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
           </div>
         </div>
       );
+    }
     case "thought":
       // An empty thought is not drawn (and the server no longer stores one): it is the shape an
       // unreadable status carrier takes, and a 「思考 0 字」 row reads as a bug to the operator rather

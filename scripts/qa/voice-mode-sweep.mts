@@ -38,6 +38,11 @@ console.log("\n[1] 三态：进入 / 每轮 / 退出");
   const steady = voiceModeBlock("sess1", { inCall: true, boundary: null, turns: 4 });
   check(textOf(steady) === VOICE_STEADY_TEXT, "通话中每轮：只有那句稳定约束（不重复进入边界）");
   check(!textOf(steady).includes(VOICE_ENTER_TEXT), "通话中每轮：不重复进入边界（不刷屏）");
+  // 表情通道：提示词里没有这一句，模型永远不会写标签，糯米模式的脸就只剩相位音色在动。
+  check(textOf(steady).includes("[emo:happy]"), "每轮约束里带上了 [emo:x] 例句（表情通道靠它）");
+  for (const v of ["happy", "sad", "angry", "surprise", "curious", "shy", "thinking", "neutral"]) {
+    check(textOf(steady).includes(v), `每轮约束点名了 emo 值 ${v}`);
+  }
 
   const exit = voiceModeBlock("sess1", { inCall: false, boundary: "exit", turns: 3 });
   const x = textOf(exit);

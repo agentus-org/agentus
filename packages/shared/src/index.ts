@@ -16,6 +16,23 @@
 /** Backend ids are registry rows now (M6): the three builtin ones plus anything the operator
  *  adds in the cockpit ("hermes-fork", "hermes-live", …). The literal union keeps autocomplete
  *  for the builtins while letting a row id through. */
+/** 通话表情标签的**规范词表** —— 服务端把它写进提示词，页面按它决定画哪张脸。
+ *
+ *  One list, two consumers: the server composes the instruction, the browser parses what comes
+ *  back. Keeping them apart is how you get a prompt that offers `[emo:excited]` while the face
+ *  silently ignores it, so the vocabulary lives here and the web side carries a superset of
+ *  synonyms on top (see `EMO_MOODS` in nomiMood.ts, guarded by the `nomi-mood` test). */
+export const EMO_TAG_VALUES = ["happy", "sad", "angry", "surprise", "curious", "shy", "thinking", "neutral"] as const;
+
+/** The sentence the call prompt carries. Kept next to the vocabulary so they cannot drift. */
+export function emoTagHint(): string {
+  return (
+    "（通话界面会跟着你的情绪换表情：想表达情绪时在回复最开头加一个隐藏标记，例如 [emo:happy]；" +
+    `可用值：${EMO_TAG_VALUES.join("/")}。这个标记不会被念出来、也不会显示给用户，` +
+    "所以不必解释它；一轮最多一个，别写进句子中间，也别用代码块或反引号包起来。）"
+  );
+}
+
 export type BackendId = "hermes" | "qoder" | "mock" | (string & {});
 
 export type SessionStatus =

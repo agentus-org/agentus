@@ -1495,7 +1495,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   );
 
   return createPortal(
-    <div className="call-mode" data-phase={phase} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
+    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
       <button
         type="button"
         className="call-gear"

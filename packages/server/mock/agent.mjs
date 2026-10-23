@@ -846,6 +846,20 @@ const agent = () => ({
     // One id per logical message, exactly like the real backend: the cockpit (and the store) fold the
     // chunks of a message by this id, so a mock that omits it would test a path nobody runs.
     const messageId = randomUUID();
+    // 表情通道的探针（糯米模式）：提示里带 `[emo-probe]`（只有 QA sweep 会发）**并且**同一轮
+    // 真的收到了 `[emo:x]` 提示句，才在回复开头吐一个标签。于是「服务端那段提示词到底有没有
+    // 到达 agent」变成一个能观测的事实，而不是靠读服务端代码相信；别的 sweep 不发这个探针，
+    // 行为零变化（也不需要给子进程多开一个 env 白名单出口）。
+    // 提示句是**另一个内容块**（ACP resource），不在 `text` 里 —— 只看 text 会得出「服务端没注入」
+    // 的错误结论（这次就是这么踩的）。所以探针看的是整条 prompt 的所有块。
+    const allBlocks = prompt.map((p) => p.text || p.resource?.text || "").join(" ");
+    if (/\[emo-probe\]/.test(allBlocks) && /\[emo:[a-z]+\]/.test(allBlocks)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId,
+        content: { type: "text", text: "[emo:happy] " },
+      });
+    }
     const words = `Mock echo (${effort} effort) to: "${text}". `.repeat(2).split(" ");
     for (const w of words) {
       if (s.cancelled) return { stopReason: "cancelled" };

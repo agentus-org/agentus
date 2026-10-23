@@ -483,14 +483,18 @@ export function readEmoTags(text: string): NomiMood[] {
  * `splitForSpeech()` does not strip brackets, so a leftover tag is read out loud.
  */
 export function stripEmoTags(text: string): string {
-  return String(text ?? "").replace(EMO_TAG, "").replace(/[ \t]{2,}/g, " ").trim();
+  return String(text ?? "")
+    .replace(EMO_TAG, "")
+    // 流式到达时标签可能只有半截（`[emo:hap`）：整段剥掉的只有闭合的，半截的留着就会在气泡里
+    // 闪一下，而它本来就不该被用户看到。只在**末尾**剥，中间未闭合的留给下一帧补全。
+    .replace(/\[\s*(?:emo|emotion)\s*[:：]\s*[a-zA-Z\u4e00-\u9fa5_-]*\s*\]?\s*$/i, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 /** The one-line constraint for the prompt. Server-side block lives in `packages/server/src/acp/voice-mode.ts`. */
-export function emoTagHint(): string {
-  return "想表达情绪时，在句子开头加一个隐藏标记，例如 [emo:happy]；可用值：" +
-    Object.keys(EMO_MOODS).join("/") + "。标记不会被念出来，也不要放在句子中间。";
-}
+/** 提示句的唯一出处在 shared（服务端写、页面认），这里只是让 web 侧有同一个入口。 */
+export { emoTagHint, EMO_TAG_VALUES } from "../../shared/src/index";
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;

@@ -233,6 +233,32 @@ try {
   check("横屏下脸仍然在画", b1 && b1.lit > 0.5, JSON.stringify(b1 && { lit: b1.lit }));
   fs.writeFileSync(`${SHOTS}/nomi-landscape.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
 
+  // ---- 6.5 表情通道端到端：提示词 → agent 写标签 → 页面剥掉 → 脸变 happy ------------------
+  // mock 只在这一句真的到达时才吐标签（MOCK_EMO=1），所以这一段同时证明了三件事：
+  // 服务端的 call 提示词带上了 [emo:x]，客户端把它从文字里剥干净，脸跟着标签换。
+  const moodOf = async () => ev(`document.querySelector('.call-mode')?.dataset.mood ?? null`);
+  const happy0 = await moodOf();
+  for (let i = 0; i < 10; i++) {
+    const st = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+      const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: '[emo-probe] 你好，说说你现在的心情' }) });
+      return r.status; })()`);
+    if (st === 200) break;
+    await sleep(700);
+  }
+  let happy = null, leaked = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(400);
+    happy = await moodOf();
+    leaked = await ev(`(() => { const rows = [...document.querySelectorAll('.msg.agent .bubble')];
+      const t = rows.length ? rows[rows.length - 1].innerText : '';
+      // 不用正则：这段代码住在 JS 模板串里，反斜杠转义会被模板吃掉，写出来的正则能假匹配。
+      return { hasTag: t.includes('emo:') || t.includes('emo：'), sample: t.slice(0, 60) }; })()`);
+    if (happy === "happy" && leaked && leaked.hasTag === false) break;
+  }
+  check("agent 照提示词写了标签，脸变成 happy（data-mood）", happy === "happy", String(happy));
+  check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", leaked && leaked.hasTag === false, JSON.stringify(leaked && leaked.sample));
+
   // ---- 7. 不侵入：进出不写设置 -----------------------------------------------------------
   await viewport(390, 844);
   await sleep(500);

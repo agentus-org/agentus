@@ -6,6 +6,9 @@
 //
 //   · the three-state lifecycle (enter → constraint every turn → exit) as a pure decision, so the
 //     trickiest part — WHICH block is owed on THIS prompt — is testable without an agent;
+//   · the emotion tag (`[emo:x]`): the face on the call screen can only follow the agent if the
+//     agent knows the channel exists. The vocabulary lives in shared/ so the prompt and the parser
+//     can never disagree about which words are real;
 //   · the thinking-depth lookup, because a call is full-duplex and a 20-second first token is
 //     indistinguishable from a hang-up.
 //
@@ -14,6 +17,8 @@
 
 /** The `_meta` key that marks a block as OURS — never the operator's words. */
 export const VOICE_META_KEY = "agentus/voice-mode";
+
+import { emoTagHint } from "../../../shared/src/index.js";
 
 export type VoiceBoundary = "enter" | "exit";
 
@@ -31,11 +36,12 @@ export const VOICE_ENTER_TEXT = [
   "现在开始语音通话：你接下来的回复会被 TTS 朗读出来，用户是用耳朵听的。",
   "请用口语化的短句回答（几句话以内），不要表格、代码块、列表符号、链接和 Markdown 标记；",
   "需要列举时用「第一/第二」这样的口语说法。数字、专有名词、路径要念得出来。",
+  emoTagHint(),
 ].join("");
 
 /** 通话中每一轮都带：单轮指令会被后续对话冲淡，也会被压缩摘要吃掉。 */
 export const VOICE_STEADY_TEXT =
-  "（仍在语音通话中：继续用口语短句回答，不要表格、代码块、列表符号。）";
+  "（仍在语音通话中：继续用口语短句回答，不要表格、代码块、列表符号。）" + emoTagHint();
 
 /** 退出通话：不只说「结束了」，还要解释刚才那段的性质 —— 否则模型会接着用通话腔回文字提问。 */
 export function voiceExitText(turns: number): string {

@@ -9,7 +9,7 @@
 // Run: npx tsx scripts/qa/nomi-mood.mts
 import {
   BLINK_BLOCKED, EMO_MOODS, IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, WARMTH_MS,
-  WORK_FLICK_MS, activityOf, blinkHoldMs, deriveEmotion, workBeat, emoTagHint, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
+  WORK_FLICK_MS, activityOf, blinkHoldMs, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
   readEmoTags, stripEmoTags, thinkingStage,
   type NomiMood,
 } from "../../packages/web/src/nomiMood.ts";
@@ -184,7 +184,14 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     return m.length === 2 && m[0] === "happy" && m[1] === "sad" && stripEmoTags(t) === "好吧";
   })());
   check("nothing to strip leaves the text alone", stripEmoTags("今天几号？") === "今天几号？");
-  check("the hint lists every mood word", Object.keys(EMO_MOODS).every((k) => emoTagHint().includes(k)));
+  // 词表只有一个出处（shared）。这里守的是**跨包一致性**：服务端提示里承诺的每个值，
+  // 页面都必须认得，否则模型照提示写了标签、脸上什么都没发生 —— 这种 bug 没有报错，只有沉默。
+  check("shared 提示里的每个值都被表情表认识", EMO_TAG_VALUES.every((v) => v in EMO_MOODS),
+    EMO_TAG_VALUES.filter((v) => !(v in EMO_MOODS)).join(",") || "all");
+  check("提示句里点名了 [emo:happy] 这个例句", emoTagHint().includes("[emo:happy]"));
+  check("提示句里列出了每个规范值", EMO_TAG_VALUES.every((v) => emoTagHint().includes(v)));
+  check("半截标签（流式）也剥掉", stripEmoTags("好的[emo:hap") === "好的", JSON.stringify(stripEmoTags("好的[emo:hap")));
+  check("句子中间没闭合的方括号不动", stripEmoTags("见 [1] 节").includes("[1]"), JSON.stringify(stripEmoTags("见 [1] 节")));
 }
 
 // 10. 中间层（本地派生）：只在模型没写标签时补空位，且必须认得出否定。
