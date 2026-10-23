@@ -259,6 +259,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *  when the sentence is finished — the silence timer is exactly what cut him off mid-sentence
    *  (「我这句话还没说完，他就显示录入完成了」). */
   const pttRef = useRef(false);
+  /** 点按式收音（按键打断页左键，操作员口述 2026-10-23）：点「开始说话」/「打断」之后，这句话什么时候
+   *  结束由人再点一次「结束」决定 —— 和 PTT 同一条契约（不存在"停顿多久自动发出去"），区别只在手势是
+   *  点一下而不是按住。`manual` 是它的渲染态，ref 是循环里读的那份。 */
+  const manualRef = useRef(false);
+  const [manual, setManual] = useState(false);
   const sentRef = useRef(false);       // a turn is in flight (do not send twice)
   const queueRef = useRef<string[]>([]);
   const queueRunRef = useRef(false);
@@ -505,7 +510,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         const quietFor = Date.now() - voiceAtRef.current;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
-        if (text && !mutedRef.current && !pttRef.current && charCount(text) >= c.minChars
+        // 点按式收音期间一律不自动发（`manualRef`）：这条路径上"说完"是一个动作，不是一次停顿。
+        if (text && !mutedRef.current && !pttRef.current && !manualRef.current && charCount(text) >= c.minChars
           && quietFor > c.silenceMs && !sentRef.current) {
           sentRef.current = true;
           setPhase("thinking");
@@ -768,18 +774,31 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *  turn-lease admission with the refusal notice above (the server refuses the same cancel too, as
    *  a second line of defence). */
   const bargeIn = async (): Promise<void> => {
+    takeFloor();     // 停播 + 取消回合 + 清队列：这一句回答到此为止
+    await backToListening(false);
+  };
+
+  /** 抢过话筒的那三步（停播、取消在跑的回合、清掉没念的队列）——三处入口共用：打断按钮、
+   *  按住说话、点按式收音。抄三份的话，改一处就会漏两处。 */
+  const takeFloor = (): void => {
     cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // this reply is over
     cutAtRef.current = Date.now();
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });
-    await backToListening(false);
+    queueRef.current = [];
+    queuedRef.current = 0;
+    queueRunRef.current = false;
+    sentRef.current = false;
+    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
   };
 
   /** Back to the operator's turn: fresh transcript, mic relaying again. */
   const backToListening = async (interrupted: boolean): Promise<void> => {
     if (!aliveRef.current) return;      // the call is closed: no state, no microphone
     if (interrupted) speaker.stop();
+    manualRef.current = false;          // 轮到别人的时候，点按式收音不该还挂着
+    setManual(false);
     queueRef.current = [];
     queuedRef.current = 0;
     queueRunRef.current = false;
@@ -837,6 +856,13 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   /** The orb is the one control that means "the floor changes hands". */
   const tapOrb = async (): Promise<void> => {
     const p = phaseRef.current;
+    // 按键打断模式：圆球和左键是同一套语义 —— 一次点击开始听（它正在说就先打断），再点一次结束并发出去。
+    // 这里不能走下面的"有文本就发"分支：那种分支只在 voice/keyword 的持续听写下才有意义。
+    if (cfgRef.current.interruptMode === "button") {
+      if (manualRef.current) manualStop();
+      else await manualStart();
+      return;
+    }
     if (p === "listening") {
       const st = dictation.getSnapshot();
       const text = (st.text || st.interim).trim();
@@ -870,16 +896,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     if (pttRef.current || !aliveRef.current) return;
     pttRef.current = true;
     setHolding(true);
-    cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // hold-to-talk takes the floor
-    cutAtRef.current = Date.now();
-    speaker.stop();
-    const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
-    if (running) cockpit.send({ t: "cancel", sessionId });
-    queueRef.current = [];
-    queuedRef.current = 0;
-    queueRunRef.current = false;
-    sentRef.current = false;
-    audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
+    manualRef.current = false;          // 按住说话与点按式收音互斥，谁先按下算谁
+    setManual(false);
+    takeFloor();
     setPhase("listening");
     setReply("");
     setHeard("");
@@ -909,6 +928,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     setPhase("thinking");
     setHeard(text);
     setErr("");
+    manualRef.current = false;     // 这句话已经发出，点按式收音随之结束
+    setManual(false);
     baselineKeyRef.current = rawAgentKeyRef.current;
     dictation.setRelay(false);
     cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
@@ -926,6 +947,47 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       dictation.resetText();
       dictation.setRelay(true);
       setPhase("listening");
+      return;
+    }
+    sendHeard();
+  };
+
+  /** 点按式收音 · 开始：点「开始说话」（或在大模型输出时点「打断」）—— 停播/取消回合，然后开麦，
+   *  文案变「结束」。之后不再有任何自动判断：`manualRef` 让主循环的自动发送分支整段跳过。 */
+  const manualStart = async (): Promise<void> => {
+    if (!aliveRef.current) return;
+    pttRef.current = false;
+    setHolding(false);
+    takeFloor();
+    manualRef.current = true;
+    setManual(true);
+    setPhase("listening");
+    setReply("");
+    setHeard("");
+    setErr("");
+    voiceAtRef.current = Date.now();
+    try {
+      dictation.cancel();          // 上一句的残留文本/连接必须先断，再开新的
+      const ok = await dictation.start(prefs, sessionId);
+      if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
+      dictation.setRelay(true);
+    } catch (e) {
+      manualRef.current = false;
+      setManual(false);
+      setErr(String((e as Error)?.message ?? e));
+      setPhase("error");
+    }
+  };
+
+  /** 点按式收音 · 结束：他说完了，这才是发送动作。一个字都没有 = 取消（同 pttEnd 的空文本分支）。 */
+  const manualStop = (): void => {
+    manualRef.current = false;
+    setManual(false);
+    const st = dictation.getSnapshot();
+    const text = (st.text || st.interim).trim();
+    if (!text) {
+      dictation.cancel();
+      void backToListening(false);
       return;
     }
     sendHeard();
@@ -1293,10 +1355,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         : "点一下直接发送，或说完停一下")
       // 按键模式平时不开麦（#51），提示就得说清楚麦是怎么开的，否则「说点什么…」是句空话。
       : muted ? "麦克风已静音"
-        : cfg.interruptMode === "button" && dictation.getSnapshot().status !== "listening" ? "按住圆球或空格说话" : (kwHint || "说点什么…"))
+        : cfg.interruptMode === "button"
+          ? manual ? "正在听你说，说完点「结束」" : "点「开始说话」，或按住圆球/空格说话"
+          : (kwHint || "说点什么…"))
     : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以"
-      : cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下圆球打断，然后自己说")
-      : phase === "thinking" ? (cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下停止它") : "";
+      : cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断`
+        : "点「打断」就开口，说完再点「结束」")
+      : phase === "thinking" ? (cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断`
+        : cfg.interruptMode === "button" ? "点「打断」就开口，说完再点「结束」" : "点一下停止它") : "";
 
   /** The transcript view's two floor controls.
    *
@@ -1469,9 +1535,31 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
           {/* TWO BUTTONS, not one: 打断 on the left (stop it, the floor is mine) and 按住说话 on the
               right (hold to talk, release to send — my sentence ends when I say it does, not when a
               silence timer guesses). Both are thumb-sized (48px) and both say what they do without
-              an icon to decode. Pressing either one takes the floor from a talking agent. */}
-          <div className={`call-floor-row${canTake ? "" : " single"}`}>
-            {!canTake ? (
+              an icon to decode. Pressing either one takes the floor from a talking agent.
+              按键打断模式下左键常驻、文案随状态走（操作员 2026-10-23：「它输出的时候显示打断，
+              空闲显示开始说话，点完变成结束」）：点一下开始说，说完再点一下才发出去 —— 这条路径上
+              没有任何自动判断，麦克风的开关和这句话的结束都由人两次点击决定。 */}
+          <div className={`call-floor-row${canTake || cfg.interruptMode === "button" ? "" : " single"}`}>
+            {cfg.interruptMode === "button" ? (
+              <>
+                <button
+                  type="button"
+                  className={`call-floor is-take${manual ? " on" : ""}`}
+                  onClick={() => { if (manual) manualStop(); else void manualStart(); }}
+                  title={canTake
+                    ? "停下它，接着说你的"
+                    : manual
+                      ? "说完了，再点一下就发出去"
+                      : "点一下开始说，说完再点一下发送；不会自己发出去"}
+                  aria-label={canTake ? "打断" : manual ? "结束" : "开始说话"}
+                  aria-pressed={manual}
+                >
+                  {canTake ? <IconStop size={17} /> : manual ? <IconSend size={17} /> : <IconMic size={17} />}
+                  <span>{canTake ? "打断" : manual ? "结束" : "开始说话"}</span>
+                </button>
+                {pttButton}
+              </>
+            ) : !canTake ? (
               dictating ? (
                 <button
                   type="button"
