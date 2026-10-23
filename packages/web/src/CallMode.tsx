@@ -30,6 +30,8 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
+import { NomiFace } from "./NomiFace";
+import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, type NomiMood } from "./nomiMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
 import {
@@ -153,10 +155,20 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
 }
 
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
-export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
+export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nomi = false, pending = 0 }: {
   sessionId: string;
   onClose: () => void;
   onKeyboard: () => void;
+  /** 糯米模式（操作者 2026-10-23 口述）：通话按钮**长按**进来的另一种电话页面。
+   *
+   *  它不是第二种通话实现 —— 相位机、看门狗、打断、TTS 队列、转录全部是同一份代码，只有两处不同：
+   *    · 表情区：orb 换成一整块会动的脸（`NomiFace`），竖屏在上、横屏在左；
+   *    · 对话区：始终展开的会话页（`renderTranscript`），字号收小。
+   *  打断方式固定为关键词（不进三态开关，也不改写持久设置 —— 见下面的 `effCfg`）。 */
+  nomi?: boolean;
+  /** 等答复的授权请求条数（`App` 的 `v.perms.length`）。脸靠它切到「asking」：在通话里被一张
+   *  授权卡挡住时，它一个字都不输出，没有这张脸就等于死了。 */
+  pending?: number;
   /** The CHAT PAGE's own transcript renderer, handed down by `App`.
    *
    *  Why a prop and not an import: `App` already imports this file, so importing `Bubble`/`WorkRun`
@@ -218,8 +230,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
    *  back) and fired one PUT per character whose out-of-order replies could roll the text back by a
    *  keystroke. Commit on blur / Enter — that is when the operator has finished a phrase. */
   const [wakeDraft, setWakeDraft] = useState<string | null>(null);
-  const cfgRef = useRef(cfg);
-  cfgRef.current = cfg;
+  /** 糯米模式下**只在这一次通话里**把打断方式当成关键词：不写 localStorage、不写服务端设置，
+   *  退出后原来的三态开关还是原样（操作者要求「不要侵入现在的语音打断和关键词打断」）。 */
+  const effCfg = nomi ? { ...cfg, interruptMode: "keyword" as const } : cfg;
+  const cfgRef = useRef(effCfg);
+  cfgRef.current = effCfg;
   const applyCfg = (patch: Partial<CallSettings>): void => {
     void patchCallSettings(patch).then(setCfgErr);
   };
@@ -607,6 +622,30 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     : "";
   const busy = Boolean(active?.busy);
 
+  // ---- the face (糯米模式) ---------------------------------------------------------------
+  // 三层来源按操作者拍板叠加：相位层（永远在，见 NomiFace 的帧循环）→ 本地派生（无标签时的
+  // 兜底）→ agent 写的 [emo:x] 标签（最高保真）。标签最终由 `stripEmoTags` 从**被念出来的文本**
+  // 里剥掉，所以它只影响表情，不影响你听到的和读到的。
+  /** 工具帧计数：一变，脸就点一下头（"手上有活"）。只数是本轮之后的行。 */
+  const toolTicks = msgs.reduce((n, m) => n + (m.kind === "tool" ? 1 : 0), 0);
+  const newest = msgs.length ? msgs[msgs.length - 1] : undefined;
+  /** 比相位更细的活动：工具在跑 / 在等授权 / 在想。这正是"没有标准输出"的那些分钟。 */
+  const faceActivity = activityOf({
+    busy: busy || phase === "thinking",
+    pending,
+    newestKind: newest?.kind,
+  });
+  const faceEmotion: NomiMood | null = (() => {
+    const tagged = readEmoTags(agentText);
+    if (tagged.length) return tagged[tagged.length - 1];
+    return deriveEmotion(stripEmoTags(agentText));
+  })();
+  /** 每帧向调用方要一次电平：说话时是播放，其余是麦克风。走 ref 不进 state（60 fps）。 */
+  const faceLevel = (): number => {
+    const v = phaseRef.current === "speaking" ? playbackLevel() : dictation.level();
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+  };
+
   /** Warm the clips of the sentences waiting in the queue.
    *  Called when a sentence ARRIVES as well as at the top of every turn: the reply streams in, so
    *  the sentence after the current one usually lands while the current one is already playing —
@@ -654,7 +693,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       queuedRef.current = 0;
       queueRef.current = [];
     }
-    const { done, tail } = splitSentences(agentText);
+    // [emo:x] 是给脸看的，不是给人念的。`splitForSpeech` 不剥方括号，所以必须在**进队列之前**剥。
+    const { done, tail } = splitSentences(stripEmoTags(agentText));
     const fresh = done.slice(queuedRef.current);
     if (fresh.length) {
       queuedRef.current = done.length;
@@ -1455,7 +1495,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   );
 
   return createPortal(
-    <div className="call-mode" data-phase={phase} data-caption={caption} role="dialog" aria-modal="true" aria-label="语音通话">
+    <div className="call-mode" data-phase={phase} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
       <button
         type="button"
         className="call-gear"
@@ -1482,7 +1522,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
 
       {/* The stage header exists only in the stage view: the transcript view's toolbar carries the
           same switch, and drawing both would say the phase twice and cost the record 44px. */}
-      {!caption ? (
+      {!caption && !nomi ? (
         <div className="call-head">
           <span className="call-title">{PHASE_LABEL[phase]}</span>
           <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
@@ -1500,7 +1540,23 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         <canvas ref={canvasRef} className="call-orb-canvas" />
       </button>
 
-      {caption ? (
+      {/* 表情区：竖屏在上、横屏在左（CSS 分区，见 theme.css 里的 data-nomi 段）。它不是装饰——
+          通话里最长的那段时间（跑工具、等你授权）它一个字都不输出，屏幕上唯一的活物就是这张脸。 */}
+      {nomi ? (
+        <div className="call-nomi-face">
+          <NomiFace phase={phase} activity={faceActivity} emotion={faceEmotion} ticks={toolTicks} getLevel={faceLevel} />
+          <div className="nomi-face-foot">
+            <span className="nomi-face-state">{PHASE_LABEL[phase]}</span>
+            {nomi && !cfg.wakePhrase ? (
+              <span className="nomi-face-warn" title="糯米模式固定用关键词打断；没设唤醒词时只有点圆球/按住说话能抢话筒">
+                糯米模式用关键词打断 · 还没设唤醒词
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {caption || nomi ? (
         /* The transcript view: the page is the words. The ball is still there (the canvas is
            untouched, `.call-orb` is just moved behind the frosted panel by CSS), so the phases keep
            their colour and the reply keeps pulsing — it is the LIGHT behind the text, not a

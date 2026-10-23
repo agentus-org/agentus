@@ -3140,3 +3140,87 @@ body.pane-dragging * { cursor: col-resize !important; }
   .new-btn { min-height: 40px; font-size: 14px; }
   .rail-more { min-height: 34px; font-size: 12px; }
 }
+
+/* ---------------------------------------------------------------- 糯米模式（nomi）---
+   One surface, TWO partitions: portrait = the face above, the record below; landscape = the face
+   left, the record right. Why the face gets the larger share: in a real Agentus turn the agent
+   spends most of its time running tools or waiting for an approval, and during those minutes it
+   emits no words at all — the face IS the progress indicator, the chat is the archive.
+
+   Everything about the conversation (phase machine, watchdog, barge, TTS queue, rows) is the same
+   code as the normal call; this block only re-arranges and shrinks. */
+.call-mode[data-nomi="true"] {
+  display: grid;
+  gap: 10px;
+  /* grid, not the flex column above: reset the column's centring or every cell collapses to its
+     content width and the face ends up a small stamp in the middle of the screen */
+  align-items: stretch;
+  justify-items: stretch;
+  padding-top: calc(max(12px, env(safe-area-inset-top)) + 36px);
+}
+/* the orb and its ring/lines belong to the other page: in this one the face is the face */
+.call-mode[data-nomi="true"] .call-orb,
+.call-mode[data-nomi="true"] .call-lines,
+.call-mode[data-nomi="true"] .call-wave,
+.call-mode[data-nomi="true"] .call-hist,
+.call-mode[data-nomi="true"] .call-head { display: none; }
+/* 三态打断开关在这个页面里不出现：糯米模式固定关键词打断（操作者 2026-10-23 拍的），
+   而开关本身属于「另一个页面」的控件 —— 留着它就等于允许在糯米模式里改走语音打断。 */
+.call-mode[data-nomi="true"] .call-modes { display: none; }
+/* the record takes the whole cell it is given instead of its usual 560px column */
+.call-mode[data-nomi="true"] .call-cc { width: 100%; max-width: none; }
+
+.call-nomi-face {
+  position: relative; min-height: 0; min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; align-items: stretch;
+  border: 1px solid rgba(255,255,255,0.10); border-radius: 20px;
+  background:
+    radial-gradient(120% 90% at 50% 40%, color-mix(in srgb, var(--call-tone, #38bdf8) 15%, transparent) 0%, transparent 72%),
+    rgba(8,10,18,0.55);
+  transition: background 500ms ease;
+}
+.nomi-face-canvas { display: block; flex: 1 1 auto; width: 100%; min-height: 0; }
+.nomi-face-foot {
+  position: absolute; left: 12px; right: 12px; bottom: 9px;
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; letter-spacing: 0.02em; pointer-events: none;
+}
+.nomi-face-state { color: var(--call-tone, #38bdf8); font-weight: 600; }
+.nomi-face-warn { color: var(--warn, #d08a2a); }
+
+/* 竖屏：上脸下记录。44% 是量出来的折中 —— 再高，390×844 上的记录区就剩不到 300px，
+   最后一条消息会被挤到折线以下；再低，眼睛就小到看不出表情。 */
+@media (orientation: portrait) {
+  .call-mode[data-nomi="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 44%) minmax(0, 1fr);
+  }
+  .call-mode[data-nomi="true"] .call-nomi-face { grid-row: 1; }
+  .call-mode[data-nomi="true"] .call-cc { grid-row: 2; }
+  /* 字号收小：这是「原件」，不是摘要（同一套行、同一套折叠），只是位置小了。
+     zoom 在布局上真的变小（scrollHeight 跟着变），transform 不会 —— 所以用 zoom。 */
+  .call-mode[data-nomi="true"] .call-cc-inner { zoom: 0.78; }
+  .call-mode[data-nomi="true"] .call-cc-head { padding: 5px 10px; }
+}
+/* 横屏：左脸右记录。手机横屏只有 ~390px 高，所以脸按高度缩放（NomiFace 自己取 min(w,h)）。 */
+@media (orientation: landscape) {
+  .call-mode[data-nomi="true"] {
+    grid-template-columns: minmax(0, 44%) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .call-mode[data-nomi="true"] .call-nomi-face { grid-column: 1; }
+  .call-mode[data-nomi="true"] .call-cc { grid-column: 2; }
+  .call-mode[data-nomi="true"] .call-cc-inner { zoom: 0.86; }
+}
+
+/* 通话按钮的长按进度：480 ms 内一条细线从左长到右，到点就是糯米模式。
+   Why a line and not a ring: a ring needs a conic gradient whose sweep is not animatable without
+   @property, and a line reads as "keep holding" to everyone who has ever held a shutter button. */
+.head-actions .icon-btn.call-entry { position: relative; overflow: hidden; }
+.head-actions .icon-btn.call-entry .press-fill {
+  position: absolute; left: 3px; right: 3px; bottom: 2px; height: 2px; border-radius: 2px;
+  background: currentColor; transform-origin: left center; transform: scaleX(0);
+}
+.head-actions .icon-btn.call-entry.press-armed .press-fill { animation: call-press-fill 480ms linear forwards; }
+@keyframes call-press-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.head-actions .icon-btn.call-entry.press-armed { color: var(--accent); }

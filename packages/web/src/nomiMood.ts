@@ -77,7 +77,9 @@ export const MOODS: NomiMood[] = [
   "working", "asking",
 ];
 
-/** Eye separation per mood (px at scale 1). Focus pulls the eyes together, drowsiness lets them drift. */
+/** The GAP between the two eyes (px at scale 1) — the original's `HStack(spacing:)`, i.e. edge to
+ *  edge, not centre to centre. The renderer adds the eye's own width to get the centre distance;
+ *  reading it as a centre distance is what made the face look cross-eyed at 1.6× scale. */
 export function eyeSpacing(mood: NomiMood): number {
   switch (mood) {
     case "focus":
@@ -245,7 +247,7 @@ export function eyeFrame(o: {
     case "curious": w = r ? 35 : 45; break;
     case "working": w = 46; break;
     case "asking": w = r ? 38 : 50; break;
-    case "focus": w = isListening ? 42 + level * 8 : isThinking ? 46 + Math.min(expr.phaseElapsed, 3) * 2.5 : 32 + expr.attention * 8; break;
+    case "focus": w = isListening ? 40 + level * 8 : isThinking ? 46 + Math.min(expr.phaseElapsed, 3) * 2.5 : 32 + expr.attention * 8; break;
     default: w = 42;
   }
 
@@ -260,7 +262,7 @@ export function eyeFrame(o: {
     case "wink": h = r ? 2 : 40; break;
     case "working": h = 46; break;
     case "asking": h = 68; break;
-    case "focus": h = isListening ? 54 + level * 18 : isThinking ? 44 - Math.min(expr.phaseElapsed, 3) * 3.5 : 78 + expr.attention * 12 + level * 8; break;
+    case "focus": h = isListening ? 74 + level * 16 : isThinking ? 44 - Math.min(expr.phaseElapsed, 3) * 3.5 : 78 + expr.attention * 12 + level * 8; break;
     default: h = 78;
   }
 

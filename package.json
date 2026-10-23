@@ -87,7 +87,8 @@
     "think-cadence": "node scripts/qa/think-cadence.mjs",
     "vad": "tsx scripts/qa/vad.mts",
     "vad-silero": "tsx scripts/qa/vad-silero.mts",
-    "nomi-mood": "tsx scripts/qa/nomi-mood.mts"
+    "nomi-mood": "tsx scripts/qa/nomi-mood.mts",
+    "nomi-mode-sweep": "node scripts/qa/nomi-mode-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"

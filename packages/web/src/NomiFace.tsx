@@ -192,8 +192,9 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       g.scale(dpr, dpr);
       const w = W / dpr, h = H / dpr;
       // 一只眼 ≈ 60 px 宽、间距 60：这个比例尺让「宽度 220、高度 170」的盒子刚好装下两张脸。
-      const k = Math.max(0.55, Math.min(2.4, Math.min(w / 220, h / 170)));
-      const spacing = eyeSpacing(mood) * k;
+      const k = Math.max(0.55, Math.min(2.6, Math.min(w / 190, h / 150)));
+      /** 中心距 = 空隙 + 眼宽（`eyeSpacing` 是 edge-to-edge 的间隙，见 nomiMood）。 */
+      const gap = eyeSpacing(mood) * k;
       const cx = w / 2 + pointer.x * 10 * k;
       const cy = h / 2 + pointer.y * 8 * k;
 
@@ -211,15 +212,18 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       const pulse = pulseAge < 260 ? 1 + 0.045 * (1 - pulseAge / 260) : 1;
 
       for (const eye of [left, right]) {
-        const ex = cx + (eye === right ? 1 : -1) * spacing / 2 + eye.x * k + mx;
+        const cdist = gap + (((left.w + right.w) / 2) * k * left.xScale);
+        const ex = cx + (eye === right ? 1 : -1) * cdist / 2 + eye.x * k + mx;
         const ey = cy + eye.y * k + breathe + my;
         g.save();
         g.translate(ex, ey);
         g.rotate((eye.rot * Math.PI) / 180);
         g.globalAlpha = Math.max(0, Math.min(1, eye.alpha));
         const tone = mood === "error" ? "248,113,113" : mood === "sad" ? "190,190,200" : "255,255,255";
-        g.shadowColor = `rgba(${tone},${Math.min(0.55, 0.18 + st.level * 0.22 + warmth * 0.15)})`;
-        g.shadowBlur = eye.glow * k;
+        g.shadowColor = `rgba(${tone},${Math.min(0.5, 0.16 + st.level * 0.2 + warmth * 0.14)})`;
+        // 光晕不能盖过形状：模糊半径收到眼睛短边的 45% 以内，否则放大之后只剩两团发白的光
+        // （实测：70px 的眼睛配 34px 模糊，读起来是两颗蛋，不是一双眼睛）。
+        g.shadowBlur = Math.min(eye.w * k * 0.45, eye.glow * k);
         g.fillStyle = `rgba(${tone},1)`;
         g.strokeStyle = `rgba(${tone},1)`;
 
@@ -245,10 +249,20 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
           const rad = Math.min(ew, eh) / 2;
           const jx = eye.jitter ? Math.sin(t * 24) * eye.jitter * k : 0;
           const jy = eye.jitter ? Math.cos(t * 19) * eye.jitter * k : 0;
+          // 上亮下略暗的竖向渐变：球形感来自这里（纯平涂的白块没有"眼珠"的立体）。
+          const grad = g.createLinearGradient(0, -eh / 2, 0, eh / 2);
+          grad.addColorStop(0, `rgba(${tone},1)`);
+          grad.addColorStop(1, `rgba(${tone},0.78)`);
+          g.fillStyle = grad;
           g.beginPath();
           if (typeof g.roundRect === "function") g.roundRect(-ew / 2 + jx, -eh / 2 + jy, ew, eh, rad);
           else g.ellipse(0, 0, ew / 2, eh / 2, 0, 0, Math.PI * 2);
           g.fill();
+          // 一圈很淡的边：给形状一个终点，屏幕小的时候尤其重要
+          g.shadowBlur = 0;
+          g.lineWidth = 1;
+          g.strokeStyle = `rgba(${tone},0.5)`;
+          g.stroke();
         }
         g.restore();
       }

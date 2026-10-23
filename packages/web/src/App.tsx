@@ -1274,6 +1274,9 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // like the other head controls) but lives in the composer, so the state sits here:
   // the head opens it, the composer renders it and can hand the keyboard back.
   const [call, setCall] = useState(false);
+  /** 哪一个通话页面：普通（orb）还是糯米（脸 + 会话记录分屏）。入口是通话按钮的**长按**：
+   *  短按仍然是原来那个电话，长按是另一种；两条都是同一次通话生命周期的两种皮肤。 */
+  const [nomi, setNomi] = useState(false);
   // 通话的进入/退出要**立刻**报一次 presence，不能等 30 秒的节拍（issue #48）：服务端就是靠这条
   // presence 判定「在打电话」，晚 30 秒等于通话开头几句仍按文字场景答（表格、代码块被念出来）。
   // 用同一个接口直接报，不把 App 的 reportPresence 再往下传一层。
@@ -1325,13 +1328,13 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         onTogglePanel={() => setPanelOpen((o) => !o)}
         onPickWorkspace={() => setPickWorkspace(true)}
         call={call}
-        onCall={() => { dictation.stop(); setCall(true); }}
+        onCall={(wantNomi) => { dictation.stop(); setNomi(wantNomi); setCall(true); }}
         onPerm={onPermClick}
       />
       <div className="main-body">
         <div className="chat-col">
           <Stream v={active} />
-          <Composer v={active} call={call} onCloseCall={() => setCall(false)} />
+          <Composer v={active} call={call} nomi={nomi} onCloseCall={() => { setCall(false); setNomi(false); }} />
         </div>
         {panelOpen && (
           <ToolPanel
@@ -1414,6 +1417,10 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
   );
 }
 
+/** 长按多久算「进入糯米模式」。480 ms 是「明显比点击长、又不到长按选择文本」的那个区间；
+ *  它有守卫（`scripts/qa/nomi-mode-sweep.mjs`）：短按 300 ms 必须还是原来的电话。 */
+const NOMI_LONG_PRESS_MS = 480;
+
 function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall, onPerm }: {
   v: SessionView;
   onMenu: () => void;
@@ -1421,11 +1428,46 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   onTogglePanel: () => void;
   onPickWorkspace: () => void;
   call: boolean;
-  onCall: () => void;
+  /** `true` = 长按进入糯米模式，`false` = 普通通话。 */
+  onCall: (nomi: boolean) => void;
   onPerm: () => void;
 }): JSX.Element {
   const info = v.info;
   const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
+  // 通话按钮：短按 = 原来的电话，**长按 480ms** = 糯米模式。长按在触摸上会和滚动/长按选择打架，
+  // 所以按住期间只认「没动」：指针移出 8px 就当场取消，宁可什么都没发生，也不能让人按着滚动时
+  // 突然弹出一个全屏页面。
+  const [armed, setArmed] = useState(false);
+  const pressTimer = useRef<number | null>(null);
+  const pressAt = useRef<{ x: number; y: number } | null>(null);
+  const pressFired = useRef(false);
+  const clearPress = (): void => {
+    if (pressTimer.current !== null) { window.clearTimeout(pressTimer.current); pressTimer.current = null; }
+    pressAt.current = null;
+    setArmed(false);
+  };
+  const pressDown = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    pressFired.current = false;
+    pressAt.current = { x: e.clientX, y: e.clientY };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+    setArmed(true);
+    pressTimer.current = window.setTimeout(() => {
+      pressTimer.current = null;
+      pressFired.current = true;
+      setArmed(false);
+      onCall(true);                 // 长按：糯米模式
+    }, NOMI_LONG_PRESS_MS);
+  };
+  const pressUp = (): void => {
+    const wasArmed = pressTimer.current !== null;
+    clearPress();
+    if (wasArmed && !pressFired.current) onCall(false);   // 短按：原来的电话
+  };
+  const pressMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
+    const at = pressAt.current;
+    if (!at) return;
+    if (Math.hypot(e.clientX - at.x, e.clientY - at.y) > 8) clearPress();
+  };
   const [prefs, setPrefs] = useVoicePrefs();
   // capabilities land after boot (loadVoiceCaps) — subscribe, or a browser with no local
   // voice would keep the button disabled after the server answered that it can speak
@@ -1535,12 +1577,21 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
           as separate stops. */}
       <span className="head-actions">
         <button
-          className={`icon-btn ${call ? "on" : ""}`}
-          title="语音通话 —— 像打电话一样跟这个会话说话"
+          className={`icon-btn call-entry ${call ? "on" : ""}${armed ? " press-armed" : ""}`}
+          title="语音通话 —— 像打电话一样跟这个会话说话（长按 = 糯米模式：一张会动的脸 + 会话记录）"
           aria-label="开始语音通话"
-          onClick={onCall}
+          onPointerDown={pressDown}
+          onPointerUp={pressUp}
+          onPointerCancel={clearPress}
+          onPointerLeave={clearPress}
+          onPointerMove={pressMove}
+          onContextMenu={(e) => e.preventDefault()}
+          /* 键盘/读屏没有「长按」：Enter 一律走普通通话（`detail === 0` 是键盘产生的 click）。
+             指针产生的 click 已经由 pointerup 处理过，这里必须让开，否则一次点击开两次。 */
+          onClick={(e) => { if (e.detail === 0) onCall(false); }}
         >
           <IconPhone />
+          <span className="press-fill" aria-hidden="true" />
         </button>
         <span className="speak-wrap" ref={speakRef}>
           <button
@@ -4200,7 +4251,7 @@ function SettingsPopover({ v, prefs, setPrefs, onClose, panelRef }: {
  *  dropping it is AionUi's behaviour too (its store is a plain Map). */
 const draftsBySession = new Map<string, string>();
 
-function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onCloseCall: () => void }): JSX.Element {
+function Composer({ v, call, nomi, onCloseCall }: { v: SessionView; call: boolean; nomi: boolean; onCloseCall: () => void }): JSX.Element {
   const [text, setText] = useState(() => draftsBySession.get(v.info.id) ?? "");
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
@@ -4906,6 +4957,9 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             {call ? (
               <CallMode
                 sessionId={v.info.id}
+                nomi={nomi}
+                /* 等答复的授权条数：脸靠它切到「asking」，通话里被授权卡挡住时这是唯一还活着的信号 */
+                pending={v.perms.length}
                 onClose={onCloseCall}
                 onKeyboard={() => { onCloseCall(); window.setTimeout(() => ta.current?.focus(), 30); }}
                 /* The chat page's OWN rows, handed to the call so its captions view shows the same
