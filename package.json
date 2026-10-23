@@ -86,7 +86,8 @@
     "replay-window": "node scripts/qa/replay-window.mjs",
     "think-cadence": "node scripts/qa/think-cadence.mjs",
     "vad": "tsx scripts/qa/vad.mts",
-    "vad-silero": "tsx scripts/qa/vad-silero.mts"
+    "vad-silero": "tsx scripts/qa/vad-silero.mts",
+    "nomi-mood": "tsx scripts/qa/nomi-mood.mts"
   },
   "engines": {
     "node": ">=22.5"
