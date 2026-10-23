@@ -1387,9 +1387,14 @@ export class SessionManager {
       // The agent has the block (a cancelled turn still received it): NOW the boundary is spent.
       settleVoice();
       this.#finalizePlan(sessionId, terminalState);
+      // Turn END is the second and last ordering event of a turn (issue #50): start moved the session,
+      // this settles it where the conversation now is. Mid-turn rows deliberately do NOT touch — see
+      // #touch.
+      this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
       this.#finalizePlan(sessionId, "failed");
+      this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
@@ -2308,7 +2313,8 @@ export class SessionManager {
           toolCallId: String(u.toolCallId ?? ""), createdAt: Date.now(),
         });
         if (up.isNew) {
-          this.#touch(live, up.message.createdAt);
+          // No clock move (issue #50): a tool call is work inside a turn, not a reason for the session to
+          // jump to the top of the rail. The turn's start and end are the only two moves it gets.
           this.#emit({ t: "message", message: up.message });
         }
         return;
@@ -2403,9 +2409,10 @@ export class SessionManager {
       if (msg.kind === "agent" || msg.kind === "thought") {
         const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind });
         if (r.delta || r.isNew) {
-          // A row that did NOT move is not activity. A re-attach replays blocks we already hold, and
-          // touching the clock for those is what made every resumed session read 「刚刚」 at once.
-          this.#touch(live, r.message.createdAt);
+          // A row that did NOT move is not activity. Neither is one that DID move — a long reply arrives
+          // as dozens of chunks, and touching per chunk re-sorted the rail on every token (issue #50:
+          // three sessions in parallel swapped places continuously). Only the turn's start/end move the
+          // clock; see #touch.
           // One message = one row, so a row that GREW keeps its seq. A client that deduplicated frames
           // by seq therefore dropped every chunk after the first one (measured: a phone bubble showing
           // "不是" with the rest of the reply nowhere, and the next frame landing in an empty bubble).
@@ -2422,7 +2429,7 @@ export class SessionManager {
         return;
       }
       const stored = this.#store.appendMessage(msg);
-      this.#touch(live, stored.createdAt);
+      // Plan/other state rows are mid-turn noise for ordering (issue #50): stored, emitted, no clock move.
       this.#emit({ t: "message", message: stored });
     }
   }
@@ -2831,7 +2838,18 @@ export class SessionManager {
   /** Keep `lastAt` on the session ITSELF, not only on the list projection. A single-session
    *  payload (status change, title update, a rename response) built from `info` used to arrive
    *  without the field, so the client's copy dropped it and that session fell back to creation
-   *  order — the rail stopped moving a session up the moment you talked to it. */
+   *  order — the rail stopped moving a session up the moment you talked to it.
+   *
+   *  WHO may move the clock is the whole of issue #50. The rail sorts on this field, so every writer
+   *  is a potential re-sort the operator sees. Allowed: the operator's own prompt (he said something),
+   *  the END of a turn (the conversation settled somewhere new), and an approval request (the session
+   *  is now blocked on a human — a real state change, and rare). NOT allowed, and this is what used to
+   *  make the rail jitter: every agent text chunk, every tool call, plan/state rows, usage frames.
+   *  A long reply arrives as dozens of chunks; touching per chunk meant three parallel sessions swapped
+   *  places continuously, with rows moving out from under the pointer.
+   *
+   *  A turn therefore moves its session at most twice — start and end — and its position inside the
+   *  turn is frozen, which is what a reader can actually follow. */
   #touch(live: LiveSession, at = Date.now()): void {
     live.info.lastAt = at;
     // …and persist it: `lastAt` on the live object is only the projection the sockets see. The rail
