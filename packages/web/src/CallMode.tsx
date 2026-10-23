@@ -113,6 +113,9 @@ const BOOT_GRACE_MS = 3000;
 /** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
  *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
 const CAPTION_KEY = "agentus.call.caption";
+/** #53：语音打断默认不摆在那一排上。它是最吵、最容易误触的一档，出问题也最难看懂（抢话判定、
+ *  回声、灵敏度都参与）。代码、阈值、判定一条没删 —— 通话设置里那个勾选框把它放回来。 */
+const VOICE_MODE_KEY = "agentus.call.voiceMode";
 
 /** One line of history in the call's window.
  *  Memoised: the reply streams in chunks, the window re-renders on every one of them, and the rows
@@ -198,6 +201,15 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
   });
   const captionRef = useRef(caption);
   captionRef.current = caption;
+  /** 语音打断这一档要不要摆在打电话那一排上（默认不摆，见 VOICE_MODE_KEY）。 */
+  const [voiceMode, setVoiceMode] = useState<boolean>(() => {
+    try { return localStorage.getItem(VOICE_MODE_KEY) === "1"; } catch { return false; }
+  });
+  const toggleVoiceMode = (): void => {
+    const next = !voiceMode;
+    setVoiceMode(next);
+    try { localStorage.setItem(VOICE_MODE_KEY, next ? "1" : "0"); } catch { /* private mode */ }
+  };
   const [ccAtBottom, setCcAtBottom] = useState(true);
   const ccRef = useRef<HTMLDivElement | null>(null);
   const [cfgErr, setCfgErr] = useState("");
@@ -1423,9 +1435,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
      ends stay visible so the current mode is never a guess.
      ONE definition, two homes: the call's header in the stage view, the transcript panel's toolbar
      in the captions view. Neither view is allowed to make it a sheet-only option. */
+  const shownModes = INTERRUPT_MODES.filter((m) => m.id !== "voice" || voiceMode || cfg.interruptMode === "voice");
+
   const modesSwitch = (
     <div className="call-modes" role="group" aria-label="打断方式" data-mode={cfg.interruptMode}>
-      {INTERRUPT_MODES.map((m) => (
+      {shownModes.map((m) => (
         <button
           key={m.id}
           type="button"
@@ -1731,6 +1745,18 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
                   ? "回声消除：已生效（抢话要盖过你听到的那个声音，不会自己打断自己）"
                   : "回声消除：这台设备没报告（浏览器语音路径）——抢话按「比回复更响」判断"}
             </p>
+            {/* 语音打断默认不摆在通话页那一排（#53）。放回来的入口在这里：一个勾选框，状态跟着
+                这台设备的本地偏好走（和字幕开关同一个理由 —— 手机和桌面不需要共享）。 */}
+            <label className="call-check">
+              <input type="checkbox" checked={voiceMode} onChange={toggleVoiceMode} aria-label="在通话页显示语音打断" />
+              <span>
+                <span className="call-check-name">在通话页显示「语音打断」</span>
+                <span className="call-check-hint">
+                  默认收起：它说一句就能打断，外放、嘈杂的房间里也最容易自己打断自己。
+                  勾上之后它回到通话页那一排，阈值和判定跟以前一样。
+                </span>
+              </span>
+            </label>
             {CALL_KNOBS.map((k) => (
               // Which knob is actually read, per mode: 按键打断 reads neither (the mic is closed),
               // 关键词打断 reads the sensitivity (it is the echo floor for `isBargeEvidence`) but not

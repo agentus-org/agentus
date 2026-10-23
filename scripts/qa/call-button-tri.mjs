@@ -183,6 +183,24 @@ try {
   check("both buttons keep their thumb size", f.btns.every((b) => b.w >= 44 && b.h >= 44), JSON.stringify(f.btns.map((b) => [b.w, b.h])));
   await shot("call-button-tri-1-idle");
 
+  // ---- 1b. 语音打断默认收起，设置里勾一下才回到这一排（#53 的另一半） -------------------------
+  const modesRow = () => ev(`(() => { const b = document.querySelector('.call-modes');
+    return b ? [...b.querySelectorAll('.call-mode-btn')].map((x) => x.textContent.trim()) : null; })()`);
+  check("默认收起语音打断：这一排只剩「关键词打断 / 按键打断」",
+    JSON.stringify(await modesRow()) === JSON.stringify(["关键词打断", "按键打断"]), JSON.stringify(await modesRow()));
+  await click(".call-gear");
+  await sleep(500);
+  check("通话设置里有那个勾选框", (await ev(`!!document.querySelector('.call-sheet .call-check input[type=checkbox]')`)) === true);
+  await click(".call-sheet .call-check input[type=checkbox]");
+  await sleep(300);
+  await click(".call-sheet-x");
+  await sleep(400);
+  check("勾上之后「语音打断」回到这一排",
+    JSON.stringify(await modesRow()) === JSON.stringify(["语音打断", "关键词打断", "按键打断"]), JSON.stringify(await modesRow()));
+  check("…并且这个选择存在本机（换一次通话还在）",
+    (await ev(`localStorage.getItem('agentus.call.voiceMode')`)) === "1",
+    String(await ev(`localStorage.getItem('agentus.call.voiceMode')`)));
+
   // ---- 2. 点「开始说话」：真开麦 + 文案变「结束」 -------------------------------------------
   await ev(`window.__asFeed = { level: 0.45, text: '这是我说的一句话', interim: '' }; true`);
   await click(".call-floor-row .call-floor.is-take");

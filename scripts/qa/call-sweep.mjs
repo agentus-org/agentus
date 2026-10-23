@@ -29,7 +29,7 @@ const killGroup = (target) => {
   try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
 };
 
-const CDP = "http://127.0.0.1:9222";
+const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentus/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -793,7 +793,23 @@ try {
     await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click(); true`);
     return await waitPhase2("speaking", 30000);
   };
-  const setMode = (label) => ev2(`[...document.querySelectorAll('.call-mode-btn')].find((b) => b.textContent.trim() === '${label}')?.click(); true`);
+  /** 语音打断现在默认收在设置里（#53），所以「点一下那一排上的语音打断」之前要先把它放出来 ——
+   *  这正是操作员要的路径：不在通话页常驻，要用就去设置里勾。 */
+  const revealVoice = async () => {
+    const present = await ev2(`[...document.querySelectorAll('.call-mode-btn')].some((b) => b.textContent.trim() === '语音打断')`);
+    if (present) return;
+    await openSheet();
+    await sleep(400);
+    await ev2(`(() => { const c = document.querySelector('.call-sheet .call-check input[type=checkbox]');
+      if (!c || c.checked) return false; c.click(); return true; })()`);
+    await sleep(300);
+    await closeSheet();
+    await sleep(400);
+  };
+  const setMode = async (label) => {
+    await revealVoice();
+    return ev2(`[...document.querySelectorAll('.call-mode-btn')].find((b) => b.textContent.trim() === '${label}')?.click(); true`);
+  };
   await api("PUT", "/api/settings", { call: { bargeSensitivity: 100, interruptMode: "voice" } });   // would barge instantly
 
   const modes = await modesOf();
@@ -814,6 +830,10 @@ try {
   check("tapping 按键打断 mid-reply is saved to the server (one tap, no sheet)",
     (await api("GET", "/api/settings")).body?.call?.interruptMode === "button");
   check("the switch reports the mode it is in", (await modesOf()).dataMode === "button");
+  // #53：语音打断不再常驻这一排 —— 切走之后它就收起来，要用的时候在通话设置里勾回来。
+  const afterButton = await modesOf();
+  check("切到按键打断之后，「语音打断」默认从这一排收回（#53）",
+    JSON.stringify(afterButton.labels) === JSON.stringify(["关键词打断", "按键打断"]), JSON.stringify(afterButton.labels));
 
   const cancelsBeforeBtn = await frameCount("cancel");
   await feed(0.35, "");                    // the level that barged a moment ago, at 100 % sensitivity
