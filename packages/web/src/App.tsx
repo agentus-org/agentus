@@ -4446,6 +4446,58 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
     ta.current?.focus();
   }, [dict.status, dict.text, call]);
 
+  // 按住 Ctrl 说话（#51）：手在键盘上时不必去够那个麦克风按钮。按住 Control 停一下就开始听，
+  // 松开照常走上面那条听写 → 输入框的通道落字。中间夹了别的键（Ctrl+C、Ctrl+A……）就不算说话，
+  // 所以起点有 250ms 的门。
+  useEffect(() => {
+    if (call) return;                        // 通话中麦克风归通话
+    let timer: number | null = null;
+    let armed = false;
+    const clear = (): void => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+    const down = (e: KeyboardEvent): void => {
+      if (e.key !== "Control") {
+        if (timer !== null) clear();         // 组合键：这不是按住说话
+        return;
+      }
+      if (e.repeat || timer !== null || armed) return;
+      if (document.activeElement !== ta.current) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        armed = true;
+        dictation.cancel();
+        void dictation.start(prefs, v.info.id);
+      }, 250);
+    };
+    const up = (e: KeyboardEvent): void => {
+      if (e.key !== "Control") return;
+      clear();
+      if (!armed) return;
+      armed = false;
+      if (dictation.owns("chat")) dictation.stop();
+    };
+    const blur = (): void => {
+      clear();
+      if (armed) {
+        armed = false;
+        if (dictation.owns("chat")) dictation.stop();
+      }
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      clear();
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, [call, prefs, v.info.id]);
+
   // Slash palette (AionUi F-DISPLAY-10): the commands are the AGENT's own
   // (available_commands_update over ACP) — we never invent a command list here.
   const slashQuery = /^\/\S*$/.test(text) ? text.slice(1).toLowerCase() : null;
@@ -4841,7 +4893,7 @@ function Composer({ v, call, onCloseCall }: { v: SessionView; call: boolean; onC
             ) : null}
             <button
               className={`icon-btn ${listening ? "on rec" : ""}`}
-              title={dict.error ? dict.error : listening ? "stop dictation" : "dictate a prompt"}
+              title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
               aria-label="dictate"
               onClick={() => {
                 dictation.cancel();
@@ -5267,7 +5319,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                 {/* Dictation: the same control, and it needs no session to record into this box. */}
                 <button
                   className={`icon-btn ${listening ? "on rec" : ""}`}
-                  title={dict.error ? dict.error : listening ? "stop dictation" : "dictate a prompt"}
+                  title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
                   aria-label="dictate"
                   onClick={() => {
                     dictation.cancel();

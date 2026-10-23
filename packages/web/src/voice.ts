@@ -904,6 +904,12 @@ class Dictation {
   #sessionId?: string;
   /** true while the streaming path owns the microphone (set by #startStream, cleared by #closeStream) */
   #streaming = false;
+  /** Capture-start generation (issue #51). A start() call is a chain of awaits — the permission
+   *  prompt alone can sit open for minutes — and the operator may hang up in the middle of it. Every
+   *  start takes a ticket; stop()/cancel() bump the counter, so whichever await resolves afterwards
+   *  can see that nobody wants this microphone any more and hand the device back instead of parking an
+   *  orphan stream on `#mic` (Chromium keeps the tab's recording badge lit for exactly that stream). */
+  #gen = 0;
   /** frames captured while the socket (re)connects — one buffer for the CURRENT socket */
   #pending: ArrayBuffer[] = [];
   #reopen: number | null = null;
@@ -1041,6 +1047,9 @@ class Dictation {
    *  `sessionId` is what lets the recogniser carry this conversation's hotwords. */
   async start(prefs: VoicePrefs, sessionId?: string): Promise<boolean> {
     if (this.#state.status !== "idle" && this.#state.status !== "error") return false;
+    // This start owns the microphone until something newer (a stop, a cancel, another start) takes the
+    // ticket. Every await below is a place the operator can change his mind (#51).
+    const gen = ++this.#gen;
     this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
     this.#committed = "";
     const fed = this.#feed();
@@ -1059,7 +1068,7 @@ class Dictation {
       // the key and the hotword list — the browser engine knows none of that.
       if (want === "stream" || (want === "auto" && streamOk)) {
         if (!streamOk) throw new Error("streaming STT is not configured on the server (settings → 语音)");
-        await this.#startStream(prefs, sessionId);
+        await this.#startStream(prefs, sessionId, gen);
         return true;
       }
       if (useBrowser) {
@@ -1067,7 +1076,7 @@ class Dictation {
         return true;
       }
       if (serverOk) {
-        await this.#startServer(prefs);
+        await this.#startServer(prefs, gen);
         return true;
       }
       this.#set({
@@ -1082,6 +1091,8 @@ class Dictation {
       });
       return false;
     } catch (e) {
+      // An abandoned start (#51) failing on its way out is not an error the operator should see.
+      if (this.#stale(gen)) return false;
       this.#set({ status: "error", error: String((e as Error)?.message ?? e) });
       return false;
     }
@@ -1139,7 +1150,7 @@ class Dictation {
   /** Live streaming recognition through the cockpit's own relay (/ws/asr). Unlike the
    *  browser engine, the same connection carries the operator's hotwords and the model
    *  they configured — and unlike the batch path, words appear as they are spoken. */
-  async #startStream(prefs: VoicePrefs, sessionId?: string): Promise<void> {
+  async #startStream(prefs: VoicePrefs, sessionId: string | undefined, gen: number): Promise<void> {
     const bridge = nativeMicAvailable() ? bridgeMic() : null;
     if (!bridge && typeof navigator.mediaDevices?.getUserMedia !== "function") {
       // No live capture — an insecure origin (plain http on a LAN IP) hides `getUserMedia`.
@@ -1164,8 +1175,16 @@ class Dictation {
     /** One place where a captured frame leaves the page, whichever source produced it — and
      *  whichever socket is current, since a dead one is replaced without touching the source. */
     const send = (frame: ArrayBuffer): void => this.#sendFrame(frame);
-    if (bridge) await this.#startBridgeCapture(bridge, send);
-    else await this.#startWebCapture(Ctor, send);
+    if (bridge) await this.#startBridgeCapture(bridge, send, gen);
+    else await this.#startWebCapture(Ctor, send, gen);
+    // The permission prompt could have been answered long after the operator hung up. Nobody wants this
+    // microphone now: hand it back instead of arming a relay and a timer for a call that is gone (#51).
+    if (this.#stale(gen)) {
+      this.#releaseCapture();
+      this.#closeStream();
+      this.#set({ status: "idle", interim: "", text: "" });
+      return;
+    }
     this.#set({ status: "listening", engine: "stream", seconds: 0 });
     this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
   }
@@ -1246,10 +1265,17 @@ class Dictation {
   }
 
   /** The page's own capture: getUserMedia → graph → 16 kHz mono s16le. */
-  async #startWebCapture(Ctor: typeof AudioContext, send: (frame: ArrayBuffer) => void): Promise<void> {
+  async #startWebCapture(Ctor: typeof AudioContext, send: (frame: ArrayBuffer) => void, gen: number): Promise<void> {
     const mic = await openMic({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
+    // The operator may have hung up while the permission prompt was up. Taking the ticket check BEFORE
+    // `#mic` is assigned is the whole fix for #51's leak A: once this stream is on `#mic` after a
+    // cancel, no stop() will ever look for it again and the tab keeps its recording badge.
+    if (this.#stale(gen)) {
+      for (const t of mic.getTracks()) t.stop();
+      return;
+    }
     this.#mic = mic;
     // 16 kHz mono s16le is what the model takes. Ask the context for 16 kHz (Chromium
     // honours it) and resample when the browser insists on 44.1/48 kHz (Safari).
@@ -1285,7 +1311,7 @@ class Dictation {
    *  Could not start audio source` after 18 granted page requests — while the app's plain
    *  AudioRecord records fine. The bridge hands the page 16 kHz mono s16le frames instead, so the
    *  socket, the level, the relay gate and the transcripts stay exactly as they are. */
-  async #startBridgeCapture(bridge: NativeMicBridge, send: (frame: ArrayBuffer) => void): Promise<void> {
+  async #startBridgeCapture(bridge: NativeMicBridge, send: (frame: ArrayBuffer) => void, gen: number): Promise<void> {
     let status = "permission";
     for (let attempt = 0; attempt < 12; attempt++) {
       status = String(bridge.start(16000));
@@ -1299,6 +1325,16 @@ class Dictation {
       throw new Error(`手机上的原生麦克风打不开（${status}）`);
     }
     if (status !== "ok" && status !== "already") throw new Error(`手机上的原生麦克风打不开（${status}）`);
+    // Same ticket check as the web path (#51): the app's own dialog can be answered after the call is
+    // over, and an AudioRecord left running keeps the device's microphone indicator on.
+    if (this.#stale(gen)) {
+      try {
+        bridge.stop();
+      } catch {
+        /* the app is gone */
+      }
+      return;
+    }
     this.#bridge = bridge;
     (window as unknown as { __asMic?: (b64: string) => void }).__asMic = (b64: string): void => {
       const bin = atob(b64);
@@ -1324,6 +1360,23 @@ class Dictation {
     this.#asked = false;
     this.#tries = 0;
     this.#relayError = "";
+    this.#releaseCapture();
+    if (this.#timer) {
+      window.clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    this.#relay = true;
+  }
+
+  /** Is the start that holds `gen` still the one the operator is waiting for? (#51) */
+  #stale(gen: number): boolean {
+    return gen !== this.#gen;
+  }
+
+  /** Hand the microphone back *now*, and only the microphone: tracks, graph, native recorder.
+   *  `stop()` uses this to split the two halves of a call — the device is finished the moment the
+   *  operator stops talking, while the recogniser still has to finish the last frames (#51). */
+  #releaseCapture(): void {
     if (this.#proc) {
       this.#proc.onaudioprocess = null;
       try {
@@ -1352,14 +1405,9 @@ class Dictation {
       this.#bridge = null;
     }
     (window as unknown as { __asMic?: unknown }).__asMic = undefined;
-    if (this.#timer) {
-      window.clearInterval(this.#timer);
-      this.#timer = null;
-    }
     // the capture graph is gone: a stale level would leave the orb pulsing at nothing
     this.#level = 0;
     this.#wave.fill(0);
-    this.#relay = true;
   }
 
   #finishStream(): void {
@@ -1367,7 +1415,7 @@ class Dictation {
     this.#set({ status: "idle", interim: "" });
   }
 
-  async #startServer(prefs: VoicePrefs): Promise<void> {
+  async #startServer(prefs: VoicePrefs, gen: number): Promise<void> {
     if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
       // Same insecure-origin case as #startStream: the batch path cannot use the app's bridge,
       // so the device's own recorder is the fallback.
@@ -1379,6 +1427,11 @@ class Dictation {
     // the button looked dead for as long as the prompt was up (QA R53).
     this.#set({ status: "requesting", engine: "server", error: "" });
     const stream = await openMic({ audio: true });
+    // Hung up while the prompt was up (#51): give the device straight back.
+    if (this.#stale(gen)) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
     const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
     const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     this.#chunks = [];
@@ -1449,6 +1502,9 @@ class Dictation {
 
   /** Stop and keep what was heard (the composer takes `text`). */
   stop(): void {
+    // Nothing that is still starting is wanted any more (#51): every pending `start()` chain sees this
+    // and hands its microphone back instead of parking it where no stop() would look for it.
+    this.#gen += 1;
     // A pending permission prompt has no recording to stop: cancelling is the only
     // honest outcome, and it drops the state back to idle.
     if (this.#state.status === "requesting") {
@@ -1463,10 +1519,16 @@ class Dictation {
       }
       return;
     }
-    // streaming: ask the recogniser to finalise and wait for its last sentence; the
-    // server closes the socket after asr-done, so nothing to tear down by hand. `#asked`
-    // makes that end OUR doing, so the relay does not try to replace the socket.
+    // streaming: the MICROPHONE is finished the moment the operator says stop — release it here, not in
+    // #closeStream, which only runs once the recogniser sends back its last sentence. Before this split
+    // the device stayed open for the whole finalisation (and forever when the asr-done never arrived),
+    // so the tab kept its recording badge lit after the call was over (#51 leak B).
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+      this.#releaseCapture();
+      if (this.#timer) {
+        window.clearInterval(this.#timer);
+        this.#timer = null;
+      }
       this.#asked = true;
       this.#set({ status: "transcribing" });
       try {
@@ -1492,6 +1554,7 @@ class Dictation {
 
   /** Throw the recording away. */
   cancel(): void {
+    this.#gen += 1;   // a start still waiting on its permission prompt must not arm afterwards (#51)
     if (this.#rec) {
       try {
         this.#rec.abort();

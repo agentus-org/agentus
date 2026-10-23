@@ -344,18 +344,24 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
         const lastAgent = [...(live?.msgs ?? [])].reverse().find((m) => m.kind === "agent");
         baselineKeyRef.current = (lastAgent as { key?: string } | undefined)?.key ?? "";
         dictation.stop();
-        const ok = await dictation.start(prefs, sessionId);
-        if (dead) return;
-        if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
-        setPhase("listening");
-        // The speech detector: Silero in the page, on this microphone's own 16 kHz frames. Lazy and
-        // non-blocking — the call is already listening above, and every path below falls back to the
-        // measured-floor gate (`vadStep`) while the model is loading or if it never loads at all.
-        void silero.load("/vad/silero_vad.onnx").then((ok) => {
-          if (dead || !ok) return;
-          silero.reset();
-          dictation.setVadTap((s) => silero.push(s));
-        });
+        // 按键模式 (#51)：接了电话先不开麦 —— 麦克风在他按住圆球时才打开，页面顶上的录音指示才不会
+        // 从接通那一刻一直亮到挂断。VAD 也是听帧的，没有麦克风就没有可喂的帧，一起跳过。
+        if (cfgRef.current.interruptMode !== "button") {
+          const ok = await dictation.start(prefs, sessionId);
+          if (dead) return;
+          if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
+          setPhase("listening");
+          // The speech detector: Silero in the page, on this microphone's own 16 kHz frames. Lazy and
+          // non-blocking — the call is already listening above, and every path below falls back to the
+          // measured-floor gate (`vadStep`) while the model is loading or if it never loads at all.
+          void silero.load("/vad/silero_vad.onnx").then((ok) => {
+            if (dead || !ok) return;
+            silero.reset();
+            dictation.setVadTap((s) => silero.push(s));
+          });
+        } else {
+          setPhase("listening");
+        }
       } catch (e) {
         if (dead) return;
         setErr(String((e as Error)?.message ?? e));
@@ -783,6 +789,13 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     setReply("");
     setHeard("");
     voiceAtRef.current = Date.now();
+    // 按键模式：回答结束「轮到你了」，但轮到你还不需要开麦 —— 他想说话时会按住圆球。以前这里无条件
+    // 续上听写，于是每轮结束都自己把麦克风打开，页面顶上的录音指示一直亮着，他也分不清到底在不在听
+    // （#51）。听写保持关闭，`pttStart` 会自己打开。
+    if (cfgRef.current.interruptMode === "button") {
+      dictation.setRelay(false);
+      return;
+    }
     try {
       const st = dictation.getSnapshot();
       if (st.status === "idle" || st.status === "error" || st.status === "transcribing") {
@@ -917,6 +930,52 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     }
     sendHeard();
   };
+
+  // ---- 空格：按住说话，轻点打断 ----------------------------------------------------------
+  // 手放在键盘上的时候，圆球离手指很远。按住空格是打电话的人最熟的手势，而「轻点一下」在通话里
+  // 只有一个意思：轮到我说了 / 你别说了。两个动作占用同一个键，用按住时长区分（<150ms = 轻点）。
+  // 正在往输入框里打字时不管 —— 那里空格就是个空格（#51）。
+  const spaceRef = useRef<{ at: number } | null>(null);
+  const keyActsRef = useRef({ pttStart, pttEnd, backToListening });
+  keyActsRef.current = { pttStart, pttEnd, backToListening };
+  useEffect(() => {
+    const typing = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el || !el.tagName) return false;
+      return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
+    };
+    const down = (e: KeyboardEvent): void => {
+      if (e.code !== "Space" || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!aliveRef.current || typing(e.target)) return;
+      e.preventDefault();            // 空格默认会滚动页面 / 按到当前聚焦的按钮
+      if (spaceRef.current) return;
+      spaceRef.current = { at: Date.now() };
+      void keyActsRef.current.pttStart();
+    };
+    const up = (e: KeyboardEvent): void => {
+      if (e.code !== "Space" || !spaceRef.current) return;
+      const held = Date.now() - spaceRef.current.at;
+      spaceRef.current = null;
+      e.preventDefault();
+      if (held < 150) {
+        // 刚按下就松开 = 没说任何话。打断这件事 pttStart 已经做了（停播 + 取消回合），所以这里**不再**
+        // 走 tapOrb：在已经空闲的会话上再发一次 cancel 会留下一个待生效的硬打断，下一个回合会死在
+        // turn-lease 准入上（见文件顶部那条注释）。只把「轮到你说」摆回来。
+        pttRef.current = false;
+        setHolding(false);
+        dictation.cancel();
+        void keyActsRef.current.backToListening(false);
+        return;
+      }
+      keyActsRef.current.pttEnd();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
 
   // ---- the animation -------------------------------------------------------------------
   useEffect(() => {
@@ -1232,7 +1291,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       ? (heardCount < cfg.minChars
         ? `太短了（少于 ${cfg.minChars} 字，不会自动发送）——继续说，或点一下圆球直接发送`
         : "点一下直接发送，或说完停一下")
-      : muted ? "麦克风已静音" : (kwHint || "说点什么…"))
+      // 按键模式平时不开麦（#51），提示就得说清楚麦是怎么开的，否则「说点什么…」是句空话。
+      : muted ? "麦克风已静音"
+        : cfg.interruptMode === "button" && dictation.getSnapshot().status !== "listening" ? "按住圆球或空格说话" : (kwHint || "说点什么…"))
     : phase === "speaking" ? (cfg.interruptMode === "voice" ? "说一句就能打断它，点圆球也可以"
       : cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下圆球打断，然后自己说")
       : phase === "thinking" ? (cfg.interruptMode === "keyword" ? `${kwHint} · 说唤醒词打断` : "点一下停止它") : "";
