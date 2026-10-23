@@ -931,7 +931,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     manualRef.current = false;     // 这句话已经发出，点按式收音随之结束
     setManual(false);
     baselineKeyRef.current = rawAgentKeyRef.current;
-    dictation.setRelay(false);
+    // 麦克风归还：按键模式没有"连续听"这回事，这句话交出去之后采集图就该断（#53 的遗留半口子）。
+    // 只有 `setRelay(false)` 是不够的 —— 它关的只是转写 socket，采集图是特意留着喂 levels/barge-in 的，
+    // 于是麦克风一直开着，Chromium 的录音灯在 agent 回答的整段时间里都亮着，直到下一轮结束才被顺手关掉。
+    // voice/keyword 模式必须留着采集图：它们的打断靠电平与 VAD，不是靠人点。
+    if (cfgRef.current.interruptMode === "button") dictation.cancel();
+    else dictation.setRelay(false);
     cockpit.send({ t: "prompt", sessionId, text, interrupt: true });
     dictation.resetText();     // same reason as the other two send paths
   };
@@ -943,8 +948,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
     const st = dictation.getSnapshot();
     const text = (st.text || st.interim).trim();
     if (!text) {
-      // Nothing was said: hand the floor back to the automatic path rather than leaving a dead mic.
+      // Nothing was said: hand the floor back rather than leaving a dead mic. In button mode there is
+      // no continuous listening to hand it back TO — the mic goes away with the attempt.
       dictation.resetText();
+      if (cfgRef.current.interruptMode === "button") {
+        dictation.cancel();
+        void backToListening(false);
+        return;
+      }
       dictation.setRelay(true);
       setPhase("listening");
       return;
@@ -1010,6 +1021,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript }: {
       if (e.code !== "Space" || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
       if (!aliveRef.current || typing(e.target)) return;
       e.preventDefault();            // 空格默认会滚动页面 / 按到当前聚焦的按钮
+      // 点按式收音进行中，空格完全不参与：否则误触一下，keydown 会走 pttStart（清掉 manual、抢话筒），
+      // keyup 的轻点分支再 cancel + backToListening —— 半句话就没了。这条路径的两个动作都在左键上。
+      if (cfgRef.current.interruptMode === "button" && manualRef.current) return;
       if (spaceRef.current) return;
       spaceRef.current = { at: Date.now() };
       void keyActsRef.current.pttStart();

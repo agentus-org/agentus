@@ -197,6 +197,18 @@ try {
   check("…and the hint, when it is on screen, is the one for this state",
     f.hint === null || /结束/.test(f.hint), String(f.hint));
 
+  // ---- 2b. 点按收音进行中误触空格（review 第 2 条：半句话消失的竞态） ------------------------
+  // 旧代码：keydown 走 pttStart（清掉 manual、抢话筒），keyup 的 <150ms 分支再 cancel + 回到 listening，
+  // 这一轮就没了。现在按键模式在 manual 进行中完全不看空格。
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " });
+  await sleep(60);
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+  await sleep(400);
+  f = await ev(FLOOR);
+  check("点按收音时误触空格：这一轮还在（仍是「结束」，还在听）",
+    f.btns[0]?.text === "结束" && f.phase === "listening", JSON.stringify({ t: f.btns[0]?.text, p: f.phase }));
+  check("…也没有把半句话发出去", !/这是我说的一句话/.test(await transcript(SID)));
+
   // ---- 3. 停顿不自动发：等够 silenceMs 的 2 倍，线路上仍然没有这条消息 -------------------------
   const before = await transcript(SID);
   await sleep(3600);                                     // silenceMs 默认 1500

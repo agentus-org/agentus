@@ -189,5 +189,29 @@ dictation.cancel();
 check("取消后回到 idle 且没有多开的麦克风", st().status === "idle" && tracks.every((t) => t.stopped >= 1),
   `status=${st().status} stops=${tracks.map((t) => t.stopped).join(",")}`);
 
+// ---- D: 发送 ≠ 归还（#53 留下的半口子） ------------------------------------------------------
+// 报上来的形状：点「结束」把句子发出去之后，采集图并没有关 —— sendHeard() 只调 setRelay(false)，
+// 而那个方法只关转写 socket（它本来就是特意留着采集图喂 levels/barge-in 的）。于是 agent 回答的
+// 整段时间里麦克风还开着，Chromium 的录音灯一直亮着。这段直接量「设备还回去没有」。
+console.log("\nD · 句子发出去之后，设备还回去了吗");
+await dictation.start(prefs, SID);
+await sleep(30);
+const micD = tracks.at(-1)!;
+const wsD = (globalThis as unknown as { __sockets: FakeWs[] }).__sockets.at(-1)!;
+wsD?.onmessage?.({ data: JSON.stringify({ t: "asr-final", text: "这是我说的一句话" }) } as { data: string });
+await sleep(10);
+check("识别器给了文本，采集图和 socket 都还在",
+  st().status === "listening" && micD.stopped === 0 && wsD.readyState === FakeWs.OPEN,
+  `${st().status} stopped=${micD.stopped}`);
+// v0.12.2 的 sendHeard() 对采集做的**全部**动作
+dictation.setRelay(false);
+check("setRelay(false) 不归还设备 —— 录音灯继续亮（这就是报上来的缺陷）", micD.stopped === 0,
+  `stopped=${micD.stopped}`);
+check("…但它确实关掉了转写 socket", wsD.readyState === FakeWs.CLOSED, String(wsD.readyState));
+// 修法的形状：按键模式发送之后直接 cancel（voice/keyword 仍走 setRelay(false)）
+dictation.cancel();
+check("cancel() 当场把设备还回去", micD.stopped === 1, `stopped=${micD.stopped}`);
+check("…并且回到 idle（不会再自己回到 listening）", st().status === "idle", st().status);
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}  ${pass} passed / ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
