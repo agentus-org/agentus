@@ -147,3 +147,13 @@ curl -s -H "Authorization: Bearer $(cat "${AGENTUS_DATA:-$HOME/.agentus}/auth.to
 Result for `hello`: **3804 rows → 70** (10 agent messages, 15 thought blocks, 37 tool cards, 8 prompts),
 `hasOlder=false`, both markdown tables reported complete (the 2623-character reply holds its 8-row table
 in one block), and one duplicate left — the 12-character re-send described above.
+
+## Splitting rows an older build glued together
+
+A re-walk cannot undo a merge: the second half's row is gone, so there is nothing to fold back out.
+`scripts/repair-glued-rows.py <db> <older-backup.bak>` finds the pairs that can be **proved** glued —
+both halves must appear, in that order, as message texts in an older copy of the same database, and
+both must be ≤24 characters — and prints them; `--apply` rewrites them. It is a dry run unless you
+pass `--apply`, and it puts the second half 5 s after the first so the corrected rule never joins
+them again.
+
