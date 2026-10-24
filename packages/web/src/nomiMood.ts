@@ -31,6 +31,19 @@ export type NomiMood =
 /** 现在这一轮里，agent 到底在干什么（比通话相位更细）。 */
 export type AgentActivity = "none" | "thinking" | "tools" | "asking";
 
+/** 工具执行中的可观测子状态。
+ *
+ * WHY: `AgentActivity = "tools"` 只够说「它在干活」，而读文件、跑命令、写文件在屏幕上
+ * 都是同一种半阖眼 —— 一轮跑五个工具时脸几乎不动。子状态全部从**已有的行**推出来
+ * （`title` / `kind2` / `status` / `pending`），没有新增任何不可观测的来源：
+ *   · `pending > 0`            → awaiting（等授权：请求还挂在服务端）
+ *   · 最新一行是工具           → 按工具名/kind 分 reading / running / writing
+ *   · 工具 status 终态         → done / failed
+ * 其余时刻是 idle（想事情/说话不在这套子状态里，由 mood 负责）。 */
+export type ToolSubstate = "idle" | "reading" | "running" | "writing" | "awaiting" | "done" | "failed";
+
+export const TOOL_SUBSTATES: ToolSubstate[] = ["idle", "reading", "running", "writing", "awaiting", "done", "failed"];
+
 
 /** What the face is DOING (as opposed to how it feels). */
 export type ExprMode = "idle" | "listening" | "thinking" | "speaking";
@@ -190,13 +203,15 @@ export function moodFor(o: {
   const { phase, activity = "none", emotion, life, resting, drowsy } = o;
   if (phase === "error") return "error";
   if (phase === "connecting") return "loading";
+  // 等你点授权 > 一切，**包括"还在念上一句"**：授权一挂起，这一轮就停在这里了，
+  // 耳机里剩下的只是已经排队的旧句子。这时脸上还写着 talking，读起来是"它没在等我"，
+  // 而操作者正盯着一个必须由他回答的弹窗。工具/授权状态比相位更接近事实。
+  if (activity === "asking") return "asking";
   if (phase === "speaking") {
     // The words decide HOW it speaks; the phase decides THAT it speaks. An unknown/neutral tag
     // leaves the plain talking face, which is also the fallback when the model writes no tag.
     return emotion && emotion !== "idle" ? emotion : "talking";
   }
-  // 等你点授权 > 一切：它此刻**就是在等你**，这时候还眯着眼"思考"或者睡着都是谎话。
-  if (activity === "asking") return "asking";
   // 工具执行中 > 听/想：一轮里跑三个工具时，相位一直是 thinking，可它并不是在想，是在干活。
   if (activity === "tools") return "working";
   // 听 ≠ 想（实测读法）：两者都回到同一张「眯着眼」的脸，通话里最常出现的两种状态就长得
@@ -232,19 +247,22 @@ export function eyeFrame(o: {
   level: number;
   expr: ExprState;
   sleep?: number;
+  /** 工具执行的子状态：眼形/视线在 working 的静止脸上再分一层。 */
+  substate?: ToolSubstate;
 }): EyeFrame {
   const { mood, right, blinking, t, expr } = o;
+  const substate = o.substate ?? "idle";
   const level = clamp01(o.level);
   const sleep = clamp01(o.sleep ?? 0);
   const { right: r } = { right };
 
   // --- shape ------------------------------------------------------------------------------
   if (mood === "error") {
-    return { shape: "x", w: 45, h: 45, yScale: 1, xScale: 1, rot: 0, x: 0, y: 0, alpha: 0.86, glow: 10, jitter: 6 };
+    return substateEye({ shape: "x", w: 45, h: 45, yScale: 1, xScale: 1, rot: 0, x: 0, y: 0, alpha: 0.86, glow: 10, jitter: 6 }, substate, right, t);
   }
   if (mood === "happy" || mood === "sad") {
     // Arcs, not capsules: joy curves up out of the eye, sadness curves down.
-    return {
+    return substateEye({
       shape: "arc",
       w: 45,
       h: 30,
@@ -257,7 +275,7 @@ export function eyeFrame(o: {
       glow: 9 + level * 12 + expr.warmth * 5,
       jitter: 0,
       arc: mood,
-    };
+    }, substate, right, t);
   }
 
   // --- geometry ---------------------------------------------------------------------------
@@ -347,7 +365,7 @@ export function eyeFrame(o: {
   // A blink is a squash of the SAME shape, so the expression never changes identity mid-blink.
   if (blinking && !BLINK_BLOCKED.includes(mood)) yScale = Math.min(yScale, 0.01);
 
-  return {
+  return substateEye({
     shape: "capsule",
     w,
     h,
@@ -359,7 +377,42 @@ export function eyeFrame(o: {
     alpha: clamp01(alpha),
     glow: 9 + level * 12 + expr.warmth * 5,
     jitter: mood === "strive" ? 0.8 : 0,
-  };
+  }, substate, right, t);
+}
+
+/**
+ * 子状态的眼形。和 `substateBall` 分工：这里管"在看什么/怎么用力"，
+ * 球体姿态管"身体朝向"。六个状态两两之间至少有一个通道不同（单测钉住）：
+ *   · reading — 眼稍微收窄、往下偏、带一点扫视；
+ *   · running — 更窄更扁，带一条更快的小抖动（在跑命令的节奏）；
+ *   · writing — 两只眼不对称地往一处收（盯着下笔的那一点）；
+ *   · awaiting — 恢复竖长、更亮（看着你等一个答复）；
+ *   · done — 眼睛往上提、变矮（松一口气）；
+ *   · failed — 往下掉、倾斜、变暗（没做成）。
+ */
+function substateEye(e: EyeFrame, sub: ToolSubstate, right: boolean, t: number): EyeFrame {
+  switch (sub) {
+    case "reading":
+      return { ...e, w: e.w * 0.9, h: e.h * 0.82, rot: e.rot + 3, y: e.y + 2 };
+    case "running":
+      return {
+        ...e, w: e.w * 1.06, h: e.h * 0.74, yScale: e.yScale * 0.82,
+        jitter: Math.max(e.jitter, 1.1), y: e.y + Math.sin(t * 5.5) * 1.2,
+      };
+    case "writing":
+      return { ...e, w: e.w * (right ? 0.76 : 0.88), h: e.h * 0.9, rot: e.rot + (right ? 4 : 1), y: e.y + 3 };
+    case "awaiting":
+      return { ...e, w: e.w * 0.94, h: e.h * 1.08, alpha: Math.min(1, e.alpha + 0.06), glow: e.glow + 3, rot: e.rot * 0.3 };
+    case "done":
+      return { ...e, w: e.w * 0.92, h: e.h * 0.72, y: e.y - 5, rot: e.rot * 0.4, alpha: Math.min(1, e.alpha + 0.04) };
+    case "failed":
+      return {
+        ...e, w: e.w * 0.96, h: e.h * 0.8, y: e.y + 5, rot: e.rot + (right ? 5 : -5),
+        alpha: e.alpha * 0.88, glow: e.glow * 0.8,
+      };
+    default:
+      return e;
+  }
 }
 
 // --------------------------------------------------------- 「它在干活」的三个状态
@@ -383,6 +436,41 @@ export function activityOf(o: {
   if (!o.busy) return "none";
   if (o.newestKind === "tool") return "tools";
   return "thinking";
+}
+
+/** 工具名/kind 的三类分法。先看 ACP 的 `kind`，再退回标题里的动词 ——
+ *  真实后端两类都出现过（Hermes 给 kind=read/edit/execute 也把动词写进标题）。 */
+function toolClassOf(title = "", kind = ""): "reading" | "running" | "writing" {
+  const k = kind.toLowerCase();
+  if (k === "edit" || k === "write" || k === "patch" || k === "create") return "writing";
+  if (k === "read" || k === "search" || k === "fetch") return "reading";
+  if (k === "execute" || k === "run" || k === "command" || k === "terminal") return "running";
+  const t = title.toLowerCase();
+  // 顺序有讲究：`write` 先于 `read`（"Write file" 里没有 read，但反过来的标题不少），
+  // 而 `run` 最后 —— "read and run" 读的是文件，不是命令。
+  if (/\b(write|edit|patch|apply_patch|multi_edit|create|mkdir|delete|move|rename)\b|写入|编辑|修改/.test(t)) return "writing";
+  if (/\b(read|cat|head|tail|view|open|glob|grep|search|find|list|ls|tree)\b|读取|查看|搜索/.test(t)) return "reading";
+  return "running";
+}
+
+/**
+ * 工具执行的可观测子状态。判据全部来自行本身；`pending > 0`（授权请求还在）优先于
+ * 一切 —— 此刻它不是在读也不是在写，是在等你。
+ */
+export function substateOf(o: {
+  busy: boolean;
+  pending: number;
+  newestKind?: string;
+  newestToolStatus?: string;
+  newestToolTitle?: string;
+  newestToolKind?: string;
+}): ToolSubstate {
+  if (o.pending > 0) return "awaiting";
+  if (!o.busy || o.newestKind !== "tool") return "idle";
+  const s = String(o.newestToolStatus ?? "").toLowerCase();
+  if (s === "failed" || s === "error" || s === "cancelled") return "failed";
+  if (s === "completed" || s === "success") return "done";
+  return toolClassOf(o.newestToolTitle, o.newestToolKind);
 }
 
 // --------------------------------------------------------------- the life beat
@@ -582,7 +670,15 @@ export interface BallFrame {
 }
 
 /** 每个 mood 的球体形状。数值是"安静可读"的区间：挤压超过 10% 会读成弹跳的果冻，不是呼吸。 */
-export function ballFrame(mood: NomiMood, o: { level?: number; breath?: number; sleep?: number } = {}): BallFrame {
+export function ballFrame(
+  mood: NomiMood,
+  o: { level?: number; breath?: number; sleep?: number; substate?: ToolSubstate } = {},
+): BallFrame {
+  const rest = ballMoodFrame(mood, o);
+  return substateBall(rest, o.substate ?? "idle");
+}
+
+function ballMoodFrame(mood: NomiMood, o: { level?: number; breath?: number; sleep?: number }): BallFrame {
   const level = clamp01(o.level ?? 0);
   const breath = o.breath ?? 0;
   const sleeping = mood === "sleep";
@@ -626,6 +722,344 @@ export function ballFrame(mood: NomiMood, o: { level?: number; breath?: number; 
 }
 
 /**
+ * 子状态在静止姿态上叠的一层小位移。
+ *
+ * 同一张 `working` 脸，读文件/跑命令/写文件的身体必须不一样：眼睛形状（`substateEye`）
+ * 管"在看什么"，球体姿态管"身体朝向" —— 两层加起来，六个子状态才各自读得出来。
+ * 数值故意小（±4 px / ±9°）：工具还在跑，这不是换一张脸，是换个姿势。
+ */
+export function substateBall(f: BallFrame, sub: ToolSubstate): BallFrame {
+  switch (sub) {
+    case "reading":  return { ...f, r: f.r - 1, rot: f.rot - 4, dy: f.dy + 2 };
+    case "running":  return { ...f, r: f.r - 2, sx: f.sx * 0.98, sy: f.sy * 0.96, rot: f.rot + 2, dy: f.dy + 3 };
+    case "writing":  return { ...f, r: f.r - 2, sx: f.sx * 1.02, sy: f.sy * 0.95, rot: f.rot + 9, dy: f.dy + 4 };
+    case "awaiting": return { ...f, r: f.r + 3, sy: f.sy * 1.02, dy: f.dy - 2, rot: f.rot * 0.4 };
+    case "done":     return { ...f, r: f.r + 4, sy: f.sy * 1.05, dy: f.dy - 5, rot: f.rot - 3 };
+    case "failed":   return { ...f, r: f.r - 4, sy: f.sy * 0.94, dy: f.dy + 5, rot: f.rot + 3 };
+    default:         return f;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Clip 编排：切脸不再"一步弹到目标值"，而是先播一段 1.4–6 s 的短动作。
+//
+// WHY: 一个 mood 只有一个静止姿态时，脸在第一帧就到终点，之后只剩呼吸 —— 读起来是"一张图
+// 在晃"。人做表情不是这样：听到你开口会先抬一下、说完话会往下沉一下再回位。所以把
+// `ballFrame` 的静止目标升级成**关键帧 clip**：2–4 帧、每段自己的时长和 easing，播完回到
+// 当前 mood 的静止姿态。clip 是纯数据（下面的 CLIPS 就是全部），采样器只做插值 ——
+// 想加一个新动作是加一行数据，不是再加一个 if/else。
+//
+// 时钟：`clipFrameAt(clip, elapsedMs)` 的 elapsed 由调用方传（NomiFace 用 rAF 的时刻）。
+// 这里**不读 Date.now()/performance.now()**，所以同一组输入在单测里永远得到同一帧。
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type ClipName =
+  | "listen-in"    // 听开始：抬一下，看着你
+  | "say-in"       // 张嘴说话：吸气 → 吐出来
+  | "think-turn"   // 思考转段：眯一下，换个角度
+  | "tool-start"   // 工具开工：收一下再压进活里
+  | "tool-done"    // 工具完成：向上轻弹
+  | "error-frown"  // 错误/皱眉：缩一下，左右抖
+  | "ask-hold"     // 等你授权：前倾歪头（我们自己的）
+  | "blink-pop"    // 眨眼：身体跟着眨一下（我们自己的）
+  | "tool-fail"    // 工具失败：往下一沉再收住（我们自己的）
+  | "wake";        // 从犯困/睡着回神：伸个懒腰（我们自己的）
+
+export type ClipEase = "linear" | "in" | "out" | "inOut";
+
+/** 一帧相对静止姿态的倍数。r/sx/sy 以 1 为静止；dy/rot 以 0 为静止、
+ *  单位是 `CLIP_DY_UNIT` px / `CLIP_ROT_UNIT` 度。 */
+export interface ClipFrame {
+  r: number;
+  sx: number;
+  sy: number;
+  dy: number;
+  rot: number;
+}
+
+export interface NomiClip {
+  /** 2–4 帧；第一帧和最后一帧都是静止姿态（clip 以"回归"收尾）。 */
+  frames: ClipFrame[];
+  /** 帧与帧之间的时长，长度 = frames.length - 1。 */
+  ms: number[];
+  ease: ClipEase[];
+}
+
+export const CLIP_DY_UNIT = 6;      // px（呼吸是 ±6，过冲 1.4 ≈ 8.4 px）
+export const CLIP_ROT_UNIT = 9;     // 度（歪头 1.4 ≈ 12.6°，再大读成摔倒）
+export const CLIP_MIN_MS = 1400;
+export const CLIP_MAX_MS = 6000;
+
+/**
+ * 过冲带：1.36–1.50。
+ *
+ * WHY A BAND, NOT "whatever looks good": 过冲是这段动作里唯一会被读成"有重量"的东西，
+ * 但它只在一个很窄的窗口里成立 ——
+ *   · < 1.36：和 easing 的减速尾巴分不开，观众只会觉得"停得有点软"，不会觉得"弹了"；
+ *   · > 1.50：球开始读成果冻/散架，尤其 sy（压扁轴）上 1.5 已经是 45° 的椭圆。
+ * 所以 `normalizeClip` 在模块加载时把每条 clip 的**最大振幅**归一化到这条带里：
+ * 超过 1.50 的整条按比例压回来，低于 1.36 的按比例放大 —— 作者只关心"哪里弹"，
+ * 不关心"弹多少"，数值永远不会跑出这条带。
+ */
+export const OVERSHOOT = { min: 1.36, max: 1.5 } as const;
+
+const REST_FRAME: ClipFrame = { r: 1, sx: 1, sy: 1, dy: 0, rot: 0 };
+
+/** 作者写的数据。归一化发生在 `CLIPS` 的构造处，见 `normalizeClip`。 */
+const RAW_CLIPS: Record<ClipName, NomiClip> = {
+  // 听开始（1.40 s）：先抬一下（dy 1.42 的过冲），再落回来。眼形由 curious 负责。
+  "listen-in": {
+    frames: [
+      REST_FRAME,
+      { r: 1.02, sx: 1.03, sy: 1.06, dy: -1.42, rot: -0.6 },
+      { r: 1.01, sx: 0.99, sy: 1.02, dy: 0.8, rot: 0.35 },
+      REST_FRAME,
+    ],
+    ms: [180, 260, 960],
+    ease: ["out", "inOut", "out"],
+  },
+  // 张嘴说话（1.50 s）：吸气缩小 → 吐气涨开 → 回位。
+  "say-in": {
+    frames: [
+      REST_FRAME,
+      { r: 1.05, sx: 1.05, sy: 0.93, dy: -1.1, rot: 0.2 },
+      { r: 1.06, sx: 0.98, sy: 1.08, dy: 1.4, rot: -0.3 },
+      REST_FRAME,
+    ],
+    ms: [120, 220, 1160],
+    ease: ["in", "out", "inOut"],
+  },
+  // 思考转段（2.00 s）：往一侧眯一下，再回来换个角度 —— 配合 thinkingStage 的三个台阶。
+  "think-turn": {
+    frames: [
+      REST_FRAME,
+      { r: 0.99, sx: 1.06, sy: 0.92, dy: 0.7, rot: -1.36 },
+      { r: 1.01, sx: 0.98, sy: 1.03, dy: -0.9, rot: 0.5 },
+      REST_FRAME,
+    ],
+    ms: [200, 700, 1100],
+    ease: ["out", "inOut", "out"],
+  },
+  // 工具开工（1.80 s）：先收一下蓄力，再压进活里（向上弹一下）。
+  "tool-start": {
+    frames: [
+      REST_FRAME,
+      { r: 0.98, sx: 1.12, sy: 0.86, dy: 1.2, rot: 0.3 },
+      { r: 1.02, sx: 0.96, sy: 1.06, dy: -1.42, rot: -0.6 },
+      REST_FRAME,
+    ],
+    ms: [150, 250, 1400],
+    ease: ["in", "out", "inOut"],
+  },
+  // 工具完成（2.00 s）：往上一提，落回来时还有一下回弹。
+  "tool-done": {
+    frames: [
+      REST_FRAME,
+      { r: 1.04, sx: 1.0, sy: 1.08, dy: -1.45, rot: -1.1 },
+      { r: 1.01, sx: 1.03, sy: 0.96, dy: 1.36, rot: 0.5 },
+      REST_FRAME,
+    ],
+    ms: [220, 380, 1400],
+    ease: ["out", "in", "out"],
+  },
+  // 错误/皱眉（1.90 s）：缩一下，左右抖两下。
+  "error-frown": {
+    frames: [
+      REST_FRAME,
+      { r: 0.95, sx: 1.06, sy: 0.92, dy: 1.3, rot: -1.45 },
+      { r: 0.98, sx: 1.02, sy: 0.96, dy: 0.7, rot: 1.36 },
+      REST_FRAME,
+    ],
+    ms: [180, 520, 1200],
+    ease: ["out", "inOut", "out"],
+  },
+  // 等你授权（3.06 s）：前倾、歪头，停住 —— 它会一直保持到请求被答复。
+  "ask-hold": {
+    frames: [
+      REST_FRAME,
+      { r: 1.02, sx: 0.99, sy: 1.02, dy: -0.7, rot: 1.36 },
+      { r: 1.01, sx: 1.02, sy: 1.0, dy: 0.5, rot: 1.1 },
+      REST_FRAME,
+    ],
+    ms: [260, 1200, 1600],
+    ease: ["out", "inOut", "inOut"],
+  },
+  // 眨眼（1.40 s）：眼睛自己闭，球只跟着轻轻点一下。
+  "blink-pop": {
+    frames: [
+      REST_FRAME,
+      { r: 0.99, sx: 1.01, sy: 0.97, dy: 1.4, rot: 0 },
+      REST_FRAME,
+    ],
+    ms: [180, 1220],
+    ease: ["out", "out"],
+  },
+  // 工具失败（1.94 s）：被结果打了一下，先沉再稳住（比 error 轻，不是那张 X 脸）。
+  "tool-fail": {
+    frames: [
+      REST_FRAME,
+      { r: 0.94, sx: 1.08, sy: 0.9, dy: 1.45, rot: -0.8 },
+      { r: 0.97, sx: 0.98, sy: 0.96, dy: 0.4, rot: 0.7 },
+      REST_FRAME,
+    ],
+    ms: [160, 380, 1400],
+    ease: ["out", "inOut", "out"],
+  },
+  // 回神（2.60 s）：从犯困/睡着里伸个懒腰再坐正。
+  "wake": {
+    frames: [
+      REST_FRAME,
+      { r: 1.05, sx: 0.97, sy: 1.06, dy: -1.45, rot: 0.4 },
+      { r: 1.0, sx: 1.02, sy: 0.98, dy: 0.6, rot: -0.2 },
+      REST_FRAME,
+    ],
+    ms: [200, 600, 1800],
+    ease: ["out", "inOut", "out"],
+  },
+};
+
+/** 一帧里最大的"离开静止"的幅度。scale 通道看 |v-1|，dy/rot 看绝对值。 */
+export function clipPeak(c: NomiClip): number {
+  let peak = 0;
+  for (const f of c.frames) {
+    peak = Math.max(peak, Math.abs(f.r - 1), Math.abs(f.sx - 1), Math.abs(f.sy - 1), Math.abs(f.dy), Math.abs(f.rot));
+  }
+  return peak;
+}
+
+/** 把整条 clip 等比缩放进过冲带（见 OVERSHOOT 的注释）。 */
+export function normalizeClip(c: NomiClip): NomiClip {
+  const peak = clipPeak(c);
+  if (!(peak > 0)) return c;
+  const k = peak > OVERSHOOT.max ? OVERSHOOT.max / peak
+    : peak < OVERSHOOT.min ? OVERSHOOT.min / peak : 1;
+  if (k === 1) return c;
+  return {
+    ...c,
+    frames: c.frames.map((f) => ({
+      r: 1 + (f.r - 1) * k, sx: 1 + (f.sx - 1) * k, sy: 1 + (f.sy - 1) * k,
+      dy: f.dy * k, rot: f.rot * k,
+    })),
+  };
+}
+
+export const CLIPS: Record<ClipName, NomiClip> = Object.fromEntries(
+  (Object.keys(RAW_CLIPS) as ClipName[]).map((n) => [n, normalizeClip(RAW_CLIPS[n])]),
+) as Record<ClipName, NomiClip>;
+
+export const CLIP_NAMES = Object.keys(CLIPS) as ClipName[];
+
+/**
+ * 同一帧里两条 clip 同时被触发时谁说话。两个来源（工具行状态、mood）描述的是同一瞬间，
+ * 而"结果"比"过渡"更值得被看见：工具完成/失败、报错、等授权不能被 say-in/tool-start 盖掉；
+ * 眨眼最轻，永远让路。同优先级时后到的赢（例如 working 与 tick 都指向 tool-start）。
+ */
+export const CLIP_PRIORITY: Record<ClipName, number> = {
+  "blink-pop": 0,
+  "tool-start": 1,
+  "listen-in": 2,
+  "say-in": 2,
+  "think-turn": 2,
+  wake: 2,
+  "ask-hold": 3,
+  "tool-done": 4,
+  "tool-fail": 4,
+  "error-frown": 4,
+};
+
+export function clipDurationMs(c: NomiClip): number {
+  return c.ms.reduce((a, b) => a + b, 0);
+}
+
+const EASES: Record<ClipEase, (t: number) => number> = {
+  linear: (t) => t,
+  in: (t) => t * t * t,
+  out: (t) => 1 - Math.pow(1 - t, 3),
+  inOut: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+};
+
+/** 采样安全网：归一化后的数据本身在带里，这里只防手改/浮点越界。 */
+function clampFrame(f: ClipFrame): ClipFrame {
+  const sc = (v: number): number => Math.min(OVERSHOOT.max, Math.max(1 / OVERSHOOT.max, v));
+  const am = (v: number): number => Math.min(OVERSHOOT.max, Math.max(-OVERSHOOT.max, v));
+  return { r: sc(f.r), sx: sc(f.sx), sy: sc(f.sy), dy: am(f.dy), rot: am(f.rot) };
+}
+
+/**
+ * 在 `elapsedMs` 时刻的那一帧（相对静止姿态）。播完返回 null —— 调用方据此回到静止姿态。
+ * 纯函数：同一 (clip, elapsedMs) 永远同一帧，单测里可以逐帧钉住。
+ */
+export function clipFrameAt(c: NomiClip, elapsedMs: number): ClipFrame | null {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
+  let left = elapsedMs;
+  for (let i = 0; i < c.ms.length; i++) {
+    const d = c.ms[i];
+    if (left <= d) {
+      const u = d > 0 ? left / d : 1;
+      const e = EASES[c.ease[i] ?? "linear"](u);
+      const a = c.frames[i], b = c.frames[i + 1] ?? a;
+      return clampFrame({
+        r: a.r + (b.r - a.r) * e,
+        sx: a.sx + (b.sx - a.sx) * e,
+        sy: a.sy + (b.sy - a.sy) * e,
+        dy: a.dy + (b.dy - a.dy) * e,
+        rot: a.rot + (b.rot - a.rot) * e,
+      });
+    }
+    left -= d;
+  }
+  return null;
+}
+
+/** 把 clip 的一帧叠到静止姿态上。dy/rot 是加在静止值上的（呼吸/低头的基准还在）。 */
+export function applyClip(rest: BallFrame, f: ClipFrame): BallFrame {
+  return {
+    r: rest.r * f.r,
+    sx: rest.sx * f.sx,
+    sy: rest.sy * f.sy,
+    dy: rest.dy + f.dy * CLIP_DY_UNIT,
+    rot: rest.rot + f.rot * CLIP_ROT_UNIT,
+  };
+}
+
+export type FaceEvent =
+  | { kind: "mood"; from: NomiMood; to: NomiMood }
+  | { kind: "tool"; status: "start" | "done" | "failed" }
+  | { kind: "think"; stage: 0 | 1 | 2 }
+  | { kind: "blink" };
+
+/**
+ * 事件 → clip。只有**值得动手**的切换才返回名字；其余返回 null（保持静止姿态）。
+ * 听/想的临时小动作（lookLeft/lookRight/wink/scan）不触发 listen-in —— 否则每次
+ * 扫一眼回来都会重播一遍"我听见了"，5 秒一次的大动作会显得很躁。
+ */
+export function clipFor(ev: FaceEvent): ClipName | null {
+  switch (ev.kind) {
+    case "tool":
+      return ev.status === "start" ? "tool-start" : ev.status === "done" ? "tool-done" : "tool-fail";
+    case "blink":
+      return "blink-pop";
+    case "think":
+      return ev.stage === 0 ? null : "think-turn";
+    case "mood": {
+      const { from, to } = ev;
+      if (to === "error") return "error-frown";
+      if (to === "asking") return "ask-hold";
+      if (to === "working") return "tool-start";
+      if (to === "talking") return "say-in";
+      if (to === "focus") return "think-turn";
+      if (to === "curious") {
+        return from === "lookLeft" || from === "lookRight" || from === "wink" || from === "scan"
+          ? null : "listen-in";
+      }
+      if ((to === "idle" || to === "happy") && (from === "sleep" || from === "drowsy")) return "wake";
+      return null;
+    }
+  }
+}
+
+
+/**
  * 弹簧积分（半隐式欧拉，固定 dt）。**这是"弹一下再停"和"线性过去"的分界**，也是原引擎最核心的
  * 一条：菜单级 ease 在任何时长下都是单调的，而弹簧会过冲、回弹、稳住 —— 人眼读前者为"过渡"，
  * 读后者为"有重量"。
@@ -656,7 +1090,7 @@ export function blinkScale(blinking: boolean): number {
 export const SPHERE = { maxX: 14, maxY: 18, sep: 21 } as const;
 
 /** 视点角度（度）。指针、情绪、思考都会把眼睛往某个方向拽。 */
-export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number }): { ax: number; ay: number } {
+export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
   const px = Math.max(-1, Math.min(1, o.pointerX ?? 0));
   const py = Math.max(-1, Math.min(1, o.pointerY ?? 0));
   const el = o.elapsed ?? 0;
@@ -685,6 +1119,17 @@ export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: nu
     case "scan": bx = Math.sin(el * 2.2) * 0.9; break;
     case "curious":
       bx = 0.35; by = -0.2; break;
+    default: break;
+  }
+  // 工具子状态把视线再分一层：读文件往左下扫、写文件往右下盯、完成往上、失败往下。
+  // 只加在基础方向上，指针仍然有权重（见下），所以手一动眼睛还是会跟着你。
+  switch (o.substate ?? "idle") {
+    case "reading": bx -= 0.35; by += 0.55; break;
+    case "running": bx += 0.05; by += 0.75; break;
+    case "writing": bx += 0.4; by += 0.75; break;
+    case "awaiting": bx *= 0.3; by = 0.15; break;
+    case "done": bx += 0.1; by -= 0.5; break;
+    case "failed": bx *= 0.6; by += 0.65; break;
     default: break;
   }
   // 指针是"它看着你"的输入，权重比情绪高：手一动眼睛就跟着，这条最容易让人觉得"活的"。

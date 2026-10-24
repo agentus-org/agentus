@@ -31,7 +31,7 @@ import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playb
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import { NomiFace } from "./NomiFace";
-import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, type NomiMood } from "./nomiMood";
+import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, type NomiMood, type ToolSubstate } from "./nomiMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
 import {
@@ -629,11 +629,31 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   /** 工具帧计数：一变，脸就点一下头（"手上有活"）。只数是本轮之后的行。 */
   const toolTicks = msgs.reduce((n, m) => n + (m.kind === "tool" ? 1 : 0), 0);
   const newest = msgs.length ? msgs[msgs.length - 1] : undefined;
+  /** 最后一个工具行（哪怕后面已经跟了文本）：它 status 的终态变化是"完成/失败"的唯一事件源。 */
+  const lastTool = ((): Extract<MsgView, { kind: "tool" }> | undefined => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.kind === "tool") return m;
+    }
+    return undefined;
+  })();
   /** 比相位更细的活动：工具在跑 / 在等授权 / 在想。这正是"没有标准输出"的那些分钟。 */
   const faceActivity = activityOf({
     busy: busy || phase === "thinking",
     pending,
     newestKind: newest?.kind,
+  });
+  /** 工具子状态：读/跑/写/等/完成/失败。判据全部是行上已有的字段（title/kind2/status/pending），
+   *  没有新增不可观测的来源。只有"最新一行是工具"时才成立 —— 后面已经出了文本，说明工具循环
+   *  走完了，脸该回到想/说，而不是一直停在"完成"上。 */
+  const newestTool = newest?.kind === "tool" ? newest : undefined;
+  const faceSubstate: ToolSubstate = substateOf({
+    busy: busy || phase === "thinking",
+    pending,
+    newestKind: newest?.kind,
+    newestToolStatus: newestTool?.status,
+    newestToolTitle: newestTool?.title,
+    newestToolKind: newestTool?.kind2,
   });
   /** 脸此刻到底是哪一张（解析后的 mood）。只作为**观测钩子**：canvas 像素能证明在动，
    *  证明不了动的是哪张脸 —— sweep 和操作者都需要一个能读的答案。mood 变了才 setState，
@@ -1499,7 +1519,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   );
 
   return createPortal(
-    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-face={nomi ? faceMood ?? undefined : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
+    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-face={nomi ? faceMood ?? undefined : undefined} data-substate={nomi ? faceSubstate : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
       <button
         type="button"
         className="call-gear"
@@ -1547,8 +1567,17 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
       {/* 表情区：竖屏在上、横屏在左（CSS 分区，见 theme.css 里的 data-nomi 段）。它不是装饰——
           通话里最长的那段时间（跑工具、等你授权）它一个字都不输出，屏幕上唯一的活物就是这张脸。 */}
       {nomi ? (
-        <div className="call-nomi-face">
-          <NomiFace phase={phase} activity={faceActivity} emotion={faceEmotion} ticks={toolTicks} getLevel={faceLevel} onMood={setFaceMood} />
+        <div className="call-nomi-face" data-substate={faceSubstate}>
+          <NomiFace
+            phase={phase}
+            activity={faceActivity}
+            substate={faceSubstate}
+            emotion={faceEmotion}
+            ticks={toolTicks}
+            toolStatus={lastTool?.status ?? ""}
+            getLevel={faceLevel}
+            onMood={setFaceMood}
+          />
           <div className="nomi-face-foot">
             <span className="nomi-face-state">{PHASE_LABEL[phase]}</span>
             {nomi && !cfg.wakePhrase ? (

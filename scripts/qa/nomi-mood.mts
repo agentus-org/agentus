@@ -8,11 +8,14 @@
 //
 // Run: npx tsx scripts/qa/nomi-mood.mts
 import {
-  BLINK_BLOCKED, EMO_MOODS, IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, WARMTH_MS,
-  WORK_FLICK_MS, activityOf, blinkHoldMs, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
+  BLINK_BLOCKED, CLIP_DY_UNIT, CLIP_MAX_MS, CLIP_MIN_MS, CLIP_NAMES, CLIP_PRIORITY, CLIP_ROT_UNIT, CLIPS, EMO_MOODS,
+  IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, OVERSHOOT, TOOL_SUBSTATES, WARMTH_MS,
+  WORK_FLICK_MS, activityOf, applyClip, ballFrame, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt,
+  clipPeak, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame,
+  eyeSpacing, gazeAngles, lifeBeat, moodFor, nextBlinkMs, normalizeClip, substateOf,
   smoothLevel, voiceCue, nextSaccadeMs, saccadeFor,
   readEmoTags, stripEmoTags, thinkingStage,
-  type NomiMood,
+  type ClipName, type NomiMood, type ToolSubstate,
 } from "../../packages/web/src/nomiMood.ts";
 
 let pass = 0, fail = 0;
@@ -166,6 +169,8 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     moodFor({ phase: "thinking", activity: "tools" }) === "working");
   check("等授权 = asking，压过 listening（它此刻就是在等你，不是在听你）",
     moodFor({ phase: "listening", activity: "asking" }) === "asking");
+  check("等授权也压过 speaking（旧句子还在念，脸也必须说在等你）",
+    moodFor({ phase: "speaking", activity: "asking", emotion: "happy" }) === "asking");
   check("授权优先于工具（同屏两件事时先喊你看这张卡）",
     activityOf({ busy: true, pending: 1, newestKind: "tool" }) === "asking");
   check("没忙的时候什么都没有", activityOf({ busy: false, pending: 0, newestKind: "tool" }) === "none");
@@ -235,6 +240,151 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("20 秒没动就换个姿势", workBeat({ activity: "tools", sinceEvent: 30_000, sinceAction: WORK_FLICK_MS, rand: () => 0.1 }) === "flick");
   check("45 秒以上变成抬头伸展", workBeat({ activity: "thinking", sinceEvent: 50_000, sinceAction: 50_000 }) === "stretch");
   check("伸展也有下限间隔（45 秒内不重复）", workBeat({ activity: "tools", sinceEvent: 60_000, sinceAction: 10_000, rand: () => 0.1 }) === null);
+}
+
+// 12. Clip 编排：切脸先播一段关键帧动作，播完回归静止姿态。
+{
+  const required: ClipName[] = ["listen-in", "say-in", "think-turn", "tool-start", "tool-done", "error-frown"];
+  check("clip 覆盖六种必需事件，另有自定的四条",
+    required.every((n) => CLIP_NAMES.includes(n)) && CLIP_NAMES.length >= required.length + 2,
+    CLIP_NAMES.join(","));
+
+  const bad: string[] = [];
+  let shapeOk = true, durOk = true, restOk = true, easeOk = true;
+  for (const n of CLIP_NAMES) {
+    const c = CLIPS[n];
+    const shape = c.frames.length >= 2 && c.frames.length <= 4
+      && c.ms.length === c.frames.length - 1 && c.ease.length === c.ms.length;
+    if (!shape) { shapeOk = false; bad.push(`${n}:shape`); }
+    const d = clipDurationMs(c);
+    if (d < CLIP_MIN_MS || d > CLIP_MAX_MS) { durOk = false; bad.push(`${n}:${d}ms`); }
+    const first = c.frames[0], last = c.frames[c.frames.length - 1];
+    const rest = (f: typeof first): boolean =>
+      f.r === 1 && f.sx === 1 && f.sy === 1 && f.dy === 0 && f.rot === 0;
+    if (!rest(first) || !rest(last)) { restOk = false; bad.push(`${n}:rest`); }
+    if (!c.ease.every((e) => e === "linear" || e === "in" || e === "out" || e === "inOut")) {
+      easeOk = false; bad.push(`${n}:ease`);
+    }
+  }
+  check("每条 clip：2–4 帧、帧/段/缓动一一对应", shapeOk, bad.join(" "));
+  check("每条 clip 时长 1.4–6 s", durOk, bad.join(" "));
+  check("每条 clip 以静止姿态开场并回归静止姿态", restOk, bad.join(" "));
+  check("缓动只用白名单里的四种", easeOk, bad.join(" "));
+  check("每条 clip 的峰值都落在 1.36–1.50 的过冲带里",
+    CLIP_NAMES.every((n) => clipPeak(CLIPS[n]) >= OVERSHOOT.min - 1e-9 && clipPeak(CLIPS[n]) <= OVERSHOOT.max + 1e-9),
+    CLIP_NAMES.map((n) => `${n}:${clipPeak(CLIPS[n]).toFixed(2)}`).join(" "));
+
+  // 归一化不是摆设：一条 3.0 倍的"手滑"数据必须被压回 1.50。
+  const wild = normalizeClip({
+    frames: [
+      { r: 1, sx: 1, sy: 1, dy: 0, rot: 0 },
+      { r: 1, sx: 1, sy: 1, dy: 0, rot: 3 },
+      { r: 1, sx: 1, sy: 1, dy: 0, rot: 0 },
+    ],
+    ms: [100, 100], ease: ["out", "out"],
+  });
+  check("normalizeClip 把 3.0 倍过冲压回 1.50", Math.abs(clipPeak(wild) - OVERSHOOT.max) < 1e-9, String(clipPeak(wild)));
+
+  const c = CLIPS["listen-in"];
+  const at0 = clipFrameAt(c, 0);
+  check("t=0 采样到静止姿态", !!at0 && at0.r === 1 && at0.dy === 0 && at0.rot === 0);
+  check("播完后采样返回 null（调用方据此回静止）", clipFrameAt(c, clipDurationMs(c) + 1) === null);
+  check("同一时刻采样两次结果相同（时钟由外部传入）",
+    JSON.stringify(clipFrameAt(c, 640)) === JSON.stringify(clipFrameAt(c, 640)));
+  check("中段真的离开了静止姿态", (() => {
+    const f = clipFrameAt(c, 260);
+    return !!f && (Math.abs(f.dy) > 0.5 || f.sy !== 1 || f.r !== 1);
+  })());
+  check("每条 clip 的峰值帧都不是静止姿态",
+    CLIP_NAMES.every((n) => {
+      const cc = CLIPS[n];
+      const peakAt = cc.ms[0] + 1;
+      const f = clipFrameAt(cc, peakAt);
+      return !!f && (f.r !== 1 || f.sx !== 1 || f.sy !== 1 || f.dy !== 0 || f.rot !== 0);
+    }));
+
+  const rest = ballFrame("working");
+  const moved = applyClip(rest, { r: 1.4, sx: 0.8, sy: 0.7, dy: 1.5, rot: -1.5 });
+  check("applyClip 把倍率叠到静止球上（dy/rot 用 px/度单位）",
+    Math.abs(moved.r - rest.r * 1.4) < 1e-9 && Math.abs(moved.sy - rest.sy * 0.7) < 1e-9
+    && Math.abs(moved.dy - (rest.dy + 1.5 * CLIP_DY_UNIT)) < 1e-9
+    && Math.abs(moved.rot - (rest.rot - 1.5 * CLIP_ROT_UNIT)) < 1e-9);
+
+  check("听开始 → listen-in，扫视回来不重播",
+    clipFor({ kind: "mood", from: "idle", to: "curious" }) === "listen-in"
+    && clipFor({ kind: "mood", from: "lookLeft", to: "curious" }) === null);
+  check("说话 → say-in，思考 → think-turn",
+    clipFor({ kind: "mood", from: "focus", to: "talking" }) === "say-in"
+    && clipFor({ kind: "mood", from: "curious", to: "focus" }) === "think-turn");
+  check("思考台阶 2/3 各换一次姿势，第一台阶不播",
+    clipFor({ kind: "think", stage: 0 }) === null
+    && clipFor({ kind: "think", stage: 1 }) === "think-turn"
+    && clipFor({ kind: "think", stage: 2 }) === "think-turn");
+  check("工具开始/完成/失败各有一条 clip",
+    clipFor({ kind: "tool", status: "start" }) === "tool-start"
+    && clipFor({ kind: "tool", status: "done" }) === "tool-done"
+    && clipFor({ kind: "tool", status: "failed" }) === "tool-fail");
+  check("错误/等授权/眨眼/回神都接上了",
+    clipFor({ kind: "mood", from: "focus", to: "error" }) === "error-frown"
+    && clipFor({ kind: "mood", from: "curious", to: "asking" }) === "ask-hold"
+    && clipFor({ kind: "blink" }) === "blink-pop"
+    && clipFor({ kind: "mood", from: "sleep", to: "idle" }) === "wake");
+  check("每条 clip 都有同帧优先级，且至少分四档",
+    CLIP_NAMES.every((n) => Number.isFinite(CLIP_PRIORITY[n]))
+    && new Set(CLIP_NAMES.map((n) => CLIP_PRIORITY[n])).size >= 4);
+  check("同一帧冲突：结果/等授权压过过渡，眨眼最轻",
+    CLIP_PRIORITY["tool-done"] > CLIP_PRIORITY["say-in"]
+    && CLIP_PRIORITY["tool-fail"] > CLIP_PRIORITY["tool-start"]
+    && CLIP_PRIORITY["ask-hold"] > CLIP_PRIORITY["tool-start"]
+    && CLIP_PRIORITY["blink-pop"] < CLIP_PRIORITY["tool-start"]);
+}
+
+// 13. 工具子状态：全部从行上已有的字段推出来，且每种在脸上可辨识。
+{
+  const tool = { busy: true, pending: 0, newestKind: "tool" };
+  check("等授权压过一切（授权请求还在）",
+    substateOf({ ...tool, pending: 1, newestToolStatus: "in_progress", newestToolTitle: "Read file: a.ts", newestToolKind: "read" }) === "awaiting");
+  check("读文件：title/kind 都认",
+    substateOf({ ...tool, newestToolStatus: "in_progress", newestToolTitle: "Read file: a.ts", newestToolKind: "read" }) === "reading"
+    && substateOf({ ...tool, newestToolStatus: "running", newestToolTitle: "grep -n TODO src/" }) === "reading");
+  check("跑命令：bash/execute",
+    substateOf({ ...tool, newestToolStatus: "in_progress", newestToolTitle: "bash: run the suite", newestToolKind: "execute" }) === "running");
+  check("写文件：Write/Edit/patch",
+    substateOf({ ...tool, newestToolStatus: "pending", newestToolTitle: "Write file: ./demo.txt", newestToolKind: "edit" }) === "writing"
+    && substateOf({ ...tool, newestToolStatus: "running", newestToolTitle: "Edit file: a.ts" }) === "writing");
+  check("成功完成 / 失败",
+    substateOf({ ...tool, newestToolStatus: "completed", newestToolTitle: "bash: run" }) === "done"
+    && substateOf({ ...tool, newestToolStatus: "failed", newestToolTitle: "bash: run" }) === "failed");
+  check("最新一行不是工具 / 没在忙 = idle（想事情交给 mood）",
+    substateOf({ busy: true, pending: 0, newestKind: "thought" }) === "idle"
+    && substateOf({ busy: false, pending: 0, newestKind: "tool", newestToolStatus: "completed" }) === "idle");
+
+  const sig = (sub: ToolSubstate): string => {
+    const b = ballFrame("working", { substate: sub });
+    const e = eyeFrame({
+      mood: "working", right: false, blinking: false, t: 0, level: 0.3,
+      expr: expr("thinking", 0.3, 2), substate: sub,
+    });
+    const g = gazeAngles({ mood: "working", substate: sub });
+    return [b.r, b.sx, b.sy, b.dy, b.rot, e.w, e.h, e.yScale, e.rot, e.y, e.alpha, e.glow, e.jitter, g.ax, g.ay]
+      .map((v) => v.toFixed(3)).join("|");
+  };
+  const sigs = new Set(TOOL_SUBSTATES.map(sig));
+  check("七个工具子状态在脸上两两可辨（球体姿态或眼形不同）",
+    sigs.size === TOOL_SUBSTATES.length, `${sigs.size}/${TOOL_SUBSTATES.length}`);
+
+  const eyeOf = (sub: ToolSubstate) => eyeFrame({
+    mood: "working", right: false, blinking: false, t: 0, level: 0.3,
+    expr: expr("thinking", 0.3, 2), substate: sub,
+  });
+  const ballOf = (sub: ToolSubstate) => ballFrame("working", { substate: sub });
+  check("awaiting 比 running 睁得更开、更亮",
+    eyeOf("awaiting").yScale > eyeOf("running").yScale && eyeOf("awaiting").alpha > eyeOf("running").alpha);
+  check("done 往上看，failed 往下看",
+    eyeOf("done").y < eyeOf("failed").y);
+  check("writing 的头歪得比 reading 多", Math.abs(ballOf("writing").rot) > Math.abs(ballOf("reading").rot),
+    `${ballOf("writing").rot} vs ${ballOf("reading").rot}`);
+  check("failed 比 done 缩得更小", ballOf("failed").r < ballOf("done").r);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -13,20 +13,25 @@
 import { useEffect, useRef } from "react";
 import type { CallPhase } from "./CallMode";
 import {
-  BLINK_BLOCKED, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS, WARMTH_MS, WORK_FLICK_MS,
-  WORK_STRETCH_MS, blinkHoldMs, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
-  nextSaccadeMs, saccadeFor, smoothLevel, voiceCue, ballFrame, springStep, gazeAngles, projectEye,
-  type AgentActivity, type MicroAction, type NomiMood,
+  BLINK_BLOCKED, CLIP_PRIORITY, CLIPS, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS, WARMTH_MS, WORK_FLICK_MS,
+  WORK_STRETCH_MS, applyClip, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt, exprFor, eyeFrame,
+  eyeSpacing, lifeBeat, moodFor, nextBlinkMs, nextSaccadeMs, saccadeFor, smoothLevel, thinkingStage,
+  voiceCue, ballFrame, springStep, gazeAngles, projectEye,
+  type AgentActivity, type ClipName, type MicroAction, type NomiMood, type ToolSubstate,
 } from "./nomiMood";
 
 export interface NomiFaceProps {
   phase: CallPhase;
   /** 这一轮 agent 在干嘛（工具 / 等授权 / 想）—— 比相位更细，见 `activityOf`。 */
   activity: AgentActivity;
+  /** 工具执行的可观测子状态（读/跑/写/等/完成/失败）—— 五官在 working 脸上再分一层。 */
+  substate?: ToolSubstate;
   /** 这一句的情绪（标签优先、本地派生兜底），null = 没有。 */
   emotion?: NomiMood | null;
-  /** 单调递增的工具帧计数：一变就点一下头（"手上有活"）。 */
+  /** 单调递增的工具帧计数：一变就点一下头（"手上有活"）并播 tool-start。 */
   ticks?: number;
+  /** 最后一个工具行的 status：终态变化时播 tool-done / tool-fail。 */
+  toolStatus?: string;
   /** 实时电平 0..1（说话时是播放，听的时候是麦克风）。每帧取一次，不进 state。 */
   getLevel: () => number;
   /** 解析后的那张脸（不是相位）。给页面留一个可观测钩子：canvas 像素只能证明「在动」。 */
@@ -35,6 +40,8 @@ export interface NomiFaceProps {
 
 /** 一帧里所有会衰减的东西。全部放进 ref：它们只在帧循环里读写。 */
 interface Mutable {
+  /** 上一帧的相位：变了就重置 "这一段想了多久"（thinkingStage 的台阶靠它）。 */
+  phase: CallPhase | "idle";
   life: NomiMood | null;
   lifeUntil: number;
   nextBlinkAt: number;
@@ -54,6 +61,14 @@ interface Mutable {
   mood: NomiMood;
   moodAt: number;
   ticks: number;
+  /** 最后一个工具行的 status（终态变化 → 播完成/失败 clip）。 */
+  toolStatus: string;
+  /** 正在播的短 clip 与它的起点/时长。null = 停在当前 mood 的静止姿态上。 */
+  clip: ClipName | null;
+  clipAt: number;
+  clipMs: number;
+  /** 上一次的思考台阶：1→2、2→3 各播一次 think-turn。 */
+  thinkStage: number;
   /** 平滑后的电平（画眼睛用的就是它）。 */
   level: number;
   /** 这一帧拿到的原始电平，用来判「人刚开口」。 */
@@ -69,22 +84,24 @@ interface Mutable {
 }
 
 const fresh = (now: number): Mutable => ({
+  phase: "idle",
   life: null, lifeUntil: 0, nextBlinkAt: now + nextBlinkMs(), blinkUntil: 0,
   nextBeatAt: now + LIFE_BEAT_MS, nextActionAt: now + WORK_FLICK_MS,
   resting: false, drowsy: false, sleep: 0, sleepTarget: 0,
   phaseAt: now, warmthUntil: 0, lastEventAt: now,
   micro: null, microAt: 0, microUntil: 0,
   mood: "idle", moodAt: now, ticks: 0, level: 0, rawLevel: 0,
+  toolStatus: "", clip: null, clipAt: 0, clipMs: 0, thinkStage: 0,
   nextSaccadeAt: now + 900,
   ball: { r: 98, sx: 1, sy: 1, dy: 0 },
   ballV: { r: 0, sx: 0, sy: 0, dy: 0 },
   ballRot: 0, ballRotV: 0,
 });
 
-export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel, onMood }: NomiFaceProps): JSX.Element {
+export function NomiFace({ phase, activity, substate = "idle", emotion = null, ticks = 0, toolStatus = "", getLevel, onMood }: NomiFaceProps): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
-  const props = useRef({ phase, activity, emotion, ticks });
-  props.current = { phase, activity, emotion, ticks };
+  const props = useRef({ phase, activity, substate, emotion, ticks, toolStatus });
+  props.current = { phase, activity, substate, emotion, ticks, toolStatus };
   const levelOf = useRef(getLevel);
   levelOf.current = getLevel;
   const moodOf = useRef(onMood);
@@ -98,6 +115,18 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel,
     /** A phone with a 3× screen does not need 3× of a soft glowing shape; 1.5 is indistinguishable. */
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     const st = fresh(performance.now());
+    // 挂载时就把计数/状态对齐：历史里已有的工具行不是"刚刚发生"的事件，不该在开场播动作。
+    st.ticks = props.current.ticks;
+    st.toolStatus = props.current.toolStatus;
+    // 新动作直接顶掉旧动作：切脸和工具事件永远比上一段动作新。**同一帧**里两条同时触发时
+    // 按 CLIP_PRIORITY 决定谁留下（"结果"压过"过渡"，眨眼永远让路），否则谁后写谁赢，
+    // 授权答复那一刻的 tool-done 就会被 say-in 吞掉。
+    const startClip = (name: ClipName, at: number): void => {
+      if (st.clip && st.clipAt === at && CLIP_PRIORITY[name] < CLIP_PRIORITY[st.clip]) return;
+      st.clip = name;
+      st.clipAt = at;
+      st.clipMs = clipDurationMs(CLIPS[name]);
+    };
     let raf = 0;
     let lastPaint = 0;
     let pointer = { x: 0, y: 0 };
@@ -137,18 +166,36 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel,
       if (cue && p.phase === "listening") { st.micro = cue; st.microAt = ms; st.microUntil = ms + 280; }
 
       // ── 事件：新工具帧 = 点一下头；相位变了 = 记时间 + 说完的余温 ──────────────────────
+      if (p.phase !== st.phase) {
+        st.phase = p.phase;
+        st.phaseAt = ms;
+      }
       if (p.ticks !== st.ticks) {
         st.ticks = p.ticks;
         st.lastEventAt = ms;
         st.micro = "tick";
         st.microAt = ms;
         st.microUntil = ms + 260;
+        startClip("tool-start", ms);
+      }
+      // 最后一个工具行的 status 变了：完成 → 弹一下；失败 → 沉一下。终态是"结果"，
+      // 它值得一个动作，而不只是卡片上的点变个颜色。
+      if (p.toolStatus !== st.toolStatus) {
+        const s = p.toolStatus.toLowerCase();
+        st.toolStatus = p.toolStatus;
+        if (s === "completed" || s === "success") startClip("tool-done", ms);
+        else if (s === "failed" || s === "error" || s === "cancelled") startClip("tool-fail", ms);
+        else if (s) startClip("tool-start", ms);
       }
       // ── 生命感：眨眼、走神、犯困 ────────────────────────────────────────────────────
       const busy = p.activity !== "none" || p.phase === "thinking" || p.phase === "speaking";
       if (ms >= st.nextBlinkAt) {
         st.nextBlinkAt = ms + nextBlinkMs();
-        if (!BLINK_BLOCKED.includes(st.mood)) st.blinkUntil = ms + blinkHoldMs();
+        if (!BLINK_BLOCKED.includes(st.mood)) {
+          st.blinkUntil = ms + blinkHoldMs();
+          // 眨眼自己的球体动作很轻，别打断正在播的切脸/工具 clip。
+          if (!st.clip) startClip("blink-pop", ms);
+        }
       }
       if (ms >= st.nextBeatAt) {
         st.nextBeatAt = ms + LIFE_BEAT_MS;
@@ -200,23 +247,34 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel,
         drowsy: st.drowsy,
       });
       if (mood !== st.mood) {
+        const clip = clipFor({ kind: "mood", from: st.mood, to: mood });
         st.moodAt = ms;
         try { moodOf.current?.(mood); } catch { /* 可选钩子，绝不打断帧循环 */ }
         if (mood !== "sleep" && (st.resting || st.drowsy)) { st.resting = false; st.drowsy = false; st.sleepTarget = 0; st.sleep = 0; }
         // 说完之后那 2.4 秒的余温：mood 从 talking 回到 idle/focus 时点亮。
         if (p.phase !== "speaking") st.warmthUntil = ms + WARMTH_MS;
         st.mood = mood;
+        if (clip) startClip(clip, ms);
       }
       const warmth = Math.max(0, Math.min(1, (st.warmthUntil - ms) / WARMTH_MS));
       const elapsed = (ms - st.phaseAt) / 1000;
       const expr = exprFor(mood, st.level, elapsed, {
         resting: st.resting, warmth,
       });
-      if (p.phase === "listening" || p.phase === "thinking" || p.phase === "speaking") st.phaseAt = st.phaseAt || ms;
+      // 想事情的三个台阶（1.2 s / 3.2 s）每上一个都换个姿势 —— 光靠眼形变窄，
+      // 在通话那种小窗里看不出来。
+      const stage = thinkingStage(elapsed);
+      if (stage !== st.thinkStage) {
+        st.thinkStage = stage;
+        if (mood === "focus") {
+          const c = clipFor({ kind: "think", stage });
+          if (c) startClip(c, ms);
+        }
+      }
 
       const blinking = ms < st.blinkUntil;
-      const left = eyeFrame({ mood, right: false, blinking, t, level: st.level, expr, sleep: st.sleep });
-      const right = eyeFrame({ mood, right: true, blinking, t, level: st.level, expr, sleep: st.sleep });
+      const left = eyeFrame({ mood, right: false, blinking, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
+      const right = eyeFrame({ mood, right: true, blinking, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
 
       // ── 画 ───────────────────────────────────────────────────────────────────────
       const W = canvas.width, H = canvas.height;
@@ -228,12 +286,30 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel,
       // 比例尺：球半径 ≈ 98 逻辑单位（和 nomiMood.ballFrame 的基准一致），整块高度装得下球
       // 加上一圈留白；眼睛按同一个比例尺缩放，所以球变大时眼睛跟着变，不会「球大眼小」。
       const k = Math.max(0.5, Math.min(3.2, Math.min(w / 260, h / 260)));
-      const target = ballFrame(mood, {
+      let target = ballFrame(mood, {
         level: st.level,
         breath: ["idle", "drowsy", "sleep", "curious", "asking", "working"].includes(mood)
           ? Math.sin((t * Math.PI * 2) / 2) * 6 : 0,
         sleep: st.sleep,
+        substate: p.substate,
       });
+      // 正在播的 clip 叠在静止姿态上；播完（或越界）就回到静止值，弹簧负责把最后一下收住。
+      if (st.clip) {
+        if (ms - st.clipAt >= st.clipMs) st.clip = null;
+        else {
+          const cf = clipFrameAt(CLIPS[st.clip], ms - st.clipAt);
+          if (cf) target = applyClip(target, cf);
+          else st.clip = null;
+        }
+      }
+      // 给 e2e/操作者留两个可读的事实：此刻哪张脸、哪个子状态、在播哪条 clip。
+      // 只写 canvas 的 dataset（不进 React state），每帧一次字符串比较，成本可以忽略。
+      const clipNow = st.clip ?? "";
+      if (canvas.dataset.clip !== clipNow) {
+        if (clipNow) canvas.dataset.clip = clipNow;
+        else delete canvas.dataset.clip;
+      }
+      if (canvas.dataset.substate !== p.substate) canvas.dataset.substate = p.substate;
       // 弹簧跑 120 Hz（和原引擎同一个积分步长），一个 30 fps 帧里补 4 步 —— 帧率掉到 15 也不会散。
       for (let i = 0; i < 4; i++) {
         const dt = 1 / 120;
@@ -303,7 +379,7 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel,
       g.translate(-cx, -cy);
 
       // 视点：指针 + 情绪决定眼睛往哪看；投影到球面上（正交），越往侧越窄。
-      const gaze = gazeAngles({ mood, pointerX: pointer.x, pointerY: pointer.y, elapsed, level: st.level });
+      const gaze = gazeAngles({ mood, pointerX: pointer.x, pointerY: pointer.y, elapsed, level: st.level, substate: p.substate });
       for (const eye of [left, right]) {
         const side: -1 | 1 = eye === right ? 1 : -1;
         const pj = projectEye({ ax: gaze.ax, ay: gaze.ay, side, R });

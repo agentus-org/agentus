@@ -119,6 +119,7 @@ const SHAPE = `(() => {
   const modesVisible = !!modes && getComputedStyle(modes).display !== 'none'
     && modes.getBoundingClientRect().width > 0;
   return { open: true, nomi: call.dataset.nomi === 'true', phase: call.dataset.phase,
+    err: document.querySelector('.call-err')?.textContent ?? null,
     vw: innerWidth, vh: innerHeight, face, chat, canvas,
     bubbleH: bubble ? Math.round(bubble.getBoundingClientRect().height * 10) / 10 : null,
     modesVisible, zoom: chat ? (getComputedStyle(document.querySelector('.call-cc-inner')).zoom ?? null) : null,
@@ -126,6 +127,34 @@ const SHAPE = `(() => {
       const b = o.getBoundingClientRect(); return getComputedStyle(o).display !== 'none' && b.width > 0; })(),
     overflowX: document.documentElement.scrollWidth - innerWidth };
 })()`;
+
+/** 记录属性**每一次**变化，而不是每 200 ms 采样一次 —— 工具在跑只有 ~25 ms（mock 的
+ *  in-progress 窗口），轮询会漏，MutationObserver 不会。canvas 的 data-clip 由帧循环设置，
+ *  clip 本身持续 1.4–6 s，所以它是"这条动作真的播了"的最直接证据。 */
+const WATCH = `(() => {
+  window.__nomiSeen = { sub: [], clip: [], face: [], mood: [] };
+  const push = (k, v) => { const a = window.__nomiSeen[k]; if (v && a[a.length - 1] !== v) a.push(v); };
+  const read = () => {
+    const c = document.querySelector('.call-mode');
+    if (c) { push('sub', c.dataset.substate); push('face', c.dataset.face); push('mood', c.dataset.mood); }
+    const cv = document.querySelector('.nomi-face-canvas');
+    if (cv) push('clip', cv.dataset.clip);
+  };
+  read();
+  new MutationObserver((rows) => {
+    for (const r of rows) {
+      const t = r.target;
+      if (r.attributeName === 'data-clip') push('clip', t.dataset.clip);
+      else if (r.attributeName === 'data-substate') { push('sub', t.dataset.substate); push('face', t.dataset.face); }
+      else if (r.attributeName === 'data-face') push('face', t.dataset.face);
+      else if (r.attributeName === 'data-mood') push('mood', t.dataset.mood);
+    }
+  }).observe(document.body, { attributes: true, subtree: true,
+    attributeFilter: ['data-substate', 'data-clip', 'data-face', 'data-mood'] });
+  return true;
+})()`;
+const SEEN = `JSON.parse(JSON.stringify(window.__nomiSeen ?? { sub: [], clip: [], face: [], mood: [] }))`;
+const RESET_SEEN = `(window.__nomiSeen = { sub: [], clip: [], face: [], mood: [] }, true)`;
 
 /** canvas 的运动签名 + 亮像素比例（照 call-sweep 的做法：像素差，不是「元素存在」）。 */
 const SIG = `(sel) => { const cv = document.querySelector(sel); if (!cv) return null;
@@ -143,6 +172,46 @@ const settingsCall = async () => {
   return JSON.stringify(body?.call ?? null);
 };
 
+/** 这一轮跑完没有 —— 用服务端的 status，不靠猜"气泡是不是还在长"。 */
+const turnStatus = async () => ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+  const d = await fetch('/api/sessions').then((r) => r.json()).catch(() => null);
+  return (d?.live ?? []).find((s) => s.id === sid)?.status ?? null; })()`);
+const waitIdle = async (maxMs = 25000) => {
+  let st = null;
+  for (let t = 0; t < maxMs; t += 300) {
+    st = await turnStatus();
+    if (st === "ready" || st === "error" || st === "closed") return st;
+    await sleep(300);
+  }
+  return st;
+};
+/** 代理这一轮结束后，通话页可能还在念上一句 —— 等它把话筒交回来再发下一句。
+ *  （真人是打断后再说；这里用接口发提示词，没有打断，所以要显式等相位回到 listening。） */
+const waitListening = async (maxMs = 40000) => {
+  let ph = null, streak = 0;
+  for (let t = 0; t < maxMs; t += 250) {
+    ph = await ev(`document.querySelector('.call-mode')?.dataset.phase ?? null`);
+    if (ph === "listening") { streak++; if (streak >= 4) return true; }
+    else streak = 0;
+    await sleep(250);
+  }
+  return false;
+};
+/** 发一句话给 mock。上一轮还在跑时服务端会拒，重试到它收下为止。 */
+const promptCall = async (text) => {
+  for (let i = 0; i < 30; i++) {
+    const st = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+      const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: ${JSON.stringify(text)} }) });
+      return r.status; })()`);
+    // /prompt answers 202 (fire & forget); treating 202 as failure re-sends the same prompt
+    // every retry and the server then queues turn after turn.
+    if (st >= 200 && st < 300) return true;
+    await sleep(700);
+  }
+  return false;
+};
+
 let exitCode = 0;
 try {
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -157,6 +226,13 @@ try {
     return { sid: s.id };
   })()`);
   await send("Browser.grantPermissions", { origin: BASE, permissions: ["audioCapture"] }).catch(() => {});
+  // 自动化没有麦克风，Web Speech 还会因为"network"直接失败 —— 失败时相位是 error，
+  // 脸就不是 listening，这一页最常被问到的两个状态都测不到。`__asFeed` 是 voice.ts 留的
+  // 同一个测试缝（call-sweep 也用它）：start() 无需设备即成功，电平/转写完全可控。
+  await send("Page.enable");
+  await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `window.__asFeed = { level: 0, text: '', interim: '' };`,
+  });
   await send("Page.reload", { ignoreCache: true });
   for (let i = 0; i < 40; i++) { await sleep(400); if (await ev(`!!document.querySelector('.chat-head')`)) break; }
   // 先造一轮真实对话：记录区必须**有行**才量得到字号（这也是 captions 视图的同一个前提）。
@@ -165,10 +241,13 @@ try {
       const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: '第一句：这是一段足够长的回答，用来量聊天区的行高和滚动。第二句：糯米模式要把这一页缩小放进下半屏。第三句：横屏时它应该在右边。' }) });
       return r.status; })()`);
-    if (ok === 200) break;
+    if (ok >= 200 && ok < 300) break;
     await sleep(800);
   }
   for (let i = 0; i < 30; i++) { await sleep(400); if (await ev(`!!document.querySelector('.chat-col .bubble')`)) break; }
+  // Mock 的回复是流式的：如果 turn 还在跑就接进通话，它会把这句答复当成"正在说的话"念，
+  // 相位就是 speaking，脸当然不是 listening。先把这一轮等干净，后面的断言才有确定的起点。
+  await waitIdle();
 
   // ---- 1. 短按：还是原来那个电话 --------------------------------------------------------
   const callBtn = ".icon-btn.call-entry";
@@ -191,9 +270,13 @@ try {
   await pressSel(callBtn, 620);
   await sleep(1500);
   const nomi = await ev(SHAPE);
-  check("长按 480ms 打开糯米模式（data-nomi=true）", nomi.open === true && nomi.nomi === true, JSON.stringify(nomi.phase));
+  check("长按 480ms 打开糯米模式（data-nomi=true）", nomi.open === true && nomi.nomi === true, JSON.stringify({ phase: nomi.phase, err: nomi.err }));
   check("糯米模式里没有 orb（脸取代了它）", nomi.orbVisible === false);
   check("三态打断开关在这个页面里不可见（固定关键词）", nomi.modesVisible === false);
+  // 从这一刻起记录 data-substate / data-clip / data-face 的每一次变化（见 WATCH）。
+  await ev(WATCH);
+  const initialSub = await ev(`document.querySelector('.call-mode')?.dataset.substate ?? null`);
+  check("糯米模式一打开就带 data-substate（观测口，不靠猜）", initialSub === "idle", String(initialSub));
 
   // ---- 3. 竖屏分区：上脸下记录 -----------------------------------------------------------
   check("竖屏 390×844：脸在上、记录在下",
@@ -206,11 +289,17 @@ try {
   check("没有横向溢出", (nomi.overflowX ?? 99) <= 0);
 
   // ---- 4. 脸在动，而且真的画了东西 -------------------------------------------------------
-  const a1 = await ev(`(${SIG})('.nomi-face-canvas')`);
-  await sleep(700);
-  const a2 = await ev(`(${SIG})('.nomi-face-canvas')`);
-  check("脸是 canvas 且画了东西（亮像素 > 0.5%）", a1 && a1.lit > 0.5, JSON.stringify(a1 && { lit: a1.lit, w: a1.w, h: a1.h }));
-  check("脸在两帧之间变了（不是一张静态图）", a1 && a2 && a1.sig !== a2.sig, JSON.stringify({ a: a1?.sig, b: a2?.sig }));
+  // 取四次而不是两次：静止姿态也会有呼吸/眨眼，但任意 700 ms 窗口都可能恰好没动；
+  // 四次里只要有一对帧不同，就证明帧循环还活着（这也是"冻结"最怕的误判）。
+  const sigs = [];
+  for (let i = 0; i < 4; i++) {
+    sigs.push(await ev(`(${SIG})('.nomi-face-canvas')`));
+    if (i < 3) await sleep(450);
+  }
+  const lit = sigs.find(Boolean);
+  const distinct = new Set(sigs.filter(Boolean).map((s) => s.sig)).size;
+  check("脸是 canvas 且画了东西（亮像素 > 0.5%）", lit && lit.lit > 0.5, JSON.stringify(lit && { lit: lit.lit, w: lit.w, h: lit.h }));
+  check("脸在两帧之间变了（不是一张静态图）", distinct > 1, `${distinct} 种签名 / ${sigs.length} 次采样`);
 
   // ---- 4.5 「听」和「想」不是同一张脸；听话时脸上有节奏 --------------------------------
   // 操作者 2026-10-23:「怎么还是呆呆的」—— 当时 listening 与 thinking 都落到同一张眯眼的脸，
@@ -256,7 +345,7 @@ try {
       const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: '[emo-probe] 你好，说说你现在的心情' }) });
       return r.status; })()`);
-    if (st === 200) break;
+    if (st >= 200 && st < 300) break;
     await sleep(700);
   }
   let happy = null, leaked = null;
@@ -272,9 +361,95 @@ try {
   check("agent 照提示词写了标签，脸变成 happy（data-mood）", happy === "happy", String(happy));
   check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", leaked && leaked.hasTag === false, JSON.stringify(leaked && leaked.sample));
 
-  // ---- 7. 不侵入：进出不写设置 -----------------------------------------------------------
+  // ---- 6.6 工具子状态端到端：data-substate 跟着行变，clip 跟着状态播 ---------------------
+  // 这里只用**已有的可观测行**（tool 行的 title/kind/status + pending），mock 不配合改行为：
+  //   · [tools:3]  → in_progress 25 ms 窗口 → reading/running，随后 completed → done
+  //   · [tool]     → 写文件的授权请求挂着 → awaiting；点允许 → completed；点拒绝 → failed
+  // WATCH 是 MutationObserver，25 ms 的窗口也不会被采样漏掉。
   await viewport(390, 844);
-  await sleep(500);
+  await sleep(600);
+  await waitIdle();
+  await waitListening();
+  await ev(RESET_SEEN);
+
+  await promptCall("[tools:3]");
+  let tSeen = null;
+  for (let i = 0; i < 120; i++) {
+    await sleep(200);
+    tSeen = await ev(SEEN);
+    if (tSeen.clip.includes("tool-start") && tSeen.clip.includes("tool-done")) break;
+  }
+  check("工具回合：data-substate 出现过工具态（reading/running）",
+    tSeen.sub.some((s) => s === "reading" || s === "running"), tSeen.sub.join(" → "));
+  check("工具回合：data-clip 从 tool-start 走到 tool-done",
+    tSeen.clip.includes("tool-start") && tSeen.clip.includes("tool-done"), tSeen.clip.join(" → "));
+  // 回合结束时回到 idle —— "完成"不是常驻状态，下一句文本到了就该离开工具循环。
+  await waitIdle();
+  let idleSub = null;
+  for (let i = 0; i < 40; i++) {
+    idleSub = await ev(`document.querySelector('.call-mode')?.dataset.substate ?? null`);
+    if (idleSub === "idle") break;
+    await sleep(250);
+  }
+  check("回合结束后 data-substate 回到 idle", idleSub === "idle", String(idleSub));
+
+  // (b) 等授权：这是整通电话里最长的沉默之一，脸必须说"我在等你"，不是说"我在干活"。
+  await waitListening();
+  await ev(RESET_SEEN);
+  await promptCall("[tool]");
+  let pSeen = null, pNow = null;
+  for (let i = 0; i < 100; i++) {
+    await sleep(200);
+    pSeen = await ev(SEEN);
+    pNow = await ev(`(() => { const c = document.querySelector('.call-mode');
+      return c ? { sub: c.dataset.substate ?? null, face: c.dataset.face ?? null } : null; })()`);
+    if (pNow?.sub === "awaiting" && pNow?.face === "asking") break;
+  }
+  check("授权请求挂着时 data-substate=awaiting（不是 idle/working）", pNow?.sub === "awaiting", JSON.stringify(pNow));
+  check("…同一时刻脸是 asking（在等你，不是低头干活）", pNow?.face === "asking", JSON.stringify(pNow));
+  check("…并且播了 ask-hold 这条 clip", pSeen.clip.includes("ask-hold"), pSeen.clip.join(" → "));
+
+  // 允许：点的是通话记录里真实的审批卡（.call-cc 范围内），不是直接调接口。
+  const clickedAllow = await ev(`(() => { const b = document.querySelector('.call-cc .perm-card button.allow');
+    if (!b) return false; b.scrollIntoView({ block: 'center' }); return true; })()`);
+  check("审批卡出现在通话记录里（记录是原件的缩小版，卡片和按钮都在）", clickedAllow === true);
+  await sleep(300);
+  await clickSel(".call-cc .perm-card button.allow");
+  let aSeen = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(200);
+    aSeen = await ev(SEEN);
+    if (aSeen.sub.includes("done") || aSeen.clip.includes("tool-done")) break;
+  }
+  check("点允许后：完成态/完成 clip 出现（done 或 tool-done）",
+    aSeen.sub.includes("done") || aSeen.clip.includes("tool-done"),
+    JSON.stringify({ sub: aSeen.sub, clip: aSeen.clip }));
+
+  // (c) 拒绝：失败不是"没反应"—— tool-fail 这条 clip 必须真的播。
+  await waitIdle();
+  await waitListening();
+  await ev(RESET_SEEN);
+  await promptCall("[tool]");
+  for (let i = 0; i < 100; i++) {
+    await sleep(200);
+    pNow = await ev(`document.querySelector('.call-mode')?.dataset.substate ?? null`);
+    if (pNow === "awaiting") break;
+  }
+  const clickedReject = await ev(`(() => { const b = document.querySelector('.call-cc .perm-card button.reject');
+    if (!b) return false; b.scrollIntoView({ block: 'center' }); return true; })()`);
+  if (clickedReject) { await sleep(300); await clickSel(".call-cc .perm-card button.reject"); }
+  let fSeen = null;
+  for (let i = 0; i < 60; i++) {
+    await sleep(200);
+    fSeen = await ev(SEEN);
+    if (fSeen.clip.includes("tool-fail")) break;
+  }
+  check("拒绝一次写文件：会播 tool-fail（失败有单独的动作，不是静音收场）",
+    clickedReject === true && fSeen.clip.includes("tool-fail"),
+    JSON.stringify({ clicked: clickedReject, clip: fSeen.clip }));
+
+  // ---- 7. 不侵入：进出不写设置 -----------------------------------------------------------
+  await waitIdle();
   await clickSel(".call-btn.hangup");
   await sleep(700);
   const afterLocal = await ev(`localStorage.getItem('agentus.call')`);
