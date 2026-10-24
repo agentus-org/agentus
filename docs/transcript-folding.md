@@ -116,7 +116,9 @@ accepted rather than guessed away.
    previous frame is at most 2 s, the turn id (when both rows carry one) agrees, and a sentence end
    only counts as a boundary when that gap is over 750 ms. The accepted cost is written down rather
    than hidden: two id-less messages written less than 750 ms apart, the first ending in a full stop,
-   are indistinguishable from one stream and get merged. Time is the only witness a store without
+   are indistinguishable from one stream and get merged — but only when both are short fragments (≤24
+   characters) carrying no `messageId` and no `block_key`, which is the only shape this rule applies to;
+   a longer second message stays its own row even at a 40 ms gap. Time is the only witness a store without
    message ids has, and the alternative — the rule that shipped in v3 — cut every reply at its first
    full stop.
 3. **Never fold on a guess.** Same id, or whitespace-insensitive equality, or ≥60% coverage. Everything
