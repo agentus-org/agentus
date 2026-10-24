@@ -329,7 +329,12 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
 {
   check("[emo:happy] is removed", stripEmoTags("[emo:happy] 我今天超开心") === "我今天超开心");
   check("…and read as a mood", readEmoTags("[emo:happy] 开心")[0] === "happy");
-  check("mid-sentence tags go too", stripEmoTags("好的 [emo:sad] 我知道了") === "好的 我知道了");
+  // 标签走了，它两侧原有的空白**不动**：气泡里的文本会进"复制"，也是 Markdown 的源码。
+  check("mid-sentence tags go too (and the text around them is not rewritten)",
+    stripEmoTags("好的 [emo:sad] 我知道了") === "好的  我知道了", JSON.stringify(stripEmoTags("好的 [emo:sad] 我知道了")));
+  // …单行里的空白同样是内容：对齐的表格行、单行代码里的两个空格、单行 diff
+  check("a single line keeps its internal spacing", stripEmoTags("[emo:happy] name    value") === "name    value",
+    JSON.stringify(stripEmoTags("[emo:happy] name    value")));
   check("case / spacing / full-width colon all match",
     stripEmoTags("[EMO : Curious] 嗯？") === "嗯？" && readEmoTags("[EMO : Curious] 嗯？")[0] === "curious");
   check("emotion: is accepted as the key", stripEmoTags("[emotion: shy] 嘿嘿") === "嘿嘿");
@@ -528,6 +533,35 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("writing 的头歪得比 reading 多", Math.abs(ballOf("writing").rot) > Math.abs(ballOf("reading").rot),
     `${ballOf("writing").rot} vs ${ballOf("reading").rot}`);
   check("failed 比 done 缩得更小", ballOf("failed").r < ballOf("done").r);
+}
+
+// ---- the render path must not rewrite whitespace ------------------------------------------------
+// `stripEmoTags` runs on EVERY agent bubble (App.tsx Bubble → Markdown → copy). It used to collapse
+// runs of spaces, which silently destroyed code indentation, diff alignment and nested lists — and
+// "copy code" handed the operator the mangled text. These two cases are the red evidence.
+{
+  const py = "```python\nif x:\n    if y:\n        print(1)\n```";
+  check("a fenced code block comes back byte-identical (indentation is content)",
+    stripEmoTags(py) === py, JSON.stringify(stripEmoTags(py)));
+  const nested = "- 父项\n  - 子项\n    - 孙项";
+  check("a nested list keeps its nesting", stripEmoTags(nested) === nested, JSON.stringify(stripEmoTags(nested)));
+  const aligned = "name    value\nalpha   1";
+  check("column alignment survives", stripEmoTags(aligned) === aligned, JSON.stringify(stripEmoTags(aligned)));
+  check("…and a tag next to a code block still comes out, with the block intact",
+    stripEmoTags("[emo:happy]\n" + py) === py, JSON.stringify(stripEmoTags("[emo:happy]\n" + py)));
+}
+
+// ---- 犯困/睡着 must be REACHABLE from the phases a call actually has ------------------------------
+// The renderer only ever passes listening/thinking/speaking; the `resting`/`drowsy` branches used to
+// sit below the listening return, so 400 lines of designed behaviour could never appear on a page.
+{
+  check("resting beats the listening base face", moodFor({ phase: "listening", resting: true }) === "sleep",
+    moodFor({ phase: "listening", resting: true }));
+  check("drowsy beats it too", moodFor({ phase: "listening", drowsy: true }) === "drowsy",
+    moodFor({ phase: "listening", drowsy: true }));
+  // …and the states that are louder than "quiet" still win: it must never sleep while it talks.
+  check("…but actually speaking is never sleep", moodFor({ phase: "speaking", resting: true }) === "talking",
+    moodFor({ phase: "speaking", resting: true }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

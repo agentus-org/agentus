@@ -32,7 +32,7 @@ import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import { BriefPlanner, type Cue } from "./call-brief";
 import { TusFace } from "./TusFace";
-import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, type TusMood, type ToolSubstate } from "./tusMood";
+import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, tidyForSpeech, type TusMood, type ToolSubstate } from "./tusMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
 import {
@@ -758,7 +758,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       queueRef.current = [];
     }
     // [emo:x] 是给脸看的，不是给人念的。`splitForSpeech` 不剥方括号，所以必须在**进队列之前**剥。
-    const { done, tail } = splitSentences(stripEmoTags(agentText));
+    const { done, tail } = splitSentences(tidyForSpeech(stripEmoTags(agentText)));
     const fresh = done.slice(queuedRef.current);
     if (fresh.length) {
       queuedRef.current = done.length;
@@ -1360,6 +1360,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     const ctx = canvas.getContext("2d");
     const wctx = wave.getContext("2d");
     if (!ctx || !wctx) return;
+    // Tus 模式把圆球和波形藏了（`display:none`），这圈 rAF 就成了纯开销：0×0 的画布、每帧两次
+    // 电平读数，整个通话一直在跑 —— 正好抵掉 TusFace 那侧 30 fps / dpr≤1.5 的省电努力。
+    if (tus) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     /** The transcript view paints this same canvas full-bleed, blurred, behind a frosted panel —
      *  out-of-focus pixels do not need the same density, and a full-screen canvas at dpr 2 is the
@@ -1592,7 +1595,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     raf = window.requestAnimationFrame(draw);
     return () => { window.cancelAnimationFrame(raf); ro.disconnect(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reduced]);
+  }, [reduced, tus]);
 
   // Follow the newest line ONLY while the operator is at the bottom: scrolling back to read something
   // must not be yanked away by the next streamed chunk (the same rule the transcript uses).
@@ -1809,7 +1812,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
           <div className="tus-face-foot">
             <span className="tus-face-state">{PHASE_LABEL[phase]}</span>
             {tus && !cfg.wakePhrase ? (
-              <span className="tus-face-warn" title="Tus 模式固定用关键词打断；没设唤醒词时只有点圆球/按住说话能抢话筒">
+              <span className="tus-face-warn" title="Tus 模式固定用关键词打断；没设唤醒词时只有按住说话能抢话筒">
                 Tus 模式用关键词打断 · 还没设唤醒词
               </span>
             ) : null}
@@ -2031,7 +2034,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
                 所以灵敏度和持续时间这会儿不起作用（切回「语音打断」就恢复）。
               </p>
             ) : null}
-            {cfg.interruptMode === "keyword" ? (
+            {effCfg.interruptMode === "keyword" ? (
               <label className="call-knob">
                 <span className="call-knob-top">
                   <span className="call-knob-name">唤醒词</span>

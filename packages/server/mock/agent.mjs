@@ -643,9 +643,13 @@ const agent = () => ({
     // A turn that does real work: N tool calls with a reasoning burst before each — the
     // transcript-flood case (ten calls + ten bursts). `[tools:10]` drives it with no permission
     // prompts: the point is the SHAPE of the transcript, not the approval.
-    const many = /\[tools:(\d+)\]/.exec(text);
+    // `[tools:N]` (25 ms in-progress window, the real shape) or `[tools:N:ms]` for QA: a 25 ms
+    // window is honest but a page that misses the re-render inside it can only be blamed on the
+    // machine's load, so a test that needs to OBSERVE the running state widens it explicitly.
+    const many = /\[tools:(\d+)(?::(\d+))?\]/.exec(text);
     if (many) {
       const n = Math.min(20, Math.max(1, Number(many[1]) || 1));
+      const windowMs = Math.min(3000, Math.max(10, Number(many[2]) || 25));
       for (let i = 1; i <= n; i++) {
         const burst = (`step ${i}: reading the file, checking the surrounding code, then writing `
           + "the change back. This sentence is deliberately long so the reasoning block is taller "
@@ -669,7 +673,7 @@ const agent = () => ({
           status: "in_progress",
           rawInput: { step: i },
         });
-        await sleep(25);
+        await sleep(windowMs);
         await send(agent._conn, sessionId, {
           sessionUpdate: "tool_call_update",
           toolCallId: id,

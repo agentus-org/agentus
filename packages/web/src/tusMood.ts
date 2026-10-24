@@ -400,10 +400,12 @@ export function moodFor(o: {
   // 官方的三点 morph（见 TusFace 的 dots）—— 参考实现里 thinking 本来就没有脸。
   // 听话时也有小动作（扫一眼／偏一下／眨个眼）：生命感那一拍落在"听"上时优先出它，
   // 否则这两个状态永远被 calm 吃掉 —— 脸看着在看你，却一动不动。
-  if (phase === "listening") return life ?? "calm";
-  if (phase === "thinking") return "focus";
+  // 睡着了/犯困压过「在听」：这两个状态只在长时间没事件时出现，若被 listening 的底脸吃掉，
+  // 400 行设计出来的「等久了会睡着、被叫醒会惊一下」就永远不上脸（实测：一次都不出现）。
   if (resting) return "sleep";
   if (drowsy) return "drowsy";
+  if (phase === "listening") return life ?? "calm";
+  if (phase === "thinking") return "focus";
   return life ?? "idle";
 }
 
@@ -812,18 +814,36 @@ export function readEmoTags(text: string): TusMood[] {
   return out;
 }
 
+/** A half-written tag at the very end of a streamed frame: `[emo:hap` / `[emo:` / `[emo]`. */
+const EMO_HALF_TAG = /\s*\[\s*(?:emo|emotion)\s*[:：]\s*[a-zA-Z\u4e00-\u9fa5_-]*\s*\]?\s*$/i;
+/** Non-global twin of `EMO_TAG` — `.test()` on a `/g` regex is stateful and would skip matches. */
+const EMO_TAG_TEST = new RegExp(EMO_TAG.source, "i");
+
 /**
  * Remove the tags. Call this **before the text is spoken and before it is rendered/存储** —
  * `splitForSpeech()` does not strip brackets, so a leftover tag is read out loud.
+ *
+ * This function ONLY removes tags. It used to also collapse runs of spaces and trim, which was fine
+ * for speech and destructive for display: the bubbles render every agent reply through this, so a
+ * fenced code block lost its indentation (Python stopped parsing), a diff lost its alignment and a
+ * nested list was flattened — and "copy" handed the operator the mangled text. Whitespace belongs to
+ * `tidyForSpeech`, which only the TTS path calls.
  */
 export function stripEmoTags(text: string): string {
-  return String(text ?? "")
-    .replace(EMO_TAG, "")
-    // 流式到达时标签可能只有半截（`[emo:hap`）：整段剥掉的只有闭合的，半截的留着就会在气泡里
-    // 闪一下，而它本来就不该被用户看到。只在**末尾**剥，中间未闭合的留给下一帧补全。
-    .replace(/\[\s*(?:emo|emotion)\s*[:：]\s*[a-zA-Z\u4e00-\u9fa5_-]*\s*\]?\s*$/i, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  const src = String(text ?? "");
+  // Nothing to strip → the text is returned BYTE-IDENTICAL. Everything below rewrites whitespace,
+  // which is why the early return matters: this runs on every agent bubble.
+  if (!EMO_TAG_TEST.test(src) && !EMO_HALF_TAG.test(src)) return src;
+  // ONLY the edges are touched. Internal runs of spaces stay exactly as they arrived: an aligned
+  // one-line table row, a double space inside a code span and a one-line diff are all content, and
+  // the caller copies this string (`CopyButton`). A removed tag can leave one extra space — in
+  // rendered markdown that is invisible, in a copy it is the truth minus the tag.
+  return src.replace(EMO_TAG, "").replace(EMO_HALF_TAG, "").trim();
+}
+
+/** Whitespace tidy-up for the SPEECH path only: models pad, a voice does not want the pauses. */
+export function tidyForSpeech(text: string): string {
+  return String(text ?? "").replace(/[ \t]{2,}/g, " ").trim();
 }
 
 /** The one-line constraint for the prompt. Server-side block lives in `packages/server/src/acp/voice-mode.ts`. */

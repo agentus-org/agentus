@@ -2,6 +2,7 @@
 // Design: sessions row carries `pid` (orphan-reclaim anchor, AC5);
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
 import fs from "node:fs";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { BackendId, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
@@ -51,8 +52,59 @@ const ANON_SCAN_ROWS = 80;
  * a row are still two messages, because a tool call or the operator's turn sits between them — and
  * this is only ever used to decide whether to glue a row onto the row directly above it.
  */
+/** Print the fold state once per store FILE per process (tests open several). */
+const foldStateLogged = new Set<string>();
+
 function isFragmentText(text: string): boolean {
   return text.length > 0 && text.length <= 24 && !text.includes("\n");
+}
+
+/**
+ * How far apart two id-less fragments can be written and still belong to one streamed message.
+ *
+ * Frames of one reply land milliseconds apart; a conversation's two short messages are minutes or
+ * hours apart. This is the second half of the pair test — see `sameStream`.
+ */
+const FRAGMENT_WINDOW_MS = 2_000;
+
+/** Where "a full stop" stops being a frame boundary and starts being the end of a message. */
+const FRAGMENT_BOUNDARY_MS = 750;
+
+/** Text that closes a sentence — a plausible end of a message, never the middle of one. */
+const SENTENCE_FINAL = /[。．.!?！？…;；:：]\s*$/;
+/** A frame that is nothing but punctuation: a stream really does end "…works" + "." */
+const PUNCT_ONLY = /^[\s\p{P}\p{S}]+$/u;
+
+/**
+ * Is this row provably the next frame of the SAME streamed message as the row above it?
+ *
+ * Adjacency in the table is NOT adjacency in the stream: the replay dedupe (`#dedupeReplayedRows`)
+ * and the live tool-call upsert both remove rows that used to sit between two messages, so on every
+ * real store two unrelated short messages can end up neighbours. Measured on the operator's own DB:
+ * 24 rows ended up holding two messages ("Operation interrupted." ×2, hours apart) because of it.
+ *
+ * So a pair needs a second witness — the turn both rows belong to, or, for rows written before the
+ * turn id existed, a tight time window plus the fact that no chunk boundary lands after a full stop.
+ */
+function sameStream(prev: RawMessageRow, prevAt: number, cur: RawMessageRow, prevFrame: string, text: string): boolean {
+  // The clock is measured from the LAST FRAME, not from the row's first one: `prev` is the surviving
+  // row and its `created_at` never moves, so using it means "how long has this message been growing"
+  // — which cuts a long stream at its first full stop after 750 ms and unconditionally after 2 s.
+  const gap = Math.abs(cur.created_at - prevAt);
+  // The clock is the one witness that cannot lie. Frames of one reply are milliseconds apart; two
+  // messages a minute apart are two messages — whatever their turn ids say, because a turn holds
+  // MANY messages and the rows between them are exactly what the replay cleanup deletes.
+  if (gap > FRAGMENT_WINDOW_MS) return false;
+  const a = prev.turn_id;
+  const b = cur.turn_id;
+  // A matching turn id is a second witness, never a substitute for the clock: `turnSeq` restarts at 0
+  // after a server restart, so turn 1 of this run and turn 1 of the last run compare equal.
+  if (a !== null && a !== undefined && b !== null && b !== undefined && a !== b) return false;
+  // Judged on the previous FRAME, never on the accumulated text: a reply passes many full stops, and
+  // a full stop deep inside the accumulation says nothing about where this frame begins. A sentence
+  // end is evidence of a boundary only when the write also took long enough to be a real pause.
+  const looksLikeBoundary = SENTENCE_FINAL.test(prevFrame) && !PUNCT_ONLY.test(text);
+  return !(looksLikeBoundary && gap > FRAGMENT_BOUNDARY_MS);
 }
 
 /**
@@ -158,6 +210,7 @@ function parseJson(v: string | null | undefined): unknown {
 interface RawMessageRow {
   seq: number; session_id: string; kind: StoredMessage["kind"];
   payload: string; tool_call_id: string | null; block_key?: string | null; created_at: number;
+  turn_id?: number | null;
 }
 
 function rowToMessage(r: RawMessageRow): StoredMessage {
@@ -506,6 +559,7 @@ export class Store {
     if (!beCols.has("last_check_latency_ms")) {
       this.#db.exec("alter table backends add column last_check_latency_ms integer");
     }
+    this.#migrateLegacyRepairVersions();
     this.#foldStreamedChunks();
     // …then the one-time removal of what the REPLAYS already wrote (see #dedupeReplayedRows), and the
     // clock for a store that predates the column — computed after the cleanup, so a session's time is
@@ -527,8 +581,33 @@ export class Store {
     const row = this.#db.prepare("select version from repairs where name = ?").get(name) as
       | { version?: number } | undefined;
     if (row && typeof row.version === "number") return row.version;
+    // Past the one-time migration below, a missing row really does mean "this pass never ran here".
+    return Math.min(this.#legacyUv(), legacy);
+  }
+
+  #legacyUv(): number {
     const uv = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
-    return Math.min(Number(uv?.user_version ?? 0), legacy);
+    return Number(uv?.user_version ?? 0);
+  }
+
+  /**
+   * `pragma user_version` was the shared counter of the pre-`repairs` era, and one pass's number
+   * could satisfy another's — a store whose counter read 4 "had run" the cleanup even when only the
+   * fold had ever recorded anything. Read it as legacy exactly once, write what it implies into
+   * per-pass rows, and leave a marker so the reading never happens again. Without the marker, a
+   * destructive pass runs on a store whose record it cannot interpret (measured on the operator's
+   * file: 767 rows and 15 session clocks moved on a boot that had nothing to do).
+   */
+  #migrateLegacyRepairVersions(): void {
+    const marker = this.#db.prepare("select version from repairs where name = ?").get("per-pass-rows");
+    if (marker) return;
+    const any = this.#db.prepare("select count(*) as c from repairs").get() as { c?: number } | undefined;
+    if (Number(any?.c ?? 0) === 0 && this.#legacyUv() === 0) return;   // brand-new store: nothing to seed
+    const uv = this.#legacyUv();
+    const ins = this.#db.prepare("insert into repairs (name, version, at) values (?,?,?) on conflict(name) do nothing");
+    ins.run("fold", Math.min(uv, 2), Date.now());
+    ins.run("dedupe", uv >= 4 ? 4 : 0, Date.now());
+    ins.run("per-pass-rows", 1, Date.now());
   }
 
   #setRepairVersion(name: string, version: number): void {
@@ -557,12 +636,32 @@ export class Store {
     // v2: the anonymous-re-emission rule got sharper (a short block is no longer a fold candidate,
     // but a ≥24-char one that covers most of a block is) — an already-folded DB is worth re-walking.
     // v3: id-less FRAGMENTS are glued onto the row directly above (the qoder word-per-line era).
-    const FOLD_VERSION = 3;
+    // v4: that rule was too eager (it merged messages that only LOOKED adjacent, once the replay
+    // cleanup had removed the rows between them) and too timid (it stopped folding after 24
+    // accumulated characters). A re-walk cannot un-merge what v3 glued — that is
+    // `scripts/repair-glued-rows.py`'s job — but it does re-join rows v3 split and stops new damage.
+    const FOLD_VERSION = 4;
     // A store that predates the repairs table recorded its fold in user_version (2 = the rules
     // shipped with it). Anything at 0/1 never folded at all.
-    const seenFold = this.#repairVersion("fold", 2) >= 2;
-    if (this.#repairVersion("fold", 2) >= FOLD_VERSION) return;
-    if (!this.#backup("fold")) return;
+    // Two different questions: whether the pass must run again (the version gate below) and whether
+    // this file was EVER folded — the un-windowed replay rule is only safe on a store that never was,
+    // and it has no time window, so a genuine repeat reads as a copy and the second message is
+    // deleted. `user_version >= 2` is the legacy record of a fold that never wrote a `repairs` row
+    // (a boot whose backup failed returns before recording anything).
+    const seenFold = this.#repairVersion("fold", 2) >= 2 || this.#legacyUv() >= 2;
+    if (this.#repairVersion("fold", 2) >= FOLD_VERSION) {
+      // v3 shipped a rule that could glue two DISTINCT messages when the replay cleanup had removed
+      // the rows between them; a store folded by it keeps those rows — no re-run can un-merge them
+      // (the second half's row is gone). Say the version once per process so "clean" and "folded
+      // before the fix" are not indistinguishable in the log; the split lives in
+      // tasks/20261001-agentus/scripts/repair-glued-rows.py.
+      if (!foldStateLogged.has(this.#path)) {
+        foldStateLogged.add(this.#path);
+        console.log(`[store] 分片折叠：v${FOLD_VERSION}（已是当前版本，本次不改动历史行）`);
+      }
+      return;
+    }
+    if (!this.#backup("fold", FOLD_VERSION)) return;
     // One transaction for the whole walk: this is a per-row update pass over every message in the
     // file (430k rows on the operator's store) and autocommit is what made it 46 seconds of boot.
     this.#db.exec("begin");
@@ -577,11 +676,11 @@ export class Store {
         .prepare("select * from messages where session_id = ? order by seq asc")
         .all(id) as unknown as RawMessageRow[];
       before += rows.length;
-      const kept: { row: RawMessageRow; text: string | null }[] = [];
+      const kept: { row: RawMessageRow; text: string | null; frame: string; frameAt: number }[] = [];
       const doomed: number[] = [];
       for (const r of rows) {
         if (r.kind !== "agent" && r.kind !== "thought") {
-          kept.push({ row: r, text: null });
+          kept.push({ row: r, text: null, frame: "", frameAt: r.created_at });
           continue;
         }
         const payload = parseJson(r.payload);
@@ -592,10 +691,17 @@ export class Store {
         // must be fragments and the target must be the row immediately above: a real message that
         // happens to be short twice in a row is separated by the tool/operator row between them.
         const prev = kept[kept.length - 1];
+        // "Is this a fragment" is a property of ONE FRAME, so it is judged on the last frame that went
+        // into the row above, not on the row's accumulated text: otherwise folding stops as soon as
+        // the message passes 24 characters, which is every message worth folding (measured on the
+        // operator's store: 311,638 one-word thought frames only reached ~6 per row for this reason).
         if (!key && prev && prev.row.kind === r.kind && prev.text !== null
-            && isFragmentText(prev.text) && isFragmentText(text)
-            && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null) {
+            && isFragmentText(prev.frame) && isFragmentText(text)
+            && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null
+            && sameStream(prev.row, prev.frameAt, r, prev.frame, text)) {
           prev.text += text;
+          prev.frame = text;
+          prev.frameAt = r.created_at;
           doomed.push(r.seq);
           continue;
         }
@@ -620,14 +726,14 @@ export class Store {
           // (it has the time window and the evidence). Deleting here would also eat a genuine short
           // repeat — "好的" sent twice is a conversation.
           if (key && !delta) {
-            kept.push({ row: r, text });
+            kept.push({ row: r, text, frame: text, frameAt: r.created_at });
             continue;
           }
           if (delta) target.text = (target.text ?? "") + delta;
           doomed.push(r.seq);
           continue;
         }
-        kept.push({ row: r, text });
+        kept.push({ row: r, text, frame: text, frameAt: r.created_at });
       }
       for (const seq of doomed) del.run(id, seq);
       for (const k of kept) {
@@ -651,12 +757,38 @@ export class Store {
    * Copy the DB aside ONCE, before a destructive repair pass. False means no backup could be made
    * (a read-only filesystem, a locked file) — the caller must then leave the data alone.
    */
-  #backup(tag: string): boolean {
-    const bak = `${this.#path}.pre-${tag}.bak`;
+  #backup(tag: string, version: number): boolean {
+    // The name carries the pass version AND the moment: a per-tag name (the old behaviour) meant the
+    // second-ever destructive pass silently reused the first one's copy. Measured on the operator's
+    // machine: the fold that rewrote 430,318 rows "backed up" to a file from 19 days earlier that did
+    // not even contain the session being folded, so a bad rule had no safety net at all.
+    const bak = `${this.#path}.pre-${tag}-v${version}-${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
     try {
-      if (!fs.existsSync(bak)) {
-        this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
-        console.log(`[store] 修复前已备份：${bak}`);
+      this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
+      console.log(`[store] 修复前已备份：${bak}`);
+      // Keep the newest copy of every pass version (the run before a rule change is the one that may
+      // hold rows the newer rule no longer produces) plus the newest three overall; a 400k-row store
+      // copies to hundreds of MB, so this must not grow with every version bump.
+      try {
+        const dir = path.dirname(this.#path);
+        const base = path.basename(this.#path);
+        const mine = fs
+          .readdirSync(dir)
+          // per tag AND per pass version: bumping the version must not evict the backup of the run
+          // that came before it (the one that may hold the rows the newer rule no longer produces)
+          .filter((f) => f.startsWith(`${base}.pre-${tag}-v`))
+          .map((f) => ({ f, at: fs.statSync(path.join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.at - a.at);
+        const keep = new Set(mine.slice(0, 3).map((x) => x.f));
+        const perVersion = new Set<string>();
+        for (const x of mine) {
+          const m = /-v(\d+)-/.exec(x.f);
+          const v = m?.[1] ?? "";
+          if (!perVersion.has(v)) { perVersion.add(v); keep.add(x.f); }
+        }
+        for (const old of mine) if (!keep.has(old.f)) fs.unlinkSync(path.join(dir, old.f));
+      } catch {
+        /* pruning is a courtesy — never fail the repair over it */
       }
       return true;
     } catch (e) {
@@ -695,7 +827,7 @@ export class Store {
     // Legacy: this pass wrote its own number into user_version (3, then 4) before the repairs table
     // existed, so a store carrying 4 has already run it.
     if (this.#repairVersion("dedupe", 4) >= DEDUPE_VERSION) return;
-    if (!this.#backup("dedupe")) return;
+    if (!this.#backup("dedupe", DEDUPE_VERSION)) return;
     // The store's own floor for "this is a block, not an utterance" (`reemissionTarget`): below it a
     // repeat is legitimately two messages ("好的" twice) and never a replay of one block.
     const MIN_DUP_CHARS = 24;
@@ -706,6 +838,7 @@ export class Store {
     let toolsDropped = 0;
     let textDropped = 0;
     let kept = 0;
+    const doomedSessions = new Set<string>();
     const sessions = this.#db
       .prepare("select distinct session_id as id from messages")
       .all() as unknown as { id: string }[];
@@ -762,6 +895,7 @@ export class Store {
         textDropped += 1;
       }
       for (const seq of doomed) del.run(id, seq);
+      if (doomed.size > 0) doomedSessions.add(id);
       after += rows.length - doomed.size;
     }
     // The same replay also bumped the session's ACTIVITY clock — `#touch` fires on any write, so a
@@ -769,14 +903,22 @@ export class Store {
     // eleven sessions at once, 10:44:52 → 10:45:20). With the copies now gone, a clock that sits
     // AHEAD of the session's newest surviving row is provably that bump and nothing else, so put it
     // back to the row that is actually there. A session with no messages left keeps what it has.
-    const clock = this.#db
-      .prepare(
-        `update sessions set last_activity_at =
-           (select max(m.created_at) from messages m where m.session_id = sessions.id)
-         where last_activity_at is not null
-           and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
-      )
-      .run();
+    // …and only where rows were actually removed. A session's clock legitimately sits ahead of its
+    // newest row after any long turn (`#touch` at turn end), so an unscoped version of this rewrote
+    // the rail order of every session in the file — 15 clocks moved on a boot that deleted from 5.
+    let clock = { changes: 0 as number | bigint };
+    if (doomedSessions.size > 0) {
+      const ids = [...doomedSessions];
+      clock = this.#db
+        .prepare(
+          `update sessions set last_activity_at =
+             (select max(m.created_at) from messages m where m.session_id = sessions.id)
+           where id in (${ids.map(() => "?").join(",")})
+             and last_activity_at is not null
+             and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
+        )
+        .run(...ids);
+    }
     this.#setRepairVersion("dedupe", DEDUPE_VERSION);
     if (before !== after) {
       console.log(

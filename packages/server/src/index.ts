@@ -843,22 +843,52 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (wantReply && mgr.isBusy(to) && !wantInterrupt) {
           return send(res, 409, { error: COCKPIT_ERRORS.targetBusy });
         }
-        const replyId = wantReply ? mgr.expectTurnReply(to, { origin: caller!, originTitle: rows.find((s) => s.id === caller)?.title ?? null }) : null;
+        if (wantReply && caller === to) {
+          return send(res, 400, {
+            error: COCKPIT_ERRORS.badRequest,
+            message: "reply-on-done 不能发给自己：那是一次普通发言，回一条「你跑完了」只会变成乒乓",
+          });
+        }
+        // 登记必须绑在**这一轮**上，而不是绑在会话上：先登记再 prompt，被 --interrupt 干掉的那一轮
+        // 结束时会把后来的登记一起吞掉，调用方就永远收不到回执（review 实测的形状）。所以登记在
+        // 「prompt 真的拿到话筒」那一刻发生，并带上它自己那一轮的编号。
+        let turnStartedSeq: number | null = null;
+        let onTurnStarted: ((seq: number) => void) | null = null;
+        const turnStarted = new Promise<void>((resolve) => { onTurnStarted = (seq) => { turnStartedSeq = seq; resolve(); }; });
+        let promptErr: unknown = null;
         try {
           // `origin` is not decoration: without it the target's page shows this as a message the
           // OPERATOR typed. With it the bubble says which session it came from.
           const turn = mgr.prompt(to, message, [], {
             interrupt: wantInterrupt,
             origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
+            ...(wantReply ? { onTurnStarted: (seq: number) => onTurnStarted?.(seq) } : {}),
           });
-          if (replyId) {
-            // 不 await：等它跑完正是这个标志要消灭的那段等待。失败（比如抢话头没抢成）也要有回音，
-            // 否则调用方会以为消息在路上，其实根本没落地。
-            void turn.then(
-              () => { /* 回合结束会由 #settleTurnReplies 投递，这里不做第二次 */ },
-              (e) => mgr.failTurnReply(to, replyId, String((e as Error)?.message ?? e)),
-            );
-            return send(res, 200, { delivered: true, to, code: "delivered", reply_on_done: true });
+          if (wantReply) {
+            // 只等到「回合真的开始了」——那正是这个标志要消灭的那段长等待之外的全部代价。
+            // 回合启动前的失败（没抢到话筒、目标进程死了、空 prompt）必须报失败，不能回 delivered。
+            const started = await Promise.race([
+              turnStarted.then(() => true),
+              turn.then(() => false, (e) => { promptErr = e; return false; }),
+            ]);
+            if (!started) {
+              const why = String((promptErr as Error)?.message ?? promptErr ?? "turn did not start");
+              return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
+            }
+            const replyId = mgr.expectTurnReply(to, {
+              origin: caller!,
+              originTitle: rows.find((s) => s.id === caller)?.title ?? null,
+              turnSeq: turnStartedSeq,
+            });
+            // 回合结束会由 #settleTurnReplies 投递。这里兜的是「回合开过之后 prompt 才抛错」——
+            // 那条路径的 settle 可能早于本次登记（登记是微任务之后才落地的），所以不能靠它：
+            // 明确投一条失败回推，否则调用方等一个永远不会来的回执。
+            void turn.catch((e) => mgr.failTurnReply(to, replyId, String((e as Error)?.message ?? e)));
+            return send(res, 200, {
+              delivered: true, to, code: "delivered", reply_on_done: true,
+              ...(woke ? { delivered_after_wake: true } : {}),
+              ...(wantInterrupt ? { interrupted: true } : {}),
+            });
           }
           await turn;
         } catch (e) {

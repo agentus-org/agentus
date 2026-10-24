@@ -57,6 +57,8 @@ interface Mutable {
   phaseAt: number;
   warmthUntil: number;
   lastEventAt: number;
+  /** Last REAL event (a tool frame, a phase change) — saccades do not count. */
+  quietSince: number;
   micro: MicroAction | null;
   microAt: number;
   microUntil: number;
@@ -96,7 +98,7 @@ const fresh = (now: number): Mutable => ({
   life: null, lifeUntil: 0, nextBlinkAt: now + nextBlinkMs(), blinkAt: now - BLINK_MS,
   nextBeatAt: now + LIFE_BEAT_MS, nextActionAt: now + WORK_FLICK_MS,
   resting: false, drowsy: false, sleep: 0, sleepTarget: 0,
-  phaseAt: now, warmthUntil: 0, lastEventAt: now,
+  phaseAt: now, warmthUntil: 0, lastEventAt: now, quietSince: now,
   micro: null, microAt: 0, microUntil: 0,
   mood: "idle", moodAt: now, ticks: 0, level: 0, rawLevel: 0,
   toolStatus: "", clip: null, clipAt: 0, clipMs: 0, thinkStage: 0,
@@ -160,16 +162,23 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       const before = st.level;
       st.level = smoothLevel(st.level, st.rawLevel);
       const cue = voiceCue(before, st.level);
-      if (cue && p.phase === "listening") { st.micro = cue; st.microAt = ms; st.microUntil = ms + 280; }
+      if (cue && p.phase === "listening") {
+        st.micro = cue;
+        st.microAt = ms;
+        st.microUntil = ms + 280;
+        st.quietSince = ms;          // someone is talking to it — never doze off mid-conversation
+      }
 
       // ── 事件：新工具帧 = 点一下头；相位变了 = 记时间 + 说完的余温 ──────────────────────
       if (p.phase !== st.phase) {
         st.phase = p.phase;
         st.phaseAt = ms;
+        st.quietSince = ms;          // a phase change is a real event: it is not "quiet"
       }
       if (p.ticks !== st.ticks) {
         st.ticks = p.ticks;
         st.lastEventAt = ms;
+        st.quietSince = ms;
         st.micro = "tick";
         st.microAt = ms;
         st.microUntil = ms + 260;
@@ -196,7 +205,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       }
       if (ms >= st.nextBeatAt) {
         st.nextBeatAt = ms + LIFE_BEAT_MS;
-        const b = lifeBeat(ms - st.lastEventAt, Math.random, { busy });
+        const b = lifeBeat(ms - st.quietSince, Math.random, { busy });
         if (b === "rest") {
           st.drowsy = true;
           st.sleepTarget = 1;
@@ -217,7 +226,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         }
       }
       if (st.life && ms > st.lifeUntil) st.life = null;
-      if (st.drowsy && st.sleepTarget > 0 && st.sleep >= 1) {
+      if (st.drowsy && st.sleepTarget > 0 && st.sleep >= 0.995) {
         st.drowsy = false;
         st.resting = true;
       }

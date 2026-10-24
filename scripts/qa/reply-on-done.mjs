@@ -158,6 +158,62 @@ try {
   // 这里只要它**没有**被当成一次成功的派活。
   check("in operator mode it is refused (there is no origin session to reply to)",
     operator.code !== 0, JSON.stringify(operator.doc).slice(0, 200));
+
+  // ---- 6. --interrupt --reply-on-done：回执必须属于「我送进去的那一轮」，不是被它杀掉的那一轮 ----
+  // 登记过去绑在「目标会话」上，于是被取消的旧回合收尾时会把新登记的也一起投出去，然后真正的
+  // 回合结束时已经没人等 —— 调用方收到一条凭空出现的「被取消了」，再也没等到自己那一条。
+  const C = await mkSession("被打断C");
+  const busy = cli(asA, ["session", "send", C.id, "[hold:9000] 先占住", "--reply-on-done"]);
+  check("a long turn is running on the worker", busy.code === 0, busy.stderr);
+  await sleep(700);
+  const preNotices = new Set((await messages(A.id)).map(textOf).filter((t) => t.startsWith("【完成回推】"))).size;
+  const interlaced = cli(asA, ["session", "send", C.id, "[hold:2500] 抢话头", "--interrupt", "--reply-on-done"]);
+  check("`--interrupt --reply-on-done` is accepted", interlaced.code === 0 && interlaced.doc?.data?.reply_on_done === true,
+    interlaced.stderr || JSON.stringify(interlaced.doc?.data));
+  check("…and the receipt says it interrupted", interlaced.doc?.data?.interrupted === true, JSON.stringify(interlaced.doc?.data));
+  let got = null;
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(500);
+    const rows = await messages(A.id);
+    const fresh = rows.map(textOf).filter((t) => t.startsWith("【完成回推】") && t.includes("被打断C"));
+    if (fresh.length > 0) { got = fresh[fresh.length - 1]; break; }
+  }
+  await sleep(2000);
+  const afterInterrupt = (await messages(A.id)).map(textOf).filter((t) => t.startsWith("【完成回推】"));
+  check("…and exactly ONE notice arrives for it (the killed turn's registration is not delivered)",
+    got != null && afterInterrupt.length === preNotices + 1, `notices=${afterInterrupt.length} expected=${preNotices + 1}`);
+
+  // ---- 7. 关掉「后台任务完成唤醒」不许把派活回执一起关掉 -------------------------------------
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { completionWake: false } }) });
+  const D = await mkSession("静默D");
+  const beforeQuiet = (await messages(A.id)).length;
+  const quietSend = cli(asA, ["session", "send", D.id, "[hold:1200] 关掉唤醒也要回我", "--reply-on-done"]);
+  check("with completionWake OFF the dispatch is still accepted", quietSend.code === 0, quietSend.stderr);
+  let quietNotice = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(500);
+    const hit = (await messages(A.id)).map(textOf).find((t) => t.startsWith("【完成回推】") && t.includes("静默D"));
+    if (hit) { quietNotice = hit; break; }
+  }
+  check("…and the receipt still arrives (that switch is about background noise, not about peers waiting)",
+    quietNotice != null, `rows ${beforeQuiet} -> ${(await messages(A.id)).length}`);
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { completionWake: true } }) });
+
+  // ---- 8. 目标被 --close：登记不许悬着 --------------------------------------------------------
+  const E = await mkSession("要关E");
+  const closing = cli(asA, ["session", "send", E.id, "[hold:12000] 长活", "--reply-on-done"]);
+  check("a long turn is running before the close", closing.code === 0, closing.stderr);
+  await sleep(700);
+  const stop = cli(asA, ["session", "stop", E.id, "--close"]);
+  check("`session stop --close` closes it", stop.code === 0, stop.stderr || JSON.stringify(stop.doc));
+  let closeNotice = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(500);
+    const hit = (await messages(A.id)).map(textOf).find((t) => t.startsWith("【完成回推】") && t.includes("要关E"));
+    if (hit) { closeNotice = hit; break; }
+  }
+  check("closing a target with a reply outstanding tells the dispatcher instead of leaving it waiting",
+    closeNotice != null, String(closeNotice).slice(0, 120));
 } finally {
   try { process.kill(-proc.pid, "SIGTERM"); } catch { /* gone */ }
 }
