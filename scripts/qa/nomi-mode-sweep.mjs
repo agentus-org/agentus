@@ -212,6 +212,19 @@ try {
   check("脸是 canvas 且画了东西（亮像素 > 0.5%）", a1 && a1.lit > 0.5, JSON.stringify(a1 && { lit: a1.lit, w: a1.w, h: a1.h }));
   check("脸在两帧之间变了（不是一张静态图）", a1 && a2 && a1.sig !== a2.sig, JSON.stringify({ a: a1?.sig, b: a2?.sig }));
 
+  // ---- 4.5 「听」和「想」不是同一张脸；听话时脸上有节奏 --------------------------------
+  // 操作者 2026-10-23:「怎么还是呆呆的」—— 当时 listening 与 thinking 都落到同一张眯眼的脸，
+  // 而这两种状态占了通话的绝大部分时间。下面两条就是那次修的可观测判据。
+  const faceNow = await ev(`document.querySelector('.call-mode')?.dataset.face ?? null`);
+  check("听话时是「看着你」的那张脸（curious），不是思考的眯眼脸", faceNow === "curious", String(faceNow));
+  const seen = new Set();
+  for (let i = 0; i < 40; i++) {
+    seen.add(await ev(`document.querySelector('.call-mode')?.dataset.face ?? ''`));
+    await sleep(200);
+  }
+  seen.delete("");
+  check("8 秒内脸上还换过别的表情（眨眼/扫一眼的节奏在走）", seen.size >= 2, [...seen].join(","));
+
   // ---- 5. 记录是「原件缩小」，不是另写一份 -----------------------------------------------
   check("记录里是会话页自己的行（.msg/.bubble 存在）", nomi.bubbleH !== null, String(nomi.bubbleH));
   check("字号真的变小了（同一行盒子比普通通话里矮）",

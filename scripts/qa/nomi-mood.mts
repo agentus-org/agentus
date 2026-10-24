@@ -10,6 +10,7 @@
 import {
   BLINK_BLOCKED, EMO_MOODS, IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, WARMTH_MS,
   WORK_FLICK_MS, activityOf, blinkHoldMs, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
+  smoothLevel, voiceCue, nextSaccadeMs, saccadeFor,
   readEmoTags, stripEmoTags, thinkingStage,
   type NomiMood,
 } from "../../packages/web/src/nomiMood.ts";
@@ -97,7 +98,18 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   const none = { phase: "idle" as const };
   check("connecting → loading", moodFor({ phase: "connecting" }) === "loading");
   check("error → error", moodFor({ phase: "error" }) === "error");
-  check("listening and thinking both focus the eyes", moodFor({ phase: "listening" }) === "focus" && moodFor({ phase: "thinking" }) === "focus");
+  // 听 ≠ 想（2026-10-23 实测：两者同脸时，通话里最常出现的两种状态长得一模一样 ——
+  // 「你说话时它在发呆」）。听 = 睁眼看着你；想 = 眯起来往上看。
+  check("listening is the attentive face, not the thinking one", moodFor({ phase: "listening" }) === "curious");
+  check("thinking squints (focus)", moodFor({ phase: "thinking" }) === "focus");
+  check("a saccade shows THROUGH listening (otherwise the face freezes while you talk)",
+    moodFor({ phase: "listening", life: "lookLeft" }) === "lookLeft");
+  check("listening and thinking do NOT look the same",
+    eyeFrame({ mood: "curious", right: false, blinking: false, t: 0, level: 0, expr: exprFor("curious", 0, 0), sleep: 0 }).h
+    !== eyeFrame({ mood: "focus", right: false, blinking: false, t: 0, level: 0, expr: exprFor("focus", 0, 0), sleep: 0 }).h);
+  // 连续量也要按「哪张脸」算，不按相位：working 拿到的必须是 thinking 那套神态。
+  check("expr follows the FACE, not the phase", exprFor("working", 0, 0).mode === "thinking" && exprFor("asking", 0, 0).mode === "listening");
+  check("expr still accepts a phase (old call sites keep working)", exprFor("speaking", 0.4, 0).mode === "speaking");
   check("speaking with no emotion → talking", moodFor({ phase: "speaking" }) === "talking");
   check("speaking with a neutral tag → still talking", moodFor({ phase: "speaking", emotion: "idle" }) === "talking");
   check("speaking with an emotion uses it", moodFor({ phase: "speaking", emotion: "sad" }) === "sad");
@@ -105,7 +117,20 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("90 s idle → sleep wins over the life beat", moodFor({ ...none, life: "wink", resting: true }) === "sleep");
   check("on the way to sleep it is drowsy", moodFor({ ...none, drowsy: true }) === "drowsy");
   check("a phase always beats an emotion (in-listening a sad tag must not change the eyes)",
-    moodFor({ phase: "listening", emotion: "sad" }) === "focus");
+    moodFor({ phase: "listening", emotion: "sad" }) === "curious");
+}
+
+// 6.5 电平：起音快、收尾慢；人一开口点一下头；听话时的眼神节奏。
+{
+  check("level rises fast", smoothLevel(0, 1, 0.55, 0.1) > 0.5);
+  check("level falls slow", smoothLevel(1, 0, 0.55, 0.1) > 0.85);
+  check("level stays inside 0..1", smoothLevel(-5, 5) <= 1 && smoothLevel(5, -5) >= 0);
+  check("a voice onset is noticed", voiceCue(0.02, 0.5) === "tick");
+  check("room noise is not a voice onset", voiceCue(0.02, 0.09) === null);
+  check("a loud room that is already loud is not an onset", voiceCue(0.45, 0.5) === null);
+  check("saccade rhythm is 2.4–4.6 s", nextSaccadeMs(() => 0) === 2400 && Math.round(nextSaccadeMs(() => 1)) === 4600);
+  const sacc = saccadeFor(() => 0.1);
+  check("a saccade is brief", sacc.durationMs >= 300 && sacc.durationMs <= 520, String(sacc.durationMs));
 }
 
 // 7. The life beat: rare, harmless, and it goes to bed eventually.

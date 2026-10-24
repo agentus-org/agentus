@@ -635,6 +635,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
     pending,
     newestKind: newest?.kind,
   });
+  /** 脸此刻到底是哪一张（解析后的 mood）。只作为**观测钩子**：canvas 像素能证明在动，
+   *  证明不了动的是哪张脸 —— sweep 和操作者都需要一个能读的答案。mood 变了才 setState，
+   *  不是每帧（帧循环 30 fps，每帧 setState 会把整页会话一起重渲染）。 */
+  const [faceMood, setFaceMood] = useState<NomiMood | null>(null);
   const faceEmotion: NomiMood | null = (() => {
     const tagged = readEmoTags(agentText);
     if (tagged.length) return tagged[tagged.length - 1];
@@ -1495,7 +1499,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   );
 
   return createPortal(
-    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
+    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-face={nomi ? faceMood ?? undefined : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
       <button
         type="button"
         className="call-gear"
@@ -1544,7 +1548,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
           通话里最长的那段时间（跑工具、等你授权）它一个字都不输出，屏幕上唯一的活物就是这张脸。 */}
       {nomi ? (
         <div className="call-nomi-face">
-          <NomiFace phase={phase} activity={faceActivity} emotion={faceEmotion} ticks={toolTicks} getLevel={faceLevel} />
+          <NomiFace phase={phase} activity={faceActivity} emotion={faceEmotion} ticks={toolTicks} getLevel={faceLevel} onMood={setFaceMood} />
           <div className="nomi-face-foot">
             <span className="nomi-face-state">{PHASE_LABEL[phase]}</span>
             {nomi && !cfg.wakePhrase ? (

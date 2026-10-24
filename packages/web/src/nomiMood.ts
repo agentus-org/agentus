@@ -127,15 +127,42 @@ export const LIFE_BEAT_P = 0.56;
 // --------------------------------------------------------------- expression state
 
 /** The state vector for this phase. `level` is the live 0..1 audio level (mic or playback). */
-export function exprFor(phase: CallPhase | "idle", level: number, elapsed: number, o: { resting?: boolean; warmth?: number } = {}): ExprState {
+/** 一张脸此刻的连续量从**它自己是哪张脸**推，不是从相位推。
+ *
+ *  实测（操作者 2026-10-23「怎么还是呆呆的」）：早先这里只看 `phase`，于是
+ *  `working`／`asking`／`curious` 这些 mood 拿到的都是 `thinking`／`listening` 的连续量 ——
+ *  形状换了、神态没换，读起来还是同一张脸在发呆。 */
+export function exprFor(who: CallPhase | NomiMood | "idle", level: number, elapsed: number, o: { resting?: boolean; warmth?: number } = {}): ExprState {
   const warmth = clamp01(o.warmth ?? 0);
-  switch (phase) {
+  switch (who) {
     case "listening":
       return { mode: "listening", attention: Math.min(1, 0.72 + level * 0.38), energy: 0.78, warmth, phaseElapsed: elapsed };
     case "thinking":
       return { mode: "thinking", attention: 0.88, energy: Math.min(1, 0.62 + elapsed * 0.08), warmth, phaseElapsed: elapsed };
     case "speaking":
       return { mode: "speaking", attention: 0.7, energy: Math.min(1, 0.72 + level * 0.35), warmth: Math.max(warmth, 0.25), phaseElapsed: elapsed };
+    // ── 按 mood 走（渲染器现在传的是解析后的那张脸，不是相位）────────────────────────
+    // 「听」和「想」必须是两种神态：听的时侯睁着眼看着你，想的时候眯起来往上看。
+    case "curious":
+    case "asking":
+      return { mode: "listening", attention: Math.min(1, 0.82 + level * 0.34), energy: 0.86, warmth, phaseElapsed: elapsed };
+    case "focus":
+    case "working":
+    case "strive":
+    case "loading":
+      return { mode: "thinking", attention: 0.9, energy: Math.min(1, 0.64 + elapsed * 0.08), warmth, phaseElapsed: elapsed };
+    case "talking":
+    case "happy":
+    case "surprise":
+    case "wink":
+      return { mode: "speaking", attention: 0.74, energy: Math.min(1, 0.76 + level * 0.33), warmth: Math.max(warmth, 0.28), phaseElapsed: elapsed };
+    case "lookLeft":
+    case "lookRight":
+    case "scan":
+      return { mode: "listening", attention: 0.66, energy: 0.7, warmth, phaseElapsed: elapsed };
+    case "drowsy":
+    case "sleep":
+      return { mode: "idle", attention: 0.1, energy: 0.16 + warmth * 0.1, warmth, phaseElapsed: elapsed };
     default:
       return {
         mode: "idle",
@@ -172,7 +199,13 @@ export function moodFor(o: {
   if (activity === "asking") return "asking";
   // 工具执行中 > 听/想：一轮里跑三个工具时，相位一直是 thinking，可它并不是在想，是在干活。
   if (activity === "tools") return "working";
-  if (phase === "listening" || phase === "thinking") return "focus";
+  // 听 ≠ 想（实测读法）：两者都回到同一张「眯着眼」的脸，通话里最常出现的两种状态就长得
+  // 一模一样 —— 你说话时它在发呆，它在思考时你分不出来。听 = 睁眼看着你（curious），
+  // 想 = 眯起来往上看（focus）。
+  // 听话时也有小动作（扫一眼／偏一下／眨个眼）：生命感那一拍落在"听"上时优先出它，
+  // 否则这两个状态永远被 curious 吃掉 —— 脸看着在看你，却一动不动。
+  if (phase === "listening") return life ?? "curious";
+  if (phase === "thinking") return "focus";
   if (resting) return "sleep";
   if (drowsy) return "drowsy";
   return life ?? "idle";
@@ -244,11 +277,11 @@ export function eyeFrame(o: {
     case "sleep": w = 45; break;
     case "surprise": w = 55; break;
     case "loading": w = 16; break;
-    case "curious": w = r ? 35 : 45; break;
+    case "curious": w = 34; break;   // 球面眼里 35×74 才读成"竖着的胶囊"；40×64 会变成圆角方块
     case "working": w = 46; break;
-    case "asking": w = r ? 38 : 50; break;
+    case "asking": w = 38; break;
     case "focus": w = isListening ? 40 + level * 8 : isThinking ? 46 + Math.min(expr.phaseElapsed, 3) * 2.5 : 32 + expr.attention * 8; break;
-    default: w = 42;
+    default: w = 34;
   }
 
   let h: number;
@@ -261,14 +294,14 @@ export function eyeFrame(o: {
     case "loading": h = 16; break;
     case "wink": h = r ? 2 : 40; break;
     case "working": h = 46; break;
-    case "asking": h = 68; break;
-    case "focus": h = isListening ? 74 + level * 16 : isThinking ? 44 - Math.min(expr.phaseElapsed, 3) * 3.5 : 78 + expr.attention * 12 + level * 8; break;
-    default: h = 78;
+    case "asking": h = 74; break;
+    case "focus": h = isListening ? 68 + level * 14 : isThinking ? 44 - Math.min(expr.phaseElapsed, 3) * 3.5 : 78 + expr.attention * 12 + level * 8; break;
+    default: h = 70;   // 球里的眼睛：34×70 约 2:1，才读成"竖着的胶囊"（64 高会变圆角方块）
   }
 
   let rot = 0;
   if (mood === "strive") rot = r ? -thinkingRot : thinkingRot;
-  else if (mood === "curious") rot = 15;
+  else if (mood === "curious") rot = 6;
   else if (mood === "asking") rot = 8;
   else if (isThinking) rot = r ? 4 : -4;
 
@@ -288,18 +321,14 @@ export function eyeFrame(o: {
     case "talking": y = Math.sin(t * 10) * 2 - level * 4 + expr.warmth * 2; break;
     case "strive": y = Math.cos(t * 3.2) * (2 + expr.energy * 2); break;
     case "drowsy": y = 4 + sleep * 12 + Math.sin(t * 1.2) * 1.4; break;
-    case "curious": y = r ? 10 : -10; break;
     case "wink": y = r ? 0 : -10; break;
     case "working": y = 6 + Math.sin(t * 1.6) * 1.2; break;   // 低头看手上的活
-    case "asking": y = r ? 6 : -6; break;
   }
 
   let yScale = 1;
   if (mood === "talking") yScale = 0.72 + level * 0.42 + Math.sin(t * 8) * 0.06 + expr.warmth * 0.04;
   else if (mood === "drowsy") yScale = Math.max(0.18, 1 - sleep * 0.74);
-  else if (mood === "curious") yScale = r ? 0.8 : 1.2;
   else if (mood === "working") yScale = 0.58 + Math.sin(t * 1.6) * 0.02;  // 半阖：专注，不是困
-  else if (mood === "asking") yScale = r ? 0.94 : 1.06;
   else if (mood === "focus") {
     yScale = isListening ? 0.9 + level * 0.12 + Math.sin(t * 1.4) * 0.015
       : isThinking ? 0.82 + Math.sin(t * 1.8) * 0.025
@@ -498,4 +527,181 @@ export { emoTagHint, EMO_TAG_VALUES } from "../../shared/src/index";
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/**
+ * 电平平滑：**上得快、落得慢**。
+ *
+ * 麦克风电平逐帧抖得厉害，直接用会让眼睛每帧都变尺寸（看着像噪点而不是表情）；但如果
+ * 一律慢速平滑，人一开口那一下「它听见了」的反应就没了。所以起音跟得紧（0.55/帧），
+ * 收尾慢慢落（0.10/帧）—— 这是包络检波器用了五十年的那套。
+ */
+export function smoothLevel(prev: number, raw: number, up = 0.55, down = 0.1): number {
+  const p = clamp01(prev), r = clamp01(raw);
+  return clamp01(p + (r - p) * (r > p ? up : down));
+}
+
+/** 人突然开口（电平跳起来）时该做什么小动作。返回 null 表示这一帧没什么好反应的。 */
+export function voiceCue(prev: number, now: number): MicroAction | null {
+  const jump = clamp01(now) - clamp01(prev);
+  // 0.18 是「说话」和「房间本底」的分界：底噪跳这么多不会发生，正常开口一定超过。
+  return jump > 0.18 && now > 0.22 ? "tick" : null;
+}
+
+/** 听你说话时的眼神节奏：每 2.4–4.6 s 一个 300–520 ms 的小动作（扫一眼／偏一下／眨个眼）。 */
+export const SACCADE_MIN_MS = 2400;
+export const SACCADE_MAX_MS = 4600;
+export function nextSaccadeMs(rand: () => number = Math.random): number {
+  return SACCADE_MIN_MS + rand() * (SACCADE_MAX_MS - SACCADE_MIN_MS);
+}
+export function saccadeFor(rand: () => number = Math.random): { mood: NomiMood; durationMs: number } {
+  const r = rand();
+  const mood: NomiMood = r < 0.42 ? "lookLeft" : r < 0.84 ? "lookRight" : "wink";
+  return { mood, durationMs: 300 + rand() * 220 };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// 球（本体）。眼睛不再是"悬在空中的两条白线"，而是**长在一个深色圆球里** —— 参照
+// `grokbot-animation-anatomy` 那套解剖（Grok Bot 的头像 = 黑球 + 白眼 + 弹簧），但实现是我们自己的：
+// 它们用 192 条射线的径向轮廓插值，我们只需要一个会挤压的圆，成本低一个数量级。
+//
+// 球存在的理由很实际：只有两只眼睛时，"在动"和"在发呆"的差别只有几像素；有了球，**整个身体的
+// 挤压/回弹**都在动，同样 30 fps 下读起来是活的。
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export interface BallFrame {
+  /** 半径（px，未乘 k）。 */
+  r: number;
+  /** 横向/纵向缩放：0.94 = 压扁一点。 */
+  sx: number;
+  sy: number;
+  /** 垂直偏移（px，未乘 k）—— 说话时身体轻轻上浮。 */
+  dy: number;
+  /** 整颗球的倾斜（度）。好奇歪头、干活低头都该是"头"在转，不是眼睛各转各的。 */
+  rot: number;
+}
+
+/** 每个 mood 的球体形状。数值是"安静可读"的区间：挤压超过 10% 会读成弹跳的果冻，不是呼吸。 */
+export function ballFrame(mood: NomiMood, o: { level?: number; breath?: number; sleep?: number } = {}): BallFrame {
+  const level = clamp01(o.level ?? 0);
+  const breath = o.breath ?? 0;
+  const sleeping = mood === "sleep";
+  const drowsy = mood === "drowsy";
+  switch (mood) {
+    case "talking":
+      // 说话：随音量体积略涨，纵向被"声音推"起来一点（不是抖动，是 0.02 的呼吸差）。
+      return { r: 96 + level * 7, sx: 1 + level * 0.03, sy: 1 - level * 0.025, dy: -1.5 - level * 2, rot: 0 };
+    case "happy":
+    case "wink":
+      return { r: 100, sx: 1.03, sy: 0.97, dy: -3, rot: -4 };
+    case "surprise":
+      return { r: 104, sx: 0.98, sy: 1.04, dy: -4, rot: 0 };
+    case "sad":
+      return { r: 93, sx: 1.02, sy: 0.94, dy: 3, rot: 3 };
+    case "strive":
+      return { r: 95, sx: 1.05, sy: 0.92, dy: 1, rot: -3 };
+    case "working":
+      // 干活：身体压低、前倾一点，像低着头。
+      return { r: 92, sx: 1.06, sy: 0.9, dy: 4, rot: 7 };
+    case "asking":
+      return { r: 99, sx: 0.99, sy: 1.01, dy: -1, rot: 0 };
+    case "focus":
+      return { r: 94, sx: 0.98, sy: 1.0, dy: 0, rot: -5 };
+    case "drowsy":
+      return { r: 97, sx: 1.02, sy: 0.95, dy: 6, rot: 6 };
+    case "sleep":
+      return { r: 95, sx: 1.04, sy: 0.93, dy: 7, rot: 8 };
+    case "loading":
+      return { r: 92 + (o.breath ?? 0) * 3, sx: 1, sy: 1, dy: 0, rot: 0 };
+    case "error":
+      return { r: 96, sx: 1.03, sy: 0.96, dy: 0, rot: 0 };
+    default:
+      // idle / curious / lookLeft / lookRight / scan：安静的球，呼吸 2×6 px 走 dy。
+      return {
+        r: sleeping ? 95 : 98, sx: 1 + breath * 0.006, sy: 1 - breath * 0.006,
+        dy: drowsy ? 5 : -breath * 2,
+        rot: mood === "curious" ? 4 : mood === "lookLeft" ? -3 : mood === "lookRight" ? 3 : 0,
+      };
+  }
+}
+
+/**
+ * 弹簧积分（半隐式欧拉，固定 dt）。**这是"弹一下再停"和"线性过去"的分界**，也是原引擎最核心的
+ * 一条：菜单级 ease 在任何时长下都是单调的，而弹簧会过冲、回弹、稳住 —— 人眼读前者为"过渡"，
+ * 读后者为"有重量"。
+ *
+ * 稳定性：k/m 与阻尼必须满足 dt 足够小；这里固定 dt=1/120 s、ω≤40 rad/s，单测跑 600 步验证不发散。
+ */
+export function springStep(x: number, v: number, target: number, dt: number, omega = 26, zeta = 0.55): { x: number; v: number } {
+  const a = -2 * zeta * omega * v - omega * omega * (x - target);
+  const nv = v + a * dt;
+  return { x: x + nv * dt, v: nv };
+}
+
+/** 眨眼闭合量 → 眼睛高度系数（0.06 = 一条缝）。 */
+export function blinkScale(blinking: boolean): number {
+  return blinking ? 0.06 : 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// 球面眼（伪 3D）。眼睛不是贴在平面上的贴纸，而是**长在球面上**：按正交投影摆放，
+// 往侧看时近的一只变窄、远的一只几乎看不见 —— 这一条是"有体积"和"平面图案"的分界。
+//
+// 参数取自 Grok Bot 解剖里的实测值：眼睛活动范围 水平 14° / 垂直 18°（形状类眼睛 19°/26°）。
+// 14° 听着小，但把它乘到半径上就是 ±0.24R 的位移，肉眼足够读出"它在看哪"。
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// sep 是**两只眼睛在球面上的夹角**。取 17° 而不是 26°：26° 时靠边的那只眼比另一只窄 8%，
+// 静止画面读起来是"歪掉的半边脸"；17° 的差只有 3%，体积感靠转头时的变化给出，静态仍然对称。
+export const SPHERE = { maxX: 14, maxY: 18, sep: 21 } as const;
+
+/** 视点角度（度）。指针、情绪、思考都会把眼睛往某个方向拽。 */
+export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number }): { ax: number; ay: number } {
+  const px = Math.max(-1, Math.min(1, o.pointerX ?? 0));
+  const py = Math.max(-1, Math.min(1, o.pointerY ?? 0));
+  const el = o.elapsed ?? 0;
+  let bx = 0, by = 0;
+  switch (o.mood) {
+    case "focus":
+      // 想事情（focus 就是"想"那张脸）：往左上飘
+      bx = -0.55; by = -0.7;
+      break;
+    case "working":
+      bx = -0.25; by = 0.85; break;          // 低头看手上的活
+    case "asking":
+      bx = 0; by = 0.1; break;               // 直视你
+    case "sad":
+      bx = 0; by = 0.8; break;
+    case "happy":
+    case "wink":
+      bx = 0.15; by = -0.25; break;
+    case "surprise":
+      bx = 0; by = -0.15; break;
+    case "drowsy":
+    case "sleep":
+      bx = 0; by = 0.75; break;
+    case "lookLeft": bx = -0.9; break;
+    case "lookRight": bx = 0.9; break;
+    case "scan": bx = Math.sin(el * 2.2) * 0.9; break;
+    case "curious":
+      bx = 0.35; by = -0.2; break;
+    default: break;
+  }
+  // 指针是"它看着你"的输入，权重比情绪高：手一动眼睛就跟着，这条最容易让人觉得"活的"。
+  const ax = Math.max(-1, Math.min(1, bx * 0.7 + px * 0.9));
+  const ay = Math.max(-1, Math.min(1, by * 0.7 + py * 0.8));
+  return { ax: ax * SPHERE.maxX, ay: ay * SPHERE.maxY };
+}
+
+/** 正交投影：把球面上某个角度的一个点投到屏幕坐标，并给出它的缩小系数（cos）。 */
+export function projectEye(o: { ax: number; ay: number; side: -1 | 1; R: number; sep?: number }): { x: number; y: number; cos: number } {
+  const sep = o.sep ?? SPHERE.sep;
+  const th = ((o.ax + o.side * sep / 2) * Math.PI) / 180;
+  const tv = (o.ay * Math.PI) / 180;
+  // 球面上的点 (sinθ, sinφ, cosθ·cosφ)，正交投影只取前两维；cosθ·cosφ 就是"正对镜头的比例"。
+  return {
+    x: o.R * Math.sin(th),
+    y: o.R * Math.sin(tv),
+    cos: Math.max(0, Math.cos(th) * Math.cos(tv)),
+  };
 }

@@ -3170,14 +3170,23 @@ body.pane-dragging * { cursor: col-resize !important; }
 /* the record takes the whole cell it is given instead of its usual 560px column */
 .call-mode[data-nomi="true"] .call-cc { width: 100%; max-width: none; }
 
+/* 脸区是**浅底**，球是深色 —— 这是"有体积"的前提（操作者 2026-10-24：「圆球以外背景改成白色，
+   球暗色也可以」）。暗底 + 暗球会糊成一团：球没有轮廓，眼睛又是白的，整块只剩两条发光竖线。
+   浅底把球变成实体（黑球白眼是 Grok Bot 头像的观感），代价是通话页原本那套"暗场辉光"氛围
+   在这一块不再成立 —— 所以这里刻意做成"页面上的一张浅色相纸"，而不是继续半透明玻璃。 */
 .call-nomi-face {
   position: relative; min-height: 0; min-width: 0; overflow: hidden;
   display: flex; flex-direction: column; align-items: stretch;
-  border: 1px solid rgba(255,255,255,0.10); border-radius: 20px;
+  border: 1px solid var(--nomi-edge, rgba(16,20,26,0.08)); border-radius: 20px;
   background:
-    radial-gradient(120% 90% at 50% 40%, color-mix(in srgb, var(--call-tone, #38bdf8) 15%, transparent) 0%, transparent 72%),
-    rgba(8,10,18,0.55);
+    radial-gradient(120% 90% at 50% 34%, var(--nomi-glow, rgba(16,20,26,0.055)) 0%, transparent 70%),
+    var(--nomi-bg, #fbfcfd);
   transition: background 500ms ease;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+}
+/* 暗色主题：浅底不变（球靠对比出形），只把"纸"压暗一点点，避免夜里整块发白刺眼。 */
+:root[data-theme="dark"] .call-nomi-face {
+  --nomi-bg: #f2f4f7; --nomi-edge: rgba(255,255,255,0.14); --nomi-glow: rgba(16,20,26,0.07);
 }
 .nomi-face-canvas { display: block; flex: 1 1 auto; width: 100%; min-height: 0; }
 .nomi-face-foot {
@@ -3185,8 +3194,8 @@ body.pane-dragging * { cursor: col-resize !important; }
   display: flex; align-items: baseline; gap: 8px;
   font-size: 11.5px; letter-spacing: 0.02em; pointer-events: none;
 }
-.nomi-face-state { color: var(--call-tone, #38bdf8); font-weight: 600; }
-.nomi-face-warn { color: var(--warn, #d08a2a); }
+.nomi-face-state { color: var(--nomi-ink, #0f1419); font-weight: 650; }
+.nomi-face-warn { color: #8a5a12; }
 
 /* 竖屏：上脸下记录。44% 是量出来的折中 —— 再高，390×844 上的记录区就剩不到 300px，
    最后一条消息会被挤到折线以下；再低，眼睛就小到看不出表情。 */

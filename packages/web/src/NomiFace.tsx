@@ -15,6 +15,7 @@ import type { CallPhase } from "./CallMode";
 import {
   BLINK_BLOCKED, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS, WARMTH_MS, WORK_FLICK_MS,
   WORK_STRETCH_MS, blinkHoldMs, exprFor, eyeFrame, eyeSpacing, lifeBeat, moodFor, nextBlinkMs,
+  nextSaccadeMs, saccadeFor, smoothLevel, voiceCue, ballFrame, springStep, gazeAngles, projectEye,
   type AgentActivity, type MicroAction, type NomiMood,
 } from "./nomiMood";
 
@@ -28,6 +29,8 @@ export interface NomiFaceProps {
   ticks?: number;
   /** 实时电平 0..1（说话时是播放，听的时候是麦克风）。每帧取一次，不进 state。 */
   getLevel: () => number;
+  /** 解析后的那张脸（不是相位）。给页面留一个可观测钩子：canvas 像素只能证明「在动」。 */
+  onMood?: (mood: NomiMood) => void;
 }
 
 /** 一帧里所有会衰减的东西。全部放进 ref：它们只在帧循环里读写。 */
@@ -51,7 +54,18 @@ interface Mutable {
   mood: NomiMood;
   moodAt: number;
   ticks: number;
+  /** 平滑后的电平（画眼睛用的就是它）。 */
   level: number;
+  /** 这一帧拿到的原始电平，用来判「人刚开口」。 */
+  rawLevel: number;
+  /** 下一次「扫一眼／偏一下」的时刻（只在 listening 里走）。 */
+  nextSaccadeAt: number;
+  /** 球体（本体）的弹簧状态：半径 + 两个方向的缩放 + 垂直偏移，各自一条弹簧。 */
+  ball: { r: number; sx: number; sy: number; dy: number };
+  ballV: { r: number; sx: number; sy: number; dy: number };
+  /** 球的倾角（度）与角速度 —— 也走弹簧，歪头才有惯性。 */
+  ballRot: number;
+  ballRotV: number;
 }
 
 const fresh = (now: number): Mutable => ({
@@ -60,15 +74,21 @@ const fresh = (now: number): Mutable => ({
   resting: false, drowsy: false, sleep: 0, sleepTarget: 0,
   phaseAt: now, warmthUntil: 0, lastEventAt: now,
   micro: null, microAt: 0, microUntil: 0,
-  mood: "idle", moodAt: now, ticks: 0, level: 0,
+  mood: "idle", moodAt: now, ticks: 0, level: 0, rawLevel: 0,
+  nextSaccadeAt: now + 900,
+  ball: { r: 98, sx: 1, sy: 1, dy: 0 },
+  ballV: { r: 0, sx: 0, sy: 0, dy: 0 },
+  ballRot: 0, ballRotV: 0,
 });
 
-export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel }: NomiFaceProps): JSX.Element {
+export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel, onMood }: NomiFaceProps): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const props = useRef({ phase, activity, emotion, ticks });
   props.current = { phase, activity, emotion, ticks };
   const levelOf = useRef(getLevel);
   levelOf.current = getLevel;
+  const moodOf = useRef(onMood);
+  moodOf.current = onMood;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -109,7 +129,12 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       lastPaint = ms;
       const t = ms / 1000;
       const p = props.current;
-      st.level = Math.max(0, Math.min(1, levelOf.current() || 0));
+      // 电平：先平滑（起音快、收尾慢），再判「人刚开口」—— 那一帧点一下头，等于「我听见了」。
+      st.rawLevel = Math.max(0, Math.min(1, levelOf.current() || 0));
+      const before = st.level;
+      st.level = smoothLevel(st.level, st.rawLevel);
+      const cue = voiceCue(before, st.level);
+      if (cue && p.phase === "listening") { st.micro = cue; st.microAt = ms; st.microUntil = ms + 280; }
 
       // ── 事件：新工具帧 = 点一下头；相位变了 = 记时间 + 说完的余温 ──────────────────────
       if (p.ticks !== st.ticks) {
@@ -119,10 +144,6 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
         st.microAt = ms;
         st.microUntil = ms + 260;
       }
-      if (p.phase !== st.mood || true) {
-        // phase 变化在下面 mood 计算里自然体现；这里只管两件事：阶段起点 + 说完的余温。
-      }
-
       // ── 生命感：眨眼、走神、犯困 ────────────────────────────────────────────────────
       const busy = p.activity !== "none" || p.phase === "thinking" || p.phase === "speaking";
       if (ms >= st.nextBlinkAt) {
@@ -138,6 +159,17 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
         } else if (b) {
           st.life = b.mood;
           st.lifeUntil = ms + b.durationMs;
+        }
+      }
+      // 听你说话的时侯别只剩呼吸：每 2.4–4.6 s 扫一眼／偏一下／眨个眼（300–520 ms）。
+      // 这条节奏是「活的」和「一张图」之间最便宜的分界，比呼吸幅度好认。
+      if (p.phase === "listening" && ms >= st.nextSaccadeAt) {
+        st.nextSaccadeAt = ms + nextSaccadeMs();
+        if (!st.life) {
+          const s2 = saccadeFor();
+          st.life = s2.mood;
+          st.lifeUntil = ms + s2.durationMs;
+          st.lastEventAt = ms;
         }
       }
       if (st.life && ms > st.lifeUntil) st.life = null;
@@ -169,6 +201,7 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       });
       if (mood !== st.mood) {
         st.moodAt = ms;
+        try { moodOf.current?.(mood); } catch { /* 可选钩子，绝不打断帧循环 */ }
         if (mood !== "sleep" && (st.resting || st.drowsy)) { st.resting = false; st.drowsy = false; st.sleepTarget = 0; st.sleep = 0; }
         // 说完之后那 2.4 秒的余温：mood 从 talking 回到 idle/focus 时点亮。
         if (p.phase !== "speaking") st.warmthUntil = ms + WARMTH_MS;
@@ -176,7 +209,7 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       }
       const warmth = Math.max(0, Math.min(1, (st.warmthUntil - ms) / WARMTH_MS));
       const elapsed = (ms - st.phaseAt) / 1000;
-      const expr = exprFor(p.phase === "connecting" ? "idle" : p.phase, st.level, elapsed, {
+      const expr = exprFor(mood, st.level, elapsed, {
         resting: st.resting, warmth,
       });
       if (p.phase === "listening" || p.phase === "thinking" || p.phase === "speaking") st.phaseAt = st.phaseAt || ms;
@@ -191,12 +224,35 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       g.clearRect(0, 0, W, H);
       g.scale(dpr, dpr);
       const w = W / dpr, h = H / dpr;
-      // 一只眼 ≈ 60 px 宽、间距 60：这个比例尺让「宽度 220、高度 170」的盒子刚好装下两张脸。
-      const k = Math.max(0.55, Math.min(2.6, Math.min(w / 190, h / 150)));
+      // ── 球（本体）────────────────────────────────────────────────────────────────
+      // 比例尺：球半径 ≈ 98 逻辑单位（和 nomiMood.ballFrame 的基准一致），整块高度装得下球
+      // 加上一圈留白；眼睛按同一个比例尺缩放，所以球变大时眼睛跟着变，不会「球大眼小」。
+      const k = Math.max(0.5, Math.min(3.2, Math.min(w / 260, h / 260)));
+      const target = ballFrame(mood, {
+        level: st.level,
+        breath: ["idle", "drowsy", "sleep", "curious", "asking", "working"].includes(mood)
+          ? Math.sin((t * Math.PI * 2) / 2) * 6 : 0,
+        sleep: st.sleep,
+      });
+      // 弹簧跑 120 Hz（和原引擎同一个积分步长），一个 30 fps 帧里补 4 步 —— 帧率掉到 15 也不会散。
+      for (let i = 0; i < 4; i++) {
+        const dt = 1 / 120;
+        const sr = springStep(st.ball.r, st.ballV.r, target.r, dt, 22, 0.6);
+        st.ball.r = sr.x; st.ballV.r = sr.v;
+        const sx = springStep(st.ball.sx, st.ballV.sx, target.sx, dt, 30, 0.5);
+        st.ball.sx = sx.x; st.ballV.sx = sx.v;
+        const sy = springStep(st.ball.sy, st.ballV.sy, target.sy, dt, 30, 0.5);
+        st.ball.sy = sy.x; st.ballV.sy = sy.v;
+        const dy = springStep(st.ball.dy, st.ballV.dy, target.dy, dt, 24, 0.62);
+        st.ball.dy = dy.x; st.ballV.dy = dy.v;
+        const rt = springStep(st.ballRot, st.ballRotV, target.rot, dt, 18, 0.5);
+        st.ballRot = rt.x; st.ballRotV = rt.v;
+      }
+      const R = st.ball.r * k;
+      const cx = w / 2 + pointer.x * 9 * k;
+      const cy = h / 2 + pointer.y * 7 * k + st.ball.dy * k;
       /** 中心距 = 空隙 + 眼宽（`eyeSpacing` 是 edge-to-edge 的间隙，见 nomiMood）。 */
       const gap = eyeSpacing(mood) * k;
-      const cx = w / 2 + pointer.x * 10 * k;
-      const cy = h / 2 + pointer.y * 8 * k;
 
       // 呼吸：只在「不紧绷」的脸上升降（2 s 一个来回，±6）。
       const breathe = ["idle", "drowsy", "sleep", "curious", "asking", "working"].includes(mood)
@@ -211,10 +267,51 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
       const pulseAge = ms - st.moodAt;
       const pulse = pulseAge < 260 ? 1 + 0.045 * (1 - pulseAge / 260) : 1;
 
+      // ── 球本体：深色，左上柔光 ──────────────────────────────────────────────────
+      // 「伪 3D 的光泽来自 fill，而不是几何」（grokbot 解剖的 Glow Lab 结论）：一个径向渐变就够，
+      // 不需要三层模糊、不需要阴影贴图。底部再垫一层很淡的接触阴影，让它看起来"坐"在背景上。
+      g.save();
+      g.translate(cx, cy);
+      g.rotate((st.ballRot * Math.PI) / 180);
+      g.scale(st.ball.sx, st.ball.sy);
+      g.beginPath();
+      g.arc(0, 0, R, 0, Math.PI * 2);
+      g.shadowColor = "rgba(15,20,26,0.30)";
+      g.shadowBlur = 30 * k;
+      g.shadowOffsetY = 12 * k;
+      const bg = g.createRadialGradient(-R * 0.32, -R * 0.42, R * 0.06, 0, 0, R * 1.02);
+      bg.addColorStop(0, "#31383f");
+      bg.addColorStop(0.52, "#171b20");
+      bg.addColorStop(1, "#0a0c0f");
+      g.fillStyle = bg;
+      g.fill();
+      g.shadowBlur = 0;
+      g.shadowOffsetY = 0;
+      // 顶缘一圈极淡的高光：没有它，球在浅色背景上会读成"一块平的圆片"。
+      g.strokeStyle = "rgba(255,255,255,0.12)";
+      g.lineWidth = Math.max(1, 1.6 * k);
+      g.stroke();
+      g.restore();
+
+      // 眼睛剪进球里：这样眨眼/眯眼/偏移都不会把白块甩到球外（原引擎同样把眼睛画在球内）。
+      g.save();
+      g.translate(cx, cy);
+      g.rotate((st.ballRot * Math.PI) / 180);
+      g.beginPath();
+      g.ellipse(0, 0, R * st.ball.sx, R * st.ball.sy, 0, 0, Math.PI * 2);
+      g.clip();
+      g.translate(-cx, -cy);
+
+      // 视点：指针 + 情绪决定眼睛往哪看；投影到球面上（正交），越往侧越窄。
+      const gaze = gazeAngles({ mood, pointerX: pointer.x, pointerY: pointer.y, elapsed, level: st.level });
       for (const eye of [left, right]) {
-        const cdist = gap + (((left.w + right.w) / 2) * k * left.xScale);
-        const ex = cx + (eye === right ? 1 : -1) * cdist / 2 + eye.x * k + mx;
-        const ey = cy + eye.y * k + breathe + my;
+        const side: -1 | 1 = eye === right ? 1 : -1;
+        const pj = projectEye({ ax: gaze.ax, ay: gaze.ay, side, R });
+        // 投影出的眼心 + 情绪自己那点水平偏移（`eye.x` 仍在用，量级很小）
+        const ex = cx + pj.x + eye.x * k * 0.5 + mx;
+        const ey = cy + pj.y + eye.y * k + breathe * 0.4 + my;
+        // 正对镜头 = 1；转到 60° 只剩一半宽，再往后就几乎看不见（真实球面就是这样）
+        const foreshorten = 0.55 + 0.45 * pj.cos;   // 收敛到 0.55–1：差 45% 是"透视"，差 75% 是"畸形"
         g.save();
         g.translate(ex, ey);
         g.rotate((eye.rot * Math.PI) / 180);
@@ -228,7 +325,7 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
         g.strokeStyle = `rgba(${tone},1)`;
 
         if (eye.shape === "x") {
-          const s = (eye.w / 2) * k;
+          const s = (eye.w / 2) * k * foreshorten;
           const j = Math.sin(t * 24) * eye.jitter * k;
           g.lineWidth = 6 * k;
           g.beginPath();
@@ -237,22 +334,23 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
           g.stroke();
         } else if (eye.shape === "arc") {
           // 开心朝上、难过朝下：一条半圆，线宽 6。
-          const r = (eye.w / 2) * k;
+          const r = (eye.w / 2) * k * foreshorten;
           g.lineWidth = 6 * k;
           g.beginPath();
           if (eye.arc === "happy") g.arc(0, r, r, Math.PI, Math.PI * 2);
           else g.arc(0, -r, r, 0, Math.PI);
           g.stroke();
         } else {
-          const ew = Math.max(2, eye.w * k * eye.xScale);
+          const ew = Math.max(2, eye.w * k * eye.xScale * foreshorten);
           const eh = Math.max(1, eye.h * k * eye.yScale);
           const rad = Math.min(ew, eh) / 2;
           const jx = eye.jitter ? Math.sin(t * 24) * eye.jitter * k : 0;
           const jy = eye.jitter ? Math.cos(t * 19) * eye.jitter * k : 0;
           // 上亮下略暗的竖向渐变：球形感来自这里（纯平涂的白块没有"眼珠"的立体）。
+          // 眼球不是一块平涂白：上缘亮、下缘略暗（0.94 而不是 0.78 —— 压在浅底上 0.78 会读成灰）
           const grad = g.createLinearGradient(0, -eh / 2, 0, eh / 2);
           grad.addColorStop(0, `rgba(${tone},1)`);
-          grad.addColorStop(1, `rgba(${tone},0.78)`);
+          grad.addColorStop(1, `rgba(${tone},0.94)`);
           g.fillStyle = grad;
           g.beginPath();
           if (typeof g.roundRect === "function") g.roundRect(-ew / 2 + jx, -eh / 2 + jy, ew, eh, rad);
@@ -266,6 +364,7 @@ export function NomiFace({ phase, activity, emotion = null, ticks = 0, getLevel 
         }
         g.restore();
       }
+      g.restore();   // 解除剪裁
 
       // 呼吸/脉动作用在整体上：用 scale 把两只眼一起收
       void pulse;
