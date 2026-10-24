@@ -3877,15 +3877,22 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
   const trace = v.trace;
   // clicking a message, another session, or empty space puts the popover away
   useDismiss(open, [rowRef], () => { setOpen(false); setEditing(false); });
-  if (!usage || (!usage.used && !usage.size)) return null;
+  // An agent that never sends `usage_update` still gets this row. Qoder sends none at all (measured on
+  // the live store: hermes 60/60 sessions carry usage, qoder 0/2), and the declaration that lives here
+  // is the SERVER's (`POST …/context-limit` is backend-agnostic) — so gating the whole row on the
+  // agent's report hid the only knob a qoder session has (issue #57). What we lose without usage is the
+  // gauge, not the setting; the row says so instead of vanishing.
+  const used = usage?.used ?? 0;
+  const reported = usage?.size ?? 0;
+  const hasUsage = used > 0 || reported > 0;
 
   const declared = v.info.contextLimit && v.info.contextLimit > 0 ? v.info.contextLimit : null;
   const remembered = v.info.modelContextLimit && v.info.modelContextLimit > 0 ? v.info.modelContextLimit : null;
   const source: "session" | "model" | "agent" = declared ? "session" : remembered ? "model" : "agent";
-  const limit = declared ?? remembered ?? usage.size;
-  const pct = limit > 0 ? Math.min(100, Math.round((usage.used / limit) * 100)) : 0;
-  const level = pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
-  const remaining = limit > 0 ? Math.max(0, limit - usage.used) : 0;
+  const limit = declared ?? remembered ?? reported;
+  const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  const level = !hasUsage ? "ok" : pct >= 85 ? "hot" : pct >= 65 ? "warn" : "ok";
+  const remaining = limit > 0 ? Math.max(0, limit - used) : 0;
   const commands = v.info.commands ?? [];
   const has = (name: string): boolean => commands.some((c) => c.name === name);
   const sourceLabel = source === "session"
@@ -3936,13 +3943,15 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
         {/* used / total · pct — the shape every other agent product uses (AionUi "45.2K / 200K",
             studio "12.3K / 200K (6%)"): a bare length answers nothing about how much of it is spent
             (operator: 「已用上下文的数量也要写上去……应该把总的、还有已用的、占的百分比都写上去」). */}
-        {limit > 0 ? `${fmtTokens(usage.used)} / ${fmtTokens(limit)}` : `${fmtTokens(usage.used)} / —`}
-        {limit > 0 ? ` · ${pct}%` : ""}
+        {!hasUsage
+          ? (limit > 0 ? `未上报用量 · 窗口 ${fmtTokens(limit)}` : "agent 未上报用量 · 设窗口")
+          : limit > 0 ? `${fmtTokens(used)} / ${fmtTokens(limit)}` : `${fmtTokens(used)} / —`}
+        {hasUsage && limit > 0 ? ` · ${pct}%` : ""}
         {source === "session" ? " · 声明" : source === "model" ? " · 模型记录" : ""}
       </button>
       {limit > 0 ? (
-        <div className="usage-bar" title={`${usage.used} / ${limit} tokens (${pct}%)`}>
-          <i style={{ width: `${pct}%` }} />
+        <div className="usage-bar" title={hasUsage ? `${used} / ${limit} tokens (${pct}%)` : `agent 未上报用量 · 已声明 ${limit} tokens`}>
+          <i style={{ width: `${hasUsage ? pct : 0}%` }} />
         </div>
       ) : null}
       {/* A nearly-full window gets the useful action in place, using the command this agent
@@ -4007,7 +4016,17 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
             ) : (
               <>
                 <div className="usage-note">
-                  这个后端没公告上下文旋钮，所以下面这个数只是仪表盘的<b>声明</b>，只影响百分比；真减上下文用压缩命令或换模型。
+                  {v.info.backend === "qoder" ? (
+                    <>
+                      这个后端不公告上下文旋钮，也不上报用量（所以没有仪表盘数字）。下面的<b>声明</b>对 qoder 是真的：
+                      它会在<b>下次启动</b>（冷启 / 重启 / 恢复）时作为 <code>--context-window</code> 交给 CLI，
+                      当场改要先停一次会话。
+                    </>
+                  ) : (
+                    <>
+                      这个后端没公告上下文旋钮，所以下面这个数只是仪表盘的<b>声明</b>，只影响百分比；真减上下文用压缩命令或换模型。
+                    </>
+                  )}
                 </div>
                 {editing ? (
                   <div className="usage-edit">
@@ -4016,7 +4035,7 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
                       value={draft}
                       inputMode="numeric"
                       aria-label="context window in tokens"
-                      placeholder={String(usage.size || v.info.contextLimit || 200000)}
+                      placeholder={String(reported || v.info.contextLimit || 200000)}
                       onChange={(e) => setDraft(e.target.value)}
                       {...ime.handlers}
                       onKeyDown={(e) => {
@@ -4057,12 +4076,12 @@ function UsageRow({ v }: { v: SessionView }): JSX.Element | null {
               </>
             )}
           </div>
-          <div>已用 {usage.used} / {limit || "—"} tokens（{pct}%）</div>
-          <div>剩余：{limit > 0 ? remaining : "unknown"} tokens</div>
+          <div>{hasUsage ? `已用 ${used} / ${limit || "—"} tokens（${pct}%）` : "agent 未上报用量（这个后端不发 usage_update）"}</div>
+          <div>剩余：{hasUsage && limit > 0 ? `${remaining} tokens` : "unknown"}</div>
           <div>窗口来源：<b>{sourceLabel}</b></div>
-          {usage.size > 0 && source !== "agent" ? <div>agent 上报：{fmtTokens(usage.size)} tokens (usage_update)</div> : null}
+          {reported > 0 && source !== "agent" ? <div>agent 上报：{fmtTokens(reported)} tokens (usage_update)</div> : null}
           {remembered && source === "session" ? <div>本模型记录：{fmtTokens(remembered)} tokens</div> : null}
-          {usage.cost != null ? <div>本轮花费：${usage.cost.toFixed(6)}</div> : null}
+          {usage?.cost != null ? <div>本轮花费：${usage.cost.toFixed(6)}</div> : null}
           {trace?.model ? <div>model：{trace.model}</div> : null}
           {trace && (trace.effort || trace.mode)
             ? <div>本轮：{[trace.effort && `思考强度 ${trace.effort}`, trace.mode && `模式 ${trace.mode}`].filter(Boolean).join("，")}</div>

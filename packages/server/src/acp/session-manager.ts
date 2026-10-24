@@ -14,7 +14,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
-import { BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
+import { applyContextWindow, BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
 import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
 import { thinkingOptionOf, voiceAppliesToPrompt, voiceModeBlock } from "./voice-mode.js";
 import {
@@ -681,11 +681,17 @@ export class SessionManager {
    * row was touched never breaks. argv comes from registry.effectiveArgs — that is where the
    * hermes profile flag (`-p <profile>`) is composed.
    */
-  #spawnShape(id: string): { spec: BackendSpec; args: string[] } | null {
+  #spawnShape(id: string, contextLimit?: number | null): { spec: BackendSpec; args: string[] } | null {
     const row = this.#store.getBackend(id);
-    if (row) return { spec: rowToSpec(row), args: effectiveArgs(row) };
-    const builtin = BACKENDS[id];
-    return builtin ? { spec: builtin, args: builtin.args } : null;
+    const shape = row
+      ? { spec: rowToSpec(row), args: effectiveArgs(row) }
+      : BACKENDS[id] ? { spec: BACKENDS[id], args: [...BACKENDS[id].args] } : null;
+    if (!shape) return null;
+    // The declared window rides argv only where that is the only channel the backend has (qoder) —
+    // see applyContextWindow. Deliberately not passed on create: a brand-new session has nothing
+    // declared yet, and resume is where a declaration first exists.
+    shape.args = applyContextWindow(id, shape.spec, shape.args, contextLimit);
+    return shape;
   }
 
   /**
@@ -903,7 +909,7 @@ export class SessionManager {
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`unknown session: ${id}`);
     if (!row.acpSessionId) throw new Error(`session ${id} was never handed to an agent`);
-    const shape = this.#spawnShape(row.backend);
+    const shape = this.#spawnShape(row.backend, row.contextLimit);
     if (!shape) throw new Error(`unknown backend: ${row.backend}`);
     const { spec, args } = shape;
 

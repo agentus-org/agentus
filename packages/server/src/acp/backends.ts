@@ -24,6 +24,28 @@ export interface HomeIsolation {
   homeDefault: string;
 }
 
+/**
+ * Hand a backend its declared context window as argv, when that is the only way it can hear it.
+ *
+ * Qoder reports no `usage_update` and advertises no context option over ACP (issue #57), but its CLI
+ * takes a global `--context-window <n>`; its own log line (`context_window.restore_skipped
+ * reason=cli_context_window_override`) says the flag wins over the window restored from a resumed
+ * session. Every other backend keeps the ACP route (Hermes has `context_budget`), so this does
+ * nothing for them — and an arg the operator already put in the row is never duplicated.
+ */
+export function applyContextWindow(
+  id: string,
+  spec: { kind?: string },
+  args: string[],
+  contextLimit?: number | null,
+): string[] {
+  const declared = typeof contextLimit === "number" && contextLimit > 0 ? Math.round(contextLimit) : null;
+  if (!declared) return args;
+  if (id !== "qoder" && spec.kind !== "qoder") return args;
+  if (args.some((a) => a === "--context-window" || a.startsWith("--context-window="))) return args;
+  return [...args, "--context-window", String(declared)];
+}
+
 export interface BackendSpec {
   /** registry row id (M6); the builtin seeds carry theirs, spawn does not need it */
   id?: string;

@@ -75,6 +75,7 @@
     "apk": "bash scripts/build-apk.sh",
     "transcript-fold": "tsx scripts/qa/transcript-fold.mts",
     "store-fold": "tsx scripts/qa/store-fold.mts",
+    "context-window": "tsx scripts/qa/context-window.mts",
     "live-stream": "tsx scripts/qa/live-stream.mts",
     "open-target": "tsx scripts/qa/open-target.mts",
     "rail-recent": "tsx scripts/qa/rail-recent.mts",
@@ -88,7 +89,8 @@
     "vad": "tsx scripts/qa/vad.mts",
     "vad-silero": "tsx scripts/qa/vad-silero.mts",
     "tus-mood": "tsx scripts/qa/tus-mood.mts",
-    "tus-mode-sweep": "node scripts/qa/tus-mode-sweep.mjs"
+    "tus-mode-sweep": "node scripts/qa/tus-mode-sweep.mjs",
+    "usage-row-sweep": "node scripts/qa/usage-row-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"
