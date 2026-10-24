@@ -322,6 +322,23 @@ try {
   check("a refused send leaves nothing behind in the target's transcript",
     !afterBusy.some((m) => JSON.stringify(m.payload ?? "").includes("目标正忙")), `${afterBusy.length} rows`);
 
+  // #55: --interrupt is the explicit way to take the floor. Same busy target, one flag.
+  const interruptSend = cli(env, ["session", "send", dst.id, "--interrupt", "我插一句"]);
+  check("``send --interrupt`` on a BUSY target is delivered (the floor was taken on purpose)",
+    interruptSend.code === 0 && interruptSend.doc?.data?.delivered === true && interruptSend.doc?.data?.interrupted === true,
+    JSON.stringify(interruptSend.doc?.data ?? interruptSend.doc?.error));
+  check("…and the note says a turn was interrupted, not that it was read",
+    /interrupted/.test(String(interruptSend.doc?.meta?.note ?? "")) && /does NOT mean it read/.test(String(interruptSend.doc?.meta?.note ?? "")),
+    String(interruptSend.doc?.meta?.note));
+  await sleep(600);
+  const interruptedLanded = (await api(`/api/sessions/${dst.id}/messages`)).body?.messages ?? [];
+  check("…and the interrupting message really reached the target's transcript",
+    interruptedLanded.some((m) => JSON.stringify(m.payload ?? "").includes("我插一句")));
+  const unknownFlag = cli(env, ["session", "send", dst.id, "x", "--shout"]);
+  check("an unknown send flag is refused instead of being sent as text",
+    unknownFlag.code !== 0 && unknownFlag.doc?.error?.code === "bad_request", JSON.stringify(unknownFlag.doc?.error));
+
+
   // Typos are refused, not ignored, and the aliases I floated are gone.
   const stray = cli(env, ["session", "show", dst.id, "extra"]);
   check("a stray positional argument is refused (bad_request), not silently dropped",

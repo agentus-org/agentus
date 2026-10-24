@@ -822,20 +822,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return send(res, 409, { error: COCKPIT_ERRORS.wakeFailed, message: String((e as Error)?.message ?? e) });
           }
         }
-        // Deliberately NOT `interrupt`: a cross-session message must never take the floor from a turn
-        // the OPERATOR started. A busy target answers `target_busy` and the caller reports it as such.
+        // NOT interrupt by DEFAULT: a cross-session message must never take the floor from a turn the
+        // OPERATOR started — a busy target answers `target_busy` and the caller reports it as such.
+        // #55: the caller may ASK for the floor (`--interrupt`), which reuses prompt()'s existing
+        // cancel → wait-until-really-stopped → new-turn path. The抢话头 is therefore always explicit
+        // and always visible in the command that did it; nothing on this channel interrupts silently.
+        const wantInterrupt = body.interrupt === true;
         try {
           // `origin` is not decoration: without it the target's page shows this as a message the
           // OPERATOR typed. With it the bubble says which session it came from.
           await mgr.prompt(to, message, [], {
-            interrupt: false,
+            interrupt: wantInterrupt,
             origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
           });
         } catch (e) {
           const why = String((e as Error)?.message ?? e);
           return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
         }
-        return send(res, 200, { delivered: true, to, code: "delivered", ...(woke ? { delivered_after_wake: true } : {}) });
+        return send(res, 200, {
+          delivered: true, to, code: "delivered",
+          ...(woke ? { delivered_after_wake: true } : {}),
+          ...(wantInterrupt ? { interrupted: true } : {}),
+        });
       }
       if (url.pathname === "/api/cockpit/create" && req.method === "POST") {
         const body = await readJson(req);

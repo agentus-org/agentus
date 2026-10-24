@@ -54,9 +54,10 @@ another one
   agentus session messages <id> [--tail N]
                                       the last N messages, each cut to the documented size
   agentus session plan <id>           the plan object the operator's card renders
-  agentus session send <id> <text…> [--wake]
+  agentus session send <id> <text…> [--wake] [--interrupt]
                                        deliver a message into another session (stdin if no text);
-                                       --wake also starts the target when it is cold
+                                       --wake also starts the target when it is cold;
+                                       --interrupt cancels the turn it is running first (explicit)
   agentus session wake <id>            start a cold session's process (same switch as send)
   agentus session create <cwd> [--backend <id>] [--title <text>]
                                        open a NEW session in that directory and answer with its row
@@ -300,7 +301,12 @@ if (cmd === "capabilities") {
     // The text is the plain words after the id — an agent writing a sentence should not have to
     // build JSON to say it. With no words, stdin is accepted: either a JSON `{"message": "…"}` (what
     // older callers sent) or the raw text.
-    let message = args.slice(1).filter((a) => a !== "--wake").join(" ").trim();
+    const wantWake = args.includes("--wake");
+    const wantInterrupt = args.includes("--interrupt");
+    const FLAGS = new Set(["--wake", "--interrupt"]);
+    const straySend = args.slice(1).filter((a) => a.startsWith("--") && !FLAGS.has(a));
+    if (straySend.length) fail("bad_request", `unknown flag ${straySend[0]} (usage: agentus session send <id> <text…> [--wake] [--interrupt])`);
+    let message = args.slice(1).filter((a) => !FLAGS.has(a)).join(" ").trim();
     if (!message) {
       const raw = await readStdin();
       if (raw) {
@@ -318,7 +324,7 @@ if (cmd === "capabilities") {
       res = await fetch(`${EP}/api/cockpit/send`, {
         method: "POST",
         headers: headers(true),
-        body: JSON.stringify({ to: id, message, ...(args.includes("--wake") ? { wake: true } : {}) }),
+        body: JSON.stringify({ to: id, message, ...(wantWake ? { wake: true } : {}), ...(wantInterrupt ? { interrupt: true } : {}) }),
       });
     } catch (e) {
       fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
@@ -338,9 +344,15 @@ if (cmd === "capabilities") {
       data: body,
       meta: {
         schema_version: 1,
-        note: body?.delivered_after_wake
-          ? "the target was COLD: this call woke it (a process now exists) and then delivered. delivered means it received the message and started a turn — not that it read or agreed."
-          : "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
+        note: [
+          body?.delivered_after_wake
+            ? "the target was COLD: this call woke it (a process now exists) and then delivered."
+            : null,
+          body?.interrupted
+            ? "the target was BUSY: its turn was interrupted (cancelled, then the session was waited to really stop) before yours started — the words it had already produced stay in its transcript."
+            : null,
+          "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
+        ].filter(Boolean).join(" "),
       },
     });
   } else if (verb === "wake") {
