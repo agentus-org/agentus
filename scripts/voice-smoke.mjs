@@ -424,6 +424,40 @@ try {
     mig2.body?.call?.minChars === 3 && mig2.body?.call?.bargeSensitivity === 60, JSON.stringify(mig2.body?.call));
   killGroup(fourth.proc);
 
+  // A row that sits at the CURRENT shipped numbers with an empty wake phrase is the shape every
+  // existing install has (the phrase is new): it must adopt 「hi, Tus」, otherwise Tus mode — which
+  // forces keyword interruption — stays inert on exactly the machines that already had settings.
+  const phraseDir = mkdtempSync(path.join(tmpdir(), "agentus-phrase-"));
+  fs.writeFileSync(
+    path.join(phraseDir, "settings.json"),
+    JSON.stringify({ call: { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3, wakePhrase: "" }, updatedAt: 1 }),
+    { mode: 0o600 },
+  );
+  const fifthP = await boot(phraseDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const mig4 = await (async () => {
+    const res = await fetch(fifthP.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(phraseDir)}` } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  })();
+  check("a call section at the CURRENT defaults still adopts the shipped wake phrase（空的就是没人设过）",
+    mig4.body?.call?.wakePhrase === "hi, Tus", JSON.stringify(mig4.body?.call));
+  killGroup(fifthP.proc);
+
+  // …but a phrase the operator typed is theirs, never overwritten by a new default
+  const typedDir = mkdtempSync(path.join(tmpdir(), "agentus-typed-"));
+  fs.writeFileSync(
+    path.join(typedDir, "settings.json"),
+    JSON.stringify({ call: { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3, wakePhrase: "小灵" }, updatedAt: 1 }),
+    { mode: 0o600 },
+  );
+  const sixth = await boot(typedDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const mig5 = await (async () => {
+    const res = await fetch(sixth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(typedDir)}` } });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  })();
+  check("…and a phrase the operator typed is kept as-is", mig5.body?.call?.wakePhrase === "小灵",
+    JSON.stringify(mig5.body?.call));
+  killGroup(sixth.proc);
+
   // …but a section the operator really tuned is left exactly as it is
   const tunedDir = mkdtempSync(path.join(tmpdir(), "agentus-tuned-"));
   fs.writeFileSync(

@@ -400,8 +400,14 @@ function callAtShippedDefaults(r: Record<string, unknown>): boolean {
   // by hand after the new default is indistinguishable — it gets the default back once.)
   const wakeShipped = r.wakePhrase === undefined || r.wakePhrase === CALL_DEFAULT.wakePhrase
     || r.wakePhrase === "";
+  // Two generations of numbers count as untouched: the pre-rename row (bargeLevel 0.2 / 1200 / 1)
+  // and the row that already holds what ships today (60 / 300 / 1500 / 3). Without the second one
+  // a new default can never reach an existing install — its row is already at the current numbers,
+  // so it fails the fossil test and keeps the old value (that is how 「hi, Tus」 stayed inert).
+  const silenceShipped = Number(r.silenceMs) === 1200 || Number(r.silenceMs) === CALL_DEFAULT.silenceMs;
+  const minCharsShipped = Number(r.minChars) === 1 || Number(r.minChars) === CALL_DEFAULT.minChars;
   return sens && modeShipped && wakeShipped
-    && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
+    && Number(r.bargeMs) === 300 && silenceShipped && minCharsShipped;
 }
 
 /** What each knob may be. The ranges are the panel's slider ends; the server is the one
