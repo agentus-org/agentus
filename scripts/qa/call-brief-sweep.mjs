@@ -110,6 +110,10 @@ const cueText = () => ev(`(() => { const el = document.querySelector('.call-cue'
 // ---- 1. a turn that goes quiet is not allowed to go silent -------------------------------
 // `[hold:12000]` is a turn that is IN FLIGHT and silent for 12 s: the exact window the operator
 // cannot tell from a dropped call.
+// Let the call's own clock hook up first: a prompt fired in the same tick the call opened can land
+// before the page has recorded that a turn is running (measured: the leading ack then never comes,
+// and this single check flaked 2 runs out of 4 with the same code).
+await sleep(1000);
 await api(`/api/sessions/${SID}/prompt`, { method: "POST", body: JSON.stringify({ text: "[hold:12000] 我在想" }) });
 let firstCue = null;
 let cueAt = 0;

@@ -489,7 +489,9 @@ try {
   await waitListening();
   await ev(RESET_SEEN);
 
-  await promptCall("[tools:3]");
+  // 300 ms 的 in_progress 窗口：25 ms 时这条断言在机器忙的时候会假红（实测连续两次），
+  // 而它要证的是"状态真的到了页面上"，不是"25 ms 内重渲染能不能跟上"。
+  await promptCall("[tools:3:300]");
   let tSeen = null;
   for (let i = 0; i < 120; i++) {
     await sleep(200);
