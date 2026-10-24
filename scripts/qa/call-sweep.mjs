@@ -758,6 +758,13 @@ try {
   const tookFloor = await waitPhase2("listening", 3000);
   check("…and at its most sensitive the SAME voice takes the floor immediately (live apply)",
     tookFloor === true, JSON.stringify({ set: sensitive, phase: await phase2() }));
+  // #58 的反面：语音模式抢过话筒时**不许说「好，停了」** —— 这一刻麦克风是开的，我们自己念出来的
+  // 那句会被识别成操作者的下一句话（和关键词模式在回答期间必须关 relay 是同一类坑）。那里只给两声
+  // 下行短提示音。按键模式没有这个限制，所以 tri 那边断言的正是「说出来了」。
+  check("a voice-mode barge does NOT say 好，停了 out loud (the mic is live — it would hear itself)",
+    !ttsBodies.some((b) => String(b).includes("好，停了"))
+      && !(await ev2("window.__bvoice ?? []")).some((t) => String(t).includes("好，停了")),
+    JSON.stringify({ tts: ttsBodies.filter((b) => String(b).includes("好，停了")) }));
   // REGRESSION for "Stopped waiting for another Hermes process on this session. Your message was
   // not processed." The call sits in `speaking` while the reply is read out, and the agent's TURN
   // is usually over long before that — so barge-in used to cancel an IDLE session, which leaves a
@@ -1023,7 +1030,10 @@ try {
   // The progress cues (#58) are a different speaker path — one short line, nothing glued after it —
   // so they are excluded here by name; the invariant this line pins is the ANSWER splitter's.
   const cues = new Set(await ev2("window.__cues ?? []"));
-  const answerClips = ttsBodies.filter((b) => !cues.has(b));
+  // …and the floor ack (#58) is the same class: one deliberate short line, never the splitter's
+  // output. It is only ever spoken in 按键/按住说话 (the mic is closed there); the voice-mode
+  // assertion above pins the opposite, so excluding it here cannot hide a regression.
+  const answerClips = ttsBodies.filter((b) => !cues.has(b) && !String(b).includes("好，停了"));
   const shortClips = answerClips.filter((b, i) => b.length < 12 && i < answerClips.length - 1);
   check("no clip is shorter than the glued-sentence threshold (except the last one)",
     shortClips.length === 0, JSON.stringify(shortClips.map((b) => `${b.length}字:${b}`).slice(0, 4)));

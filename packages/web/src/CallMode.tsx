@@ -790,12 +790,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const approvalDoneRef = useRef(0);         // how many reminders went out for it
 
   /** 两声短提示音，纯 WebAudio：不要网络、不占 TTS 配额、不会跟正在念的句子抢喇叭。 */
-  const chime = (): void => {
+  const chime = (tones: number[] = [880, 1180]): void => {
     try {
       const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctx) return;
       const ctx = new Ctx();
-      [880, 1180].forEach((f, i) => {
+      tones.forEach((f, i) => {
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.type = "sine";
@@ -1039,6 +1039,24 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *  no-op on the agent side: it leaves a hard interrupt pending, and the NEXT turn then dies at its
    *  turn-lease admission with the refusal notice above (the server refuses the same cancel too, as
    *  a second line of defence). */
+  /** 「好，停了」（#58）：打断不能是无声的 —— 否则你分不清它听没听见，只有屏幕上一个相位字。
+   *
+   *  但**在语音模式里不能说这句话**：那时麦克风正开着，我们自己念出来的「好，停了」会被识别成
+   *  你的下一句话（同一类坑：关键词模式在回答期间一直开着 relay）。所以分两种确认：
+   *  - 按键/按住说话模式：话筒是关的，直接说一句「好，停了」，最直白；
+   *  - 语音模式：只是两声短促、下行的小提示音（人耳一听就知道「停了」，ASR 基本不成词），
+   *    而且不占用喇叭队列 —— 说完你马上就能开口。 */
+  const confirmTakeFloor = (): void => {
+    if (!aliveRef.current) return;
+    if (cfgRef.current.interruptMode !== "voice") {
+      void withSpeechLock(async () => {
+        await speaker.speak("好，停了", "call", prefs).catch(() => { /* nothing to confirm with */ });
+      });
+      return;
+    }
+    chime([520, 400]);
+  };
+
   const bargeIn = async (): Promise<void> => {
     takeFloor();     // 停播 + 取消回合 + 清队列：这一句回答到此为止
     await backToListening(false);
@@ -1052,6 +1070,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     speaker.stop();
     const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
     if (running) cockpit.send({ t: "cancel", sessionId });
+    // 确认语按「操作者确实从它手里拿走了话筒」触发，不按 cancel 发没发出去：回合可能刚好在这一瞬
+    // 结束（`running` 已经是 false，于是 cancel 不发），但操作者眼前还是「思考中/正在说」——
+    // 那种时候也必须有一声回应，否则按了没动静，只能靠屏幕上那个相位字。
+    const phase = phaseRef.current;
+    const wasBusy = running || queueRunRef.current || phase === "speaking" || phase === "thinking";
+    if (wasBusy) confirmTakeFloor();
     queueRef.current = [];
     queuedRef.current = 0;
     queueRunRef.current = false;

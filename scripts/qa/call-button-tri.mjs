@@ -48,10 +48,16 @@ function wav(seconds, freq = 320) {
   return Buffer.concat([head, data]);
 }
 const clip = wav(2);
+/** every sentence the call asked the speaker to say — the floor ack is only real if it went out */
+const spoken = [];
 const stub = http.createServer((req, res) => {
   if (req.method === "POST" && String(req.url).startsWith("/audio/speech")) {
-    req.resume();
+    let body = "";
+    req.on("data", (d) => { body += String(d); });
     req.on("end", () => {
+      // the raw body, not a guessed field: the provider's payload shape is not our business here,
+      // all this assertion needs is「这句话有没有被送去念」
+      spoken.push(body);
       res.writeHead(200, { "content-type": "audio/wav", "content-length": String(clip.length) });
       res.end(clip);
     });
@@ -153,6 +159,16 @@ try {
     body: JSON.stringify({ username: 'admin', password: [1,2,3,4,5,6].join('') }) }); return true; })()`);
   const stubVoice = { provider: "openai", baseUrl: `http://127.0.0.1:${stubPort}`, ttsModel: "stub-tts", ttsVoice: "stub", ["api" + "Key"]: ["sk-", "stub", "-key"].join("") };
   const setup = await ev(`(async () => {
+    // 这一次要断言「它到底说了哪句话」，而上游 TTS 桩只能证明有请求、认不出上下文；
+    // 直接在页面里记下交给 /api/tts 的正文，与用户真正听到的是同一份。
+    window.__tts = [];
+    {
+      const rawFetch = window.fetch;
+      window.fetch = function (u, o) {
+        try { if (String(u).includes('/api/tts') && o && o.body) window.__tts.push(String(o.body)); } catch (e) {}
+        return rawFetch.apply(this, arguments);
+      };
+    }
     localStorage.setItem('agentus.voice', JSON.stringify({ autoRead: false, voiceURI: '', rate: 1, lang: 'zh-CN', serverTts: true, stt: 'auto' }));
     localStorage.setItem('agentus.call.caption', '1');      // 左键只活在转录视图里：它就是操作员看的那一层
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' },
@@ -263,6 +279,13 @@ try {
     f = await ev(FLOOR);
     check("打断 then puts you in «结束» — the floor is yours, mic open",
       f.btns[0]?.text === "结束" && f.phase === "listening", JSON.stringify({ t: f.btns[0]?.text, p: f.phase }));
+    // #58: an interrupt must not be silent. In 按键/按住说话 the mic is CLOSED, so the call may say it
+    // out loud — that is the difference from 语音模式, where the same words would be re-heard as the
+    // operator's next sentence and are therefore replaced by a short chime.
+    const ttsSeen = (await ev(`window.__tts ?? []`)).join("\n");
+    check("…and it says 好，停了 out loud (button mode: the microphone is closed, so words are safe)",
+      spoken.some((t) => t.includes("好，停了")) || /好，停了/.test(ttsSeen),
+      JSON.stringify({ spoken: spoken.slice(-3), tts: ttsSeen.slice(-160), takes: await ev("window.__takes ?? 0"), dbg: await ev("window.__busyDbg ?? null"), acks: await ev("window.__acks ?? 0"), mode: await ev("localStorage.getItem('agentus.voice')") }));
     // 空文本结束 = 取消，不该发一条空消息出去
     const count = (t) => (t.match(/"role":"user"/g) ?? []).length;
     const c0 = count(await transcript(SID));
