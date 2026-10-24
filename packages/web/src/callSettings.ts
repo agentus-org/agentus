@@ -32,14 +32,17 @@ export interface CallSettings {
   /** an automatic send shorter than this many characters is dropped (1 = no limit) */
   minChars: number;
   /** 关键词打断 (opt-in, `interruptMode: "keyword"`): the utterance that has to be HEARD before the
-   *  floor changes hands — e.g. 「小灵」. Empty means the mode is inert, which is deliberate: no
-   *  default wake word, so switching the mode without typing one changes nothing (#42's comment). */
+   *  floor changes hands — e.g. 「小灵」. The shipped default is 「hi, Tus」 because Tus mode forces
+   *  keyword interruption: with an empty starter the mode was inert until the operator configured
+   *  it. Clearing the field still means "inert" — that stays a deliberate choice. */
   wakePhrase: string;
 }
 
 export const CALL_DEFAULT: CallSettings = {
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
-  wakePhrase: "",
+  // Matching ignores spaces, punctuation and case (see `matchesWakePhrase`), so 「hi tus」,
+  // 「Hi, Tus」 and 「HI TUS」 all fire.
+  wakePhrase: "hi, Tus",
 };
 
 /** The switch's ends, in the operator's words. */

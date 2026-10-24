@@ -362,6 +362,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       try {
         const snap = cockpit.getSnapshot();
         const live = snap.active?.info.id === sessionId ? snap.active : undefined;
+        // 从接通开始，这段听写就归通话。上一个页面的残留一律丢掉：`stop()` 会把它留给
+        // “输入框”消费，而通话结束后那个输入框正是聊天页的 composer。
+        dictation.cancel();
         if (live?.busy) {
           if (dead) return;
           sentRef.current = true;             // a turn is already in flight
@@ -375,7 +378,6 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         }
         const lastAgent = [...(live?.msgs ?? [])].reverse().find((m) => m.kind === "agent");
         baselineKeyRef.current = (lastAgent as { key?: string } | undefined)?.key ?? "";
-        dictation.stop();
         // 按键模式 (#51)：接了电话先不开麦 —— 麦克风在他按住圆球时才打开，页面顶上的录音指示才不会
         // 从接通那一刻一直亮到挂断。VAD 也是听帧的，没有麦克风就没有可喂的帧，一起跳过。
         if (cfgRef.current.interruptMode !== "button") {
@@ -407,7 +409,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       silero.reset();
       aliveRef.current = false;     // covers 改用键盘 and the parent closing the call
       speaker.stop();
-      dictation.stop();
+      // DISCARD, not stop(): `stop()` keeps what was heard so the composer can take it. The
+      // composer behind this call then becomes the chat prompt — which is exactly how the tail of
+      // the agent's own reply ("keyword mode keeps the recogniser on while we speak") ended up
+      // typed into the operator's input after 挂断 / 改用键盘.
+      dictation.cancel();
       setCallActive(false);
       // Hang up = nobody watching. Reporting "not watching" is the safe direction: for up to one tick
       // the phone may still notify while the operator is in fact back at the screen, which is a missed
@@ -867,6 +873,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     queueRunRef.current = false;
     sentRef.current = false;
     audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
+    // 关键词模式在回答期间一直开着 relay（它得听见唤醒词），所以那个识别任务里装的是
+    // 我们自己念出来的回答。换手时把任务换掉：只 resetText() 清的是本地文本，服务端
+    // 还会把剩下的句子按 asr-final 送回来 —— 挂断后它就变成输入框里「模型的最后几句话」。
+    dictation.setRelay(false);
+    dictation.resetText();
   };
 
   /** Back to the operator's turn: fresh transcript, mic relaying again. */
@@ -884,19 +895,23 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     setReply("");
     setHeard("");
     voiceAtRef.current = Date.now();
+    // 回到「听」之前先把上一段识别任务扔掉：回答期间（关键词模式）它听到的是我们自己的
+    // TTS，不换任务的话剩余句子会接着作为「他刚才说的」冒出来。关掉再开 = 新会话，
+    // 采集图不动，所以麦克风不会闪一下。
+    dictation.setRelay(false);
+    dictation.resetText();
     // 按键模式：回答结束「轮到你了」，但轮到你还不需要开麦 —— 他想说话时会按住圆球。以前这里无条件
     // 续上听写，于是每轮结束都自己把麦克风打开，页面顶上的录音指示一直亮着，他也分不清到底在不在听
     // （#51）。听写保持关闭，`pttStart` 会自己打开。
-    if (cfgRef.current.interruptMode === "button") {
-      dictation.setRelay(false);
-      return;
-    }
+    if (cfgRef.current.interruptMode === "button") return;
     try {
       const st = dictation.getSnapshot();
+      if (st.status === "transcribing") dictation.cancel();
       if (st.status === "idle" || st.status === "error" || st.status === "transcribing") {
-        await dictation.start(prefs, sessionId);
+        const ok = await dictation.start(prefs, sessionId);
+        if (!ok) throw new Error(dictation.getSnapshot().error || "无法打开麦克风");
+        dictation.setRelay(true);
       } else {
-        dictation.resetText();
         dictation.setRelay(true);
       }
     } catch (e) {
@@ -910,7 +925,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // screen is gone ("挂断的时候它有时候还在说话")
     aliveRef.current = false;
     speaker.stop();
-    dictation.stop();
+    dictation.cancel();   // the call's transcript is the call's; never hand it to the chat composer
     onClose();
   };
 

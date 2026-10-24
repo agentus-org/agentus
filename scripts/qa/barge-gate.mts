@@ -104,8 +104,16 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
     matchesWakePhrase("你好呀，今天天气不错", "小灵") === false);
   check("an empty phrase is INERT, never 'always on'", matchesWakePhrase("小灵", "") === false
     && matchesWakePhrase("", "") === false);
-  check("switching to keyword without typing a phrase changes nothing",
-    normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "");
+  // Tus mode forces keyword interruption, so the shipped phrase has to exist (2026-10-24). An
+  // explicitly cleared field still means inert — that is a choice, not the default.
+  check("the shipped keyword is 「hi, Tus」 and clears spaces/punctuation/case",
+    CALL_DEFAULT.wakePhrase === "hi, Tus"
+    && normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "hi, Tus"
+    && matchesWakePhrase("Hi, Tus，停一下", CALL_DEFAULT.wakePhrase)
+    && matchesWakePhrase("HI TUS", CALL_DEFAULT.wakePhrase));
+  check("clearing the phrase by hand still makes keyword mode inert",
+    normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword", wakePhrase: "" }).wakePhrase === ""
+    && matchesWakePhrase("hi tus", "") === false);
   check("the stored phrase is trimmed and capped at 24 CODE POINTS",
     normalizeWakePhrase("  小  灵  ") === "小 灵" && [...normalizeWakePhrase("x".repeat(40))].length === WAKE_MAX);
   // A cap counted in UTF-16 units would cut an emoji in half and store a lone surrogate (U+FFFD in

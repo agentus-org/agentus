@@ -176,7 +176,9 @@ export const CALL_DEFAULT: CallSettings = {
      and a long sentence with a breath in the middle got cut. Both ends of the range still let
      the room decide — this is only where a fresh install starts. */
   interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
-  wakePhrase: "",
+  /* Tus mode forces keyword interruption, so the shipped phrase has to exist: an empty starter
+     made the mode inert until somebody typed one. Matching strips spaces/punctuation/case. */
+  wakePhrase: "hi, Tus",
 };
 
 export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button", "keyword"];
@@ -393,7 +395,11 @@ function callAtShippedDefaults(r: Record<string, unknown>): boolean {
   const modeShipped = r.interruptMode === undefined || r.interruptMode === CALL_DEFAULT.interruptMode;
   // …and a stored wake phrase is a deliberate choice too: without this, setting one and switching
   // back to 语音打断 would make the whole section look untouched and the phrase would be dropped.
-  const wakeShipped = r.wakePhrase === undefined || r.wakePhrase === CALL_DEFAULT.wakePhrase;
+  // The empty string is ALSO shipped: it was the default until 2026-10-24, and a row that still
+  // carries it together with the old numbers is a row nobody configured. (A row that was cleared
+  // by hand after the new default is indistinguishable — it gets the default back once.)
+  const wakeShipped = r.wakePhrase === undefined || r.wakePhrase === CALL_DEFAULT.wakePhrase
+    || r.wakePhrase === "";
   return sens && modeShipped && wakeShipped
     && Number(r.bargeMs) === 300 && Number(r.silenceMs) === 1200 && Number(r.minChars) === 1;
 }

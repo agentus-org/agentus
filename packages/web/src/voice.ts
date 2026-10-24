@@ -981,6 +981,13 @@ class Dictation {
     this.#ws = null;
     this.#pending.length = 0;
     if (!ws) return;
+    // A socket we closed on purpose must never write again: `close()` is a handshake, and frames
+    // already queued in the event loop still fire their handler. That is how the call's own words
+    // (keyword mode keeps the recogniser running while the reply plays) landed in the transcript
+    // AFTER a hang-up had already cleared it — and then in the chat composer.
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
     try {
       ws.close();
     } catch {
@@ -991,6 +998,15 @@ class Dictation {
   resetText(): void {
     this.#committed = "";
     this.#set({ text: "", interim: "" });
+  }
+
+  /** QA only (see `__asFeed` / `__asMic`): put a FINISHED sentence into the shared transcript,
+   *  exactly where `asr-final` + `asr-done` leave it. The call and the chat composer share this
+   *  object, so this is how a sweep proves that what the microphone heard during a call cannot
+   *  surface in the composer afterwards — no recogniser credentials needed. */
+  commitForTest(text: string): void {
+    this.#committed = `${this.#committed}${text}`.replace(/\s+/g, " ").trim();
+    this.#set({ status: "idle", text: this.#committed, interim: "" });
   }
 
   #measure(chan: Float32Array): void {
@@ -1631,6 +1647,11 @@ function clampPcm(v: number): number {
 }
 
 export const dictation = new Dictation();
+// QA seam (next to `__asFeed` / `__asMic`): the call and the composer share one dictation object,
+// and a sweep has to be able to leave a sentence in it without a recogniser.
+if (typeof window !== "undefined") {
+  (window as unknown as { __asDictation?: Dictation }).__asDictation = dictation;
+}
 
 export function useDictation(): DictationState {
   return useSyncExternalStore(dictation.subscribe, dictation.getSnapshot);

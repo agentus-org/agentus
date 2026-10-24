@@ -1014,6 +1014,17 @@ try {
   check("no clip is shorter than the glued-sentence threshold (except the last one)",
     shortClips.length === 0, JSON.stringify(shortClips.map((b) => `${b.length}字:${b}`).slice(0, 4)));
   await sleep(400);                          // the first sentence reaches the TTS first
+  // The dictation object is SHARED by the call and the chat composer behind it, and keyword mode
+  // keeps the recogniser running through the reply (it has to hear the phrase), so it writes our
+  // own TTS into that object. Hang-up used to `stop()` (keep what was heard) instead of `cancel()`
+  // (throw it away): the composer sink then typed the reply's tail into the chat prompt. Inject the
+  // shape while the call is SPEAKING, so the loop cannot mistake it for the operator's question.
+  // The fed microphone overrides `getSnapshot().text`, so remove it first — otherwise the seam
+  // would hide the very text this check exists to establish.
+  await ev2(`delete window.__asFeed; true`);
+  await ev2(`window.__asDictation.commitForTest("模型的最后两句回答。")`);
+  check("the call's dictation really holds leftovers before hang-up",
+    String(await ev2(`window.__asDictation.getSnapshot().text`)).includes("最后两句回答"));
   const hitsAtHangup = ttsBodies.length;
   await ev2(`document.querySelector('.call-btn.hangup')?.click(); true`);
   await sleep(4200);                         // longer than one sentence (stub: 700 ms + a 2 s clip)
@@ -1021,6 +1032,11 @@ try {
     ttsBodies.length === hitsAtHangup,
     JSON.stringify({ at: hitsAtHangup, now: ttsBodies.length, tail: ttsBodies.slice(-2) }));
   check("…and the call is really gone", (await ev2(`!document.querySelector('.call-mode')`)) === true);
+  const afterHang = await ev2(`(() => { const ta = document.querySelector('.composer textarea') ?? document.querySelector('textarea');
+    return { text: ta ? ta.value : null, dict: window.__asDictation?.getSnapshot().text ?? null }; })()`);
+  check("hanging up discards what the call heard instead of typing it into the composer",
+    afterHang.text === "" && afterHang.dict === "", JSON.stringify(afterHang));
+  await ev2(`window.__asDictation?.cancel(); true`);   // leave nothing for the sections below
   await feed(0, "");
 
   // ---- 限流不能换嗓子 ---------------------------------------------------------------------------
