@@ -1982,13 +1982,22 @@ function StatusNoteRow({ n }: {
  *
  *  `App` passes this function down to `CallMode` as a prop instead of `CallMode` importing it, so
  *  the two modules do not import each other. */
-function TranscriptRows({ msgs, sid, backend, busy, base, notes = [] }: {
+function TranscriptRows({ msgs, sid, backend, busy, base, notes = [], speaking = false }: {
   msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string; notes?: StatusNote[];
+  /** 通话里已经开口了：思考块照常留着，但不再标成“还在写”的思考中。 */
+  speaking?: boolean;
 }): JSX.Element {
+  const folded = foldWork(msgs);
+  // 转录里的「💭 思考中…」是 m.open（这个思考块还在长），不是相位。真实 agent 会在
+  // 回答已经开始播放之后才补上最后一段思考 —— 于是耳朵听见回答、眼睛看见「思考中」，
+  // 两个信号互相矛盾（操作者 2026-10-24 在 live 上指出）。通话里说话时把思考行的
+  // live 摘掉：块本身还在（点开能读），只是不再冒充"正在思考"。
+  const rows = speaking
+    ? folded.map((r) => (r.kind === "msg" && r.m.kind === "thought" && r.live ? { ...r, live: false } : r))
+    : folded;
   // 状态行按「它来的时候最新那条消息是谁」插回去（`afterKey`），而不是一律堆在末尾 —— 回忆发生在
   // 回复之前、压缩发生在回合中间，堆在末尾等于把时间顺序讲错。锚点消息不在本页（翻页翻掉了、或
   // 还在后面的页里）时退到末尾：宁可位置不精确，也不能让一行状态凭空消失。
-  const rows = foldWork(msgs);
   const out: JSX.Element[] = [];
   let n = 0;
   // #38 文件变更：挂在**那次工具执行**旁边，不再攒到回合末尾（操作者 2026-10-21）。

@@ -176,7 +176,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *  implementation of the rows — the operator's requirement was literally 「那一套UI不要变」:
    *  the agent's mark and name, YOU, collapsible thinking, tool cards, plan cards, streaming
    *  markdown — and the call gets all of it without a second renderer drifting away from it. */
-  renderTranscript?: (p: { msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string }) => JSX.Element | null;
+  renderTranscript?: (p: { msgs: MsgView[]; sid: string; backend: string; busy: boolean; base: string; speaking?: boolean }) => JSX.Element | null;
 }): JSX.Element {
   const [prefs] = useVoicePrefs();
   // Why the voice changed: the speaker records a note when the server voice fails for a sentence and
@@ -1625,6 +1625,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
                   backend: active.info.backend,
                   busy: Boolean(active.busy),
                   base: active.info.workspace || active.info.cwd,
+                  // 耳朵里已经在念这句话了，转录里就不该再标「思考中…」——两个相反的信号。
+                  speaking: phase === "speaking",
                 })
                 : null}
               {/* What the recogniser has so far is not a message yet (it has not been sent), but in

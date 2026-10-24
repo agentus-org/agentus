@@ -210,13 +210,14 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("connecting → loading", moodFor({ phase: "connecting" }) === "loading");
   check("error → error", moodFor({ phase: "error" }) === "error");
   // 听 ≠ 想（2026-10-23 实测：两者同脸时，通话里最常出现的两种状态长得一模一样 ——
-  // 「你说话时它在发呆」）。听 = 睁眼看着你；想 = 眯起来往上看。
-  check("listening is the attentive face, not the thinking one", moodFor({ phase: "listening" }) === "curious");
+  // 「你说话时它在发呆」）。听 = 官方 listening 的 calm（宽椭圆、半阖）；想 = focus，
+  // 而渲染器在 phase=thinking 时会把整张脸换成官方的三点 morph。
+  check("listening is the official calm face, not the thinking one", moodFor({ phase: "listening" }) === "calm");
   check("thinking squints (focus)", moodFor({ phase: "thinking" }) === "focus");
   check("a saccade shows THROUGH listening (otherwise the face freezes while you talk)",
     moodFor({ phase: "listening", life: "lookLeft" }) === "lookLeft");
   check("listening and thinking do NOT look the same",
-    eyeFrame({ mood: "curious", right: false, blinking: false, t: 0, level: 0, expr: exprFor("curious", 0, 0), sleep: 0 }).h
+    eyeFrame({ mood: "calm", right: false, blinking: false, t: 0, level: 0, expr: exprFor("calm", 0, 0), sleep: 0 }).h
     !== eyeFrame({ mood: "focus", right: false, blinking: false, t: 0, level: 0, expr: exprFor("focus", 0, 0), sleep: 0 }).h);
   // 连续量也要按「哪张脸」算，不按相位：working 拿到的必须是 thinking 那套神态。
   check("expr follows the FACE, not the phase", exprFor("working", 0, 0).mode === "thinking" && exprFor("asking", 0, 0).mode === "listening");
@@ -228,7 +229,7 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("90 s idle → sleep wins over the life beat", moodFor({ ...none, life: "wink", resting: true }) === "sleep");
   check("on the way to sleep it is drowsy", moodFor({ ...none, drowsy: true }) === "drowsy");
   check("a phase always beats an emotion (in-listening a sad tag must not change the eyes)",
-    moodFor({ phase: "listening", emotion: "sad" }) === "curious");
+    moodFor({ phase: "listening", emotion: "sad" }) === "calm");
   check("speaking can carry the two new faces",
     moodFor({ phase: "speaking", emotion: "calm" }) === "calm"
     && moodFor({ phase: "speaking", emotion: "confused" }) === "confused");
@@ -338,13 +339,13 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
       ["neutral", "idle"], ["happy", "happy"], ["surprised", "surprise"], ["inspecting", "curious"],
       ["sad", "sad"], ["sleepy", "drowsy"], ["squinted", "focus"], ["calm", "calm"], ["confused", "confused"],
       ["smile", "happy"], ["inspect", "curious"], ["strange", "curious"], ["squint", "focus"], ["idle", "idle"],
+      ["thinking", "sad"],
     ];
     const bad = want.filter(([tag, mood]) => readEmoTags(`[emo:${tag}]`)[0] !== mood).map(([t]) => t);
     return bad.length === 0;
   })());
-  check("deliberate deviations stay ours: thinking→focus, angry→strive, sleep→sleep",
-    readEmoTags("[emo:thinking]")[0] === "focus" && readEmoTags("[emo:angry]")[0] === "strive"
-    && readEmoTags("[emo:sleep]")[0] === "sleep");
+  check("deliberate deviations stay ours: angry→strive, sleep→sleep",
+    readEmoTags("[emo:angry]")[0] === "strive" && readEmoTags("[emo:sleep]")[0] === "sleep");
   check("ordinary brackets survive", stripEmoTags("见 [1] 和 【注】") === "见 [1] 和 【注】");
   check("bracketed code survives", stripEmoTags("arr[0] 与 [x]") === "arr[0] 与 [x]");
   check("several tags → the moods in order, text clean", (() => {

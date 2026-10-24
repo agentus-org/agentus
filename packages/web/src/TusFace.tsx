@@ -87,6 +87,8 @@ interface Mutable {
   askingSince: number;
   /** 从困/睡里被叫醒的「惊一下」到什么时候（Grok 的 waking，1.6 s）。 */
   wakeUntil: number;
+  /** 三点 morph 的权重 0..1：1 = 只剩三个点（官方 thinking → dots），0 = 完整一张脸。 */
+  dots: number;
 }
 
 const fresh = (now: number): Mutable => ({
@@ -102,7 +104,7 @@ const fresh = (now: number): Mutable => ({
   ball: { r: 98, sx: 1, sy: 1, dy: 0 },
   ballV: { r: 0, sx: 0, sy: 0, dy: 0 },
   ballRot: 0, ballRotV: 0,
-  askingSince: 0, wakeUntil: 0,
+  askingSince: 0, wakeUntil: 0, dots: 0,
 });
 
 export function TusFace({ phase, activity, substate = "idle", emotion = null, ticks = 0, toolStatus = "", getLevel, onMood }: TusFaceProps): JSX.Element {
@@ -279,6 +281,14 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         st.mood = mood;
         if (clip) startClip(clip, ms);
       }
+      // 官方 thinking 不是一张脸，是三点的 morph（grok-recipes: thinking → morph "dots"，
+      // dotsGap 62 / dotsStagger 0.12 / liftPeriodMs 1400）。球和眼睛让位，只剩中点大、
+      // 两侧小的三点错开上下浮。0.2 s 淡入淡出，不硬切；球体弹簧照常跑，退出时脸从
+      // "正在呼吸的位置"接回来，不会跳一下。
+      const wantDots = p.phase === "thinking" && mood === "focus" ? 1 : 0;
+      st.dots += (wantDots - st.dots) * 0.14;
+      if (st.dots < 0.002) st.dots = 0;
+      else if (st.dots > 0.998) st.dots = 1;
       const warmth = Math.max(0, Math.min(1, (st.warmthUntil - ms) / WARMTH_MS));
       const elapsed = (ms - st.phaseAt) / 1000;
       const expr = exprFor(mood, st.level, elapsed, {
@@ -333,6 +343,12 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         else delete canvas.dataset.clip;
       }
       if (canvas.dataset.substate !== p.substate) canvas.dataset.substate = p.substate;
+      // 给 e2e 一个可读信号：此刻是不是三点 morph（脸已经淡出）。像素判据只能证明"在动"。
+      const dotsNow = st.dots >= 0.5 ? "1" : "";
+      if ((canvas.dataset.dots ?? "") !== dotsNow) {
+        if (dotsNow) canvas.dataset.dots = dotsNow;
+        else delete canvas.dataset.dots;
+      }
       // 弹簧跑 120 Hz（和原引擎同一个积分步长），一个 30 fps 帧里补 4 步 —— 帧率掉到 15 也不会散。
       for (let i = 0; i < 4; i++) {
         const dt = 1 / 120;
@@ -368,6 +384,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       // 「伪 3D 的光泽来自 fill，而不是几何」（grokbot 解剖的 Glow Lab 结论）：一个径向渐变就够，
       // 不需要三层模糊、不需要阴影贴图。底部再垫一层很淡的接触阴影，让它看起来"坐"在背景上。
       g.save();
+      g.globalAlpha = 1 - st.dots;
       g.translate(cx, cy);
       g.rotate((st.ballRot * Math.PI) / 180);
       g.scale(st.ball.sx, st.ball.sy);
@@ -412,7 +429,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         g.save();
         g.translate(ex, ey);
         g.rotate((eye.rot * Math.PI) / 180);
-        g.globalAlpha = Math.max(0, Math.min(1, eye.alpha));
+        g.globalAlpha = Math.max(0, Math.min(1, eye.alpha)) * (1 - st.dots);
         const tone = mood === "error" ? "248,113,113" : mood === "sad" ? "190,190,200" : "255,255,255";
         g.shadowColor = `rgba(${tone},${Math.min(0.5, 0.16 + st.level * 0.2 + warmth * 0.14)})`;
         // 光晕不能盖过形状：模糊半径收到眼睛短边的 45% 以内，否则放大之后只剩两团发白的光
@@ -462,6 +479,34 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         g.restore();
       }
       g.restore();   // 解除剪裁
+
+      // ── 三点的 thinking morph（官方 thinking → dots）──────────────────────────────
+      // 尺寸与节奏取自 recipe：span / 半径 / 错相 / 1.4 s 周期都是常数，不跟电平。
+      // 点比球小一圈（整排约球直径的 0.78），所以看起来是"身体缩小让位给装饰图元"，
+      // 而不是一个加载动画盖在脸上。
+      if (st.dots > 0) {
+        const span = R * 0.56;
+        const lift = R * 0.08;
+        const wave = (offset: number): number => Math.sin((t * Math.PI * 2) / 1.4 + offset * Math.PI * 2);
+        const dots: { x: number; r: number; tone: string; offset: number }[] = [
+          { x: cx - span, r: R * 0.17, tone: "109,114,120", offset: -0.12 },
+          { x: cx, r: R * 0.24, tone: "13,15,18", offset: 0 },
+          { x: cx + span, r: R * 0.19, tone: "125,131,139", offset: 0.12 },
+        ];
+        g.save();
+        for (const d of dots) {
+          const y = cy + wave(d.offset) * lift;
+          const r = d.r * (1 + 0.04 * wave(d.offset + 0.25));
+          g.globalAlpha = st.dots;
+          g.fillStyle = `rgb(${d.tone})`;
+          g.shadowColor = `rgba(${d.tone},0.28)`;
+          g.shadowBlur = r * 0.9;
+          g.beginPath();
+          g.arc(d.x, y, r, 0, Math.PI * 2);
+          g.fill();
+        }
+        g.restore();
+      }
 
       // 呼吸/脉动作用在整体上：用 scale 把两只眼一起收
       void pulse;

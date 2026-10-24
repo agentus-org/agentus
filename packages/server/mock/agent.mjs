@@ -882,6 +882,22 @@ const agent = () => ({
       messageId,
       content: { type: "text", text: MOCK_MARKDOWN },
     });
+    // `[think-late:N]` — 回答已经开始之后才到的思考块。真实后端会这样交错（思考 → 回答 →
+    // 又一段思考），而这正是「耳朵里在念回答、转录里还写着思考中」的来源。QA only：
+    // 没有这个探针的轮次行为零变化。
+    const lateThink = /\[think-late(?::(\d+))?\]/.exec(text);
+    if (lateThink) {
+      const thinkId = `th-${sessionId}-late`;
+      const n = Math.min(Math.max(Number(lateThink[1] ?? 2) || 2, 1), 12);
+      for (let i = 0; i < n; i++) {
+        await send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: thinkId,
+          content: { type: "text", text: `after the answer started, thought ${i + 1}. ` },
+        });
+        await sleep(SLOW);
+      }
+    }
     // Context gauge data, shaped like a real agent's usage_update (AionUi F-DISPLAY-07).
     // `/compress` is the agent's own command for this: honour it by actually lowering the
     // reported context, so "the button did something" is a measurable claim.

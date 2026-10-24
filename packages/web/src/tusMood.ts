@@ -146,8 +146,8 @@ export const GROK_EXPRESSIONS: Record<GrokExpression, [GrokEyeDescriptor, GrokEy
   confused: pair([-0.1, 0], 0.1305, 1, [0, 0], 0, [-0.08, 0.01, -0.16, 0.16]),
 };
 
-/** 官方别名。注意我们**故意不照搬**两条：`thinking` 在本产品是 focus（不是 sad）、
- *  `angry` 是 strive（不是 neutral）—— 见 `EMO_MOODS` 的注释。 */
+/** 官方别名。`thinking → sad` 照搬（思考时那张「垂眼」）；我们只**故意不照搬** `angry`
+ *  （用 strive 而不是 neutral）—— 见 `EMO_MOODS` 的注释。 */
 export const GROK_EXPRESSION_ALIASES: Record<string, GrokExpression> = {
   thinking: "sad", strange: "inspecting", angry: "neutral", inspect: "inspecting",
   squint: "squinted", idle: "neutral", smile: "happy", sleep: "sleepy",
@@ -395,12 +395,12 @@ export function moodFor(o: {
   }
   // 工具执行中 > 听/想：一轮里跑三个工具时，相位一直是 thinking，可它并不是在想，是在干活。
   if (activity === "tools") return "working";
-  // 听 ≠ 想（实测读法）：两者都回到同一张「眯着眼」的脸，通话里最常出现的两种状态就长得
-  // 一模一样 —— 你说话时它在发呆，它在思考时你分不出来。听 = 睁眼看着你（curious），
-  // 想 = 眯起来往上看（focus）。
+  // 听 = 官方 listening 的底脸 calm（宽椭圆、半阖，平静地在场），不是 inspecting 那种
+  // 「凑近辨认」的不对称小点。想 = focus，但渲染器在 phase=thinking 时会把这张脸换成
+  // 官方的三点 morph（见 TusFace 的 dots）—— 参考实现里 thinking 本来就没有脸。
   // 听话时也有小动作（扫一眼／偏一下／眨个眼）：生命感那一拍落在"听"上时优先出它，
-  // 否则这两个状态永远被 curious 吃掉 —— 脸看着在看你，却一动不动。
-  if (phase === "listening") return life ?? "curious";
+  // 否则这两个状态永远被 calm 吃掉 —— 脸看着在看你，却一动不动。
+  if (phase === "listening") return life ?? "calm";
   if (phase === "thinking") return "focus";
   if (resting) return "sleep";
   if (drowsy) return "drowsy";
@@ -787,13 +787,13 @@ export const EMO_MOODS: Record<string, TusMood> = {
   // 官方九表情，一对一（neutral 回到 idle；inspecting 复用「看着你」的 curious）
   neutral: "idle", happy: "happy", surprised: "surprise", inspecting: "curious",
   sad: "sad", sleepy: "drowsy", squinted: "focus", calm: "calm", confused: "confused",
-  // 官方别名里的五条（thinking / angry / sleep 三条见下）
+  // 官方别名里的六条（angry / sleep 两条见下）
   smile: "happy", inspect: "curious", strange: "curious", squint: "focus", idle: "idle",
-  // 故意偏离官方的三条：
-  //   · thinking —— 官方 thinking→sad，但在本产品里「在想」是 focus（眯起来往上看）；
-  //   · angry    —— 官方 angry→neutral，我们的 strive 才是那张「顶住了/出问题了」的脸；
-  //   · sleep    —— 官方 sleep→sleepy(drowsy)，我们的 sleep 是真的闭眼睡着，sleepy 才是 drowsy。
-  thinking: "focus", focus: "focus", angry: "strive", sleep: "sleep",
+  thinking: "sad",
+  // 故意偏离官方的两条：
+  //   · angry —— 官方 angry→neutral，我们的 strive 才是那张「顶住了/出问题了」的脸；
+  //   · sleep —— 官方 sleep→sleepy(drowsy)，我们的 sleep 是真的闭眼睡着，sleepy 才是 drowsy。
+  focus: "focus", angry: "strive", sleep: "sleep",
   // OpenNomi 时代的同义词，继续认（老提示词/老会话里还会出现）
   joy: "happy", love: "happy", surprise: "surprise", curious: "curious",
   strive: "strive", shy: "wink", wink: "wink",

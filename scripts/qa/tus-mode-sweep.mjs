@@ -184,9 +184,9 @@ const EYES = `(sel) => { const cv = document.querySelector(sel); if (!cv) return
   return { w, h, runs: runs.length, widths: runs.map((r) => r.width),
     gap: runs.length >= 2 ? runs[1].start - runs[0].end - 1 : null }; }`;
 
-/** 采样多帧、只收“稳定的目标脸帧”（默认 curious）：眨眼与 2.4–4.6 s 一次的走神会把单次
+/** 采样多帧、只收“稳定的目标脸帧”（默认 calm）：眨眼与 2.4–4.6 s 一次的走神会把单次
  *  采样变成假红/假绿。要求 ≥5 个好样本且 0 个坏样本，坏样本才算数（跳过的帧不计）。 */
-const sampleEyes = async (n = 8, face = 'curious') => {
+const sampleEyes = async (n = 8, face = 'calm') => {
   const good = [], bad = [];
   for (let i = 0; i < n * 3 && good.length + bad.length < n; i++) {
     const s = await ev(`(() => {
@@ -350,15 +350,15 @@ try {
   }
   seen.delete("");
   // 瞬时判据会撞进 2.4–4.6 s 一次的走神动作（lookLeft/lookRight/wink），所以看 8 秒窗口里
-  // 「不在走神时」的那张脸：它必须只有 curious。
+  // 「不在走神时」的那张脸：它必须只有 calm（官方 listening 的底脸）。
   const SACCADE = ["lookLeft", "lookRight", "wink", "scan"];
   const steady = [...seen].filter((f) => !SACCADE.includes(f));
-  check("听话时是「看着你」的那张脸（curious），不是思考的眯眼脸",
-    steady.length > 0 && steady.every((f) => f === "curious"), [...seen].join(","));
+  check("听话时是官方的 calm（宽椭圆、平静地在场），不是思考的眯眼脸",
+    steady.length > 0 && steady.every((f) => f === "calm"), [...seen].join(","));
   check("8 秒内脸上还换过别的表情（眨眼/扫一眼的节奏在走）", seen.size >= 2, [...seen].join(","));
 
   // ---- 4.6 两只眼不是叠成一个“暂停”符号 ------------------------------------------------
-  // 多帧采样：单次会撞上眨眼（BLINK_BLOCKED 不含 curious）或走神，一次红/绿都不作数。
+  // 多帧采样：单次会撞上眨眼（BLINK_BLOCKED 不含 calm）或走神，一次红/绿都不作数。
   const eyeP = await sampleEyes();
   const eyeWorst = eyeP.bad[0] ?? eyeP.good[0] ?? null;
   check("两只眼是两条亮带、中间有真实暗缝（不是叠成一个“暂停”符号）",
@@ -564,6 +564,74 @@ try {
   check("拒绝一次写文件：会播 tool-fail（失败有单独的动作，不是静音收场）",
     clickedReject === true && fSeen.clip.includes("tool-fail"),
     JSON.stringify({ clicked: clickedReject, clip: fSeen.clip }));
+
+  // ---- 6.7 thinking = 官方的三点 morph，不是一张眯眼的脸 -------------------------------
+  // 参考实现里 thinking 状态没有 face，只有 morph: "dots"（三点错开上下浮）。页面用
+  // canvas.dataset.dots 把「脸已经淡出、只剩三点」变成一个可断言的事实。
+  // 这条必须走通话自己的入口：直接 POST /prompt 是外部回合，通话相位不会进 thinking，
+  // 只有按住说话/点圆球才有「发出去 → 思考中 → 回答」这条相位机。自动化没有麦克风，
+  // 所以用 voice.ts 的 __asFeed 测试缝塞一句话进去，再真的按住/松开那颗按钮。
+  await waitIdle();
+  await waitListening();
+  await ev(`(window.__asFeed = { level: 0.6, text: '[think:40] 想一想再回答', interim: '' }, true)`);
+  await ev(`(() => { const b = document.querySelector('.call-floor.is-ptt');
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, isPrimary: true }));
+    return true; })()`);
+  await sleep(300);
+  await ev(`(() => { const b = document.querySelector('.call-floor.is-ptt');
+    b.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, isPrimary: true }));
+    return true; })()`);
+  let thinkSeen = null, thinkShot = false;
+  for (let i = 0; i < 80; i++) {
+    await sleep(150);
+    thinkSeen = await ev(`(() => { const c = document.querySelector('.call-mode');
+      const cv = document.querySelector('.tus-face-canvas');
+      return { phase: c?.dataset.phase ?? null, face: c?.dataset.face ?? null,
+        dots: cv?.dataset.dots ?? null }; })()`);
+    if (thinkSeen.phase === "thinking" && thinkSeen.dots === "1") {
+      if (!thinkShot) {
+        // dataset 在 morph 过半时就翻成 1 了：再等 350ms 让球和眼睛真正淡完，
+        // 否则截图拍到的是过渡帧（右上还挂着一只正在消失的眼）。
+        await sleep(350);
+        thinkSeen = await ev(`(() => { const c = document.querySelector('.call-mode');
+          const cv = document.querySelector('.tus-face-canvas');
+          return { phase: c?.dataset.phase ?? null, face: c?.dataset.face ?? null,
+            dots: cv?.dataset.dots ?? null }; })()`);
+        fs.writeFileSync(`${SHOTS}/tus-thinking.png`,
+          Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+        thinkShot = true;
+      }
+      break;
+    }
+  }
+  check("思考时换成官方的三点 morph（不是眯眼的脸）",
+    thinkSeen?.phase === "thinking" && thinkSeen?.dots === "1", JSON.stringify(thinkSeen));
+  // 那句话已经发出去了：把测试话筒清空，否则下一轮回到 listening 时喂进去的文本会被
+  // 自动发送分支再送一遍（同一个 seam，call-sweep 也这么做）。
+  await ev(`(window.__asFeed = { level: 0, text: '', interim: '' }, true)`);
+
+  // ---- 6.8 已经在说话时，转录不再标「思考中…」 ---------------------------------------
+  // `[think-late:3]` 让 mock 在回答之后才补一段思考（真实后端就会这样交错）。旧行为下
+  // 这一段会让「💭 思考中…」在回答已经念出来之后继续亮着。
+  await waitIdle();
+  await waitListening();
+  await promptCall("[think-late:3] 回答我一句");
+  let baseThoughts = null, late = null;
+  for (let i = 0; i < 140; i++) {
+    await sleep(120);
+    late = await ev(`(() => { const c = document.querySelector('.call-mode');
+      const list = document.querySelector('.call-cc');
+      const live = document.querySelectorAll('.call-cc .msg.thought.live').length;
+      const rows = document.querySelectorAll('.call-cc .msg.thought').length;
+      return { phase: c?.dataset.phase ?? null, thoughts: rows, live,
+        says: Boolean(list && list.innerText.includes('思考中')) }; })()`);
+    if (late.phase === "speaking" && baseThoughts === null) baseThoughts = late.thoughts;
+    if (late.phase === "speaking" && baseThoughts !== null && late.thoughts > baseThoughts) break;
+  }
+  check("晚到的思考块确实出现在说话相位里（场景真的复现了，不是空跑）",
+    baseThoughts !== null && late?.thoughts > baseThoughts, JSON.stringify({ baseThoughts, late }));
+  check("已经在说话时，转录里没有「思考中…」也没有 live 思考窗（块本身仍然保留）",
+    late?.live === 0 && late?.says === false && late?.thoughts > 0, JSON.stringify(late));
 
   // ---- 7. 不侵入：进出不写设置 -----------------------------------------------------------
   await waitIdle();
