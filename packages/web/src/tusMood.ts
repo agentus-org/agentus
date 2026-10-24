@@ -1307,10 +1307,9 @@ export function springStep(x: number, v: number, target: number, dt: number, ome
 // 固定角度在宽眼上会让两只眼叠成一个"暂停"符号。
 export const SPHERE = { maxX: 14, maxY: 18 } as const;
 
-/** 视点角度（度）。指针、情绪、思考都会把眼睛往某个方向拽。 */
-export function gazeAngles(o: { mood: TusMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
-  const px = Math.max(-1, Math.min(1, o.pointerX ?? 0));
-  const py = Math.max(-1, Math.min(1, o.pointerY ?? 0));
+/** 视点角度（度）。情绪、工具子状态、思考会把眼睛往某个方向拽。
+ *  故意不跟指针：2026-10-24 操作者实测「头跟着鼠标转没什么用」，视线只由它自己的状态决定。 */
+export function gazeAngles(o: { mood: TusMood; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
   const el = o.elapsed ?? 0;
   let bx = 0, by = 0;
   switch (o.mood) {
@@ -1344,7 +1343,6 @@ export function gazeAngles(o: { mood: TusMood; pointerX?: number; pointerY?: num
     default: break;
   }
   // 工具子状态把视线再分一层：读文件往左下扫、写文件往右下盯、完成往上、失败往下。
-  // 只加在基础方向上，指针仍然有权重（见下），所以手一动眼睛还是会跟着你。
   switch (o.substate ?? "idle") {
     case "reading": bx -= 0.35; by += 0.55; break;
     case "running": bx += 0.05; by += 0.75; break;
@@ -1354,10 +1352,7 @@ export function gazeAngles(o: { mood: TusMood; pointerX?: number; pointerY?: num
     case "failed": bx *= 0.6; by += 0.65; break;
     default: break;
   }
-  // 指针是"它看着你"的输入，权重比情绪高：手一动眼睛就跟着，这条最容易让人觉得"活的"。
-  const ax = Math.max(-1, Math.min(1, bx * 0.7 + px * 0.9));
-  const ay = Math.max(-1, Math.min(1, by * 0.7 + py * 0.8));
-  return { ax: ax * SPHERE.maxX, ay: ay * SPHERE.maxY };
+  return { ax: bx * 0.7 * SPHERE.maxX, ay: by * 0.7 * SPHERE.maxY };
 }
 
 /** 正交投影：把球面上某个角度的一个点投到屏幕坐标，并给出它的缩小系数（cos）。

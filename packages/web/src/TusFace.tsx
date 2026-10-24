@@ -138,7 +138,6 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
     };
     let raf = 0;
     let lastPaint = 0;
-    let pointer = { x: 0, y: 0 };
 
     const size = (): void => {
       const r = canvas.getBoundingClientRect();
@@ -148,17 +147,6 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
     size();
     const ro = new ResizeObserver(size);
     ro.observe(canvas);
-
-    const onMove = (e: PointerEvent): void => {
-      const r = canvas.getBoundingClientRect();
-      pointer = {
-        x: ((e.clientX - r.left) / Math.max(1, r.width)) * 2 - 1,
-        y: ((e.clientY - r.top) / Math.max(1, r.height)) * 2 - 1,
-      };
-    };
-    const onLeave = (): void => { pointer = { x: 0, y: 0 }; };
-    window.addEventListener("pointermove", onMove, { passive: true });
-    canvas.addEventListener("pointerleave", onLeave);
 
     const draw = (ms: number): void => {
       raf = window.requestAnimationFrame(draw);
@@ -364,8 +352,8 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         st.ballRot = rt.x; st.ballRotV = rt.v;
       }
       const R = st.ball.r * k;
-      const cx = w / 2 + pointer.x * 9 * k;
-      const cy = h / 2 + pointer.y * 7 * k + st.ball.dy * k;
+      const cx = w / 2;
+      const cy = h / 2 + st.ball.dy * k;
 
       // 呼吸：只在「不紧绷」的脸上升降（2 s 一个来回，±6）。
       const breathe = ["idle", "drowsy", "sleep", "curious", "asking", "working", "calm"].includes(mood)
@@ -416,9 +404,9 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       g.clip();
       g.translate(-cx, -cy);
 
-      // 视点：指针 + 情绪决定眼睛往哪看；投影到球面上（正交），越往侧越窄。
+      // 视点：情绪决定眼睛往哪看；投影到球面上（正交），越往侧越窄。
       // 两眼的位置/宽度统一由 `projectEyes` 给出（和单测同一套算式），这里只负责画。
-      const gaze = gazeAngles({ mood, pointerX: pointer.x, pointerY: pointer.y, elapsed, level: st.level, substate: p.substate });
+      const gaze = gazeAngles({ mood, elapsed, level: st.level, substate: p.substate });
       const pe = projectEyes({ mood, left, right, gaze, ballR: st.ball.r, k });
       for (const eye of [left, right]) {
         const side: -1 | 1 = eye === right ? 1 : -1;
@@ -515,8 +503,6 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
     return () => {
       window.cancelAnimationFrame(raf);
       ro.disconnect();
-      window.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointerleave", onLeave);
     };
     // 只挂一次：所有会变的东西都从 `props` ref 里读
     // eslint-disable-next-line react-hooks/exhaustive-deps

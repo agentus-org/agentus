@@ -105,41 +105,38 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
 // 2.5 渲染器那条链必须兑现「两只眼分开」：live 实测（2026-10-24）旧实现写死 sep=21°，
 //     中心距 35.7 < focus 眼宽 40，听你说话时两只眼贴成一个“暂停”符号。
 //     这里不再只验 eyeSepAngle 的逆运算 —— 直接走 TusFace 用的那串
-//     eyeFrame → gazeAngles → projectEyes，把 mood × 子状态 × 球径 × 指针极端铺满；
+//     eyeFrame → gazeAngles → projectEyes，把 mood × 子状态 × 球径铺满；
 //     渲染器退回固定角度/平面布局，或宽眼在大角度上被球缘剪平，都会在这里转红。
 {
-  const PTRS: Array<[number, number]> = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
-  let worst = { gap: Infinity, mood: "", sub: "", r: 0, ptr: "" };
+  let worst = { gap: Infinity, mood: "", sub: "", r: 0, at: "" };
   let worstOuter = 0;
   let nan = 0;
   const seps = new Set<string>();
   for (const m of MOODS) {
     for (const sub of TOOL_SUBSTATES) {
       for (const ballR of [92, 98, 104]) {
-        for (const [px, py] of PTRS) {
-          // level 和 t 都要扫：scan 的横扫位移是 `eye.x = sin(t·3.5)·45`，t=0 时看不见它把眼带出球。
-          for (const level of [0, 0.5, 1]) {
-            for (const t of [0, 0.45, 1.35]) {
-              const elapsed = 2;
-              const ex = exprFor(m, level, elapsed);
-              const left = eyeFrame({ mood: m, right: false, blinking: false, t, level, expr: ex, substate: sub });
-              const right = eyeFrame({ mood: m, right: true, blinking: false, t, level, expr: ex, substate: sub });
-              const gaze = gazeAngles({ mood: m, pointerX: px, pointerY: py, elapsed, level, substate: sub });
-              const pe = projectEyes({ mood: m, left, right, gaze, ballR });
-              if (!Number.isFinite(pe.gap) || !Number.isFinite(pe.left.x) || !Number.isFinite(pe.right.w)) nan++;
-              if (pe.gap < worst.gap) worst = { gap: pe.gap, mood: m, sub, r: ballR, ptr: `${px},${py}/L${level}/t${t}` };
-              worstOuter = Math.max(worstOuter,
-                (Math.abs(pe.left.x) + pe.left.w / 2) / ballR,
-                (Math.abs(pe.right.x) + pe.right.w / 2) / ballR);
-              seps.add(pe.sep.toFixed(2));
-            }
+        // level 和 t 都要扫：scan 的横扫位移是 `eye.x = sin(t·3.5)·45`，t=0 时看不见它把眼带出球。
+        for (const level of [0, 0.5, 1]) {
+          for (const t of [0, 0.45, 1.35]) {
+            const elapsed = 2;
+            const ex = exprFor(m, level, elapsed);
+            const left = eyeFrame({ mood: m, right: false, blinking: false, t, level, expr: ex, substate: sub });
+            const right = eyeFrame({ mood: m, right: true, blinking: false, t, level, expr: ex, substate: sub });
+            const gaze = gazeAngles({ mood: m, elapsed, level, substate: sub });
+            const pe = projectEyes({ mood: m, left, right, gaze, ballR });
+            if (!Number.isFinite(pe.gap) || !Number.isFinite(pe.left.x) || !Number.isFinite(pe.right.w)) nan++;
+            if (pe.gap < worst.gap) worst = { gap: pe.gap, mood: m, sub, r: ballR, at: `L${level}/t${t}` };
+            worstOuter = Math.max(worstOuter,
+              (Math.abs(pe.left.x) + pe.left.w / 2) / ballR,
+              (Math.abs(pe.right.x) + pe.right.w / 2) / ballR);
+            seps.add(pe.sep.toFixed(2));
           }
         }
       }
     }
   }
-  check("20 张脸 × 7 个子状态 × 3 球径 × 9 指针位 × level/t：两眼始终有可见空隙（不是一条“暂停”）",
-    worst.gap >= 8, `worst ${worst.gap.toFixed(1)} px @ ${worst.mood}/${worst.sub}/R${worst.r}/${worst.ptr}`);
+  check("20 张脸 × 7 个子状态 × 3 球径 × level/t：两眼始终有可见空隙（不是一条“暂停”）",
+    worst.gap >= 8, `worst ${worst.gap.toFixed(1)} px @ ${worst.mood}/${worst.sub}/R${worst.r}/${worst.at}`);
   check("…且外眼不会被球缘剪平（外缘 ≤ 1.05R，旧实现同量级）", worstOuter <= 1.0501, `worst ${worstOuter.toFixed(3)}R`);
   check("…且没有 NaN 几何（宽/半径写错不会让整双眼睛消失）", nan === 0, `${nan} 组`);
   check("角距随表情/眼宽变化，不是固定角度", seps.size >= MOODS.length, `${seps.size} 种`);
@@ -151,6 +148,10 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   const faceSrc = readFileSync(new URL("../../packages/web/src/TusFace.tsx", import.meta.url), "utf8");
   check("渲染器真的走 projectEyes（自己另算一套 / 退回固定角距会在这里转红）",
     /projectEyes\(/.test(faceSrc) && !/sep:\s*21\b/.test(faceSrc));
+  // 2026-10-24 操作者：「头跟着鼠标转没什么用，取消掉」。视线只由它自己的状态决定，
+  // 渲染器再挂 pointermove / 把指针喂给 gazeAngles，这条就转红。
+  check("脸不再跟随鼠标/手指（没有 pointermove 监听，也不把指针喂给视线）",
+    !/pointermove/.test(faceSrc) && !/pointer\.[xy]/.test(faceSrc) && !/pointerX|pointerY/.test(faceSrc));
 }
 
 // 3. Thinking is THREE stages, not a spinner. This is the part that reads as "it is looking for the
