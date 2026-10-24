@@ -837,6 +837,66 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         return send(res, 200, { delivered: true, to, code: "delivered", ...(woke ? { delivered_after_wake: true } : {}) });
       }
+      if (url.pathname === "/api/cockpit/create" && req.method === "POST") {
+        const body = await readJson(req);
+        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        const backendRaw = String(body.backend ?? "").trim();
+        // Same resolution as the operator's own "+" (POST /api/sessions): a registry row wins, a
+        // builtin id still resolves. An empty backend means "the one this cockpit would default to",
+        // which is what a caller that does not care should get instead of an error.
+        const beRow = backendRaw ? store.getBackend(backendRaw) : null;
+        const backend = backendRaw
+          ? (beRow || Object.prototype.hasOwnProperty.call(BACKENDS, backendRaw) ? (backendRaw as BackendId) : null)
+          : (store.listBackends()[0]?.id as BackendId | undefined) ?? null;
+        if (!backend) {
+          return send(res, 400, {
+            error: "unknown backend",
+            message: `unknown backend: ${backendRaw}`,
+            backends: store.listBackends().map((b) => b.id),
+          });
+        }
+        let cwd = String(body.cwd ?? "").trim();
+        if (!cwd || cwd === "~") cwd = homedir();
+        else if (cwd.startsWith("~/")) cwd = path.join(homedir(), cwd.slice(2));
+        if (!cwd) return send(res, 400, { error: "bad_request", message: "cwd is required: which directory should the new session work in?" });
+        if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+          return send(res, 400, { error: "bad_cwd", message: `cwd not a directory: ${cwd}` });
+        }
+        try {
+          const info = await mgr.create(backend, cwd, body.title ? String(body.title) : undefined);
+          emit(sessionsEvent());
+          // The same row shape `session show` answers with, so a caller can use the new id at once.
+          return send(res, 201, { schema_version: COCKPIT_SCHEMA_VERSION, session: summarize(info) });
+        } catch (e) {
+          return send(res, 409, { error: "create_failed", message: String((e as Error)?.message ?? e) });
+        }
+      }
+      if (url.pathname === "/api/cockpit/stop" && req.method === "POST") {
+        const body = await readJson(req);
+        const id = String(body.id ?? "");
+        if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        // Stopping is as costly as starting (it throws away a turn in flight), so it answers to the
+        // same switch. `close` is the only command in this channel that ends a PROCESS; when the
+        // target is already cold there is nothing to end and the answer says so rather than
+        // pretending. Deliberately NOT DELETE /api/sessions/:id: for a cold row that route PURGES the
+        // transcript, and no cross-session caller gets to delete the operator's history.
+        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        const target = rowOf(id);
+        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (body.close === true) {
+          if (target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, id, closed: false, already_cold: true });
+          await mgr.closeSession(id);
+          emit(sessionsEvent());
+          return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, id, closed: true });
+        }
+        const stopped = await mgr.cancel(id);
+        return send(res, 200, {
+          schema_version: COCKPIT_SCHEMA_VERSION,
+          id,
+          stopped,
+          ...(stopped ? {} : { message: "no turn was running — nothing to interrupt" }),
+        });
+      }
       if (url.pathname === "/api/cockpit/wake" && req.method === "POST") {
         const body = await readJson(req);
         const id = String(body.id ?? "");

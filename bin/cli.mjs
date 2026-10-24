@@ -4,7 +4,7 @@
  * cross-session `send`. Dispatched by `bin/agentus.mjs`, which is also what the cockpit hands agents
  * as `AGENTUS_COCKPIT_BIN`, so there is exactly one command and one spelling everywhere.
  *
- * SHAPE: noun, then verb — `agentus session list|show|messages|plan|send`
+ * SHAPE: noun, then verb — `agentus session list|show|messages|plan|send|wake|create|stop`
  * The five things an agent needs are all about ONE object (a session), so the noun is not decoration:
  * it keeps `list` from meaning "list what?" and leaves the top level free for the two commands that
  * are NOT about a session — `capabilities` (this CLI's contract) and `skill` (its manual). The
@@ -58,6 +58,11 @@ another one
                                        deliver a message into another session (stdin if no text);
                                        --wake also starts the target when it is cold
   agentus session wake <id>            start a cold session's process (same switch as send)
+  agentus session create <cwd> [--backend <id>] [--title <text>]
+                                       open a NEW session in that directory and answer with its row
+                                       (same switch as send — it costs one agent process)
+  agentus session stop <id> [--close]  interrupt the turn it is running; --close stops the PROCESS
+                                       (the slot goes cold, the transcript stays)
 
   agentus capabilities                the contract: commands, fields, truncation, scope, send state
   agentus skill [--path]              this CLI's manual, as shipped in the package
@@ -362,6 +367,75 @@ if (cmd === "capabilities") {
         note: body?.woke
           ? "the target now has a process and accepts send. Waking costs one process — do it for work you actually need."
           : "the target was already live: nothing was started.",
+      },
+    });
+  } else if (verb === "create") {
+    // The FIRST positional is the directory, not an id: this is the one verb that makes an object
+    // instead of acting on one. `~` is expanded HERE as well as server-side so the error a caller
+    // reads names the path it actually meant.
+    const cwdArg = args.find((a) => !a.startsWith("--"));
+    if (!cwdArg) fail("bad_request", "usage: agentus session create <cwd> [--backend <id>] [--title <text>]");
+    const flags = { backend: undefined, title: undefined };
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === cwdArg) continue;
+      if (a === "--backend" || a === "--title") {
+        const v = args[++i];
+        if (v === undefined) fail("bad_request", `${a} needs a value`);
+        flags[a.slice(2)] = v;
+      } else fail("bad_request", `unexpected argument "${a}" (usage: agentus session create <cwd> [--backend <id>] [--title <text>])`);
+    }
+    let res;
+    try {
+      res = await fetch(`${EP}/api/cockpit/create`, {
+        method: "POST",
+        headers: headers(true),
+        body: JSON.stringify({ cwd: cwdArg, ...flags }),
+      });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      // An unknown backend is only actionable if the caller is told WHICH ones exist — the same reason
+      // `target_cold` names `--wake` instead of being a bare prohibition.
+      fail(String(body?.error ?? `http_${res.status}`),
+        String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`),
+        Array.isArray(body?.backends) ? { details: { backends: body.backends } } : {});
+    }
+    out({
+      success: true,
+      data: body,
+      meta: {
+        schema_version: 1,
+        note: "the session exists and is starting. Read its id from data.session and send into it at once; a slot with no process yet answers cold_target unless you pass --wake.",
+      },
+    });
+  } else if (verb === "stop") {
+    if (!id) fail("bad_request", "usage: agentus session stop <id> [--close]");
+    const close = args.includes("--close");
+    const leftovers = args.slice(1).filter((a) => a !== "--close");
+    if (leftovers.length) fail("bad_request", `unexpected argument "${leftovers[0]}" (usage: agentus session stop <id> [--close])`);
+    let res;
+    try {
+      res = await fetch(`${EP}/api/cockpit/stop`, {
+        method: "POST",
+        headers: headers(true),
+        body: JSON.stringify(close ? { id, close: true } : { id }),
+      });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) fail(String(body?.error ?? `http_${res.status}`), String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    out({
+      success: true,
+      data: body,
+      meta: {
+        schema_version: 1,
+        note: close
+          ? (body?.closed ? "its agent process is stopped and the slot is cold; the transcript is untouched." : "nothing was running: the slot was already cold.")
+          : (body?.stopped ? "the turn was cancelled; the words it had already produced stay in the transcript." : "no turn was running — nothing was interrupted."),
       },
     });
   } else {

@@ -370,6 +370,92 @@ try {
   const blank = cli(env, ["session", "send", dst.id, "   "]);
   check("an empty message is refused before anything is sent", blank.code !== 0 && blank.doc?.error?.code === "bad_request",
     JSON.stringify(blank.doc?.error));
+  // ---------------------------------------------------------------- create / stop (#54)
+  // A session is an OBJECT the agent could only read and talk to; these two verbs close the loop
+  // (make one, end what it is doing) without the operator's "+" button or a trip to the page.
+  const made = cli(env, ["session", "create", "/tmp", "--backend", "mock", "--title", "cockpit-cli created（自动删除）"]);
+  const newId = made.doc?.data?.session?.id;
+  check("session create opens a session in the given directory", made.code === 0 && Boolean(newId),
+    JSON.stringify(made.doc?.data ?? made.doc?.error));
+  check("…carrying the title it was given", made.doc?.data?.session?.name === "cockpit-cli created（自动删除）",
+    String(made.doc?.data?.session?.name));
+  check("…and the backend it was told to use", made.doc?.data?.session?.backend === "mock",
+    String(made.doc?.data?.session?.backend));
+
+  if (newId) {
+    const shown = cli(env, ["session", "show", newId]);
+    check("the new id is immediately readable through the same channel",
+      shown.code === 0 && (shown.doc?.data?.session?.id ?? shown.doc?.data?.id) === newId,
+      JSON.stringify(shown.doc?.data?.session?.id ?? shown.doc?.data?.id ?? shown.doc?.error));
+    const listed = cli(env, ["session", "list", "--limit", "50"]).doc?.data?.sessions ?? [];
+    check("…and it shows up in session list", listed.some((r) => r.id === newId));
+
+    // stop with nothing running: an honest "nothing to interrupt", not a fake success
+    const idleStop = cli(env, ["session", "stop", newId]);
+    check("session stop on an idle session answers stopped:false (no invented stop)",
+      idleStop.code === 0 && idleStop.doc?.data?.stopped === false, JSON.stringify(idleStop.doc?.data ?? idleStop.doc?.error));
+
+    // …and a running turn is really interrupted
+    await api(`/api/sessions/${newId}/prompt`, { method: "POST", body: JSON.stringify({ text: "[slow] 我在跑，停下我" }) });
+    let running = false;
+    for (let i = 0; i < 60 && !running; i += 1) {
+      await sleep(250);
+      const rows = (await api("/api/sessions")).body;
+      running = [...(rows?.live ?? []), ...(rows?.pending ?? [])].some((r) => r.id === newId && r.status === "running");
+    }
+    check("fixture: the new session really has a turn in flight", running === true);
+    const liveStop = cli(env, ["session", "stop", newId]);
+    check("session stop interrupts it (stopped:true)", liveStop.code === 0 && liveStop.doc?.data?.stopped === true,
+      JSON.stringify(liveStop.doc?.data ?? liveStop.doc?.error));
+    let idleAgain = false;
+    for (let i = 0; i < 60 && !idleAgain; i += 1) {
+      await sleep(250);
+      const rows = (await api("/api/sessions")).body;
+      const row = [...(rows?.live ?? []), ...(rows?.pending ?? [])].find((r) => r.id === newId);
+      idleAgain = !row || row.status !== "running";
+    }
+    check("…and the turn really stops", idleAgain === true);
+
+    // --close ends the PROCESS and keeps the transcript — never a DELETE (that purges a cold row)
+    const beforeClose = (await api(`/api/sessions/${newId}/messages`)).body?.messages?.length ?? 0;
+    const closed = cli(env, ["session", "stop", newId, "--close"]);
+    check("session stop --close stops the agent process", closed.code === 0 && closed.doc?.data?.closed === true,
+      JSON.stringify(closed.doc?.data ?? closed.doc?.error));
+    const afterClose = cli(env, ["session", "show", newId]);
+    check("…the slot goes cold", (afterClose.doc?.data?.session ?? afterClose.doc?.data)?.cold === true,
+      JSON.stringify((afterClose.doc?.data?.session ?? afterClose.doc?.data)?.cold));
+    const kept = (await api(`/api/sessions/${newId}/messages`)).body?.messages?.length ?? 0;
+    check("…and the transcript is untouched (close is not delete)", kept === beforeClose, `${beforeClose} -> ${kept}`);
+    const closedAgain = cli(env, ["session", "stop", newId, "--close"]);
+    check("closing an already cold slot says so instead of failing", closedAgain.code === 0 && closedAgain.doc?.data?.already_cold === true,
+      JSON.stringify(closedAgain.doc?.data ?? closedAgain.doc?.error));
+  }
+
+  // the refusals a caller must be able to branch on
+  const noDir = cli(env, ["session", "create", "/tmp/definitely-not-a-dir-xyz"]);
+  check("a cwd that is not a directory answers bad_cwd (with the path in the message)",
+    noDir.code !== 0 && noDir.doc?.error?.code === "bad_cwd" && /definitely-not-a-dir-xyz/.test(String(noDir.doc?.error?.message)),
+    JSON.stringify(noDir.doc?.error));
+  const badBackend = cli(env, ["session", "create", "/tmp", "--backend", "no_such_backend"]);
+  check("an unknown backend is refused, and the answer lists what exists",
+    badBackend.code !== 0 && /unknown backend/.test(String(badBackend.doc?.error?.code))
+    && Array.isArray(badBackend.doc?.details?.backends), JSON.stringify(badBackend.doc ?? badBackend));
+  const noCwd = cli(env, ["session", "create"]);
+  check("create without a directory is a usage error, not a silent default",
+    noCwd.code !== 0 && noCwd.doc?.error?.code === "bad_request", JSON.stringify(noCwd.doc?.error));
+  const strayStop = cli(env, ["session", "stop", "x", "--force"]);
+  check("stop refuses an unknown flag (one spelling per verb)",
+    strayStop.code !== 0 && strayStop.doc?.error?.code === "bad_request", JSON.stringify(strayStop.doc?.error));
+
+  // both verbs answer to the same switch as send: they are the other half of "spend a process"
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: false } }) });
+  const offCreate = cli(env, ["session", "create", "/tmp"]);
+  const offStop = cli(env, ["session", "stop", dst.id]);
+  check("with the gate OFF, create answers sends_disabled", offCreate.code !== 0 && offCreate.doc?.error?.code === "sends_disabled",
+    JSON.stringify(offCreate.doc?.error));
+  check("…and stop does too", offStop.code !== 0 && offStop.doc?.error?.code === "sends_disabled", JSON.stringify(offStop.doc?.error));
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
+  if (newId) await purge(newId);
 } finally {
   await api(`/api/settings`, { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: before } }) });
   await purge(src.id);

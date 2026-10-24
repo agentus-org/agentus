@@ -1456,9 +1456,13 @@ export class SessionManager {
     setTimeout(() => void this.#wakeWithCompletion(s, next), 0).unref?.();
   }
 
-  async cancel(sessionId: string): Promise<void> {
-    const s = this.#need(sessionId);
-    if (!s.conn || !s.info.acpSessionId) return;
+  /** @returns whether a turn was actually interrupted — `false` for an idle/absent slot, so a caller
+   *  (the cockpit CLI's `session stop`) can tell the operator "nothing was running" instead of
+   *  reporting a stop that never happened. */
+  async cancel(sessionId: string): Promise<boolean> {
+    const s = this.#sessions.get(sessionId);
+    if (!s) return false;
+    if (!s.conn || !s.info.acpSessionId) return false;
     // An idle session must NOT be cancelled. On the agent side this is not a no-op: Hermes' ACP
     // `session/cancel` sets the hard-interrupt flag unconditionally (`request_hard_interrupt`) and
     // clears it only at a turn boundary, so the NEXT turn aborts before it starts — at its
@@ -1469,10 +1473,11 @@ export class SessionManager {
     // barge-in's cancel landed on an idle session.
     if (!s.busy) {
       console.log(`[agentus] cancel ignored for ${sessionId}: no turn is running`);
-      return;
+      return false;
     }
     console.log(`[agentus] cancel sent for ${sessionId}`);
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
+    return true;
   }
 
   /**
