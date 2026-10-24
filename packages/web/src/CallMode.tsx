@@ -783,11 +783,87 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentText, agentKey, busy, failureText]);
 
+  /** 有人要你批准时，电话里不能静着（#58）。这跟"报进度"不是一回事：进度没人听也无所谓，
+   *  一张卡没人批会把回合永远卡在那儿。所以它不受那个开关管，但同样不抢答案的话筒。 */
+  const [approvalLine, setApprovalLine] = useState("");
+  const approvalAtRef = useRef(0);           // when the CURRENT request arrived
+  const approvalDoneRef = useRef(0);         // how many reminders went out for it
+
+  /** 两声短提示音，纯 WebAudio：不要网络、不占 TTS 配额、不会跟正在念的句子抢喇叭。 */
+  const chime = (): void => {
+    try {
+      const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      [880, 1180].forEach((f, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.16);
+        g.gain.exponentialRampToValueAtTime(0.16, ctx.currentTime + i * 0.16 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.16 + 0.15);
+        o.connect(g).connect(ctx.destination);
+        o.start(ctx.currentTime + i * 0.16);
+        o.stop(ctx.currentTime + i * 0.16 + 0.18);
+      });
+      window.setTimeout(() => void ctx.close().catch(() => {}), 800);
+    } catch { /* no audio device: the line on screen still says it */ }
+  };
+
+  // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
+  // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
+  const prevPendingRef = useRef(pending);
+  useEffect(() => {
+    const grew = pending > prevPendingRef.current;
+    const cleared = pending === 0;
+    prevPendingRef.current = pending;
+    if (grew) {
+      approvalAtRef.current = Date.now();
+      approvalDoneRef.current = 0;
+      setApprovalLine(pending === 1 ? "有个操作等你批准" : `有 ${pending} 个操作等你批准`);
+      chime();
+      void speakCue({ text: pending === 1 ? "有个操作等你批准" : `有 ${pending} 个操作等你批准`, kind: "approval" });
+      return;
+    }
+    if (cleared) {
+      approvalAtRef.current = 0;
+      approvalDoneRef.current = 0;
+      setApprovalLine("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending]);
+
+  // 提醒：卡一直挂着就再响。间隔按里程碑走（60s、5min），不是每 30 秒唠叨一次。
+  useEffect(() => {
+    if (pending <= 0 || !approvalAtRef.current) return;
+    const marks = (window as unknown as { __approveRemindMs?: number[] }).__approveRemindMs ?? [60_000, 300_000];
+    const t = window.setInterval(() => {
+      const waited = Date.now() - approvalAtRef.current;
+      while (approvalDoneRef.current < marks.length && waited >= marks[approvalDoneRef.current]) {
+        approvalDoneRef.current += 1;
+        // 文案按这条里程碑自己的尺度说（QA 会把里程碑缩到秒级，所以别写死「分钟」）
+        const ms = marks[approvalDoneRef.current - 1];
+        const waited = ms < 60_000 ? `${Math.round(ms / 1000)} 秒`
+          : ms >= 300_000 ? "已经五分钟" : `${Math.round(ms / 60_000)} 分钟`;
+        const line = `审批还挂着，${waited}了`;
+        setApprovalLine(line);
+        chime();
+        void speakCue({ text: line, kind: "approval" });
+      }
+    }, 1000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending]);
+
   /** Say one milestone. Deliberately narrow: only while the call is THINKING (the answer owns the line
    *  the moment it starts), only if the operator left it on, and never while an answer sentence is
    *  being spoken — a cue that lands mid-answer is the noise this feature exists to avoid. */
   const speakCue = async (cue: Cue): Promise<void> => {
-    if (!aliveRef.current || !briefOnRef.current) return;
+    if (!aliveRef.current) return;
+    // 「报进度」只管进度。审批是另一码事：它不受那个开关管（一张卡没人批=回合永远卡住），
+    // 但同样不抢答案的话筒（下面 phase 那段对两者一视同仁）。
+    if (cue.kind !== "approval" && !briefOnRef.current) return;
     // `thinking` is the phase for a turn THIS CALL started. A turn can also arrive from elsewhere — a
     // typed prompt on the page, another session's `send` (#55) — and then the call is still `listening`
     // while the agent is already working. Those are exactly the turns nobody can see, so they get the
@@ -797,6 +873,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // …and never while the operator holds the floor (listening = the mic may be open).
     if (manualRef.current || pttRef.current || heard) return;
     if (spokenTextRef.current || queueRunRef.current) return;
+    // an approval is not progress chatter: it is the only cue that is about the OPERATOR, so it is
+    // allowed regardless of the 报进度 switch (a stuck card waits forever, silently)
     setCueLine(cue.text);
     await withSpeechLock(async () => {
       await speaker.speak(cue.text, "call", prefs).catch(() => { /* a cue that fails is not an error */ });
@@ -1677,7 +1755,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
 
       {/* 进度播报的屏幕副本（#58）。舞台视图没有聊天记录，这一行就是"它刚才说了什么"；说的和写的
           是同一句（`data-cue` 与交给喇叭的文本同源）。 */}
-      {cueLine && !caption ? <p className="call-cue call-cue-stage" data-cue={cueLine}>{cueLine}</p> : null}
+      {approvalLine && !caption ? <p className="call-cue call-cue-stage call-approve" data-cue={approvalLine}>{approvalLine}</p> : null}
+      {!approvalLine && cueLine && !caption ? <p className="call-cue call-cue-stage" data-cue={cueLine}>{cueLine}</p> : null}
 
       <button
         type="button"
@@ -1765,7 +1844,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
               ) : null}
               {/* 最近一句进度播报（#58）：说出来的时候屏幕上也有一行，所以"它到底说了什么"可查、
                   可测；回合结束或答案开始就消失，不留一句过期的话在屏幕上。 */}
-              {cueLine && !err ? <p className="call-cue" data-cue={cueLine}>{cueLine}</p> : null}
+              {approvalLine && !err ? <p className="call-cue call-approve" data-cue={approvalLine}>{approvalLine}</p> : null}
+              {!approvalLine && cueLine && !err ? <p className="call-cue" data-cue={cueLine}>{cueLine}</p> : null}
               {err ? <p className="call-err">{err}</p> : null}
               {/* The speaker's own failure, which used to be visible only in the composer — i.e.
                   never during a call. A call that stops talking must say why. */}

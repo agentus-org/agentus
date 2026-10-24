@@ -173,6 +173,37 @@ await sleep(4000);
 check("a quick answer needs no cue at all (silence is only a problem when it lasts)",
   (await cueText()) === null, String(await cueText()));
 
+// ---- 5. a card nobody answers is not allowed to wait in silence --------------------------
+// `tool2` is the mock's two-approvals-in-one-turn fixture: it holds the turn until someone answers,
+// which on a call is the最贵的 failure — the agent is not slow, it is waiting for a human.
+await ev(`(() => { const AC = window.AudioContext; window.__chimes = 0;
+  if (AC) { const o = AC.prototype.createOscillator;
+    AC.prototype.createOscillator = function () { window.__chimes += 1; return o.call(this); }; }
+  window.__approveRemindMs = [1500];
+  return true; })()`);
+await api(`/api/sessions/${SID}/prompt`, { method: "POST", body: JSON.stringify({ text: "tool2 帮我写两个文件" }) });
+let approve = null;
+for (let i = 0; i < 40; i += 1) {
+  await sleep(250);
+  const l = await ev(`document.querySelector('.call-approve')?.textContent?.trim() ?? null`);
+  if (l) { approve = l; break; }
+}
+check("a pending approval is announced on the call, in words (#58)", approve != null && /批准/.test(approve), String(approve));
+check("…and it carries the count (two cards really are two)", /2/.test(String(approve)), String(approve));
+const chimes = await ev("window.__chimes ?? 0");
+check("…with a sound, so a call in the dark is not silent (WebAudio chime, no TTS spent)", chimes >= 2, `oscillators=${chimes}`);
+let remind = null;
+for (let i = 0; i < 24; i += 1) {
+  await sleep(250);
+  const l = await ev(`document.querySelector('.call-approve')?.textContent?.trim() ?? null`);
+  if (l && /还挂着/.test(l)) { remind = l; break; }
+}
+check("…and it REMINDS the operator while the card is still unanswered", remind != null, String(remind));
+// answer them so the turn ends and the fixture is not left holding a subprocess
+const perms = (await api("/api/sessions")).json()?.pending ?? [];
+for (const p of perms) await api(`/api/permissions/${p.id}`, { method: "POST", body: JSON.stringify({ optionId: "allow" }) }).catch(() => {});
+await sleep(500);
+
 try { ws.close(); await fetch(`${CDP}/json/close/${tab.id}`); } catch { /* gone */ }
 try { process.kill(-proc.pid, "SIGTERM"); } catch { /* gone */ }
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} ok, ${fail} failed`);

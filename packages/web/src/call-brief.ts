@@ -22,7 +22,7 @@
  *    makes the call feel broken (the classic "早就执行完了你还在播").
  */
 
-export type CueKind = "leading" | "tool" | "plan";
+export type CueKind = "leading" | "tool" | "plan" | "approval";
 
 export interface Cue {
   text: string;

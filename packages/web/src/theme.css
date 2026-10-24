@@ -2646,6 +2646,11 @@ body.pane-dragging * { cursor: col-resize !important; }
   text-align: center;
 }
 
+.call-approve {
+  color: var(--warn, #e0a340);   /* 要人做的事，比进度更该被看见 */
+  opacity: 1;
+}
+
 .call-cue-stage {
   position: absolute;
   top: calc(env(safe-area-inset-top, 0px) + 76px);
