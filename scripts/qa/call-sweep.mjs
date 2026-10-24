@@ -513,6 +513,15 @@ try {
       return rawSend.call(this, data);
     };
     window.__need = (what) => window.__frames.filter((f) => f && f.t === what).map((f) => f.text ?? null);
+    // every progress cue that actually reached the screen (#58): short by design, and a different
+    // speaker path from the answer, so the clip-length invariant below has to be told them apart
+    window.__cues = [];
+    setInterval(() => {
+      document.querySelectorAll('.call-cue').forEach((el) => {
+        const t = el.dataset.cue;
+        if (t && !window.__cues.includes(t)) window.__cues.push(t);
+      });
+    }, 250);   // a poll, not a MutationObserver: this runs at document-start, before <html> exists
   ` });
   await send2("Page.enable");
   await send2("Page.navigate", { url: BASE });
@@ -800,7 +809,8 @@ try {
     if (present) return;
     await openSheet();
     await sleep(400);
-    await ev2(`(() => { const c = document.querySelector('.call-sheet .call-check input[type=checkbox]');
+    // by LABEL, not by position: the sheet now carries more than one switch (#58 报进度 is above it)
+    await ev2(`(() => { const c = document.querySelector('.call-sheet input[aria-label="在通话页显示语音打断"]');
       if (!c || c.checked) return false; c.click(); return true; })()`);
     await sleep(300);
     await closeSheet();
@@ -1010,7 +1020,11 @@ try {
   // with it. Only the LAST clip may be short (nothing follows it). The discriminating case — a real
   // 2-character opening sentence — a canned mock copy cannot produce, so scripts/qa/sentence-units.mts
   // owns that one; this pins the invariant on what actually went to the provider.
-  const shortClips = ttsBodies.filter((b, i) => b.length < 12 && i < ttsBodies.length - 1);
+  // The progress cues (#58) are a different speaker path — one short line, nothing glued after it —
+  // so they are excluded here by name; the invariant this line pins is the ANSWER splitter's.
+  const cues = new Set(await ev2("window.__cues ?? []"));
+  const answerClips = ttsBodies.filter((b) => !cues.has(b));
+  const shortClips = answerClips.filter((b, i) => b.length < 12 && i < answerClips.length - 1);
   check("no clip is shorter than the glued-sentence threshold (except the last one)",
     shortClips.length === 0, JSON.stringify(shortClips.map((b) => `${b.length}字:${b}`).slice(0, 4)));
   await sleep(400);                          // the first sentence reaches the TTS first
