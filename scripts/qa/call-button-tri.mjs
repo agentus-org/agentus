@@ -190,8 +190,10 @@ try {
     JSON.stringify(await modesRow()) === JSON.stringify(["关键词打断", "按键打断"]), JSON.stringify(await modesRow()));
   await click(".call-gear");
   await sleep(500);
-  check("通话设置里有那个勾选框", (await ev(`!!document.querySelector('.call-sheet .call-check input[type=checkbox]')`)) === true);
-  await click(".call-sheet .call-check input[type=checkbox]");
+  // by LABEL, not by position: the settings sheet holds more than one switch (#58 报进度 sits above it)
+  const VOICE_CHK = '.call-sheet input[aria-label="在通话页显示语音打断"]';
+  check("通话设置里有那个勾选框", (await ev(`!!document.querySelector(${JSON.stringify(VOICE_CHK)})`)) === true);
+  await click(VOICE_CHK);
   await sleep(300);
   await click(".call-sheet-x");
   await sleep(400);

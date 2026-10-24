@@ -30,6 +30,7 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
+import { BriefPlanner, type Cue } from "./call-brief";
 import { TusFace } from "./TusFace";
 import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, type TusMood, type ToolSubstate } from "./tusMood";
 import { vadStep, newVad, type VadState } from "./vad";
@@ -118,6 +119,8 @@ const CAPTION_KEY = "agentus.call.caption";
 /** #53：语音打断默认不摆在那一排上。它是最吵、最容易误触的一档，出问题也最难看懂（抢话判定、
  *  回声、灵敏度都参与）。代码、阈值、判定一条没删 —— 通话设置里那个勾选框把它放回来。 */
 const VOICE_MODE_KEY = "agentus.call.voiceMode";
+/** 干活期间的进度播报（#58）默认开；关掉它就只剩答案本身。 */
+const BRIEF_KEY = "agentus.call.brief";
 
 /** One line of history in the call's window.
  *  Memoised: the reply streams in chunks, the window re-renders on every one of them, and the rows
@@ -213,6 +216,18 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   });
   const captionRef = useRef(caption);
   captionRef.current = caption;
+  /** 干活期间要不要出声报进度（#58）。默认开：盲操时沉默 = 掉线。 */
+  const [briefOn, setBriefOn] = useState<boolean>(() => {
+    try { return localStorage.getItem(BRIEF_KEY) !== "0"; } catch { return true; }
+  });
+  const briefOnRef = useRef(briefOn);
+  briefOnRef.current = briefOn;
+  const toggleBrief = (): void => {
+    const next = !briefOn;
+    setBriefOn(next);
+    try { localStorage.setItem(BRIEF_KEY, next ? "1" : "0"); } catch { /* private mode */ }
+    if (!next) briefRef.current.turnEnded();
+  };
   /** 语音打断这一档要不要摆在打电话那一排上（默认不摆，见 VOICE_MODE_KEY）。 */
   const [voiceMode, setVoiceMode] = useState<boolean>(() => {
     try { return localStorage.getItem(VOICE_MODE_KEY) === "1"; } catch { return false; }
@@ -296,6 +311,21 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** 干活期间的进度播报（#58）：判定（说什么、隔多久、什么时候闭嘴）在 call-brief.ts，
+   *  这里只负责把 cue 交给喇叭和一句字幕。 */
+  const briefRef = useRef<BriefPlanner>(new BriefPlanner());
+  const briefSeenRef = useRef<Set<string>>(new Set());   // tool/plan 行只报一次（同一行会持续更新）
+  const [cueLine, setCueLine] = useState("");
+  /** ONE speaker at a time. The answer runner and the cue speaker both call `speak()`, and two
+   *  clips racing would talk over each other in the middle of a sentence. */
+  const speechLockRef = useRef<Promise<void>>(Promise.resolve());
+  const withSpeechLock = async (fn: () => Promise<void>): Promise<void> => {
+    const prev = speechLockRef.current;
+    let release: () => void = () => {};
+    speechLockRef.current = new Promise<void>((r) => { release = r; });
+    await prev;
+    try { await fn(); } finally { release(); }
+  };
   /** The reply that was playing when the operator took the floor. Its key must never reach the
    *  speaker again — without this, loosening the gate off the phase (so a typed prompt gets read)
    *  would also re-read the tail of the answer we just interrupted: 「打断它以后它又自己念了一遍」. */
@@ -718,6 +748,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       void backToListening(false);
       return;
     }
+    if (agentText.trim()) {
+      briefRef.current.answerStarted();   // the answer owns the line now (#58)
+      setCueLine("");                     // …so the progress line is stale the moment it starts
+    }
     if (agentKey !== replyKeyRef.current) {          // a new reply started
       replyKeyRef.current = agentKey;
       queuedRef.current = 0;
@@ -749,6 +783,78 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentText, agentKey, busy, failureText]);
 
+  /** Say one milestone. Deliberately narrow: only while the call is THINKING (the answer owns the line
+   *  the moment it starts), only if the operator left it on, and never while an answer sentence is
+   *  being spoken — a cue that lands mid-answer is the noise this feature exists to avoid. */
+  const speakCue = async (cue: Cue): Promise<void> => {
+    if (!aliveRef.current || !briefOnRef.current) return;
+    // `thinking` is the phase for a turn THIS CALL started. A turn can also arrive from elsewhere — a
+    // typed prompt on the page, another session's `send` (#55) — and then the call is still `listening`
+    // while the agent is already working. Those are exactly the turns nobody can see, so they get the
+    // briefing too; what we never do is talk over the ANSWER (`speaking`) or a failure (`error`).
+    const phase = phaseRef.current;
+    if (phase !== "thinking" && phase !== "listening") return;
+    // …and never while the operator holds the floor (listening = the mic may be open).
+    if (manualRef.current || pttRef.current || heard) return;
+    if (spokenTextRef.current || queueRunRef.current) return;
+    setCueLine(cue.text);
+    await withSpeechLock(async () => {
+      await speaker.speak(cue.text, "call", prefs).catch(() => { /* a cue that fails is not an error */ });
+    });
+  };
+
+  // A turn begins/ends: the planner is per-turn state, so a new turn is a clean slate and an ended
+  // turn drops whatever it was holding (a progress line after the fact is worse than silence).
+  const prevBusyRef = useRef(false);
+  useEffect(() => {
+    const now = Date.now();
+    if (busy && !prevBusyRef.current) {
+      briefRef.current = new BriefPlanner();
+      briefSeenRef.current = new Set();
+      briefRef.current.turnStarted(now);
+      setCueLine("");
+    } else if (!busy && prevBusyRef.current) {
+      briefRef.current.turnEnded();
+      setCueLine("");            // the turn is over: nothing on screen may claim it is still working
+    }
+    prevBusyRef.current = busy;
+  }, [busy]);
+
+  // The cue SOURCES: a tool call starting, a plan step moving. Both are real events the transcript
+  // already carries — nothing here is inferred from silence.
+  useEffect(() => {
+    if (!busy || !briefOnRef.current) return;
+    const last = msgs[msgs.length - 1];
+    if (!last) return;
+    if (briefSeenRef.current.has(last.key)) return;
+    const now = Date.now();
+    const planner = briefRef.current;
+    let cue: Cue | null = null;
+    if (last.kind === "tool") {
+      briefSeenRef.current.add(last.key);
+      cue = planner.tool(now, last.title || last.kind2 || "工具");
+    } else if (last.kind === "plan") {
+      briefSeenRef.current.add(last.key);
+      const done = last.items.filter((i) => i.status === "completed").length;
+      cue = planner.plan(now, done, last.items.length);
+    }
+    if (cue) void speakCue(cue);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [msgs, busy, briefOn]);
+
+  // The heartbeat: the only place a coalesced cue can come out (and the leading ack, once thinking
+  // has gone on long enough). 500 ms is cheap and keeps the gap rules honest to the wall clock.
+  useEffect(() => {
+    if (!busy || !briefOn) return;
+    const t = window.setInterval(() => {
+      const now = Date.now();
+      const cue = briefRef.current.thinking(now) ?? briefRef.current.tick(now);
+      if (cue) void speakCue(cue);
+    }, 500);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, briefOn]);
+
   // the speaker: one sentence at a time, in order
   useEffect(() => {
     if (phaseRef.current !== "speaking" || queueRunRef.current) return;
@@ -772,10 +878,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
             // answering, and an `<audio>` element on a stream that went dead. Awaiting it plainly is
             // what made the call go permanently silent (#44) — and now the watchdog needs a way to
             // say 「skip this one」 without hanging up.
-            await new Promise<void>((resolve, reject) => {
+            await withSpeechLock(() => new Promise<void>((resolve, reject) => {
               abandonRef.current = () => reject(new Error("clip abandoned"));
               void speaker.speak(sentence, "call", prefs).then(resolve, reject);
-            });
+            }));
           } catch {
             /* this clip failed or was abandoned; the sentences behind it still get their turn */
           } finally {
@@ -1569,6 +1675,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         </div>
       ) : null}
 
+      {/* 进度播报的屏幕副本（#58）。舞台视图没有聊天记录，这一行就是"它刚才说了什么"；说的和写的
+          是同一句（`data-cue` 与交给喇叭的文本同源）。 */}
+      {cueLine && !caption ? <p className="call-cue call-cue-stage" data-cue={cueLine}>{cueLine}</p> : null}
+
       <button
         type="button"
         className="call-orb"
@@ -1653,6 +1763,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
                   <div className="bubble">{heard}</div>
                 </div>
               ) : null}
+              {/* 最近一句进度播报（#58）：说出来的时候屏幕上也有一行，所以"它到底说了什么"可查、
+                  可测；回合结束或答案开始就消失，不留一句过期的话在屏幕上。 */}
+              {cueLine && !err ? <p className="call-cue" data-cue={cueLine}>{cueLine}</p> : null}
               {err ? <p className="call-err">{err}</p> : null}
               {/* The speaker's own failure, which used to be visible only in the composer — i.e.
                   never during a call. A call that stops talking must say why. */}
@@ -1853,6 +1966,18 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
             </p>
             {/* 语音打断默认不摆在通话页那一排（#53）。放回来的入口在这里：一个勾选框，状态跟着
                 这台设备的本地偏好走（和字幕开关同一个理由 —— 手机和桌面不需要共享）。 */}
+            {/* 干活期间的进度播报（#58）。默认开：盲操时沉默和掉线是同一件事；但它也可能吵，所以给
+                这台设备一个开关（和字幕、语音打断同一个理由——手机和桌面不需要共享一个偏好）。 */}
+            <label className="call-check">
+              <input type="checkbox" checked={briefOn} onChange={toggleBrief} aria-label="干活期间报进度" />
+              <span>
+                <span className="call-check-name">干活期间报进度</span>
+                <span className="call-check-hint">
+                  它去跑工具、深思考、等计划推进的时候，隔一阵用一句话告诉你还在干什么（「我查一下」
+                  「在跑 terminal」「第 2 步，共 5 步」）。答案一开始读就闭嘴，一轮最多三句。
+                </span>
+              </span>
+            </label>
             <label className="call-check">
               <input type="checkbox" checked={voiceMode} onChange={toggleVoiceMode} aria-label="在通话页显示语音打断" />
               <span>

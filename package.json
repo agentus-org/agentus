@@ -90,7 +90,8 @@
     "vad-silero": "tsx scripts/qa/vad-silero.mts",
     "tus-mood": "tsx scripts/qa/tus-mood.mts",
     "tus-mode-sweep": "node scripts/qa/tus-mode-sweep.mjs",
-    "usage-row-sweep": "node scripts/qa/usage-row-sweep.mjs"
+    "usage-row-sweep": "node scripts/qa/usage-row-sweep.mjs",
+    "call-brief-sweep": "node scripts/qa/call-brief-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"
