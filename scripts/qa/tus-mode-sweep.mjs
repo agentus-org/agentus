@@ -422,31 +422,44 @@ try {
   // 带上了 [emo:x]，客户端把它从文字里剥干净，脸跟着标签换。
   // `[emo-probe:<mood>]` 让 mock 回指定的标签（缺省 happy）—— 新移植的两张脸（calm/confused）
   // 也要在真页面上被看见一次，只靠纯函数单测证明不了渲染器真的会用它们。
-  const moodOf = async () => ev(`document.querySelector('.call-mode')?.dataset.mood ?? null`);
-  const probeEmo = async (want) => {
+  const moodOf = async () => ev(`(() => { const c = document.querySelector('.call-mode');
+    return c ? { mood: c.dataset.mood ?? null, face: c.dataset.face ?? null, phase: c.dataset.phase ?? null }
+      : { mood: null, face: null, phase: null }; })()`);
+  const probeEmo = async (want, shot) => {
     const sent = await promptCall(`[emo-probe:${want}] 你好，说说你现在的心情`);
-    let mood = null, leaked = null;
+    let mood = null, face = null, phase = null, leaked = null, shotAt = null;
     for (let i = 0; i < 40; i++) {
-      await sleep(400);
-      mood = await moodOf();
+      await sleep(300);
+      const s = await moodOf();
+      mood = s.mood; face = s.face; phase = s.phase;
+      // data-mood 是「解析到的标签」，data-face 才是「脸上正在画的那张」——只看前者会在
+      // 话音结束、脸已经回到 listening 之后仍然判绿（实测抓到过一张名不副实的截图）。
+      if (face === want && shot && !shotAt) {
+        fs.writeFileSync(`${SHOTS}/${shot}`,
+          Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+        shotAt = `${face}@${phase}`;
+      }
       leaked = await ev(`(() => { const rows = [...document.querySelectorAll('.msg.agent .bubble')];
         const t = rows.length ? rows[rows.length - 1].innerText : '';
         // 不用正则：这段代码住在 JS 模板串里，反斜杠转义会被模板吃掉，写出来的正则能假匹配。
         return { hasTag: t.includes('emo:') || t.includes('emo：'), sample: t.slice(0, 60) }; })()`);
-      if (mood === want && leaked && leaked.hasTag === false) break;
+      if (mood === want && face === want && leaked && leaked.hasTag === false) break;
     }
-    return { sent, mood, leaked };
+    return { sent, mood, face, phase, leaked, shotAt };
   };
   const HAPPY = await probeEmo("happy");
-  check("agent 照提示词写了标签，脸变成 happy（data-mood）", HAPPY.mood === "happy", String(HAPPY.mood));
+  check("agent 照提示词写了标签（data-mood）", HAPPY.mood === "happy", String(HAPPY.mood));
+  check("脸真的画成 happy（data-face，不是只解析了标签）", HAPPY.face === "happy", String(HAPPY.face));
   check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", HAPPY.leaked && HAPPY.leaked.hasTag === false,
     JSON.stringify(HAPPY.leaked && HAPPY.leaked.sample));
 
   // calm：Grok 描述符里最宽的一张（64×27，宽高 2.2:1）。宽眼正是“叠成暂停符号 / 被球缘剪平”
   // 这两类旧 bug 的高危区，所以在真页面上再量一次两只眼之间有没有真实暗缝。
   await waitListening();
-  const CALM = await probeEmo("calm");
+  const CALM = await probeEmo("calm", "tus-calm.png");
   check("calm 标签让脸换成 calm（新脸在真页面上真的被用上）", CALM.mood === "calm", String(CALM.mood));
+  check("calm 的脸真的画出来了（data-face）", CALM.face === "calm", String(CALM.face));
+  check("calm 的截图确实拍在这张脸在场时", CALM.shotAt === "calm@speaking", String(CALM.shotAt));
   const calmEyes = await sampleEyes(6, "calm");
   const calmWorst = calmEyes.good[0] ?? calmEyes.bad[0] ?? null;
   // 眨眼（calm 不在 BLINK_BLOCKED 里）会吃掉一帧，所以允许至多一个坏样本；全坏仍判红。
@@ -458,8 +471,10 @@ try {
   // confused：官方描述符里唯一一张偏心的脸（off -0.10）。渲染器对风格位移打 0.5 权重
   // （见 projectEyes），曾经把 -13 px 缩成 -6.5 px、看起来像“根本没歪”，这条钉住它真的到了页面。
   await waitListening();
-  const CONF = await probeEmo("confused");
+  const CONF = await probeEmo("confused", "tus-confused.png");
   check("confused 标签让脸换成 confused（偏心那张也走到了真页面）", CONF.mood === "confused", String(CONF.mood));
+  check("confused 的脸真的画出来了（data-face）", CONF.face === "confused", String(CONF.face));
+  check("confused 的截图也拍在这张脸在场时", CONF.shotAt === "confused@speaking", String(CONF.shotAt));
   check("confused 标签也没有漏进气泡", CONF.leaked && CONF.leaked.hasTag === false,
     JSON.stringify(CONF.leaked && CONF.leaked.sample));
 
