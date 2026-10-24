@@ -43,6 +43,19 @@ const ANON_COVER = 0.6;
 const ANON_SCAN_ROWS = 80;
 
 /**
+ * Is this row a FRAGMENT of a message rather than a message?
+ *
+ * The store has to tell "one more frame of the reply being built" from "the next message". With no
+ * messageId (qoder) and no turn id (rows written before it existed) the only honest signal left is
+ * shape: a streamed frame is a few characters and never contains a line break. Two short messages in
+ * a row are still two messages, because a tool call or the operator's turn sits between them — and
+ * this is only ever used to decide whether to glue a row onto the row directly above it.
+ */
+function isFragmentText(text: string): boolean {
+  return text.length > 0 && text.length <= 24 && !text.includes("\n");
+}
+
+/**
  * Is `incoming` the same block as `blockText` rather than new content?
  *
  * Both directions matter: the agent re-sends an earlier message untouched (the incoming is contained
@@ -387,6 +400,14 @@ export class Store {
         thought_touched integer not null default 0, -- operator changed depth during the call
         updated_at integer not null
       );
+      -- Which one-time repairs have run, and at what version. The user_version pragma is a single
+      -- number, so two passes that both write it overwrite each other's answer: the store ended up
+      -- at 4 with the fold recorded as done while 311,638 unfolded rows were still in it.
+      create table if not exists repairs (
+        name text primary key,
+        version integer not null,
+        at integer not null
+      );
     `);
     // The DB now holds the speech endpoint's key, so it is the operator's secret material:
     // 0600 like the file it replaced (a default 0644 sqlite file would be a downgrade).
@@ -450,6 +471,12 @@ export class Store {
     );
     if (!mcols.has("block_key")) this.#db.exec("alter table messages add column block_key text");
     this.#db.exec("create index if not exists idx_messages_block on messages (session_id, block_key)");
+    // Which turn a row belongs to (issue #56). Qoder's live stream carries no `messageId`, so the
+    // only identity an id-less chunk has is "the message being built in THIS turn" — without it a
+    // reply is one row per token (measured: 311,638 thought rows in one session, 186 MB store), and
+    // folding on "same kind as the row above" alone would merge two genuinely separate replies.
+    if (!mcols.has("turn_id")) this.#db.exec("alter table messages add column turn_id integer");
+    this.#db.exec("create index if not exists idx_messages_turn on messages (session_id, turn_id)");
     // plans: the one-line TITLE a completion notification reads (issue #11). Additive, and null for
     // every existing plan — a card that has never been given a title falls back to its remark, and
     // then to the last step it closed, so an old store keeps behaving exactly as before.
@@ -488,6 +515,32 @@ export class Store {
   }
 
   /**
+   * Has this one-time repair already run, and at which version?
+   *
+   * Repairs used to share `pragma user_version`, which is ONE number for the whole file: the fold
+   * set it to 2, the replay cleanup then set it to 4, and the next fold read 4 — "already done" —
+   * while the 311,638 unfolded rows it was written for were still in the table. Each pass keeps its
+   * own row here now. `legacy` is what a store that predates the table reports (it only ever had
+   * user_version to go by), so upgrading in place does not re-walk an already-folded file from 0.
+   */
+  #repairVersion(name: string, legacy: number): number {
+    const row = this.#db.prepare("select version from repairs where name = ?").get(name) as
+      | { version?: number } | undefined;
+    if (row && typeof row.version === "number") return row.version;
+    const uv = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
+    return Math.min(Number(uv?.user_version ?? 0), legacy);
+  }
+
+  #setRepairVersion(name: string, version: number): void {
+    this.#db.prepare("insert into repairs (name, version, at) values (?,?,?) on conflict(name) do update set version = excluded.version, at = excluded.at")
+      .run(name, version, Date.now());
+    // …and keep the old reading monotonic for a build that still asks user_version.
+    const uv = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
+    const cur = Number(uv?.user_version ?? 0);
+    if (version > cur) this.#db.prepare(`pragma user_version = ${version}`).run();
+  }
+
+  /**
    * One-time repair of transcripts written by the chunk-per-row era.
    *
    * Until `appendTextChunk` existed, every `agent_message_chunk` (1–3 characters) was its own row: a
@@ -503,13 +556,20 @@ export class Store {
   #foldStreamedChunks(): void {
     // v2: the anonymous-re-emission rule got sharper (a short block is no longer a fold candidate,
     // but a ≥24-char one that covers most of a block is) — an already-folded DB is worth re-walking.
-    const FOLD_VERSION = 2;
-    const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
-    if (Number(v?.user_version ?? 0) >= FOLD_VERSION) return;
+    // v3: id-less FRAGMENTS are glued onto the row directly above (the qoder word-per-line era).
+    const FOLD_VERSION = 3;
+    // A store that predates the repairs table recorded its fold in user_version (2 = the rules
+    // shipped with it). Anything at 0/1 never folded at all.
+    const seenFold = this.#repairVersion("fold", 2) >= 2;
+    if (this.#repairVersion("fold", 2) >= FOLD_VERSION) return;
     if (!this.#backup("fold")) return;
-    const sessions = this.#db.prepare("select distinct session_id as id from messages").all() as unknown as { id: string }[];
+    // One transaction for the whole walk: this is a per-row update pass over every message in the
+    // file (430k rows on the operator's store) and autocommit is what made it 46 seconds of boot.
+    this.#db.exec("begin");
     let before = 0;
     let after = 0;
+    try {
+    const sessions = this.#db.prepare("select distinct session_id as id from messages").all() as unknown as { id: string }[];
     const upd = this.#db.prepare("update messages set payload = ?, block_key = ? where session_id = ? and seq = ?");
     const del = this.#db.prepare("delete from messages where session_id = ? and seq = ?");
     for (const { id } of sessions) {
@@ -527,6 +587,18 @@ export class Store {
         const payload = parseJson(r.payload);
         const text = textOf(payload);
         const key = blockKeyOf(r.kind, payload);
+        // A word-per-line stream: rows written before the turn id existed (qoder sends no messageId,
+        // so the era's rows are "There" / " are" / ")" — 311,638 of them in one session). Both sides
+        // must be fragments and the target must be the row immediately above: a real message that
+        // happens to be short twice in a row is separated by the tool/operator row between them.
+        const prev = kept[kept.length - 1];
+        if (!key && prev && prev.row.kind === r.kind && prev.text !== null
+            && isFragmentText(prev.text) && isFragmentText(text)
+            && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null) {
+          prev.text += text;
+          doomed.push(r.seq);
+          continue;
+        }
         // Walk back to the block this row belongs to: the same messageId, or a block whose text
         // already contains this one (the agent replays its own text without an id).
         let hitIdx = -1;
@@ -535,12 +607,22 @@ export class Store {
           if (cand.text === null || cand.row.kind !== r.kind) continue;
           const candText: string = cand.text;
           if (key && blockKeyOf(cand.row.kind, parseJson(cand.row.payload)) === key) { hitIdx = i; break; }
-          if (!key && reemissionTarget(candText, text)) { hitIdx = i; break; }
+          // Replays are only judged here for a store that has never been folded. On a store that has,
+          // the evidence-based pass (#dedupeReplayedRows) owns them — this walk has no time window,
+          // so a genuine repeat would read as a copy.
+          if (!key && !seenFold && reemissionTarget(candText, text)) { hitIdx = i; break; }
           if (kept.length - i > ANON_SCAN_ROWS) break;
         }
         if (hitIdx >= 0) {
           const target = kept[hitIdx];
           const delta = key ? appendedTextDelta(target.text ?? "", text) : "";
+          // Same id, same text: that is a REPLAY, and judging replays is #dedupeReplayedRows' job
+          // (it has the time window and the evidence). Deleting here would also eat a genuine short
+          // repeat — "好的" sent twice is a conversation.
+          if (key && !delta) {
+            kept.push({ row: r, text });
+            continue;
+          }
           if (delta) target.text = (target.text ?? "") + delta;
           doomed.push(r.seq);
           continue;
@@ -556,7 +638,12 @@ export class Store {
       }
       after += kept.length;
     }
-    this.#db.prepare(`pragma user_version = ${FOLD_VERSION}`).run();
+    this.#setRepairVersion("fold", FOLD_VERSION);
+    this.#db.exec("commit");
+    } catch (e) {
+      this.#db.exec("rollback");
+      throw e;
+    }
     console.log(`[store] 历史分片已折叠：${before} 行 → ${after} 行`);
   }
 
@@ -605,8 +692,9 @@ export class Store {
     // already carries v3 therefore still holds them, so the walk is worth repeating; v4 also puts
     // back the activity clock the same replay bumped (see the tail of this method).
     const DEDUPE_VERSION = 4;
-    const v = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
-    if (Number(v?.user_version ?? 0) >= DEDUPE_VERSION) return;
+    // Legacy: this pass wrote its own number into user_version (3, then 4) before the repairs table
+    // existed, so a store carrying 4 has already run it.
+    if (this.#repairVersion("dedupe", 4) >= DEDUPE_VERSION) return;
     if (!this.#backup("dedupe")) return;
     // The store's own floor for "this is a block, not an utterance" (`reemissionTarget`): below it a
     // repeat is legitimately two messages ("好的" twice) and never a replay of one block.
@@ -689,7 +777,7 @@ export class Store {
            and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
       )
       .run();
-    this.#db.prepare(`pragma user_version = ${DEDUPE_VERSION}`).run();
+    this.#setRepairVersion("dedupe", DEDUPE_VERSION);
     if (before !== after) {
       console.log(
         `[store] 重放行清理：${before} 行 → ${after} 行（工具行 ${toolsDropped}、文本行 ${textDropped}；`
@@ -1124,7 +1212,7 @@ export class Store {
    * the frame was a pure re-emission (nothing to emit); an existing row with a non-empty delta means
    * "this row grew" — the client appends instead of inserting a second bubble.
    */
-  appendTextChunk(m: Omit<StoredMessage, "seq"> & { kind: "agent" | "thought" }): {
+  appendTextChunk(m: Omit<StoredMessage, "seq"> & { kind: "agent" | "thought" }, turnId?: number): {
     message: StoredMessage;
     delta: string;
     isNew: boolean;
@@ -1146,11 +1234,39 @@ export class Store {
     if (!key) {
       const row = this.#rowContaining(m.sessionId, m.kind, text);
       if (row) return this.#foldInto(row, text);   // "grew" appends the tail, "same" is a no-op
+      // 3. an id-less DELTA of a message this same turn is still building (issue #56, qoder). Its
+      //    frames carry no messageId at all, so "same kind, same turn, still the newest row" is the
+      //    only identity available — and the turn id is what keeps two separate replies apart
+      //    (a new turn starts a new row, and a tool/plan/user row in between does too).
+      if (turnId !== undefined) {
+        const open = this.#openTurnRow(m.sessionId, m.kind, turnId);
+        if (open) return this.#foldInto(open, text);
+      }
     }
     const stored = this.appendMessage(m);
     if (key) this.#db.prepare("update messages set block_key = ? where session_id = ? and seq = ?")
       .run(key, m.sessionId, stored.seq);
+    if (turnId !== undefined || key) {
+      this.#db.prepare("update messages set turn_id = ? where session_id = ? and seq = ?")
+        .run(turnId ?? null, m.sessionId, stored.seq);
+    }
     return { message: stored, delta: text, isNew: true };
+  }
+
+  /** The row an id-less delta continues: same kind, same turn, still the newest row of the session. */
+  #openTurnRow(sessionId: string, kind: string, turnId: number): StoredMessage | undefined {
+    const r = this.#db
+      .prepare("select * from messages where session_id = ? and kind = ? order by seq desc limit 1")
+      .get(sessionId, kind) as unknown as RawMessageRow | undefined;
+    if (!r) return undefined;
+    if ((r as unknown as { turn_id?: number | null }).turn_id !== turnId) return undefined;
+    if ((r as unknown as { block_key?: string | null }).block_key) return undefined;
+    // …and nothing was appended after it (a tool call, a plan, the operator) — that ends the message.
+    const newest = this.#db
+      .prepare("select seq from messages where session_id = ? order by seq desc limit 1")
+      .get(sessionId) as { seq: number } | undefined;
+    if (!newest || newest.seq !== r.seq) return undefined;
+    return rowToMessage(r);
   }
 
   /** Append to the row that already accumulates this message (or report it as a re-emission). */

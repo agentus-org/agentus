@@ -2407,7 +2407,7 @@ export class SessionManager {
       // is ONE row, not 1259. The client gets the row plus the part that is genuinely new, so a live
       // turn stays a small delta on the wire while the store stays the source of truth.
       if (msg.kind === "agent" || msg.kind === "thought") {
-        const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind });
+        const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind }, live.turnSeq);
         if (r.delta || r.isNew) {
           // A row that did NOT move is not activity. Neither is one that DID move — a long reply arrives
           // as dozens of chunks, and touching per chunk re-sorted the rail on every token (issue #50:

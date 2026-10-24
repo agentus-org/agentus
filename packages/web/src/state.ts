@@ -1363,9 +1363,12 @@ class Cockpit {
   /** Page backwards through a long transcript (M4). Older rows are prepended in order
    *  and deduped through the same `seen` set, so a WS replay racing the fetch cannot
    *  double-render a message. */
-  async loadEarlier(id: string): Promise<void> {
+  /** Returns how many NEW bubbles the page added. Zero is a real answer — every row in the page was
+   *  a fragment of a block already on screen — and the transcript says so instead of doing nothing
+   *  visible (issue #56: 1,427 silent clicks to reach the start of one qoder session). */
+  async loadEarlier(id: string): Promise<number> {
     const v = this.#view(id);
-    if (v.loadingOlder || !v.hasOlder || v.minSeq == null) return;
+    if (v.loadingOlder || !v.hasOlder || v.minSeq == null) return 0;
     v.loadingOlder = true;
     this.bump();
     try {
@@ -1398,8 +1401,10 @@ class Cockpit {
       if (fresh.length) v.msgs = [...fresh, ...v.msgs];
       v.blocks = reindexBlocks(v.msgs);
       v.hasOlder = Boolean(hasOlder);
+      return fresh.length;
     } catch {
       /* keep hasOlder so the affordance stays for a retry */
+      return -1;
     } finally {
       v.loadingOlder = false;
       this.bump();

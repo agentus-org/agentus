@@ -15,6 +15,16 @@ function check(name: string, cond: boolean, detail = ""): void {
   else { failed += 1; console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ""}`); }
 }
 
+/** Put a scratch DB into the state an old build left it in. Before the `repairs` table both
+ *  one-time passes recorded themselves in `pragma user_version`, so a fixture saying "this store is
+ *  at v2" means: the fold ran at 2, the replay cleanup never ran. (Today each pass has its own row.) */
+function era(db: DatabaseSync, uv: number): void {
+  db.exec("delete from repairs");
+  db.prepare(`pragma user_version = ${uv}`).run();
+  if (uv >= 2) db.prepare("insert into repairs (name, version, at) values ('fold',?,?)").run(Math.min(uv, 2), Date.now());
+  if (uv >= 3) db.prepare("insert into repairs (name, version, at) values ('dedupe',?,?)").run(Math.min(uv, 4), Date.now());
+}
+
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-store-fold-"));
 const dbPath = path.join(dir, "agentus.sqlite");
 const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent" | "thought" = "agent"):
@@ -105,7 +115,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   // …and the same message re-sent later as one anonymous block (what Hermes does on every re-attach)
   ins.run(++seq, "s-legacy", "agent", payload(legacy), null, null, Date.now());
   ins.run(++seq, "s-legacy", "user", JSON.stringify({ text: "另一问" }), null, null, Date.now());
-  raw.prepare("pragma user_version = 0").run();
+  era(raw, 0);
   raw.close();
 
   const store = new Store(dbPath); // the constructor folds
@@ -198,7 +208,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const shortSeqs = [seq - 1, seq];
   // Version 2 models the operator's real store: the legacy fold had ALREADY run when these copies
   // landed, so it never saw them — that is why a second pass exists at all.
-  raw.prepare("pragma user_version = 2").run();
+  era(raw, 2);
   raw.close();
 
   const store = new Store(rpDb); // the constructor cleans up
@@ -268,7 +278,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   ins.run(3, "s-old", "agent", JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: body } }), null, null, T + 86_400_000);
   ins.run(4, "s-old", "agent", JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: body } }), null, null, T + 86_400_001);
   ins.run(5, "s-old", "agent", JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: body } }), null, null, T + 86_400_002);
-  raw.prepare("pragma user_version = 0").run(); // this store predates every repair
+  era(raw, 0); // this store predates every repair
   raw.close();
   const store = new Store(oldDb); // adds the column, cleans up, then reads the clock
   check("the legacy session's clock is its real last activity, not the restart",
@@ -309,7 +319,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const before = ids.map((id) => store.lastActivityAt().get(id));
   check("fixture: every session's clock sits at the restart", before.every((c) => (c ?? 0) >= RESTART), JSON.stringify(before));
   store.close();
-  new DatabaseSync(burstDb).exec("pragma user_version = 3"); // the state the live store is in
+  era(new DatabaseSync(burstDb), 3); // the state the live store is in
   const repaired = new Store(burstDb); // …and this is the release start
   const after = ids.map((id) => repaired.lastActivityAt().get(id));
   check("the burst repair puts every session back to its real last activity",
@@ -317,6 +327,113 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   check("…and the replayed rows it could not prove are copies are still there",
     ids.every((id) => repaired.messagesTail(id, 50).messages.length === 2));
   repaired.close();
+}
+
+// ---- 9. an id-less stream (qoder) folds inside its turn, never across turns -------------------
+// Qoder's live frames carry no messageId at all, so "one row per message" had no identity to hold on
+// to: the operator's own store grew 311,638 thought rows in a single session (186 MB) and renderd as
+// "There" / " are" / ")" one word per line. The only identity available is the turn the chunk belongs
+// to, so that is what the fold keys on — a new turn, a tool call, or the operator speaking ends the
+// message in progress.
+{
+  const store = new Store(dbPath);
+  const sid = "s-qoder";
+  const rows = () => store.messagesTail(sid, 200).messages;
+  const of = (kind: string) => rows().filter((r) => r.kind === kind);
+  const textOf = (r?: { payload: unknown }) =>
+    (r?.payload as { content?: { text?: string } } | undefined)?.content?.text ?? "";
+
+  ["看", "这个", "实现", "。"].forEach((p) => store.appendTextChunk(chunk(sid, p), 7));
+  check("qoder: a turn's id-less deltas are ONE row", of("agent").length === 1, `${of("agent").length} agent rows`);
+  check("…holding the whole reply", textOf(of("agent")[0]) === "看这个实现。", JSON.stringify(textOf(of("agent")[0])));
+
+  // a tool call in the same turn ends the message in progress
+  store.appendMessage({
+    sessionId: sid, kind: "tool", createdAt: Date.now(),
+    payload: { sessionUpdate: "tool_call", toolCallId: "c-1", title: "read_file" },
+  } as never);
+  store.appendTextChunk(chunk(sid, "读完", ), 7);
+  check("a tool call in between starts a new row", of("agent").length === 2, `${of("agent").length} agent rows`);
+
+  // …and so do thoughts vs the answer
+  store.appendTextChunk({ ...chunk(sid, "在想"), kind: "thought" } as never, 7);
+  check("a thought does not fold into the answer", of("thought").length === 1 && of("agent").length === 2);
+  store.appendTextChunk(chunk(sid, "然后答", ), 7);
+  check("…and the answer after it starts its own row", of("agent").length === 3, `${of("agent").length} agent rows`);
+
+  // the next turn says the same thing again: same kind, nothing in between — but a NEW turn
+  store.appendTextChunk(chunk(sid, "好的"), 8);
+  check("a new turn starts a new row even with nothing in between", of("agent").length === 4,
+    `${of("agent").length} agent rows`);
+  store.appendTextChunk(chunk(sid, "，收到"), 8);
+  check("…which then folds its own deltas", of("agent").length === 4 && textOf(of("agent")[3]) === "好的，收到",
+    JSON.stringify(textOf(of("agent")[3])));
+
+  // the operator speaking also ends the message in progress
+  store.appendMessage({ sessionId: sid, kind: "user", payload: { text: "继续" }, createdAt: Date.now() } as never);
+  store.appendTextChunk(chunk(sid, "继续答"), 8);
+  check("the operator's turn ends the message in progress", of("agent").length === 5, `${of("agent").length} agent rows`);
+  store.close();
+}
+
+// ---- 10. the same repair, for the id-less word-per-line era (qoder) --------------------------
+// Rows written before `turn_id` existed have no id and no containment relationship (each is a
+// fragment of the reply, not a re-send of it), so the rules above never touch them. They fold by
+// shape instead: a fragment glues onto the fragment directly above it, and any other kind of row
+// (the operator, a tool call, a plan) is what separates two messages.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 200;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at) values (?,?,?,?,?,?,?)",
+  );
+  const p = (text: string, kind = "agent") =>
+    JSON.stringify({ sessionUpdate: `${kind}_message_chunk`, content: { type: "text", text } });
+  for (const f of ["There", " are", " two", " ways", ")"]) ins.run(++seq, "s-qoder-legacy", "agent", p(f), null, null, Date.now());
+  ins.run(++seq, "s-qoder-legacy", "tool", JSON.stringify({ sessionUpdate: "tool_call", toolCallId: "c-9", title: "read" }), null, null, Date.now());
+  for (const f of ["Then", " it", " works", "."]) ins.run(++seq, "s-qoder-legacy", "agent", p(f), null, null, Date.now());
+  for (const f of ["Let", " me", " think"]) ins.run(++seq, "s-qoder-legacy", "thought", p(f, "thought"), null, null, Date.now());
+  // a tool call in the same turn ends the message in progress
+  ins.run(++seq, "s-qoder-legacy", "tool", JSON.stringify({ sessionUpdate: "tool_call", toolCallId: "c-10", title: "read" }), null, null, Date.now());
+  era(raw, 1); // an era-1 store: needs the fold walk
+  raw.close();
+
+  const store = new Store(dbPath);
+  const rows = store.messagesTail("s-qoder-legacy", 200).messages;
+  const agents = rows.filter((r) => r.kind === "agent");
+  const txt = (r: { payload: unknown } | undefined) =>
+    (r?.payload as { content?: { text?: string } } | undefined)?.content?.text ?? "";
+  check("a word-per-line stream collapses to its messages", agents.length === 2, `${agents.length} agent rows`);
+  check("…in order, whole", txt(agents[0]) === "There are two ways)" && txt(agents[1]) === "Then it works.",
+    `${JSON.stringify(txt(agents[0]))} / ${JSON.stringify(txt(agents[1]))}`);
+  check("…and the thought stays its own row", rows.filter((r) => r.kind === "thought").length === 1);
+  store.close();
+}
+
+// ---- 11. a store whose repairs disagree: the replay cleanup ran, the fold never did ------------
+// This is the OPERATOR'S OWN FILE (user_version 4, 430,269 rows, 311,638 of them one-word qoder
+// thought fragments): the two passes shared one number, so the fold's "done" was overwritten by the
+// cleanup's. Reading each pass's own row is what lets the fold still run here.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 300;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at) values (?,?,?,?,?,?,?)",
+  );
+  const p2 = (text: string) => JSON.stringify({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text } });
+  for (const f of ["The", " user", " asked", " a", " question"]) ins.run(++seq, "s-disagree", "thought", p2(f), null, null, Date.now());
+  raw.exec("delete from repairs");
+  raw.prepare("pragma user_version = 4").run();   // the number the cleanup left behind…
+  raw.prepare("insert into repairs (name, version, at) values ('dedupe', 4, ?)").run(Date.now());
+  raw.close();
+
+  const store = new Store(dbPath);                 // …and the fold has no row of its own
+  const thoughts = store.messagesTail("s-disagree", 100).messages.filter((r) => r.kind === "thought");
+  check("a fold that never recorded itself still runs, whatever the other pass wrote", thoughts.length === 1,
+    `${thoughts.length} thought rows`);
+  check("…and keeps the text", (thoughts[0]?.payload as { content: { text: string } }).content.text === "The user asked a question",
+    JSON.stringify((thoughts[0]?.payload as { content: { text: string } }).content.text));
+  store.close();
 }
 
 fs.rmSync(dir, { recursive: true, force: true });

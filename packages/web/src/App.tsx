@@ -2188,6 +2188,10 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
     return () => ro.disconnect();
   }, [v.info.id]);
 
+  // What the last manual page said about itself (empty page / failed page) — see `pageOlder`.
+  const [olderNote, setOlderNote] = useState<string | null>(null);
+  useEffect(() => { setOlderNote(null); }, [v.info.id]);
+
   // Keep the reader's place when an older page is prepended (paging used to shove
   // the viewport by a whole page, so "load earlier" felt like a jump to nowhere).
   //
@@ -2205,7 +2209,16 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
       setFollow(false);
     }
     setPagedOnce(true);
-    await cockpit.loadEarlier(v.info.id);
+    const added = await cockpit.loadEarlier(v.info.id);
+    // A page can come back with nothing new: every row in it was a fragment of a block already on
+    // screen (an unfolded qoder transcript is one row per token, so 200 rows can be 540 characters
+    // of text the reader is already looking at). Saying nothing is what made it look broken —
+    // the operator clicked 1,427 times in one session and saw no change.
+    if (added === 0) {
+      setOlderNote("这一页没有新内容（更早的记录都是屏幕上已有内容的碎片）");
+    } else if (added > 0) {
+      setOlderNote(null);
+    }
     requestAnimationFrame(() => {
       const after = ref.current;
       if (!after) return;
@@ -2304,6 +2317,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
               ) : (
                 <button className="ghost-btn" onClick={() => loadEarlier()}>↑ load earlier messages</button>
               )}
+              {olderNote && !v.loadingOlder ? <span className="load-earlier-end">{olderNote}</span> : null}
             </div>
           ) : pagedOnce && v.msgs.length ? (
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
