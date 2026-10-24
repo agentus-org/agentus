@@ -52,6 +52,9 @@ const ANON_SCAN_ROWS = 80;
  * a row are still two messages, because a tool call or the operator's turn sits between them — and
  * this is only ever used to decide whether to glue a row onto the row directly above it.
  */
+/** Print the fold state once per process, not once per store instance. */
+let foldStateLogged = false;
+
 function isFragmentText(text: string): boolean {
   return text.length > 0 && text.length <= 24 && !text.includes("\n");
 }
@@ -63,6 +66,9 @@ function isFragmentText(text: string): boolean {
  * hours apart. This is the second half of the pair test — see `sameStream`.
  */
 const FRAGMENT_WINDOW_MS = 2_000;
+
+/** Where "a full stop" stops being a frame boundary and starts being the end of a message. */
+const FRAGMENT_BOUNDARY_MS = 750;
 
 /** Text that closes a sentence — a plausible end of a message, never the middle of one. */
 const SENTENCE_FINAL = /[。．.!?！？…;；:：]\s*$/;
@@ -80,15 +86,22 @@ const PUNCT_ONLY = /^[\s\p{P}\p{S}]+$/u;
  * So a pair needs a second witness — the turn both rows belong to, or, for rows written before the
  * turn id existed, a tight time window plus the fact that no chunk boundary lands after a full stop.
  */
-function sameStream(prev: RawMessageRow, cur: RawMessageRow, prevText: string, text: string): boolean {
+function sameStream(prev: RawMessageRow, cur: RawMessageRow, prevFrame: string, text: string): boolean {
+  const gap = Math.abs(cur.created_at - prev.created_at);
+  // The clock is the one witness that cannot lie. Frames of one reply are milliseconds apart; two
+  // messages a minute apart are two messages — whatever their turn ids say, because a turn holds
+  // MANY messages and the rows between them are exactly what the replay cleanup deletes.
+  if (gap > FRAGMENT_WINDOW_MS) return false;
   const a = prev.turn_id;
   const b = cur.turn_id;
-  if (a !== null && a !== undefined && b !== null && b !== undefined) return a === b;
-  // The clock is the witness: frames of one reply are milliseconds apart, a conversation's two short
-  // messages are minutes or hours. The sentence-final test only rules out the remaining coincidence —
-  // and it must not reject the last frame of a stream, which is often just the full stop.
-  if (Math.abs(cur.created_at - prev.created_at) > FRAGMENT_WINDOW_MS) return false;
-  return !SENTENCE_FINAL.test(prevText) || PUNCT_ONLY.test(text);
+  // A matching turn id is a second witness, never a substitute for the clock: `turnSeq` restarts at 0
+  // after a server restart, so turn 1 of this run and turn 1 of the last run compare equal.
+  if (a !== null && a !== undefined && b !== null && b !== undefined && a !== b) return false;
+  // Judged on the previous FRAME, never on the accumulated text: a reply passes many full stops, and
+  // a full stop deep inside the accumulation says nothing about where this frame begins. A sentence
+  // end is evidence of a boundary only when the write also took long enough to be a real pause.
+  const looksLikeBoundary = SENTENCE_FINAL.test(prevFrame) && !PUNCT_ONLY.test(text);
+  return !(looksLikeBoundary && gap > FRAGMENT_BOUNDARY_MS);
 }
 
 /**
@@ -598,7 +611,18 @@ export class Store {
     // A store that predates the repairs table recorded its fold in user_version (2 = the rules
     // shipped with it). Anything at 0/1 never folded at all.
     const seenFold = this.#repairVersion("fold", 2) >= 2;
-    if (this.#repairVersion("fold", 2) >= FOLD_VERSION) return;
+    if (this.#repairVersion("fold", 2) >= FOLD_VERSION) {
+      // v3 shipped a rule that could glue two DISTINCT messages when the replay cleanup had removed
+      // the rows between them; a store folded by it keeps those rows — no re-run can un-merge them
+      // (the second half's row is gone). Say the version once per process so "clean" and "folded
+      // before the fix" are not indistinguishable in the log; the split lives in
+      // tasks/20261001-agentus/scripts/repair-glued-rows.py.
+      if (!foldStateLogged) {
+        foldStateLogged = true;
+        console.log(`[store] 分片折叠：v${FOLD_VERSION}（已是当前版本，本次不改动历史行）`);
+      }
+      return;
+    }
     if (!this.#backup("fold", FOLD_VERSION)) return;
     // One transaction for the whole walk: this is a per-row update pass over every message in the
     // file (430k rows on the operator's store) and autocommit is what made it 46 seconds of boot.
@@ -614,11 +638,11 @@ export class Store {
         .prepare("select * from messages where session_id = ? order by seq asc")
         .all(id) as unknown as RawMessageRow[];
       before += rows.length;
-      const kept: { row: RawMessageRow; text: string | null }[] = [];
+      const kept: { row: RawMessageRow; text: string | null; frame: string }[] = [];
       const doomed: number[] = [];
       for (const r of rows) {
         if (r.kind !== "agent" && r.kind !== "thought") {
-          kept.push({ row: r, text: null });
+          kept.push({ row: r, text: null, frame: "" });
           continue;
         }
         const payload = parseJson(r.payload);
@@ -629,11 +653,16 @@ export class Store {
         // must be fragments and the target must be the row immediately above: a real message that
         // happens to be short twice in a row is separated by the tool/operator row between them.
         const prev = kept[kept.length - 1];
+        // "Is this a fragment" is a property of ONE FRAME, so it is judged on the last frame that went
+        // into the row above, not on the row's accumulated text: otherwise folding stops as soon as
+        // the message passes 24 characters, which is every message worth folding (measured on the
+        // operator's store: 311,638 one-word thought frames only reached ~6 per row for this reason).
         if (!key && prev && prev.row.kind === r.kind && prev.text !== null
-            && isFragmentText(prev.text) && isFragmentText(text)
+            && isFragmentText(prev.frame) && isFragmentText(text)
             && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null
-            && sameStream(prev.row, r, prev.text, text)) {
+            && sameStream(prev.row, r, prev.frame, text)) {
           prev.text += text;
+          prev.frame = text;
           doomed.push(r.seq);
           continue;
         }
@@ -658,14 +687,14 @@ export class Store {
           // (it has the time window and the evidence). Deleting here would also eat a genuine short
           // repeat — "好的" sent twice is a conversation.
           if (key && !delta) {
-            kept.push({ row: r, text });
+            kept.push({ row: r, text, frame: text });
             continue;
           }
           if (delta) target.text = (target.text ?? "") + delta;
           doomed.push(r.seq);
           continue;
         }
-        kept.push({ row: r, text });
+        kept.push({ row: r, text, frame: text });
       }
       for (const seq of doomed) del.run(id, seq);
       for (const k of kept) {

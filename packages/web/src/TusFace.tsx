@@ -162,13 +162,20 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       const before = st.level;
       st.level = smoothLevel(st.level, st.rawLevel);
       const cue = voiceCue(before, st.level);
-      if (cue && p.phase === "listening") { st.micro = cue; st.microAt = ms; st.microUntil = ms + 280; }
+      if (cue && p.phase === "listening") {
+        st.micro = cue;
+        st.microAt = ms;
+        st.microUntil = ms + 280;
+        st.quietSince = ms;          // someone is talking to it — never doze off mid-conversation
+      }
 
       // ── 事件：新工具帧 = 点一下头；相位变了 = 记时间 + 说完的余温 ──────────────────────
       if (p.phase !== st.phase) {
         st.phase = p.phase;
         st.phaseAt = ms;
+        st.quietSince = ms;          // a phase change is a real event: it is not "quiet"
       }
+      if (st.micro && st.microAt === ms) st.quietSince = ms;
       if (p.ticks !== st.ticks) {
         st.ticks = p.ticks;
         st.lastEventAt = ms;

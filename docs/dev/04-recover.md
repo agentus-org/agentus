@@ -99,9 +99,11 @@ cp -p packages/server/.data/agentus.sqlite \
 ```
 
 The one migration path in the project that rewrites rows in place — the legacy transcript
-fold — takes its own backup first with `VACUUM INTO <db>.pre-fold.bak` and gates itself on
-`pragma user_version`, so it runs once and is idempotent. If you see a `*.pre-fold.bak`
-beside the store, that fold ran; the original is inside it.
+fold — takes its own backup first with `VACUUM INTO <db>.pre-fold-v<ver>-<timestamp>.bak` and
+records itself in the `repairs` table, so it runs once per version and is idempotent. Each pass
+version gets its own file and the newest three per tag are kept (older ones are pruned), so
+"a `.pre-fold.bak` exists" no longer means anything: read `repairs` for what ran, and pick the
+backup by timestamp.
 
 Two cautions that come from real incidents:
 

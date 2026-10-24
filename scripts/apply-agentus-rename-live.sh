@@ -140,9 +140,12 @@ say "3b. 库文件改名 agentslot.sqlite* -> agentus.sqlite*"
 if [ -f "$DATA/agentus.sqlite" ]; then
   echo "  $DATA/agentus.sqlite 已存在——跳过（假定上次已迁过）"
 elif [ "$DRY" = 1 ]; then
-  echo "  [dry] mv $DATA/agentslot.sqlite{,-wal,-shm,.pre-fold.bak} -> agentus.sqlite*"
+  echo "  [dry] mv $DATA/agentslot.sqlite{,-wal,-shm} and agentslot.sqlite.pre-*.bak -> agentus.sqlite*"
 else
-  for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-fold.bak; do
+  # `.pre-fold.bak` used to be the only backup name; newer builds write
+  # `agentslot.sqlite.pre-<tag>-v<ver>-<ts>.bak`, so glob the whole family or the backups of a
+  # 400k-row store get left behind under the old basename.
+  for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-*.bak; do
     if [ -e "$DATA/$f" ]; then
       mv "$DATA/$f" "$DATA/${f/agentslot.sqlite/agentus.sqlite}"
       echo "  renamed $f"

@@ -315,6 +315,10 @@ export class SessionManager {
    *  `origin` 是发起方会话（send 的调用者），投递走的是 #39 那条「唤醒某会话」的链子。 */
   #turnReplies = new Map<string, Map<string, TurnReply>>();
   #replySeq = 0;
+  /** The newest turn a session has already finished. A registration that arrives with an older (or
+   *  equal) number is describing a turn that is over: it is answered at once instead of being stored,
+   *  because the settle that should have delivered it has already run. */
+  #lastSettledTurn = new Map<string, number>();
   /** The data directory this server owns, and the id of THIS run. Both come from the instance lock
    *  in index.ts; together they are the only evidence that a recorded pid is an agent OF THIS STORE
    *  from a PREVIOUS run — see `agent-owner.ts` and the 2026-10-22 incident. */
@@ -415,8 +419,19 @@ export class SessionManager {
    *  Returns the registration id; `dropTurnReply` cancels it. */
   expectTurnReply(target: string, r: { origin: string; originTitle?: string | null; turnSeq?: number | null }): string {
     const id = `reply-${++this.#replySeq}`;
+    const entry: TurnReply = {
+      origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now(), turnSeq: r.turnSeq ?? null,
+    };
+    const settled = this.#lastSettledTurn.get(target);
+    if (r.turnSeq != null && settled != null && r.turnSeq <= settled) {
+      // That turn is already over (a prompt that threw after it started, a settle that ran before
+      // this bookkeeping landed). Storing it would deliver it one turn late, describing the wrong
+      // turn — so answer now, honestly.
+      void this.#deliverTurnReplies(target, [entry], { failed: "这一轮在你登记之前就已经结束了", failureKind: "turn" });
+      return id;
+    }
     const rows = this.#turnReplies.get(target) ?? new Map<string, TurnReply>();
-    rows.set(id, { origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now(), turnSeq: r.turnSeq ?? null });
+    rows.set(id, entry);
     this.#turnReplies.set(target, rows);
     return id;
   }
@@ -1588,6 +1603,10 @@ export class SessionManager {
     upToTurn: number | null,
     outcome: { failed?: string; failureKind?: "send" | "turn"; durationMs?: number; stopReason?: string | null },
   ): void {
+    if (upToTurn !== null) {
+      const before = this.#lastSettledTurn.get(target);
+      if (before === undefined || upToTurn > before) this.#lastSettledTurn.set(target, upToTurn);
+    }
     const rows = this.#turnReplies.get(target);
     if (!rows || !rows.size) return;
     const entries: (TurnReply & { id?: string })[] = [];

@@ -834,12 +834,11 @@ export function stripEmoTags(text: string): string {
   // Nothing to strip → the text is returned BYTE-IDENTICAL. Everything below rewrites whitespace,
   // which is why the early return matters: this runs on every agent bubble.
   if (!EMO_TAG_TEST.test(src) && !EMO_HALF_TAG.test(src)) return src;
-  const cleaned = src.replace(EMO_TAG, "").replace(EMO_HALF_TAG, "");
-  // A removed tag leaves two spaces where it stood ("好的 [emo:sad] 我知道了"). Fold those, but only
-  // on a single-line text: a multi-line block may be indented code, and its spacing is content.
-  return cleaned.includes("\n")
-    ? cleaned.trim()
-    : cleaned.replace(/[ \t]{2,}/g, " ").trim();
+  // ONLY the edges are touched. Internal runs of spaces stay exactly as they arrived: an aligned
+  // one-line table row, a double space inside a code span and a one-line diff are all content, and
+  // the caller copies this string (`CopyButton`). A removed tag can leave one extra space — in
+  // rendered markdown that is invisible, in a copy it is the truth minus the tag.
+  return src.replace(EMO_TAG, "").replace(EMO_HALF_TAG, "").trim();
 }
 
 /** Whitespace tidy-up for the SPEECH path only: models pad, a voice does not want the pauses. */

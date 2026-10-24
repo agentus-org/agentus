@@ -453,8 +453,10 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const t0 = Date.now() - 3 * 60 * 60 * 1000;
   ins.run(++seq, "s-neighbours", "agent", p3("Operation interrupted."), null, null, t0);
   ins.run(++seq, "s-neighbours", "agent", p3("Operation interrupted."), null, null, t0 + 2 * 60 * 60 * 1000);
-  // …and a genuine stream right beside them: 40 ms apart, none of the frames sentence-final
-  let at = t0 + 2 * 60 * 60 * 1000;
+  // …and a genuine stream right beside them: 40 ms apart, a minute after the message above (a
+  // message that ends in a full stop followed 40 ms later by a new one IS ambiguous — the rule
+  // demands time, not a glyph, so the fixture gives it time).
+  let at = t0 + 2 * 60 * 60 * 1000 + 60_000;
   for (const f of ["There", " are", " two", " ways)"]) {
     at += 40;
     ins.run(++seq, "s-neighbours", "agent", p3(f), null, null, at);
@@ -469,6 +471,57 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     texts.filter((t) => t === "Operation interrupted.").length === 2, JSON.stringify(texts));
   check("…while a real stream beside them still folds into one row",
     texts.includes("There are two ways)"), JSON.stringify(texts));
+  store.close();
+}
+
+// ---- 13. a real stream passes FULL STOPS and must still be ONE row ------------------------------
+// `prevText` is the accumulated text, so "…is 42. " already ends with a period when the next frame
+// arrives. Judging a boundary by the glyph alone cut every streamed reply into one row per sentence.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 500;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at) values (?,?,?,?,?,?,?)",
+  );
+  const p4 = (text: string) => JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  const frames = ["The ", "answer ", "is ", "42. ", "Then ", "the ", "second ", "point ", "is ", "simpler. ", "Finally, ", "we ", "stop ", "here."];
+  let at = Date.now() - 60_000;
+  for (const f of frames) { at += 40; ins.run(++seq, "s-sentences", "agent", p4(f), null, null, at); }
+  era(raw, 1);
+  raw.close();
+
+  const store = new Store(dbPath);
+  const rows = store.messagesTail("s-sentences", 100).messages;
+  const txt = (r: { payload: unknown }) => (r.payload as { content?: { text?: string } }).content?.text ?? "";
+  check("a multi-sentence stream folds into ONE row", rows.length === 1, `${rows.length} rows: ${JSON.stringify(rows.map(txt))}`);
+  check("…with every sentence in it, in order",
+    rows[0] ? txt(rows[0]) === "The answer is 42. Then the second point is simpler. Finally, we stop here." : false,
+    rows[0] ? JSON.stringify(txt(rows[0])) : "no row");
+  store.close();
+}
+
+// ---- 14. the SAME turn is not the same stream --------------------------------------------------
+// A turn holds many messages; the rows between them are exactly what the replay cleanup deletes, so
+// two same-turn rows can end up adjacent — and `turnSeq` restarts at 0 after a restart, so equal ids
+// are not evidence either. Only the clock separates them.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 600;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id) values (?,?,?,?,?,?,?,?)",
+  );
+  const p5 = (text: string) => JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  const t0 = Date.now() - 50 * 60 * 1000;
+  ins.run(++seq, "s-sameturn", "agent", p5("先看日志。"), null, null, t0, 5);
+  ins.run(++seq, "s-sameturn", "agent", p5("结论是缓存。"), null, null, t0 + 40 * 60 * 1000, 5);
+  era(raw, 1);
+  raw.close();
+
+  const store = new Store(dbPath);
+  const rows = store.messagesTail("s-sameturn", 100).messages;
+  const txt = (r: { payload: unknown }) => (r.payload as { content?: { text?: string } }).content?.text ?? "";
+  check("two messages 40 minutes apart in the SAME turn stay two rows", rows.length === 2,
+    `${rows.length} rows: ${JSON.stringify(rows.map(txt))}`);
   store.close();
 }
 

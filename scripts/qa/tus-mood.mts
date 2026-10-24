@@ -329,7 +329,12 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
 {
   check("[emo:happy] is removed", stripEmoTags("[emo:happy] 我今天超开心") === "我今天超开心");
   check("…and read as a mood", readEmoTags("[emo:happy] 开心")[0] === "happy");
-  check("mid-sentence tags go too", stripEmoTags("好的 [emo:sad] 我知道了") === "好的 我知道了");
+  // 标签走了，它两侧原有的空白**不动**：气泡里的文本会进"复制"，也是 Markdown 的源码。
+  check("mid-sentence tags go too (and the text around them is not rewritten)",
+    stripEmoTags("好的 [emo:sad] 我知道了") === "好的  我知道了", JSON.stringify(stripEmoTags("好的 [emo:sad] 我知道了")));
+  // …单行里的空白同样是内容：对齐的表格行、单行代码里的两个空格、单行 diff
+  check("a single line keeps its internal spacing", stripEmoTags("[emo:happy] name    value") === "name    value",
+    JSON.stringify(stripEmoTags("[emo:happy] name    value")));
   check("case / spacing / full-width colon all match",
     stripEmoTags("[EMO : Curious] 嗯？") === "嗯？" && readEmoTags("[EMO : Curious] 嗯？")[0] === "curious");
   check("emotion: is accepted as the key", stripEmoTags("[emotion: shy] 嘿嘿") === "嘿嘿");

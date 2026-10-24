@@ -880,9 +880,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               originTitle: rows.find((s) => s.id === caller)?.title ?? null,
               turnSeq: turnStartedSeq,
             });
-            // 回合结束会由 #settleTurnReplies 投递；这里只兜「prompt 本身随后抛错」——
-            // 那种情况回合已经开过，回推会说「跑失败了」，不需要第二份回执。
-            void turn.catch(() => { mgr.dropTurnReply(to, replyId); });
+            // 回合结束会由 #settleTurnReplies 投递。这里兜的是「回合开过之后 prompt 才抛错」——
+            // 那条路径的 settle 可能早于本次登记（登记是微任务之后才落地的），所以不能靠它：
+            // 明确投一条失败回推，否则调用方等一个永远不会来的回执。
+            void turn.catch((e) => mgr.failTurnReply(to, replyId, String((e as Error)?.message ?? e)));
             return send(res, 200, {
               delivered: true, to, code: "delivered", reply_on_done: true,
               ...(woke ? { delivered_after_wake: true } : {}),
