@@ -354,7 +354,9 @@ if (cmd === "capabilities") {
           body?.interrupted
             ? "the target was BUSY: its turn was interrupted (cancelled, then the session was waited to really stop) before yours started — the words it had already produced stay in its transcript."
             : null,
-          "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
+          body?.reply_on_done
+            ? "reply-on-done: this call returned as soon as the target's turn STARTED. When that turn ends, the cockpit posts a 【完成回推】 notice into this session and wakes you; read the actual result with `session messages <target>`."
+            : "delivered means the target agent received it and started a turn — it does NOT mean it read or agreed. Only the operator sees the reply.",
         ].filter(Boolean).join(" "),
       },
     });
@@ -388,7 +390,16 @@ if (cmd === "capabilities") {
     // The FIRST positional is the directory, not an id: this is the one verb that makes an object
     // instead of acting on one. `~` is expanded HERE as well as server-side so the error a caller
     // reads names the path it actually meant.
-    const cwdArg = args.find((a) => !a.startsWith("--"));
+    // Walk argv once, skipping each flag's VALUE — otherwise `create --backend hermes /tmp/x`
+    // reads "hermes" as the directory and then rejects the real path as an extra argument.
+    const VALUE_FLAGS = new Set(["--backend", "--title", "--profile", "--model"]);
+    let cwdArg;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a.startsWith("--")) { if (VALUE_FLAGS.has(a)) i++; continue; }
+      cwdArg = a;
+      break;
+    }
     if (!cwdArg) fail("bad_request", "usage: agentus session create <cwd> [--backend <id>] [--title <text>]");
     const flags = { backend: undefined, title: undefined };
     for (let i = 0; i < args.length; i++) {

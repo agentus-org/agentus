@@ -1365,7 +1365,7 @@ function lastFinishedReply(v: SessionView | undefined): { key: string; text: str
   if (Date.now() - v.lastAt > 30_000) return null;
   for (let i = v.msgs.length - 1; i >= 0; i -= 1) {
     const m = v.msgs[i];
-    if (m.kind === "agent" && m.text.trim()) return { key: m.key, text: m.text };
+    if (m.kind === "agent" && m.text.trim()) return { key: m.key, text: stripEmoTags(m.text) };
   }
   return null;
 }
@@ -1469,6 +1469,12 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     if (!at) return;
     if (Math.hypot(e.clientX - at.x, e.clientY - at.y) > 8) clearPress();
   };
+  // Holding the button and switching slots (or closing the sheet) unmounts this head with the
+  // 480 ms timer still armed: it would then fire into a stale closure and open Tus mode on whatever
+  // session is active by then. Clear it on the way out.
+  useEffect(() => () => {
+    if (pressTimer.current !== null) { window.clearTimeout(pressTimer.current); pressTimer.current = null; }
+  }, []);
   const [prefs, setPrefs] = useVoicePrefs();
   // capabilities land after boot (loadVoiceCaps) — subscribe, or a browser with no local
   // voice would keep the button disabled after the server answered that it can speak

@@ -191,6 +191,18 @@ export interface TurnReply {
   origin: string;
   originTitle: string | null;
   at: number;
+  /** The turn this registration is about. `#settleTurnReplies` only settles entries whose turn is
+   *  this one or older, so a second `--interrupt` dispatch cannot be swallowed by the turn it killed. */
+  turnSeq: number | null;
+}
+
+/** A queued "wake this session with a notice" item. Two kinds share the queue but not the rules:
+ *  `background` is the operator's 「后台任务完成唤醒」 noise, `reply` is the receipt another session
+ *  is actively waiting for. */
+interface PendingCompletion {
+  text: string;
+  kind: "background" | "reply";
+  origin?: { sessionId: string; title: string | null };
 }
 
 interface LiveSession {
@@ -278,7 +290,7 @@ interface LiveSession {
    *  dropped: the agent is the intended reader, and a completion lost to bad timing means work the
    *  operator has to notice and redo by hand. Drained one at a time at turn-end — each opens its own
    *  turn, and two at once is a race the agent cannot mediate. */
-  pendingCompletions: string[];
+  pendingCompletions: PendingCompletion[];
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -401,10 +413,10 @@ export class SessionManager {
    *  （投递本身失败、或操作者把它打断成了另一件事）。
    *
    *  Returns the registration id; `dropTurnReply` cancels it. */
-  expectTurnReply(target: string, r: { origin: string; originTitle?: string | null }): string {
+  expectTurnReply(target: string, r: { origin: string; originTitle?: string | null; turnSeq?: number | null }): string {
     const id = `reply-${++this.#replySeq}`;
     const rows = this.#turnReplies.get(target) ?? new Map<string, TurnReply>();
-    rows.set(id, { origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now() });
+    rows.set(id, { origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now(), turnSeq: r.turnSeq ?? null });
     this.#turnReplies.set(target, rows);
     return id;
   }
@@ -712,6 +724,14 @@ export class SessionManager {
 
   /** Graceful shutdown: SIGTERM every live child before server exit. */
   async shutdown(): Promise<void> {
+    // No time to deliver these properly (we are going down), but the registrations must not outlive
+    // the process as a promise nobody keeps: log one line per waiter so the trace exists.
+    for (const [target, rows] of this.#turnReplies) {
+      for (const r of rows.values()) {
+        console.log(`[agentus] turn reply dropped on shutdown: ${target} -> ${r.origin}`);
+      }
+    }
+    this.#turnReplies.clear();
     const kills = [...this.#sessions.values()].map(async (s) => {
       this.#dropPending(s);
       s.child?.kill("SIGTERM");
@@ -953,7 +973,19 @@ export class SessionManager {
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`unknown session: ${id}`);
     if (!row.acpSessionId) throw new Error(`session ${id} was never handed to an agent`);
-    const shape = this.#spawnShape(row.backend, row.contextLimit);
+    // The declared window is a DISPLAY number the operator typed; handing it to the agent is a real
+    // decision (Qoder's `--context-window` REPLACES the window it would restore from the resumed
+    // session). Too small silently truncates the history the agent keeps; above the model's real
+    // window every later request fails. So it is clamped to the window remembered for this model,
+    // and the effective value is logged — the panel says "takes effect on the next start", and this
+    // is the line that says what actually took effect.
+    const modelLimit = this.#store.getModelLimit((row.models as { currentModelId?: string | null } | null)?.currentModelId ?? null);
+    const declared = row.contextLimit && row.contextLimit > 0 ? Math.round(row.contextLimit) : null;
+    const effective = declared && modelLimit && modelLimit > 0 ? Math.min(declared, Math.round(modelLimit)) : declared;
+    if (declared && effective !== declared) {
+      console.log(`[agentus] context window for ${id} clamped ${declared} -> ${effective} (model remembers ${modelLimit})`);
+    }
+    const shape = this.#spawnShape(row.backend, effective);
     if (!shape) throw new Error(`unknown backend: ${row.backend}`);
     const { spec, args } = shape;
 
@@ -1205,6 +1237,7 @@ export class SessionManager {
     // operator watched their slot flicker into the archive for a second — measured on :8901).
     // Mark the swap BEFORE the signal, so the exit we are causing is not read as a dead agent.
     live.replacing = true;
+    this.#settleTurnReplies(id, live.turnSeq, { failed: "目标会话正在重启", failureKind: "turn" });
     this.#dropPending(live);
     live.busy = false;
     // show the swap honestly: "starting" with no pid, not a pid that is already gone
@@ -1335,6 +1368,13 @@ export class SessionManager {
        * something. Opaque to the server: it comes back unchanged, it is never stored.
        */
       pid?: string;
+      /**
+       * Called the instant this prompt takes the floor, with the turn number it owns — before the
+       * agent is asked, so a caller can bind a one-shot notification to THIS turn. Registering on the
+       * session instead means the notification describes whichever turn ends next: with
+       * `--interrupt` that is the turn this call just killed.
+       */
+      onTurnStarted?: (turnSeq: number) => void;
     } = {},
   ): Promise<void> {
     const s = this.#need(sessionId);
@@ -1399,6 +1439,7 @@ export class SessionManager {
     const settleVoice = this.#applyVoiceMode(s, blocks, { operator: voiceAppliesToPrompt(opts) });
     s.turnSeq += 1;
     s.busy = true;
+    try { opts.onTurnStarted?.(s.turnSeq); } catch { /* a bookkeeping callback must never break a turn */ }
     // The operator has spoken: from here anything the agent says is an ANSWER, not its own history
     // being replayed (see the replay window in #onSessionUpdate).
     s.replaying = false;
@@ -1443,12 +1484,12 @@ export class SessionManager {
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
       // #59: 谁在等这一轮结束（跨会话 send --reply-on-done）
-      this.#settleTurnReplies(sessionId, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, s.turnSeq, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
       this.#finalizePlan(sessionId, "failed");
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
-      this.#settleTurnReplies(sessionId, { failed: errMessage(err), durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, s.turnSeq, { failed: errMessage(err), failureKind: "turn", durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
       if (s.info.status === "running") {
@@ -1470,28 +1511,34 @@ export class SessionManager {
    *  with the operator's switch off we say so in the log and drop it (that is the switch's meaning), and
    *  while a turn is running we hold it, because a prompt would otherwise interrupt work the operator
    *  started. */
-  #queueOrWakeCompletion(s: LiveSession, text: string): void {
-    if (!text) return;
-    if (!this.#completionWake()) {
+  #queueOrWakeCompletion(s: LiveSession, item: PendingCompletion): void {
+    if (!item.text) return;
+    // 开关关掉的是「后台任务跑完了把我叫醒」，那是噪音；跨会话派活的回推是调用方正在等的回执，
+    // 一并关掉就是让它在另一头永远等下去（而它已经收到 delivered: true 了）。
+    if (item.kind === "background" && !this.#completionWake()) {
       console.log(`[agentus] background completion dropped for ${s.info.id}: 唤醒关闭`);
       return;
     }
     if (s.busy) {
-      s.pendingCompletions.push(text);
+      s.pendingCompletions.push(item);
       return;
     }
-    void this.#wakeWithCompletion(s, text);
+    void this.#wakeWithCompletion(s, item);
   }
 
-  async #wakeWithCompletion(s: LiveSession, text: string): Promise<void> {
+  async #wakeWithCompletion(s: LiveSession, item: PendingCompletion): Promise<void> {
     try {
-      // `origin` so the page labels the bubble as a background notice instead of presenting it as
-      // something the operator typed — the same mechanism the cockpit's cross-session `send` uses.
-      await this.prompt(s.info.id, text, [], { origin: { sessionId: "background", title: "后台任务完成" } });
+      // `origin` so the page labels the bubble as a notice instead of presenting it as something the
+      // operator typed — the same mechanism the cockpit's cross-session `send` uses. A turn reply
+      // names the session that finished rather than "background", so the receiving agent can tell a
+      // peer's receipt from a log tail.
+      await this.prompt(s.info.id, item.text, [], {
+        origin: item.origin ?? { sessionId: "background", title: "后台任务完成" },
+      });
     } catch (err) {
       // Lost a race for the floor (an operator prompt landed first): keep it for the next turn end
       // instead of throwing away the agent's own result.
-      s.pendingCompletions.unshift(text);
+      s.pendingCompletions.unshift(item);
       console.log(`[agentus] completion held for ${s.info.id}: ${errMessage(err)}`);
     }
   }
@@ -1503,14 +1550,16 @@ export class SessionManager {
   async #deliverTurnReplies(
     target: string,
     entries: (TurnReply & { id?: string })[],
-    outcome: { failed?: string; durationMs?: number; stopReason?: string | null } = {},
+    outcome: { failed?: string; failureKind?: "send" | "turn"; durationMs?: number; stopReason?: string | null } = {},
   ): Promise<void> {
     if (!entries.length) return;
     const title = this.#store.getSession(target)?.title ?? target.slice(0, 8);
     const secs = outcome.durationMs ? Math.round(outcome.durationMs / 1000) : null;
     for (const e of entries) {
       const text = outcome.failed
-        ? `【完成回推】给「${title}」的消息没送进去：${outcome.failed}。它这一轮不会跑，别等了。`
+        ? outcome.failureKind === "turn"
+          ? `【完成回推】「${title}」这一轮跑失败了：${outcome.failed}。消息送到了，别重发。`
+          : `【完成回推】给「${title}」的消息没送进去：${outcome.failed}。它这一轮不会跑，别等了。`
         : outcome.stopReason === "cancelled"
           ? `【完成回推】「${title}」这一轮被取消了（${secs ?? "?"} 秒）。结果以 session messages 为准。`
           : `【完成回推】「${title}」这一轮跑完了${secs != null ? `（${secs} 秒）` : ""}。`
@@ -1519,14 +1568,14 @@ export class SessionManager {
       if (e.origin === target) continue;
       const live = this.#sessions.get(e.origin);
       if (live) {
-        this.#queueOrWakeCompletion(live, text);
+        this.#queueOrWakeCompletion(live, { text, kind: "reply", origin: { sessionId: target, title } });
         continue;
       }
       // 发起方已经冷了：和 `--wake` 同一个动作（起进程），起来以后再投。
       try {
         await this.resume(e.origin);
         const back = this.#sessions.get(e.origin);
-        if (back) this.#queueOrWakeCompletion(back, text);
+        if (back) this.#queueOrWakeCompletion(back, { text, kind: "reply", origin: { sessionId: target, title } });
       } catch (err) {
         console.log(`[agentus] turn reply dropped for ${e.origin}: ${errMessage(err)}`);
       }
@@ -1534,11 +1583,22 @@ export class SessionManager {
   }
 
   /** 一个回合结束了 —— 有登记就投。只在这里汇总，散落在三处 `busy = false` 的写法会互相漏。 */
-  #settleTurnReplies(target: string, outcome: { failed?: string; durationMs?: number; stopReason?: string | null }): void {
+  #settleTurnReplies(
+    target: string,
+    upToTurn: number | null,
+    outcome: { failed?: string; failureKind?: "send" | "turn"; durationMs?: number; stopReason?: string | null },
+  ): void {
     const rows = this.#turnReplies.get(target);
     if (!rows || !rows.size) return;
-    this.#turnReplies.delete(target);
-    const entries = [...rows.entries()].map(([id, r]) => ({ id, ...r }));
+    const entries: (TurnReply & { id?: string })[] = [];
+    for (const [id, r] of [...rows.entries()]) {
+      // 只结算「这一回合及更早」的登记。后来的登记属于后面的回合 —— 把它一起吞掉，调用方就再也
+      // 收不到回执（这正是 --interrupt 派活时会发生的事：被取消的那一轮结束时把人家的登记吃掉了）。
+      if (upToTurn !== null && r.turnSeq !== null && r.turnSeq > upToTurn) continue;
+      rows.delete(id);
+      entries.push({ id, ...r });
+    }
+    if (!rows.size) this.#turnReplies.delete(target);
     void this.#deliverTurnReplies(target, entries, outcome);
   }
 
@@ -2068,6 +2128,10 @@ export class SessionManager {
     // lands and `error` (with `lastError`) when it fails — and a handshake that failed on its own has a
     // better answer than 「closed」, so it keeps it.
     if (live.info.status !== "error") live.info.status = why === "reaped" ? "reaped" : "closed";
+    // Anyone waiting for this session's turn gets an answer: the child is about to be signalled and
+    // #onChildExit will bail out early (the slot is deleted below), so this is the last moment that
+    // can tell a dispatcher "it is not coming" instead of leaving it waiting forever.
+    this.#settleTurnReplies(live.info.id, live.turnSeq, { failed: "目标会话被关闭了", failureKind: "turn" });
     live.info.pid = null;
     live.child?.kill("SIGTERM");
     const row = this.#store.getSession(live.info.id);
@@ -2344,7 +2408,7 @@ export class SessionManager {
     }
     const finishedText = completionTextOf(u);
     if (finishedText) {
-      this.#queueOrWakeCompletion(live, finishedText);
+      this.#queueOrWakeCompletion(live, { text: finishedText, kind: "background" });
       return;
     }
     // Project skills the agent is NOT loading (fork: `_meta.hermes = {kind:"project_skills"}`).
@@ -2606,7 +2670,7 @@ export class SessionManager {
     }
     live.pendingCompletions = [];
     // #59：等这一轮的调用方不能永远等下去 —— agent 死了，那一轮不会有结尾
-    this.#settleTurnReplies(live.info.id, { failed: "agent 进程退出了" });
+    this.#settleTurnReplies(live.info.id, live.turnSeq, { failed: "agent 进程退出了", failureKind: "turn" });
     live.info.status = "error";
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);
     const row = this.#store.getSession(live.info.id);

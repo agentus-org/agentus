@@ -126,7 +126,8 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     (rows.find((r) => r.kind === "agent")?.payload as { content: { text: string } }).content.text === legacy,
     JSON.stringify((rows.find((r) => r.kind === "agent")?.payload as { content: { text: string } }).content.text).slice(0, 80));
   check("the other rows are untouched", rows.some((r) => r.kind === "user"));
-  check("a backup file was written", fs.existsSync(`${dbPath}.pre-fold.bak`), dbPath);
+  check("a backup file was written, named for this pass and this moment",
+    fs.readdirSync(path.dirname(dbPath)).some((f) => f.startsWith(`${path.basename(dbPath)}.pre-fold-v3-`)), dbPath);
   // re-open: nothing should change
   store.close();
   const again = new Store(dbPath);
@@ -223,7 +224,8 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   check("…so the transcript holds 2 tool rows and 4 agent rows",
     rows.filter((r) => r.kind === "tool").length === 2 && rows.filter((r) => r.kind === "agent").length === 4,
     `${rows.filter((r) => r.kind === "tool").length} tool, ${rows.filter((r) => r.kind === "agent").length} agent`);
-  check("a backup was made before deleting anything", fs.existsSync(`${rpDb}.pre-dedupe.bak`), rpDb);
+  check("a backup was made before deleting anything",
+    fs.readdirSync(path.dirname(rpDb)).some((f) => f.startsWith(`${path.basename(rpDb)}.pre-dedupe-v4-`)), rpDb);
   store.close();
   const again = new Store(rpDb);
   check("re-opening does not clean again",
@@ -433,6 +435,40 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     `${thoughts.length} thought rows`);
   check("…and keeps the text", (thoughts[0]?.payload as { content: { text: string } }).content.text === "The user asked a question",
     JSON.stringify((thoughts[0]?.payload as { content: { text: string } }).content.text));
+  store.close();
+}
+
+// ---- 12. two short messages that ended up NEIGHBOURS are not one stream -------------------------
+// The shape that actually broke the operator's store: the replay cleanup removes the tool/operator
+// rows that used to separate two short messages, so "Operation interrupted." ×2 (hours apart) became
+// adjacent and the v3 rule glued them into one row — 24 rows across three sessions. A pair now needs
+// a second witness (same turn, or milliseconds apart and neither sentence-final).
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 400;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at) values (?,?,?,?,?,?,?)",
+  );
+  const p3 = (text: string) => JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  const t0 = Date.now() - 3 * 60 * 60 * 1000;
+  ins.run(++seq, "s-neighbours", "agent", p3("Operation interrupted."), null, null, t0);
+  ins.run(++seq, "s-neighbours", "agent", p3("Operation interrupted."), null, null, t0 + 2 * 60 * 60 * 1000);
+  // …and a genuine stream right beside them: 40 ms apart, none of the frames sentence-final
+  let at = t0 + 2 * 60 * 60 * 1000;
+  for (const f of ["There", " are", " two", " ways)"]) {
+    at += 40;
+    ins.run(++seq, "s-neighbours", "agent", p3(f), null, null, at);
+  }
+  era(raw, 1);
+  raw.close();
+
+  const store = new Store(dbPath);
+  const rows = store.messagesTail("s-neighbours", 100).messages;
+  const texts = rows.map((r) => (r.payload as { content: { text: string } }).content.text);
+  check("two identical short messages hours apart stay TWO messages",
+    texts.filter((t) => t === "Operation interrupted.").length === 2, JSON.stringify(texts));
+  check("…while a real stream beside them still folds into one row",
+    texts.includes("There are two ways)"), JSON.stringify(texts));
   store.close();
 }
 

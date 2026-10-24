@@ -2,6 +2,7 @@
 // Design: sessions row carries `pid` (orphan-reclaim anchor, AC5);
 // messages carry monotonic per-session `seq` (reconnect replay anchor, AC6).
 import fs from "node:fs";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { BackendId, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
@@ -53,6 +54,41 @@ const ANON_SCAN_ROWS = 80;
  */
 function isFragmentText(text: string): boolean {
   return text.length > 0 && text.length <= 24 && !text.includes("\n");
+}
+
+/**
+ * How far apart two id-less fragments can be written and still belong to one streamed message.
+ *
+ * Frames of one reply land milliseconds apart; a conversation's two short messages are minutes or
+ * hours apart. This is the second half of the pair test — see `sameStream`.
+ */
+const FRAGMENT_WINDOW_MS = 2_000;
+
+/** Text that closes a sentence — a plausible end of a message, never the middle of one. */
+const SENTENCE_FINAL = /[。．.!?！？…;；:：]\s*$/;
+/** A frame that is nothing but punctuation: a stream really does end "…works" + "." */
+const PUNCT_ONLY = /^[\s\p{P}\p{S}]+$/u;
+
+/**
+ * Is this row provably the next frame of the SAME streamed message as the row above it?
+ *
+ * Adjacency in the table is NOT adjacency in the stream: the replay dedupe (`#dedupeReplayedRows`)
+ * and the live tool-call upsert both remove rows that used to sit between two messages, so on every
+ * real store two unrelated short messages can end up neighbours. Measured on the operator's own DB:
+ * 24 rows ended up holding two messages ("Operation interrupted." ×2, hours apart) because of it.
+ *
+ * So a pair needs a second witness — the turn both rows belong to, or, for rows written before the
+ * turn id existed, a tight time window plus the fact that no chunk boundary lands after a full stop.
+ */
+function sameStream(prev: RawMessageRow, cur: RawMessageRow, prevText: string, text: string): boolean {
+  const a = prev.turn_id;
+  const b = cur.turn_id;
+  if (a !== null && a !== undefined && b !== null && b !== undefined) return a === b;
+  // The clock is the witness: frames of one reply are milliseconds apart, a conversation's two short
+  // messages are minutes or hours. The sentence-final test only rules out the remaining coincidence —
+  // and it must not reject the last frame of a stream, which is often just the full stop.
+  if (Math.abs(cur.created_at - prev.created_at) > FRAGMENT_WINDOW_MS) return false;
+  return !SENTENCE_FINAL.test(prevText) || PUNCT_ONLY.test(text);
 }
 
 /**
@@ -158,6 +194,7 @@ function parseJson(v: string | null | undefined): unknown {
 interface RawMessageRow {
   seq: number; session_id: string; kind: StoredMessage["kind"];
   payload: string; tool_call_id: string | null; block_key?: string | null; created_at: number;
+  turn_id?: number | null;
 }
 
 function rowToMessage(r: RawMessageRow): StoredMessage {
@@ -562,7 +599,7 @@ export class Store {
     // shipped with it). Anything at 0/1 never folded at all.
     const seenFold = this.#repairVersion("fold", 2) >= 2;
     if (this.#repairVersion("fold", 2) >= FOLD_VERSION) return;
-    if (!this.#backup("fold")) return;
+    if (!this.#backup("fold", FOLD_VERSION)) return;
     // One transaction for the whole walk: this is a per-row update pass over every message in the
     // file (430k rows on the operator's store) and autocommit is what made it 46 seconds of boot.
     this.#db.exec("begin");
@@ -594,7 +631,8 @@ export class Store {
         const prev = kept[kept.length - 1];
         if (!key && prev && prev.row.kind === r.kind && prev.text !== null
             && isFragmentText(prev.text) && isFragmentText(text)
-            && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null) {
+            && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null
+            && sameStream(prev.row, r, prev.text, text)) {
           prev.text += text;
           doomed.push(r.seq);
           continue;
@@ -651,12 +689,27 @@ export class Store {
    * Copy the DB aside ONCE, before a destructive repair pass. False means no backup could be made
    * (a read-only filesystem, a locked file) — the caller must then leave the data alone.
    */
-  #backup(tag: string): boolean {
-    const bak = `${this.#path}.pre-${tag}.bak`;
+  #backup(tag: string, version: number): boolean {
+    // The name carries the pass version AND the moment: a per-tag name (the old behaviour) meant the
+    // second-ever destructive pass silently reused the first one's copy. Measured on the operator's
+    // machine: the fold that rewrote 430,318 rows "backed up" to a file from 19 days earlier that did
+    // not even contain the session being folded, so a bad rule had no safety net at all.
+    const bak = `${this.#path}.pre-${tag}-v${version}-${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
     try {
-      if (!fs.existsSync(bak)) {
-        this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
-        console.log(`[store] 修复前已备份：${bak}`);
+      this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
+      console.log(`[store] 修复前已备份：${bak}`);
+      // Keep the newest three per tag; a 400k-row store copies to hundreds of MB.
+      try {
+        const dir = path.dirname(this.#path);
+        const base = path.basename(this.#path);
+        const mine = fs
+          .readdirSync(dir)
+          .filter((f) => f.startsWith(`${base}.pre-${tag}-v`))
+          .map((f) => ({ f, at: fs.statSync(path.join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.at - a.at);
+        for (const old of mine.slice(3)) fs.unlinkSync(path.join(dir, old.f));
+      } catch {
+        /* pruning is a courtesy — never fail the repair over it */
       }
       return true;
     } catch (e) {
@@ -695,7 +748,7 @@ export class Store {
     // Legacy: this pass wrote its own number into user_version (3, then 4) before the repairs table
     // existed, so a store carrying 4 has already run it.
     if (this.#repairVersion("dedupe", 4) >= DEDUPE_VERSION) return;
-    if (!this.#backup("dedupe")) return;
+    if (!this.#backup("dedupe", DEDUPE_VERSION)) return;
     // The store's own floor for "this is a block, not an utterance" (`reemissionTarget`): below it a
     // repeat is legitimately two messages ("好的" twice) and never a replay of one block.
     const MIN_DUP_CHARS = 24;
