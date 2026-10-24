@@ -9,13 +9,15 @@
 // Run: npx tsx scripts/qa/tus-mood.mts
 import { readFileSync } from "node:fs";
 import {
-  BLINK_BLOCKED, CLIP_DY_UNIT, CLIP_MAX_MS, CLIP_MIN_MS, CLIP_NAMES, CLIP_PRIORITY, CLIP_ROT_UNIT, CLIPS, EMO_MOODS,
-  IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, OVERSHOOT, TOOL_SUBSTATES, WARMTH_MS,
-  WORK_FLICK_MS, activityOf, applyClip, ballFrame, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt,
-  clipPeak, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame,
-  eyeSepAngle, eyeSpacing, gazeAngles, lifeBeat, moodFor, nextBlinkMs, normalizeClip, substateOf,
-  smoothLevel, voiceCue, nextSaccadeMs, saccadeFor, projectEyes,
-  readEmoTags, stripEmoTags, thinkingStage,
+  ASKING_DOZE_MS, BLINK_BLOCKED, BLINK_CLOSE_MS, BLINK_HOLD_MS, BLINK_MS, BLINK_OVERSHOOT,
+  CLIP_DY_UNIT, CLIP_MAX_MS, CLIP_MIN_MS, CLIP_NAMES, CLIP_PRIORITY, CLIP_ROT_UNIT, CLIPS, EMO_MOODS,
+  GROK_BLINK_BLOCKED, GROK_EXPRESSION_ALIASES, GROK_EXPRESSION_MOOD, GROK_EXPRESSION_NAMES, GROK_EXPRESSIONS,
+  IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, OVERSHOOT, TOOL_SUBSTATES, WAKE_MS, WARMTH_MS,
+  WORK_FLICK_MS, activityOf, applyClip, ballFrame, blinkClosureAt, blinkScaleAt, clipDurationMs, clipFor,
+  clipFrameAt, clipPeak, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame,
+  eyeSepAngle, eyeSpacing, gazeAngles, grokEyeBox, grokExpressionOf, lifeBeat, moodFor, nextBlinkMs,
+  normalizeClip, substateOf, smoothLevel, voiceCue, nextSaccadeMs, saccadeFor, projectEyes,
+  readEmoTags, thinkingStage,
   type ClipName, type TusMood, type ToolSubstate,
 } from "../../packages/web/src/tusMood.ts";
 
@@ -31,7 +33,7 @@ const expr = (phase: "listening" | "thinking" | "speaking" | "idle", level = 0, 
 const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   eyeFrame({ mood, right: false, blinking: false, t: 0, level: 0, expr: expr("idle"), ...o });
 
-// 1. Sixteen faces, sixteen signatures. If two moods collapse onto the same geometry the operator
+// 1. Twenty faces, twenty signatures. If two moods collapse onto the same geometry the operator
 //    sees "它好像没什么反应" and there is nothing in the code to point at.
 {
   // The signature is everything the operator can SEE at rest — geometry, squash, tilt, light.
@@ -41,17 +43,54 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     return [e.shape, Math.round(e.w), Math.round(e.h), e.rot.toFixed(1), e.yScale.toFixed(2),
       Math.round(e.y), Math.round(e.x), e.xScale.toFixed(1), e.alpha.toFixed(2), e.arc ?? ""].join("|");
   }));
-  check("all 18 faces are distinct on screen (16 from OpenNomi + working/asking)",
-    MOODS.length === 18 && sig.size === MOODS.length, `${sig.size}/${MOODS.length} distinct`);
+  check("all 20 faces are distinct on screen (16 OpenNomi + working/asking + calm/confused)",
+    MOODS.length === 20 && sig.size === MOODS.length, `${sig.size}/${MOODS.length} distinct`);
   check("table covers the arc pair + the error cross",
     eye("happy").shape === "arc" && eye("sad").shape === "arc" && eye("error").shape === "x");
   check("happy arcs up, sad arcs down", eye("happy").y > 0 && eye("sad").y < 0,
     `happy ${eye("happy").y} vs sad ${eye("sad").y}`);
-  check("wink closes ONE eye", eye("wink").h <= 2 && eye("wink", { right: true }).h >= 2 || true);
   check("wink: right eye shut, left eye open",
     eyeFrame({ mood: "wink", right: true, blinking: false, t: 0, level: 0, expr: expr("idle") }).h <
     eyeFrame({ mood: "wink", right: false, blinking: false, t: 0, level: 0, expr: expr("idle") }).h);
-  check("surprise is a round pair", eye("surprise").w === eye("surprise").h);
+  // 官方 surprised 不是圆眼，是 neutral 放大 1.5 倍的高胶囊（描述符 0.42 × 0.86）。
+  check("surprise is a tall capsule, not a round pair",
+    eye("surprise").h > 70 && eye("surprise").w < 55, `${eye("surprise").w.toFixed(0)}×${eye("surprise").h.toFixed(0)}`);
+  // 两张新脸从描述符算出来：calm 宽而扁、confused 整对左移。
+  const cal = eye("calm"), con = eye("confused"), idle = eye("idle");
+  check("calm is the wide flat oval (64 × 27), not just another capsule",
+    cal.w > 55 && cal.h < 35 && cal.w > idle.w * 1.6, `${cal.w.toFixed(0)}×${cal.h.toFixed(0)}`);
+  check("confused shifts BOTH eyes left and widens them",
+    con.x < -8 && con.w > idle.w && con.rot < 0, `x ${con.x.toFixed(1)} / w ${con.w.toFixed(0)}`);
+}
+
+// 1.5 Grok 描述符是搬来的数据，不是凭印象编的：九张、别名八条、禁眨五张都要逐字对上。
+{
+  check("exactly the nine official expressions", GROK_EXPRESSION_NAMES.length === 9,
+    GROK_EXPRESSION_NAMES.join(","));
+  check("neutral descriptor matches the extracted data (wid .13, ridge ±.155)",
+    GROK_EXPRESSIONS.neutral[0].wid === 0.13 && GROK_EXPRESSIONS.neutral[0].ridge[2] === -0.155
+    && GROK_EXPRESSIONS.neutral[0].ridge[3] === 0.155);
+  check("calm descriptor keeps the oval radii .296 × .247", (() => {
+    const e = GROK_EXPRESSIONS.calm[0];
+    return e.wid === 0.247 && e.oval[0] === 0.296 && e.oval[1] === 0.247;
+  })());
+  check("confused is shifted left by .10 body units", GROK_EXPRESSIONS.confused[0].off[0] === -0.1);
+  check("inspecting eyes are asymmetric (.27 / .18)",
+    GROK_EXPRESSIONS.inspecting[0].wid === 0.27 && GROK_EXPRESSIONS.inspecting[1].wid === 0.18);
+  check("aliases are the official eight", Object.keys(GROK_EXPRESSION_ALIASES).length === 8
+    && GROK_EXPRESSION_ALIASES.smile === "happy" && GROK_EXPRESSION_ALIASES.squint === "squinted");
+  check("unknown names fall back to neutral", grokExpressionOf("excited") === "neutral"
+    && grokExpressionOf("  CALM ") === "calm" && grokExpressionOf("smile") === "happy");
+  check("official blinking block is the five named faces",
+    GROK_BLINK_BLOCKED.join(",") === "sad,happy,confused,squinted,sleepy");
+  check("neutral maps to our resting face at exactly 34 × 70", (() => {
+    const g = grokEyeBox("neutral", false);
+    return Math.abs(g.w - 34) < 0.01 && Math.abs(g.h - 70) < 0.01;
+  })());
+  check("descriptor→mood table covers all nine and uses the two new faces",
+    GROK_EXPRESSION_NAMES.every((n) => !!GROK_EXPRESSION_MOOD[n])
+    && GROK_EXPRESSION_MOOD.calm === "calm" && GROK_EXPRESSION_MOOD.confused === "confused"
+    && GROK_EXPRESSION_MOOD.neutral === "idle");
 }
 
 // 2. Eye separation — focus pulls together, drowsiness drifts apart.
@@ -59,6 +98,8 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("focus 48 / curious 54 / drowsy 56 / idle 60",
     eyeSpacing("focus") === 48 && eyeSpacing("curious") === 54 && eyeSpacing("drowsy") === 56 && eyeSpacing("idle") === 60);
   check("strive shares focus's spacing", eyeSpacing("strive") === 48);
+  check("calm keeps the wide eyes apart (62), confused leans in (54)",
+    eyeSpacing("calm") === 62 && eyeSpacing("confused") === 54);
 }
 
 // 2.5 渲染器那条链必须兑现「两只眼分开」：live 实测（2026-10-24）旧实现写死 sep=21°，
@@ -97,7 +138,7 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
       }
     }
   }
-  check("18 张脸 × 7 个子状态 × 3 球径 × 9 指针位 × level/t：两眼始终有可见空隙（不是一条“暂停”）",
+  check("20 张脸 × 7 个子状态 × 3 球径 × 9 指针位 × level/t：两眼始终有可见空隙（不是一条“暂停”）",
     worst.gap >= 8, `worst ${worst.gap.toFixed(1)} px @ ${worst.mood}/${worst.sub}/R${worst.r}/${worst.ptr}`);
   check("…且外眼不会被球缘剪平（外缘 ≤ 1.05R，旧实现同量级）", worstOuter <= 1.0501, `worst ${worstOuter.toFixed(3)}R`);
   check("…且没有 NaN 几何（宽/半径写错不会让整双眼睛消失）", nan === 0, `${nan} 组`);
@@ -137,15 +178,30 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("the level never pushes the squash out of range", loud.yScale <= 1.35 && quiet.yScale >= 0.6);
 }
 
-// 5. Blinking: it happens, it is random, and six faces must not blink at all.
+// 5. Blinking: Grok's 0.26 s envelope (close 70.8 + hold 33.3 + reopen), 6 % overshoot.
 {
-  check("six faces never blink", BLINK_BLOCKED.length === 6 && !BLINK_BLOCKED.includes("idle"));
-  check("a blink squashes the eye to a line", eye("idle", { blinking: true }).yScale <= 0.01);
+  check("ten faces never blink (five official + five ours)",
+    BLINK_BLOCKED.length === 10 && !BLINK_BLOCKED.includes("idle")
+    && GROK_BLINK_BLOCKED.every((e) => BLINK_BLOCKED.includes(GROK_EXPRESSION_MOOD[e])),
+    BLINK_BLOCKED.join(","));
+  check("a blink is exactly 0.26 s and the lid is shut for the middle third",
+    BLINK_MS === 260 && Math.abs(BLINK_CLOSE_MS + BLINK_HOLD_MS - 104.166) < 0.01);
+  check("closure rises → holds → reopens (no boolean snap)",
+    blinkClosureAt(0) === 0 && blinkClosureAt(BLINK_CLOSE_MS / 2) >= 0.5
+    && blinkClosureAt(BLINK_CLOSE_MS) === 1 && blinkClosureAt(BLINK_CLOSE_MS + BLINK_HOLD_MS) === 1
+    && blinkClosureAt(BLINK_MS - 20) > 0 && blinkClosureAt(BLINK_MS) === 0);
+  check("1.06 overshoot squashes past zero, clamped to a 0.01 line",
+    BLINK_OVERSHOOT === 1.06 && Math.abs(blinkScaleAt(BLINK_CLOSE_MS) - 0.01) < 1e-9);
+  check("a blink squashes the eye to a line", eye("idle", { blink: 1 }).yScale <= 0.01);
+  check("mid-blink is half shut (0.26 s 不是「开/关」两帧)", (() => {
+    const y = eye("idle", { blink: 0.5 }).yScale;
+    return y > 0.4 && y < 0.55;
+  })(), String(eye("idle", { blink: 0.5 }).yScale.toFixed(2)));
   check("…but never while it is dozing or thinking hard",
-    eye("drowsy", { blinking: true }).yScale > 0.05 && eye("strive", { blinking: true }).yScale > 0.05);
+    eye("drowsy", { blink: 1 }).yScale > 0.05 && eye("strive", { blink: 1 }).yScale > 0.05
+    && eye("confused", { blink: 1 }).yScale === eye("confused").yScale);
   const a = nextBlinkMs(seq(0)), b = nextBlinkMs(seq(1));
   check("blink interval 2.8–6.4 s", a === 2800 && Math.round(b) === 6400, `${a}/${Math.round(b)}`);
-  check("blink hold 0.10–0.16 s", Math.round(blinkHoldMs(seq(0))) === 100 && Math.round(blinkHoldMs(seq(1))) === 160);
 }
 
 // 6. Which face at which moment.
@@ -173,6 +229,24 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("on the way to sleep it is drowsy", moodFor({ ...none, drowsy: true }) === "drowsy");
   check("a phase always beats an emotion (in-listening a sad tag must not change the eyes)",
     moodFor({ phase: "listening", emotion: "sad" }) === "curious");
+  check("speaking can carry the two new faces",
+    moodFor({ phase: "speaking", emotion: "calm" }) === "calm"
+    && moodFor({ phase: "speaking", emotion: "confused" }) === "confused");
+  check("calm/confused get their own continuous state, not the idle default",
+    exprFor("calm", 0, 0).mode === "idle" && exprFor("confused", 0, 0).mode === "listening"
+    && exprFor("calm", 0, 0).energy !== exprFor("confused", 0, 0).energy);
+  // Grok 转场：授权挂 120 s → 走神；困/睡里被叫醒 → 1.6 s 的 surprised。
+  check("授权挂到 120 s 之后脸会走神（blocked → drowsy）",
+    moodFor({ phase: "listening", activity: "asking", askingMs: ASKING_DOZE_MS - 1 }) === "asking"
+    && moodFor({ phase: "listening", activity: "asking", askingMs: ASKING_DOZE_MS }) === "drowsy");
+  check("被叫醒的头 1.6 s 是 surprised，之后回到这一轮该有的脸",
+    WAKE_MS === 1600
+    && moodFor({ ...none, waking: true }) === "surprise"
+    && moodFor({ phase: "listening", waking: true }) === "surprise"
+    && moodFor({ phase: "listening", activity: "asking", waking: true }) === "asking"
+    && moodFor({ phase: "idle" }) === "idle");
+  check("唤醒压过说话情绪（先说「我醒了」，再演这一句）",
+    moodFor({ phase: "speaking", emotion: "sad", waking: true }) === "surprise");
 }
 
 // 6.5 电平：起音快、收尾慢；人一开口点一下头；听话时的眼神节奏。
@@ -258,6 +332,19 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     stripEmoTags("[EMO : Curious] 嗯？") === "嗯？" && readEmoTags("[EMO : Curious] 嗯？")[0] === "curious");
   check("emotion: is accepted as the key", stripEmoTags("[emotion: shy] 嘿嘿") === "嘿嘿");
   check("unknown words are stripped AND dropped", stripEmoTags("[emo:blah] 你好") === "你好" && readEmoTags("[emo:blah]").length === 0);
+  // 官方九表情 + 能直接用的别名，每一个都要落到对应的那张脸。
+  check("official nine + aliases parse to the right face", (() => {
+    const want: Array<[string, TusMood]> = [
+      ["neutral", "idle"], ["happy", "happy"], ["surprised", "surprise"], ["inspecting", "curious"],
+      ["sad", "sad"], ["sleepy", "drowsy"], ["squinted", "focus"], ["calm", "calm"], ["confused", "confused"],
+      ["smile", "happy"], ["inspect", "curious"], ["strange", "curious"], ["squint", "focus"], ["idle", "idle"],
+    ];
+    const bad = want.filter(([tag, mood]) => readEmoTags(`[emo:${tag}]`)[0] !== mood).map(([t]) => t);
+    return bad.length === 0;
+  })());
+  check("deliberate deviations stay ours: thinking→focus, angry→strive, sleep→sleep",
+    readEmoTags("[emo:thinking]")[0] === "focus" && readEmoTags("[emo:angry]")[0] === "strive"
+    && readEmoTags("[emo:sleep]")[0] === "sleep");
   check("ordinary brackets survive", stripEmoTags("见 [1] 和 【注】") === "见 [1] 和 【注】");
   check("bracketed code survives", stripEmoTags("arr[0] 与 [x]") === "arr[0] 与 [x]");
   check("several tags → the moods in order, text clean", (() => {
@@ -270,6 +357,8 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   // 页面都必须认得，否则模型照提示写了标签、脸上什么都没发生 —— 这种 bug 没有报错，只有沉默。
   check("shared 提示里的每个值都被表情表认识", EMO_TAG_VALUES.every((v) => v in EMO_MOODS),
     EMO_TAG_VALUES.filter((v) => !(v in EMO_MOODS)).join(",") || "all");
+  check("提示词点名了全部九个官方表情", GROK_EXPRESSION_NAMES.every((v) => (EMO_TAG_VALUES as readonly string[]).includes(v)),
+    GROK_EXPRESSION_NAMES.filter((v) => !(EMO_TAG_VALUES as readonly string[]).includes(v)).join(",") || "all");
   check("提示句里点名了 [emo:happy] 这个例句", emoTagHint().includes("[emo:happy]"));
   check("提示句里列出了每个规范值", EMO_TAG_VALUES.every((v) => emoTagHint().includes(v)));
   check("半截标签（流式）也剥掉", stripEmoTags("好的[emo:hap") === "好的", JSON.stringify(stripEmoTags("好的[emo:hap")));

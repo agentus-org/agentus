@@ -13,8 +13,9 @@
 import { useEffect, useRef } from "react";
 import type { CallPhase } from "./CallMode";
 import {
-  BLINK_BLOCKED, CLIP_PRIORITY, CLIPS, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS, WARMTH_MS, WORK_FLICK_MS,
-  WORK_STRETCH_MS, applyClip, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt, exprFor, eyeFrame,
+  BLINK_BLOCKED, BLINK_MS, CLIP_PRIORITY, CLIPS, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS,
+  WAKE_MS, WARMTH_MS, WORK_FLICK_MS, WORK_STRETCH_MS, applyClip, blinkClosureAt, clipDurationMs,
+  clipFor, clipFrameAt, exprFor, eyeFrame,
   lifeBeat, moodFor, nextBlinkMs, nextSaccadeMs, saccadeFor, smoothLevel, thinkingStage,
   voiceCue, ballFrame, springStep, gazeAngles, projectEyes,
   type AgentActivity, type ClipName, type MicroAction, type TusMood, type ToolSubstate,
@@ -45,7 +46,8 @@ interface Mutable {
   life: TusMood | null;
   lifeUntil: number;
   nextBlinkAt: number;
-  blinkUntil: number;
+  /** 这一眨的起点（0.26 s 包络从它往外算）。 */
+  blinkAt: number;
   nextBeatAt: number;
   nextActionAt: number;
   resting: boolean;
@@ -81,11 +83,15 @@ interface Mutable {
   /** 球的倾角（度）与角速度 —— 也走弹簧，歪头才有惯性。 */
   ballRot: number;
   ballRotV: number;
+  /** 授权请求是这一刻挂上的；0 = 现在没有挂起的请求（120 s 后脸会转 drowsy）。 */
+  askingSince: number;
+  /** 从困/睡里被叫醒的「惊一下」到什么时候（Grok 的 waking，1.6 s）。 */
+  wakeUntil: number;
 }
 
 const fresh = (now: number): Mutable => ({
   phase: "idle",
-  life: null, lifeUntil: 0, nextBlinkAt: now + nextBlinkMs(), blinkUntil: 0,
+  life: null, lifeUntil: 0, nextBlinkAt: now + nextBlinkMs(), blinkAt: now - BLINK_MS,
   nextBeatAt: now + LIFE_BEAT_MS, nextActionAt: now + WORK_FLICK_MS,
   resting: false, drowsy: false, sleep: 0, sleepTarget: 0,
   phaseAt: now, warmthUntil: 0, lastEventAt: now,
@@ -96,6 +102,7 @@ const fresh = (now: number): Mutable => ({
   ball: { r: 98, sx: 1, sy: 1, dy: 0 },
   ballV: { r: 0, sx: 0, sy: 0, dy: 0 },
   ballRot: 0, ballRotV: 0,
+  askingSince: 0, wakeUntil: 0,
 });
 
 export function TusFace({ phase, activity, substate = "idle", emotion = null, ticks = 0, toolStatus = "", getLevel, onMood }: TusFaceProps): JSX.Element {
@@ -192,7 +199,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       if (ms >= st.nextBlinkAt) {
         st.nextBlinkAt = ms + nextBlinkMs();
         if (!BLINK_BLOCKED.includes(st.mood)) {
-          st.blinkUntil = ms + blinkHoldMs();
+          st.blinkAt = ms;   // 0.26 s 的闭合/保持/睁开包络从这里往外算
           // 眨眼自己的球体动作很轻，别打断正在播的切脸/工具 clip。
           if (!st.clip) startClip("blink-pop", ms);
         }
@@ -225,7 +232,21 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         st.resting = true;
       }
       st.sleep += Math.max(-1, Math.min(1, (st.sleepTarget - st.sleep) * 0.06));
-      if (st.resting && busy) { st.resting = false; st.drowsy = false; st.sleepTarget = 0; }
+      if ((st.resting || st.drowsy) && busy) {
+        // 被叫醒不是瞬切：头 1.6 s 先「惊一下」（Grok 的 waking = surprised → idle），
+        // 同时眼睛慢慢睁开（sleepTarget 归零后 sleep 自己衰减）。伸懒腰的 clip 同帧起播。
+        st.resting = false;
+        st.drowsy = false;
+        st.sleepTarget = 0;
+        st.wakeUntil = ms + WAKE_MS;
+        startClip("wake", ms);
+      }
+      // 授权请求挂了多久（脸在 120 s 后会从「等你」转「走神」，见 ASKING_DOZE_MS）。
+      if (p.activity === "asking") {
+        if (!st.askingSince) st.askingSince = ms;
+      } else {
+        st.askingSince = 0;
+      }
 
       // ── 「没有输出」太久：换个小姿势，别让一张脸盯成死机 ────────────────────────────
       const sinceEvent = ms - st.lastEventAt;
@@ -245,6 +266,8 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         life: st.life,
         resting: st.resting,
         drowsy: st.drowsy,
+        waking: ms < st.wakeUntil,
+        askingMs: st.askingSince ? ms - st.askingSince : 0,
       });
       if (mood !== st.mood) {
         const clip = clipFor({ kind: "mood", from: st.mood, to: mood });
@@ -272,9 +295,9 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         }
       }
 
-      const blinking = ms < st.blinkUntil;
-      const left = eyeFrame({ mood, right: false, blinking, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
-      const right = eyeFrame({ mood, right: true, blinking, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
+      const blink = blinkClosureAt(ms - st.blinkAt);
+      const left = eyeFrame({ mood, right: false, blink, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
+      const right = eyeFrame({ mood, right: true, blink, t, level: st.level, expr, sleep: st.sleep, substate: p.substate });
 
       // ── 画 ───────────────────────────────────────────────────────────────────────
       const W = canvas.width, H = canvas.height;
@@ -329,7 +352,7 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
       const cy = h / 2 + pointer.y * 7 * k + st.ball.dy * k;
 
       // 呼吸：只在「不紧绷」的脸上升降（2 s 一个来回，±6）。
-      const breathe = ["idle", "drowsy", "sleep", "curious", "asking", "working"].includes(mood)
+      const breathe = ["idle", "drowsy", "sleep", "curious", "asking", "working", "calm"].includes(mood)
         ? Math.sin((t * Math.PI * 2) / 2) * 6 * k : 0;
       // 微动作：低头干活的三种小姿势。
       let mx = 0, my = 0;

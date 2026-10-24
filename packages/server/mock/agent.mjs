@@ -853,11 +853,14 @@ const agent = () => ({
     // 提示句是**另一个内容块**（ACP resource），不在 `text` 里 —— 只看 text 会得出「服务端没注入」
     // 的错误结论（这次就是这么踩的）。所以探针看的是整条 prompt 的所有块。
     const allBlocks = prompt.map((p) => p.text || p.resource?.text || "").join(" ");
-    if (/\[emo-probe\]/.test(allBlocks) && /\[emo:[a-z]+\]/.test(allBlocks)) {
+    const probe = allBlocks.match(/\[emo-probe(?::([a-z]+))?\]/i);
+    if (probe && /\[emo:[a-z]+\]/.test(allBlocks)) {
+      // 带后缀可指定要回哪张脸（[emo-probe:calm]）；不带后缀保持 happy，老 sweep 不用改。
+      const mood = (probe[1] || "happy").toLowerCase();
       await send(agent._conn, sessionId, {
         sessionUpdate: "agent_message_chunk",
         messageId,
-        content: { type: "text", text: "[emo:happy] " },
+        content: { type: "text", text: `[emo:${mood}] ` },
       });
     }
     const words = `Mock echo (${effort} effort) to: "${text}". `.repeat(2).split(" ");

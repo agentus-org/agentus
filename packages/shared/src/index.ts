@@ -22,7 +22,12 @@
  *  back. Keeping them apart is how you get a prompt that offers `[emo:excited]` while the face
  *  silently ignores it, so the vocabulary lives here and the web side carries a superset of
  *  synonyms on top (see `EMO_MOODS` in tusMood.ts, guarded by the `tus-mood` test). */
-export const EMO_TAG_VALUES = ["happy", "sad", "angry", "surprise", "curious", "shy", "thinking", "neutral"] as const;
+export const EMO_TAG_VALUES = [
+  // Grok Bot 的九个官方表情名（2026-10-24 起提示词照官方词表）
+  "neutral", "happy", "surprised", "inspecting", "sad", "sleepy", "squinted", "calm", "confused",
+  // 我们自己的四张：想、好奇、顶住、害羞（官方没有，或语义不同）
+  "curious", "thinking", "angry", "shy",
+] as const;
 
 /** The sentence the call prompt carries. Kept next to the vocabulary so they cannot drift. */
 export function emoTagHint(): string {

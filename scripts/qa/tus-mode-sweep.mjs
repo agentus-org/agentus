@@ -184,15 +184,15 @@ const EYES = `(sel) => { const cv = document.querySelector(sel); if (!cv) return
   return { w, h, runs: runs.length, widths: runs.map((r) => r.width),
     gap: runs.length >= 2 ? runs[1].start - runs[0].end - 1 : null }; }`;
 
-/** 采样多帧、只收“稳定的 curious 帧”：眨眼（BLINK_BLOCKED 不含 curious）与 2.4–4.6 s 一次的
- *  走神会把单次采样变成假红/假绿。要求 ≥5 个好样本且 0 个坏样本，坏样本才算数（跳过的帧不计）。 */
-const sampleEyes = async (n = 8) => {
+/** 采样多帧、只收“稳定的目标脸帧”（默认 curious）：眨眼与 2.4–4.6 s 一次的走神会把单次
+ *  采样变成假红/假绿。要求 ≥5 个好样本且 0 个坏样本，坏样本才算数（跳过的帧不计）。 */
+const sampleEyes = async (n = 8, face = 'curious') => {
   const good = [], bad = [];
   for (let i = 0; i < n * 3 && good.length + bad.length < n; i++) {
     const s = await ev(`(() => {
-      const face = document.querySelector('.call-mode')?.dataset.face;
+      const m = document.querySelector('.call-mode')?.dataset.face;
       const cv = document.querySelector('.tus-face-canvas');
-      if (!cv || face !== 'curious' || cv.dataset.clip) return null;
+      if (!cv || m !== '${face}' || cv.dataset.clip) return null;
       return (${EYES})('.tus-face-canvas');
     })()`);
     if (s) {
@@ -417,31 +417,51 @@ try {
     JSON.stringify({ good: eyeL.good.length, bad: eyeL.bad.length,
       worst: eyeLWorst && { runs: eyeLWorst.runs, gap: eyeLWorst.gap, widths: eyeLWorst.widths } }));
 
-  // ---- 6.5 表情通道端到端：提示词 → agent 写标签 → 页面剥掉 → 脸变 happy ------------------
-  // mock 只在这一句真的到达时才吐标签（MOCK_EMO=1），所以这一段同时证明了三件事：
-  // 服务端的 call 提示词带上了 [emo:x]，客户端把它从文字里剥干净，脸跟着标签换。
+  // ---- 6.5 表情通道端到端：提示词 → agent 写标签 → 页面剥掉 → 脸跟着换 ------------------
+  // mock 只在探针真的到达时才吐标签，所以这一段同时证明了三件事：服务端的 call 提示词
+  // 带上了 [emo:x]，客户端把它从文字里剥干净，脸跟着标签换。
+  // `[emo-probe:<mood>]` 让 mock 回指定的标签（缺省 happy）—— 新移植的两张脸（calm/confused）
+  // 也要在真页面上被看见一次，只靠纯函数单测证明不了渲染器真的会用它们。
   const moodOf = async () => ev(`document.querySelector('.call-mode')?.dataset.mood ?? null`);
-  const happy0 = await moodOf();
-  for (let i = 0; i < 10; i++) {
-    const st = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
-      const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: '[emo-probe] 你好，说说你现在的心情' }) });
-      return r.status; })()`);
-    if (st >= 200 && st < 300) break;
-    await sleep(700);
-  }
-  let happy = null, leaked = null;
-  for (let i = 0; i < 40; i++) {
-    await sleep(400);
-    happy = await moodOf();
-    leaked = await ev(`(() => { const rows = [...document.querySelectorAll('.msg.agent .bubble')];
-      const t = rows.length ? rows[rows.length - 1].innerText : '';
-      // 不用正则：这段代码住在 JS 模板串里，反斜杠转义会被模板吃掉，写出来的正则能假匹配。
-      return { hasTag: t.includes('emo:') || t.includes('emo：'), sample: t.slice(0, 60) }; })()`);
-    if (happy === "happy" && leaked && leaked.hasTag === false) break;
-  }
-  check("agent 照提示词写了标签，脸变成 happy（data-mood）", happy === "happy", String(happy));
-  check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", leaked && leaked.hasTag === false, JSON.stringify(leaked && leaked.sample));
+  const probeEmo = async (want) => {
+    const sent = await promptCall(`[emo-probe:${want}] 你好，说说你现在的心情`);
+    let mood = null, leaked = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(400);
+      mood = await moodOf();
+      leaked = await ev(`(() => { const rows = [...document.querySelectorAll('.msg.agent .bubble')];
+        const t = rows.length ? rows[rows.length - 1].innerText : '';
+        // 不用正则：这段代码住在 JS 模板串里，反斜杠转义会被模板吃掉，写出来的正则能假匹配。
+        return { hasTag: t.includes('emo:') || t.includes('emo：'), sample: t.slice(0, 60) }; })()`);
+      if (mood === want && leaked && leaked.hasTag === false) break;
+    }
+    return { sent, mood, leaked };
+  };
+  const HAPPY = await probeEmo("happy");
+  check("agent 照提示词写了标签，脸变成 happy（data-mood）", HAPPY.mood === "happy", String(HAPPY.mood));
+  check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", HAPPY.leaked && HAPPY.leaked.hasTag === false,
+    JSON.stringify(HAPPY.leaked && HAPPY.leaked.sample));
+
+  // calm：Grok 描述符里最宽的一张（64×27，宽高 2.2:1）。宽眼正是“叠成暂停符号 / 被球缘剪平”
+  // 这两类旧 bug 的高危区，所以在真页面上再量一次两只眼之间有没有真实暗缝。
+  await waitListening();
+  const CALM = await probeEmo("calm");
+  check("calm 标签让脸换成 calm（新脸在真页面上真的被用上）", CALM.mood === "calm", String(CALM.mood));
+  const calmEyes = await sampleEyes(6, "calm");
+  const calmWorst = calmEyes.good[0] ?? calmEyes.bad[0] ?? null;
+  // 眨眼（calm 不在 BLINK_BLOCKED 里）会吃掉一帧，所以允许至多一个坏样本；全坏仍判红。
+  check("calm 的宽眼在真页面上是两条亮带（没有糊成一条 / 没被球缘剪平）",
+    calmEyes.good.length >= 3 && calmEyes.bad.length <= 1,
+    JSON.stringify({ good: calmEyes.good.length, bad: calmEyes.bad.length,
+      worst: calmWorst && { runs: calmWorst.runs, gap: calmWorst.gap, widths: calmWorst.widths } }));
+
+  // confused：官方描述符里唯一一张偏心的脸（off -0.10）。渲染器对风格位移打 0.5 权重
+  // （见 projectEyes），曾经把 -13 px 缩成 -6.5 px、看起来像“根本没歪”，这条钉住它真的到了页面。
+  await waitListening();
+  const CONF = await probeEmo("confused");
+  check("confused 标签让脸换成 confused（偏心那张也走到了真页面）", CONF.mood === "confused", String(CONF.mood));
+  check("confused 标签也没有漏进气泡", CONF.leaked && CONF.leaked.hasTag === false,
+    JSON.stringify(CONF.leaked && CONF.leaked.sample));
 
   // ---- 6.6 工具子状态端到端：data-substate 跟着行变，clip 跟着状态播 ---------------------
   // 这里只用**已有的可观测行**（tool 行的 title/kind/status + pending），mock 不配合改行为：

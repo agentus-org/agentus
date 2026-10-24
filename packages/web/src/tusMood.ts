@@ -6,27 +6,33 @@
 // phaseElapsed（想了几秒）。这一层全是算术，能离开浏览器验证，所以它住在这里、由
 // `scripts/qa/tus-mood.mts` 钉住；canvas 那边只管把数字画出来。
 //
-// 数字的来源：`kerwinyoung77/OpenNomi`（MIT）的 `NomiExpressionView.swift` / `EyeView`。
-// 我们**重写**而不是搬运：它用 SwiftUI 的 View 组合与动画曲线，我们用 canvas 每帧算数；
-// 搬过来的只有「哪些量、取什么值」这类事实性参数（尺寸、时长、阈值），代码形态是自己的。
+// 数字的来源有两个，都只取**参数**、不搬代码：
+//   · `kerwinyoung77/OpenNomi`（MIT）的 `NomiExpressionView.swift` / `EyeView` —— 16 张基础脸；
+//   · `ArvinYin1/grokbot-anatomy` 解出的 Grok Bot 原引擎（`grok-recipes.json`）—— 九个官方表情
+//     描述符、别名表、眨眼包络与 `blocked→drowsy` / `waking` 转场（见 `GROK_EXPRESSIONS`）。
+// 两家都是 SwiftUI/DOM 的 View 组合，我们用 canvas 每帧算数；搬过来的只有事实性参数（尺寸、
+// 时长、阈值），形状由我们自己的 capsule / arc / x 三种原语画。
 //
-// 两个来源，叠加而不是二选一（操作者 2026-10-23 拍板的第一条；第二条他也同意「要」）：
+// 两层叠加而不是二选一（操作者 2026-10-23 拍板的第一条；第二条他也同意「要」）：
 //   1. **状态层**（永远在）：通话相位 + 音频电平 + 相位时长 → 动作与神态。不依赖模型，永不缺席。
 //   2. **情绪层**（可关）：agent 在句首写 `[emo:happy]` 这样的隐藏标记，这里剥掉、映射成 mood。
 //      标记必须在**送 TTS 前、进转录前、落历史前**剥干净 —— `splitForSpeech()` 只剥
 //      `[*_`#>|]`，不剥方括号，漏一处就会被念成「方括号 happy 方括号」。
 import type { CallPhase } from "./CallMode";
 
-/** 16 faces from OpenNomi + THREE of our own, because our agent is not a chatbot. */
+/** 20 faces: 16 from OpenNomi, working/asking of our own, plus calm/confused from Grok Bot. */
 export type TusMood =
   | "idle" | "talking" | "loading" | "sleep" | "lookLeft" | "lookRight" | "scan" | "strive"
   | "focus" | "drowsy" | "happy" | "sad" | "surprise" | "curious" | "wink" | "error"
-  // ── 我们自己的三种「没有标准输出」的脸 ──────────────────────────────────────────────────
+  // ── 我们自己的两种「没有标准输出」的脸 ──────────────────────────────────────────────────
   // OpenNomi 后端就是一个聊天机器人：它只会有「在听 / 在想 / 在说」。Agentus 的 agent 会跑工具、
-  // 会停下来等你点授权，这些时刻**一个字都不输出**，而时长以分钟计。没有这三张脸，Tus 模式在
+  // 会停下来等你点授权，这些时刻**一个字都不输出**，而时长以分钟计。没有这两张脸，Tus 模式在
   // 真实会话里会有一半时间是死的（或者更糟：看起来睡着了，而它其实正在干活）。
   | "working"   // 工具执行中 —— 低头看手上的活，不焦躁
-  | "asking";   // 等你授权 —— 直视你，眼睛微微不对称（"你看这里"）
+  | "asking"    // 等你授权 —— 直视你，眼睛微微不对称（"你看这里"）
+  // ── Grok Bot 官方九表情里我们原先缺的两张（2026-10-24 移植）────────────────────────────
+  | "calm"      // 宽椭圆、半阖：平静地在场（官方 calm）
+  | "confused"; // 竖胶囊整对左移：没听懂 / 在想你刚才那句（官方 confused）
 
 /** 现在这一轮里，agent 到底在干什么（比通话相位更细）。 */
 export type AgentActivity = "none" | "thinking" | "tools" | "asking";
@@ -87,8 +93,117 @@ export interface EyeFrame {
 export const MOODS: TusMood[] = [
   "idle", "talking", "loading", "sleep", "lookLeft", "lookRight", "scan", "strive",
   "focus", "drowsy", "happy", "sad", "surprise", "curious", "wink", "error",
-  "working", "asking",
+  "working", "asking", "calm", "confused",
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Grok Bot 的九个官方表情（数据来自 `grokbot-anatomy/js/vendor/grok-recipes.json` 的 `expressions`
+// 段，2026-10-12 从原引擎提取）。字段保留官方的：`off` 眼心偏移、`wid` 半宽（描边半径）、
+// `lidY` 眼睑纵向系数、`oval` 椭圆半径、`tilt` 倾斜（弧度）。`pts` 是 21 点脊线，我们只留它的
+// 外接框 `ridge[x0,x1,y0,y1]` —— 21 点插值属于参考实现的多边形填充管线，我们的原语用不上。
+// 单位是 body 单位（Grok 的头身坐标），不是 px；px 换算见 `grokEyeBox`。
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type GrokExpression =
+  | "neutral" | "happy" | "surprised" | "inspecting" | "sad"
+  | "sleepy" | "squinted" | "calm" | "confused";
+
+export interface GrokEyeDescriptor {
+  readonly off: readonly [number, number];
+  readonly wid: number;
+  readonly lidY: number;
+  readonly oval: readonly [number, number];
+  readonly tilt: number;
+  /** pts 的外接框：[x0, x1, y0, y1]。inspecting 的 pts 全为 0（两颗点）。 */
+  readonly ridge: readonly [number, number, number, number];
+}
+
+const pair = (
+  off: readonly [number, number],
+  wid: number,
+  lidY: number,
+  oval: readonly [number, number],
+  tilt: number,
+  ridge: readonly [number, number, number, number],
+): [GrokEyeDescriptor, GrokEyeDescriptor] => [
+  { off, wid, lidY, oval, tilt, ridge },
+  { off, wid, lidY, oval, tilt, ridge },
+];
+
+/** 左眼在 [0]，右眼在 [1]（inspecting 两只眼不等宽，其余对称）。 */
+export const GROK_EXPRESSIONS: Record<GrokExpression, [GrokEyeDescriptor, GrokEyeDescriptor]> = {
+  neutral: pair([0, 0], 0.13, 1, [0, 0], 0, [0, 0, -0.155, 0.155]),
+  happy: pair([0.03, 0.03], 0.1305, 1, [0, 0], 0, [-0.16, 0.16, -0.04, 0.12]),
+  surprised: pair([0.03, 0], 0.21, 1, [0, 0], 0, [0, 0, -0.22, 0.22]),
+  inspecting: [
+    { off: [0.04, 0], wid: 0.27, lidY: 1, oval: [0, 0], tilt: 0, ridge: [0, 0, 0, 0] },
+    { off: [0.04, 0], wid: 0.18, lidY: 1, oval: [0, 0], tilt: 0, ridge: [0, 0, 0, 0] },
+  ],
+  sad: pair([-0.05, 0], 0.13, 1, [0, 0], 0, [-0.0563, 0.0563, -0.106, 0.106]),
+  sleepy: pair([0.01, 0], 0.13, 1, [0, 0], 0, [-0.11, 0.11, -0.0125, 0.025]),
+  squinted: pair([0.01, 0], 0.13, 1, [0, 0], 0, [-0.12, 0.12, 0, 0]),
+  calm: pair([0.05, 0], 0.247, 1, [0.296, 0.247], 0, [-0.296, 0.296, 0, 0]),
+  confused: pair([-0.1, 0], 0.1305, 1, [0, 0], 0, [-0.08, 0.01, -0.16, 0.16]),
+};
+
+/** 官方别名。注意我们**故意不照搬**两条：`thinking` 在本产品是 focus（不是 sad）、
+ *  `angry` 是 strive（不是 neutral）—— 见 `EMO_MOODS` 的注释。 */
+export const GROK_EXPRESSION_ALIASES: Record<string, GrokExpression> = {
+  thinking: "sad", strange: "inspecting", angry: "neutral", inspect: "inspecting",
+  squint: "squinted", idle: "neutral", smile: "happy", sleep: "sleepy",
+};
+
+export const GROK_EXPRESSION_NAMES = Object.keys(GROK_EXPRESSIONS) as GrokExpression[];
+const GROK_NAME_SET = new Set<string>(GROK_EXPRESSION_NAMES);
+
+/** 未知名字回落到 neutral（官方行为），大小写/空格宽容。 */
+export function grokExpressionOf(name: string): GrokExpression {
+  const k = String(name ?? "").trim().toLowerCase();
+  if (GROK_NAME_SET.has(k)) return k as GrokExpression;
+  return GROK_EXPRESSION_ALIASES[k] ?? "neutral";
+}
+
+/** 官方表情 → 我们的 mood。两张一对一是新增的；其余复用已有那张读法最近的脸。 */
+export const GROK_EXPRESSION_MOOD: Record<GrokExpression, TusMood> = {
+  neutral: "idle",
+  happy: "happy",
+  surprised: "surprise",
+  inspecting: "curious",
+  sad: "sad",
+  sleepy: "drowsy",
+  squinted: "focus",
+  calm: "calm",
+  confused: "confused",
+};
+
+/** 官方规定：这五张脸上眨眼要走完整的眼睑曲线，不能简单压扁。我们另外五张也压不得
+ *  （error 的 ✕、scan 的横扫线、loading 的方点、strive 的眯眼是思考的读数、sleep 本来就闭着）。 */
+export const GROK_BLINK_BLOCKED: GrokExpression[] = ["sad", "happy", "confused", "squinted", "sleepy"];
+
+/** body 单位 → px。以 neutral 标定：Grok 的 0.26 × 0.57 正好是我们的 34 × 70。 */
+const GROK_PX = { x: 34 / 0.26, y: 70 / 0.57 } as const;
+/** 球只有 196 px 宽（R=98），Grok 的头比我们大：超出的按**同一比例**收，形状比不变。 */
+export const GROK_EYE_LIMIT = { w: 64, h: 82 } as const;
+
+/**
+ * 描述符 → 我们 capsule 的盒子。宽度 = 脊线半跨 + 两侧描边；高度 = 脊线跨度 + 上下描边×lidY。
+ * `off` 是两只眼一起的位移（原引擎靠它把整对眼随头偏），所以左右眼拿到同一个 x/y。
+ * 换算后按 `GROK_EYE_LIMIT` 等比收口 —— 只收一边会把宽椭圆拉成圆，丢掉 calm 的读法。
+ */
+export function grokEyeBox(expr: GrokExpression, right: boolean): { w: number; h: number; x: number; y: number; rot: number } {
+  const e = GROK_EXPRESSIONS[expr][right ? 1 : 0];
+  const [x0, x1, y0, y1] = e.ridge;
+  const rawW = 2 * Math.max(Math.abs(x0), Math.abs(x1)) + 2 * e.wid;
+  const rawH = (y1 - y0) + 2 * e.wid * e.lidY;
+  const fit = Math.min(1, GROK_EYE_LIMIT.w / (rawW * GROK_PX.x), GROK_EYE_LIMIT.h / (rawH * GROK_PX.y));
+  return {
+    w: rawW * GROK_PX.x * fit,
+    h: rawH * GROK_PX.y * fit,
+    x: e.off[0] * GROK_PX.x * fit,
+    y: e.off[1] * GROK_PX.y * fit,
+    rot: (e.tilt * 180) / Math.PI,
+  };
+}
 
 /** The GAP between the two eyes (px at scale 1) — the original's `HStack(spacing:)`, i.e. edge to
  *  edge, not centre to centre. The renderer adds the eye's own width to get the centre distance;
@@ -107,6 +222,10 @@ export function eyeSpacing(mood: TusMood): number {
       return 46;                       // 低头干活：眼睛往中间收，像盯着手上
     case "asking":
       return 52;                       // 看着你：比 curious 稍近
+    case "calm":
+      return 62;                       // 宽椭圆要留足空隙，否则左右两只撞在一起
+    case "confused":
+      return 54;                       // 没听懂：靠近一点，像在辨认你刚才那句
     default:
       return 60;
   }
@@ -132,17 +251,41 @@ export function eyeSepAngle(o: { mood: TusMood; leftW: number; rightW: number; b
   return (Math.asin(half) * 180 / Math.PI) * 2;
 }
 
-/** Blinking is OFF in these six faces — a closed eye would read as a different expression. */
-export const BLINK_BLOCKED: TusMood[] = ["error", "scan", "drowsy", "sleep", "loading", "strive"];
+/** Blinking is OFF in these ten faces — a closed eye would read as a different expression.
+ *  The first five come from Grok's `blinkBlockingExpressions`, mapped through
+ *  `GROK_EXPRESSION_MOOD`; the rest are ours. */
+export const BLINK_BLOCKED: TusMood[] = [
+  "happy", "sad", "confused", "focus", "drowsy",   // Grok: happy/sad/confused/squinted/sleepy
+  "error", "scan", "loading", "strive", "sleep",   // ours
+];
 
 /** Next blink, ms. 2.8–6.4 s in the original; it is random because a metronome looks dead. */
 export function nextBlinkMs(rand: () => number = Math.random): number {
   return 2800 + rand() * 3600;
 }
 
-/** How long the eye stays shut, ms (0.10–0.16 s). */
-export function blinkHoldMs(rand: () => number = Math.random): number {
-  return 100 + rand() * 60;
+/** Grok 的眨眼包络：总时长 260 ms = 闭合 70.8 + 闭住 33.3 + 睁开 155.9。
+ *  闭的时候多盖 6%（`BLINK_OVERSHOOT`），所以完全闭合那一瞬眼睛不会留一条白缝。 */
+export const BLINK_MS = 260;
+export const BLINK_CLOSE_MS = 70.833;
+export const BLINK_HOLD_MS = 33.333;
+export const BLINK_OVERSHOOT = 1.06;
+/** 完全闭合时的剩余高度系数（`1 - 1.06` 会被夹到这里）。 */
+export const BLINK_CLOSED_SCALE = 0.01;
+
+/** 闭眼程度 0..1：0 = 全开，1 = 闭住（含 hold）。越界返回 0，调用方不用自己判窗口。 */
+export function blinkClosureAt(ms: number): number {
+  if (!Number.isFinite(ms) || ms < 0 || ms >= BLINK_MS) return 0;
+  const smooth = (u: number): number => u * u * (3 - 2 * u);
+  if (ms < BLINK_CLOSE_MS) return smooth(ms / BLINK_CLOSE_MS);
+  if (ms < BLINK_CLOSE_MS + BLINK_HOLD_MS) return 1;
+  const rest = BLINK_MS - BLINK_CLOSE_MS - BLINK_HOLD_MS;
+  return 1 - smooth((ms - BLINK_CLOSE_MS - BLINK_HOLD_MS) / rest);
+}
+
+/** 闭眼程度 → 眼睛高度系数。1.06 的过冲让闭合点略过 0，夹在 0.01 上。 */
+export function blinkScaleAt(ms: number): number {
+  return Math.max(BLINK_CLOSED_SCALE, 1 - BLINK_OVERSHOOT * blinkClosureAt(ms));
 }
 
 /** Warmth decay after the reply ends. The original lets it bleed for 2.4 s. */
@@ -151,6 +294,11 @@ export const WARMTH_MS = 2400;
 /** Idle thresholds: a small look-around after 30 s, going to sleep at 90 s. */
 export const IDLE_LOOK_MS = 30_000;
 export const IDLE_REST_MS = 90_000;
+/** 挂着授权请求超过两分钟就不再盯着你：Grok 的 `blocked` 也在 120 s 后转 `drowsy`。
+ *  脸可以走神，弹窗还在 —— 走神的是等待这件事，不是这张卡。 */
+export const ASKING_DOZE_MS = 120_000;
+/** 从困/睡里被叫醒：先「惊一下」（surprised）1.6 s，再回到常态（Grok 的 `waking`）。 */
+export const WAKE_MS = 1600;
 /** Sleep is a transition, not a cut: 2.6 s of eyelids falling. */
 export const SLEEP_TRANSITION_MS = 2600;
 /** The life beat ticks every 6 s and fires 56 % of the time (measured rate in the original). */
@@ -196,6 +344,12 @@ export function exprFor(who: CallPhase | TusMood | "idle", level: number, elapse
     case "drowsy":
     case "sleep":
       return { mode: "idle", attention: 0.1, energy: 0.16 + warmth * 0.1, warmth, phaseElapsed: elapsed };
+    // calm 是「在，但不使劲」：不追着你看，也不困；confused 是「在辨认你刚才那句」：
+    // 看着你但注意力收窄（官方两张脸在 Grok 里分别是 idle 与 strange 的底）。
+    case "calm":
+      return { mode: "idle", attention: 0.5, energy: 0.56, warmth, phaseElapsed: elapsed };
+    case "confused":
+      return { mode: "listening", attention: 0.64, energy: 0.6, warmth, phaseElapsed: elapsed };
     default:
       return {
         mode: "idle",
@@ -219,6 +373,10 @@ export function moodFor(o: {
   life?: TusMood | null;
   resting?: boolean;
   drowsy?: boolean;
+  /** 授权请求已经挂了多久（ms）。120 s 之后脸会走神，见 `ASKING_DOZE_MS`。 */
+  askingMs?: number;
+  /** 刚从困/睡里被叫醒：1.6 s 的「惊一下」，见 `WAKE_MS`。 */
+  waking?: boolean;
 }): TusMood {
   const { phase, activity = "none", emotion, life, resting, drowsy } = o;
   if (phase === "error") return "error";
@@ -226,7 +384,10 @@ export function moodFor(o: {
   // 等你点授权 > 一切，**包括"还在念上一句"**：授权一挂起，这一轮就停在这里了，
   // 耳机里剩下的只是已经排队的旧句子。这时脸上还写着 talking，读起来是"它没在等我"，
   // 而操作者正盯着一个必须由他回答的弹窗。工具/授权状态比相位更接近事实。
-  if (activity === "asking") return "asking";
+  // 唯一例外是挂太久：两分钟还盯着你，读起来不是「在等」而是「在瞪」。
+  if (activity === "asking") return (o.askingMs ?? 0) >= ASKING_DOZE_MS ? "drowsy" : "asking";
+  // 被叫醒的头 1.6 s：先把「我醒了」演出来，再回到这一轮真正该有的脸。
+  if (o.waking) return "surprise";
   if (phase === "speaking") {
     // The words decide HOW it speaks; the phase decides THAT it speaks. An unknown/neutral tag
     // leaves the plain talking face, which is also the fallback when the model writes no tag.
@@ -262,7 +423,10 @@ export function thinkingStage(phaseElapsed: number): 0 | 1 | 2 {
 export function eyeFrame(o: {
   mood: TusMood;
   right: boolean;
-  blinking: boolean;
+  /** 旧入口：true = 完全闭住（等价于 blink = 1）。 */
+  blinking?: boolean;
+  /** 闭眼程度 0..1（`blinkClosureAt` 的输出）—— 0.26 s 包络就是从这里进来的。 */
+  blink?: number;
   t: number;
   level: number;
   expr: ExprState;
@@ -270,11 +434,19 @@ export function eyeFrame(o: {
   /** 工具执行的子状态：眼形/视线在 working 的静止脸上再分一层。 */
   substate?: ToolSubstate;
 }): EyeFrame {
-  const { mood, right, blinking, t, expr } = o;
+  const { mood, right, t, expr } = o;
+  const blinking = o.blinking ?? false;
+  const blink = clamp01(o.blink ?? (blinking ? 1 : 0));
   const substate = o.substate ?? "idle";
   const level = clamp01(o.level);
   const sleep = clamp01(o.sleep ?? 0);
   const { right: r } = { right };
+  // 官方描述符驱动的三张脸：surprise 是「neutral 放大」、calm 是宽椭圆、confused 是左移的窄胶囊。
+  // 只在需要时算（每帧两只眼各一次，开销可忽略）。
+  const grokBox = mood === "surprise" ? grokEyeBox("surprised", right)
+    : mood === "calm" ? grokEyeBox("calm", right)
+      : mood === "confused" ? grokEyeBox("confused", right)
+        : null;
 
   // --- shape ------------------------------------------------------------------------------
   if (mood === "error") {
@@ -313,7 +485,9 @@ export function eyeFrame(o: {
     case "strive": w = thinkingW; break;
     case "drowsy": w = 42 + sleep * 5; break;
     case "sleep": w = 45; break;
-    case "surprise": w = 55; break;
+    case "surprise": w = grokBox!.w; break;      // neutral 放大 1.5 倍（官方 surprised）
+    case "calm": w = grokBox!.w; break;          // 宽椭圆：64×27
+    case "confused": w = grokBox!.w; break;      // 比 idle 宽、整对左移
     case "loading": w = 16; break;
     case "curious": w = 34; break;   // 球面眼里 35×74 才读成"竖着的胶囊"；40×64 会变成圆角方块
     case "working": w = 46; break;
@@ -328,7 +502,9 @@ export function eyeFrame(o: {
     case "strive": h = thinkingH; break;
     case "drowsy": h = Math.max(8, 78 - sleep * 66); break;
     case "sleep": h = 4 + Math.sin(t * 1.1) * 1.2 + 1.2; break;
-    case "surprise": h = 55; break;
+    case "surprise": h = grokBox!.h; break;
+    case "calm": h = grokBox!.h; break;
+    case "confused": h = grokBox!.h; break;
     case "loading": h = 16; break;
     case "wink": h = r ? 2 : 40; break;
     case "working": h = 46; break;
@@ -341,6 +517,9 @@ export function eyeFrame(o: {
   if (mood === "strive") rot = r ? -thinkingRot : thinkingRot;
   else if (mood === "curious") rot = 6;
   else if (mood === "asking") rot = 8;
+  // 官方 confused 是「胶囊中间往左拱」；capsule 画不出拱，用整体左倾近似（rot 由描述符的
+  // tilt 给出，九张全是 0，所以这里补的是原语误差）。
+  else if (mood === "confused") rot = grokBox!.rot - 8;
   else if (isThinking) rot = r ? 4 : -4;
 
   let x = 0;
@@ -350,6 +529,11 @@ export function eyeFrame(o: {
     case "scan": x = Math.sin(t * 3.5) * 45; break;
     case "working": x = 0; break;
     case "asking": x = Math.sin(t * 0.9) * 1.2; break;
+    // `projectEyes` 把风格位移按 0.5 权重叠到球面投影上；描述符的 `off` 是整对眼在屏幕上的
+    // 实际位移，所以这里 ×2（否则 confused 的左移只剩 6 px，读不出来）。
+    case "calm": x = grokBox!.x * 2 + Math.sin(t * 0.7) * 1.2; break;
+    case "confused": x = grokBox!.x * 2 + Math.sin(t * 1.3) * 2; break;
+    case "surprise": x = grokBox!.x * 2; break;
     case "strive": x = Math.sin(t * (stage === 0 ? 1.8 : stage === 1 ? 4.2 : 5)) * thinkAmp; break;
     case "focus": x = isListening ? Math.sin(t * 1.2) * 1.8 : isThinking ? Math.sin(t * 2.4) * (expr.phaseElapsed < 1.2 ? 2.5 : 6) : Math.sin(t * 1.8) * (2 + expr.attention * 2); break;
   }
@@ -361,12 +545,17 @@ export function eyeFrame(o: {
     case "drowsy": y = 4 + sleep * 12 + Math.sin(t * 1.2) * 1.4; break;
     case "wink": y = r ? 0 : -10; break;
     case "working": y = 6 + Math.sin(t * 1.6) * 1.2; break;   // 低头看手上的活
+    case "surprise": y = grokBox!.y; break;
+    case "calm": y = grokBox!.y + Math.sin(t * 1.1) * 1.1; break;   // 缓慢起伏，像在呼吸
+    case "confused": y = grokBox!.y + Math.sin(t * 1.7) * 1.5; break;
   }
 
   let yScale = 1;
   if (mood === "talking") yScale = 0.72 + level * 0.42 + Math.sin(t * 8) * 0.06 + expr.warmth * 0.04;
   else if (mood === "drowsy") yScale = Math.max(0.18, 1 - sleep * 0.74);
   else if (mood === "working") yScale = 0.58 + Math.sin(t * 1.6) * 0.02;  // 半阖：专注，不是困
+  else if (mood === "calm") yScale = 0.82 + Math.sin(t * 1.1) * 0.02;    // 半阖的平静（官方 oval 已经很宽）
+  else if (mood === "confused") yScale = 0.98 + Math.sin(t * 1.7) * 0.015;
   else if (mood === "focus") {
     yScale = isListening ? 0.9 + level * 0.12 + Math.sin(t * 1.4) * 0.015
       : isThinking ? 0.82 + Math.sin(t * 1.8) * 0.025
@@ -383,7 +572,10 @@ export function eyeFrame(o: {
   else alpha = Math.min(1, 0.72 + expr.energy * 0.22 + expr.warmth * 0.06);
 
   // A blink is a squash of the SAME shape, so the expression never changes identity mid-blink.
-  if (blinking && !BLINK_BLOCKED.includes(mood)) yScale = Math.min(yScale, 0.01);
+  // `blink` 是 0.26 s 包络的闭眼程度（0..1）；1.06 的过冲让闭合点略过 0，夹在 0.01。
+  if (blink > 0 && !BLINK_BLOCKED.includes(mood)) {
+    yScale = Math.min(yScale, Math.max(BLINK_CLOSED_SCALE, 1 - BLINK_OVERSHOOT * blink));
+  }
 
   return substateEye({
     shape: "capsule",
@@ -515,7 +707,7 @@ export function lifeBeat(
   // 忙的时候不许睡：睡 = 「这一段结束了」，而它只是没在说话（工具跑 3 分钟很常见）。
   if (idleMs > IDLE_REST_MS) return o.busy ? null : "rest";
   const pool: TusMood[] = idleMs > IDLE_LOOK_MS
-    ? ["lookLeft", "lookRight", "curious", "wink", "focus"]
+    ? ["lookLeft", "lookRight", "curious", "wink", "focus", "calm"]
     : ["lookLeft", "lookRight", "wink"];
   if (rand() >= LIFE_BEAT_P) return null;
   const mood = pool[Math.min(pool.length - 1, Math.floor(rand() * pool.length))];
@@ -589,17 +781,22 @@ export function workBeat(o: {
 
 // --------------------------------------------------------------- emotion tags
 
-/** The tag vocabulary. Deliberately small: a bigger list is a bigger chance of a miss. */
+/** The tag vocabulary: the nine official Grok names + their aliases + the names we already
+ *  promised, minus the aliases we deliberately read differently. */
 export const EMO_MOODS: Record<string, TusMood> = {
-  happy: "happy", joy: "happy", love: "happy",
-  sad: "sad",
-  angry: "strive", strive: "strive",
-  surprise: "surprise", surprised: "surprise",
-  curious: "curious", confused: "curious",
-  shy: "wink", wink: "wink",
-  thinking: "focus", focus: "focus",
-  sleepy: "drowsy", sleep: "sleep",
-  neutral: "idle",
+  // 官方九表情，一对一（neutral 回到 idle；inspecting 复用「看着你」的 curious）
+  neutral: "idle", happy: "happy", surprised: "surprise", inspecting: "curious",
+  sad: "sad", sleepy: "drowsy", squinted: "focus", calm: "calm", confused: "confused",
+  // 官方别名里的五条（thinking / angry / sleep 三条见下）
+  smile: "happy", inspect: "curious", strange: "curious", squint: "focus", idle: "idle",
+  // 故意偏离官方的三条：
+  //   · thinking —— 官方 thinking→sad，但在本产品里「在想」是 focus（眯起来往上看）；
+  //   · angry    —— 官方 angry→neutral，我们的 strive 才是那张「顶住了/出问题了」的脸；
+  //   · sleep    —— 官方 sleep→sleepy(drowsy)，我们的 sleep 是真的闭眼睡着，sleepy 才是 drowsy。
+  thinking: "focus", focus: "focus", angry: "strive", sleep: "sleep",
+  // OpenNomi 时代的同义词，继续认（老提示词/老会话里还会出现）
+  joy: "happy", love: "happy", surprise: "surprise", curious: "curious",
+  strive: "strive", shy: "wink", wink: "wink",
 };
 
 /** ONLY `[emo:x]` / `[emotion: x]` — never a bare bracket, so ordinary text cannot be eaten. */
@@ -721,6 +918,10 @@ function ballMoodFrame(mood: TusMood, o: { level?: number; breath?: number; slee
       return { r: 92, sx: 1.06, sy: 0.9, dy: 4, rot: 7 };
     case "asking":
       return { r: 99, sx: 0.99, sy: 1.01, dy: -1, rot: 0 };
+    case "calm":
+      return { r: 100, sx: 1.01, sy: 0.99, dy: -1, rot: -2 };
+    case "confused":
+      return { r: 96, sx: 1.02, sy: 0.96, dy: 2, rot: 8 };
     case "focus":
       return { r: 94, sx: 0.98, sy: 1.0, dy: 0, rot: -5 };
     case "drowsy":
@@ -1092,11 +1293,6 @@ export function springStep(x: number, v: number, target: number, dt: number, ome
   return { x: x + nv * dt, v: nv };
 }
 
-/** 眨眼闭合量 → 眼睛高度系数（0.06 = 一条缝）。 */
-export function blinkScale(blinking: boolean): number {
-  return blinking ? 0.06 : 1;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 球面眼（伪 3D）。眼睛不是贴在平面上的贴纸，而是**长在球面上**：按正交投影摆放，
 // 往侧看时近的一只变窄、远的一只几乎看不见 —— 这一条是"有体积"和"平面图案"的分界。
@@ -1141,6 +1337,10 @@ export function gazeAngles(o: { mood: TusMood; pointerX?: number; pointerY?: num
     case "scan": bx = Math.sin(el * 2.2) * 0.9; break;
     case "curious":
       bx = 0.35; by = -0.2; break;
+    case "calm":
+      bx = 0.08; by = 0.05; break;           // 平静地在场，不强求对视
+    case "confused":
+      bx = -0.4; by = -0.12; break;          // 视线偏到一边：在回忆你刚才那句
     default: break;
   }
   // 工具子状态把视线再分一层：读文件往左下扫、写文件往右下盯、完成往上、失败往下。
