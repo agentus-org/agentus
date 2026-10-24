@@ -91,7 +91,8 @@
     "tus-mood": "tsx scripts/qa/tus-mood.mts",
     "tus-mode-sweep": "node scripts/qa/tus-mode-sweep.mjs",
     "usage-row-sweep": "node scripts/qa/usage-row-sweep.mjs",
-    "call-brief-sweep": "node scripts/qa/call-brief-sweep.mjs"
+    "call-brief-sweep": "node scripts/qa/call-brief-sweep.mjs",
+    "reply-on-done": "node scripts/qa/reply-on-done.mjs"
   },
   "engines": {
     "node": ">=22.5"

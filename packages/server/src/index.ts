@@ -828,13 +828,39 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // cancel → wait-until-really-stopped → new-turn path. The抢话头 is therefore always explicit
         // and always visible in the command that did it; nothing on this channel interrupts silently.
         const wantInterrupt = body.interrupt === true;
+        // #59：`replyOnDone` = 「它跑完回我一声」。这是一条**异步派活**：调用方不该被目标回合绑架
+        // （普通 send 今天会一直等到回合结束才返回，几十秒到几十分钟），所以带这个标志时我们
+        // 只等「消息进了目标的回合队列」，然后把回合结束那一刻的通知登记下来，立即回执。
+        // 之后目标回合自然结束 → 服务端往调用方会话里投一条【完成回推】并把它唤醒（#39 的链子）。
+        const wantReply = body.replyOnDone === true;
+        if (wantReply && !caller) {
+          return send(res, 400, {
+            error: COCKPIT_ERRORS.badRequest,
+            message: "reply-on-done 只能由另一个会话发起（要有一个可以回推的 origin）；操作者模式下没人接这条通知",
+          });
+        }
+        // 忙的目标照旧拒收：带 --reply-on-done 不等于可以插队，抢话头仍然只有 --interrupt 一条路。
+        if (wantReply && mgr.isBusy(to) && !wantInterrupt) {
+          return send(res, 409, { error: COCKPIT_ERRORS.targetBusy });
+        }
+        const replyId = wantReply ? mgr.expectTurnReply(to, { origin: caller!, originTitle: rows.find((s) => s.id === caller)?.title ?? null }) : null;
         try {
           // `origin` is not decoration: without it the target's page shows this as a message the
           // OPERATOR typed. With it the bubble says which session it came from.
-          await mgr.prompt(to, message, [], {
+          const turn = mgr.prompt(to, message, [], {
             interrupt: wantInterrupt,
             origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
           });
+          if (replyId) {
+            // 不 await：等它跑完正是这个标志要消灭的那段等待。失败（比如抢话头没抢成）也要有回音，
+            // 否则调用方会以为消息在路上，其实根本没落地。
+            void turn.then(
+              () => { /* 回合结束会由 #settleTurnReplies 投递，这里不做第二次 */ },
+              (e) => mgr.failTurnReply(to, replyId, String((e as Error)?.message ?? e)),
+            );
+            return send(res, 200, { delivered: true, to, code: "delivered", reply_on_done: true });
+          }
+          await turn;
         } catch (e) {
           const why = String((e as Error)?.message ?? e);
           return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });

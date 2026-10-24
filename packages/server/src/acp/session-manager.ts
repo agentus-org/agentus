@@ -186,6 +186,13 @@ export class SessionUnavailable extends Error {
   }
 }
 
+/** 一条「目标回合结束后回我一声」的登记（#59）。origin 是 send 的发起方会话。 */
+export interface TurnReply {
+  origin: string;
+  originTitle: string | null;
+  at: number;
+}
+
 interface LiveSession {
   info: SessionInfo;
   child?: ReturnType<typeof spawn>;
@@ -289,6 +296,13 @@ export class SessionManager {
    *  to hibernate. Default ON — this is the CLI/gateway behaviour, and the whole point is that the
    *  agent takes its own result instead of the operator noticing a stale screen. */
   #completionWake: () => boolean = () => true;
+  /** 跨会话 send 的「它跑完回我一声」登记（#59）。
+   *
+   *  内存而已，刻意不落库：这是一次性通知，不是数据 —— 服务端重启后那条回合早就结束了，
+   *  回一条「几分钟前跑完了」既没用又会把调用方凭空叫起来。目标 id → 登记项。
+   *  `origin` 是发起方会话（send 的调用者），投递走的是 #39 那条「唤醒某会话」的链子。 */
+  #turnReplies = new Map<string, Map<string, TurnReply>>();
+  #replySeq = 0;
   /** The data directory this server owns, and the id of THIS run. Both come from the instance lock
    *  in index.ts; together they are the only evidence that a recorded pid is an agent OF THIS STORE
    *  from a PREVIOUS run — see `agent-owner.ts` and the 2026-10-22 incident. */
@@ -381,6 +395,36 @@ export class SessionManager {
 
   isBusy(id: string): boolean {
     return this.#sessions.get(id)?.busy ?? false;
+  }
+
+  /** 登记一条「目标回合自然结束后，通知这个发起方」（#59）。返回 id，用于事后撤销
+   *  （投递本身失败、或操作者把它打断成了另一件事）。
+   *
+   *  Returns the registration id; `dropTurnReply` cancels it. */
+  expectTurnReply(target: string, r: { origin: string; originTitle?: string | null }): string {
+    const id = `reply-${++this.#replySeq}`;
+    const rows = this.#turnReplies.get(target) ?? new Map<string, TurnReply>();
+    rows.set(id, { origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now() });
+    this.#turnReplies.set(target, rows);
+    return id;
+  }
+
+  dropTurnReply(target: string, id: string): void {
+    const rows = this.#turnReplies.get(target);
+    if (!rows) return;
+    rows.delete(id);
+    if (!rows.size) this.#turnReplies.delete(target);
+  }
+
+  /** send 本身送不进去（抢话头没抢到、目标进程死了…）：登记项不能就那么悬着，否则调用方
+   *  永远不知道消息根本没落地。把它当成一次「失败回推」投出去。 */
+  failTurnReply(target: string, id: string, why: string): void {
+    const rows = this.#turnReplies.get(target);
+    const entry = rows?.get(id);
+    if (!entry) return;
+    rows!.delete(id);
+    if (!rows!.size) this.#turnReplies.delete(target);
+    void this.#deliverTurnReplies(target, [entry], { failed: why });
   }
 
   /** Reclaim orphans from a previous server run (AC5): kill recorded pids — but only the ones that are
@@ -1398,10 +1442,13 @@ export class SessionManager {
       // #touch.
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
+      // #59: 谁在等这一轮结束（跨会话 send --reply-on-done）
+      this.#settleTurnReplies(sessionId, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
       this.#finalizePlan(sessionId, "failed");
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, { failed: errMessage(err), durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
       if (s.info.status === "running") {
@@ -1447,6 +1494,52 @@ export class SessionManager {
       s.pendingCompletions.unshift(text);
       console.log(`[agentus] completion held for ${s.info.id}: ${errMessage(err)}`);
     }
+  }
+
+  /** 把「目标跑完了」投给发起方（#59）。走的是 #39 同一条链：目标冷着就 resume，忙就挂到
+   *  它下一回合结束时再投 —— 回推是**一条新消息**，agent 因此被叫醒，而不是我们自己伪造一帧。
+   *
+   *  `failed` 存在时说明消息根本没送进目标（而不是目标跑完了）。 */
+  async #deliverTurnReplies(
+    target: string,
+    entries: (TurnReply & { id?: string })[],
+    outcome: { failed?: string; durationMs?: number; stopReason?: string | null } = {},
+  ): Promise<void> {
+    if (!entries.length) return;
+    const title = this.#store.getSession(target)?.title ?? target.slice(0, 8);
+    const secs = outcome.durationMs ? Math.round(outcome.durationMs / 1000) : null;
+    for (const e of entries) {
+      const text = outcome.failed
+        ? `【完成回推】给「${title}」的消息没送进去：${outcome.failed}。它这一轮不会跑，别等了。`
+        : outcome.stopReason === "cancelled"
+          ? `【完成回推】「${title}」这一轮被取消了（${secs ?? "?"} 秒）。结果以 session messages 为准。`
+          : `【完成回推】「${title}」这一轮跑完了${secs != null ? `（${secs} 秒）` : ""}。`
+            + `要看内容用 session messages ${target}；这条只是通知，正文不在这里。`;
+      // 自己发给自己的那种派活不回推：那就是一次普通发言，回一条「你跑完了」会变成乒乓。
+      if (e.origin === target) continue;
+      const live = this.#sessions.get(e.origin);
+      if (live) {
+        this.#queueOrWakeCompletion(live, text);
+        continue;
+      }
+      // 发起方已经冷了：和 `--wake` 同一个动作（起进程），起来以后再投。
+      try {
+        await this.resume(e.origin);
+        const back = this.#sessions.get(e.origin);
+        if (back) this.#queueOrWakeCompletion(back, text);
+      } catch (err) {
+        console.log(`[agentus] turn reply dropped for ${e.origin}: ${errMessage(err)}`);
+      }
+    }
+  }
+
+  /** 一个回合结束了 —— 有登记就投。只在这里汇总，散落在三处 `busy = false` 的写法会互相漏。 */
+  #settleTurnReplies(target: string, outcome: { failed?: string; durationMs?: number; stopReason?: string | null }): void {
+    const rows = this.#turnReplies.get(target);
+    if (!rows || !rows.size) return;
+    this.#turnReplies.delete(target);
+    const entries = [...rows.entries()].map(([id, r]) => ({ id, ...r }));
+    void this.#deliverTurnReplies(target, entries, outcome);
   }
 
   #drainHeldCompletion(s: LiveSession): void {
@@ -2512,6 +2605,8 @@ export class SessionManager {
       this.#emit({ t: "background", sessionId: live.info.id, tasks: [] });
     }
     live.pendingCompletions = [];
+    // #59：等这一轮的调用方不能永远等下去 —— agent 死了，那一轮不会有结尾
+    this.#settleTurnReplies(live.info.id, { failed: "agent 进程退出了" });
     live.info.status = "error";
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);
     const row = this.#store.getSession(live.info.id);

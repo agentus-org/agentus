@@ -54,7 +54,7 @@ another one
   agentus session messages <id> [--tail N]
                                       the last N messages, each cut to the documented size
   agentus session plan <id>           the plan object the operator's card renders
-  agentus session send <id> <text…> [--wake] [--interrupt]
+  agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done]
                                        deliver a message into another session (stdin if no text);
                                        --wake also starts the target when it is cold;
                                        --interrupt cancels the turn it is running first (explicit)
@@ -303,9 +303,12 @@ if (cmd === "capabilities") {
     // older callers sent) or the raw text.
     const wantWake = args.includes("--wake");
     const wantInterrupt = args.includes("--interrupt");
-    const FLAGS = new Set(["--wake", "--interrupt"]);
+    // #59：`--reply-on-done` 不是"抢话头"，是"别让我在这儿等它跑完" —— 调用立即返回，目标回合
+    // 自然结束时服务端往本会话投一条【完成回推】。派活给一个要跑十分钟的会话时才用得上。
+    const wantReply = args.includes("--reply-on-done");
+    const FLAGS = new Set(["--wake", "--interrupt", "--reply-on-done"]);
     const straySend = args.slice(1).filter((a) => a.startsWith("--") && !FLAGS.has(a));
-    if (straySend.length) fail("bad_request", `unknown flag ${straySend[0]} (usage: agentus session send <id> <text…> [--wake] [--interrupt])`);
+    if (straySend.length) fail("bad_request", `unknown flag ${straySend[0]} (usage: agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done])`);
     let message = args.slice(1).filter((a) => !FLAGS.has(a)).join(" ").trim();
     if (!message) {
       const raw = await readStdin();
@@ -324,7 +327,7 @@ if (cmd === "capabilities") {
       res = await fetch(`${EP}/api/cockpit/send`, {
         method: "POST",
         headers: headers(true),
-        body: JSON.stringify({ to: id, message, ...(wantWake ? { wake: true } : {}), ...(wantInterrupt ? { interrupt: true } : {}) }),
+        body: JSON.stringify({ to: id, message, ...(wantWake ? { wake: true } : {}), ...(wantInterrupt ? { interrupt: true } : {}), ...(wantReply ? { replyOnDone: true } : {}) }),
       });
     } catch (e) {
       fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
