@@ -537,7 +537,19 @@ try {
     const row = rows.find((r) => r.dataset.session === ${JSON.stringify(slow2.id)}) ?? rows[0];
     row?.click(); return true; })()`);
   await sleep(500);
-  await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click()`);
+  // The rail can still be fetching when the row is clicked, in which case nothing opens and the call
+  // button is simply not on the page — that used to surface as `Cannot read properties of null
+  // (reading 'click')` and killed the whole sweep at check 34. Re-select the row and retry instead.
+  let callBtn = false;
+  for (let i = 0; i < 20; i++) {
+    callBtn = await ev2(`(() => { const b = document.querySelector('button[aria-label="开始语音通话"]'); if (!b) return false; b.click(); return true; })()`);
+    if (callBtn) break;
+    await ev2(`(() => { const rows = [...document.querySelectorAll('.session-item')];
+      const row = rows.find((r) => r.dataset.session === ${JSON.stringify(slow2.id)}) ?? rows[0];
+      row?.click(); return rows.length; })()`);
+    await sleep(400);
+  }
+  check("…and the call button is reachable on that session", callBtn === true, `clicked=${callBtn}`);
   // the call JOINS a running turn (that is the path under test): wait for it to get there instead
   // of sampling once and hoping — a 1.5 s sample measured `listening` and the tap then did nothing.
   for (let i = 0; i < 80; i++) {
