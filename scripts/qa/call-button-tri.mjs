@@ -280,5 +280,8 @@ try {
   console.log(`\n${pass} passed, ${fail} failed`);
   try { killGroup(proc); } catch { /* gone */ }
   try { stub.close(); } catch { /* gone */ }
-  if (fail) process.exitCode = 1;
+  // `process.exit`, not exitCode: the CDP websocket stays open after the last assertion, and node
+  // will happily sit on it forever (three zombie node processes were left behind by this in one
+  // afternoon) — a finished sweep has to actually go away.
+  process.exit(fail ? 1 : 0);
 }
