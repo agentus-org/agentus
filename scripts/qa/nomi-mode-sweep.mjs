@@ -165,6 +165,45 @@ const SIG = `(sel) => { const cv = document.querySelector(sel); if (!cv) return 
   }
   return { sig: s, lit: Math.round((lit / Math.max(1, n)) * 1000) / 10, w, h }; }`;
 
+/** 两只眼之间是否真有一条暗缝：按列统计**不透明**眼白像素，数出两条亮带和它们的间距。
+ *  只数 alpha>250 是刻意的 —— 光晕是 16–50% 的 shadow，阈值一松就会把两只眼“连”起来。
+ *  `widths` 让判据可以相对眼宽（gap/眼宽），而不是一个和分辨率无关的绝对 8px。 */
+const EYES = `(sel) => { const cv = document.querySelector(sel); if (!cv) return null;
+  const c = cv.getContext('2d'); const { width: w, height: h } = cv; if (!w || !h) return null;
+  const d = c.getImageData(0, 0, w, h).data;
+  const top = Math.floor(h * 0.22), bot = Math.ceil(h * 0.78);
+  const cols = new Array(w).fill(0);
+  for (let y = top; y < bot; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4;
+    if (d[i + 3] > 250 && d[i] > 180 && d[i + 1] > 180 && d[i + 2] > 180) cols[x]++;
+  }
+  const need = Math.max(3, Math.round((bot - top) * 0.03));
+  const runs = []; let s = -1;
+  for (let x = 0; x <= w; x++) { const on = x < w && cols[x] >= need;
+    if (on && s < 0) s = x; else if (!on && s >= 0) { if (x - s >= Math.max(2, w * 0.015)) runs.push({ start: s, end: x - 1, width: x - s }); s = -1; } }
+  return { w, h, runs: runs.length, widths: runs.map((r) => r.width),
+    gap: runs.length >= 2 ? runs[1].start - runs[0].end - 1 : null }; }`;
+
+/** 采样多帧、只收“稳定的 curious 帧”：眨眼（BLINK_BLOCKED 不含 curious）与 2.4–4.6 s 一次的
+ *  走神会把单次采样变成假红/假绿。要求 ≥5 个好样本且 0 个坏样本，坏样本才算数（跳过的帧不计）。 */
+const sampleEyes = async (n = 8) => {
+  const good = [], bad = [];
+  for (let i = 0; i < n * 3 && good.length + bad.length < n; i++) {
+    const s = await ev(`(() => {
+      const face = document.querySelector('.call-mode')?.dataset.face;
+      const cv = document.querySelector('.nomi-face-canvas');
+      if (!cv || face !== 'curious' || cv.dataset.clip) return null;
+      return (${EYES})('.nomi-face-canvas');
+    })()`);
+    if (s) {
+      const ok = s.runs === 2 && s.gap !== null && s.gap >= 0.6 * Math.min(...s.widths);
+      (ok ? good : bad).push(s);
+    }
+    await sleep(180);
+  }
+  return { good, bad };
+};
+
 const settingsCall = async () => {
   const token = fs.readFileSync(path.join(dataDir, "auth.token"), "utf8").trim();
   const res = await fetch(`${BASE}/api/settings`, { headers: { authorization: `Bearer ${token}` } });
@@ -304,15 +343,51 @@ try {
   // ---- 4.5 「听」和「想」不是同一张脸；听话时脸上有节奏 --------------------------------
   // 操作者 2026-10-23:「怎么还是呆呆的」—— 当时 listening 与 thinking 都落到同一张眯眼的脸，
   // 而这两种状态占了通话的绝大部分时间。下面两条就是那次修的可观测判据。
-  const faceNow = await ev(`document.querySelector('.call-mode')?.dataset.face ?? null`);
-  check("听话时是「看着你」的那张脸（curious），不是思考的眯眼脸", faceNow === "curious", String(faceNow));
   const seen = new Set();
   for (let i = 0; i < 40; i++) {
     seen.add(await ev(`document.querySelector('.call-mode')?.dataset.face ?? ''`));
     await sleep(200);
   }
   seen.delete("");
+  // 瞬时判据会撞进 2.4–4.6 s 一次的走神动作（lookLeft/lookRight/wink），所以看 8 秒窗口里
+  // 「不在走神时」的那张脸：它必须只有 curious。
+  const SACCADE = ["lookLeft", "lookRight", "wink", "scan"];
+  const steady = [...seen].filter((f) => !SACCADE.includes(f));
+  check("听话时是「看着你」的那张脸（curious），不是思考的眯眼脸",
+    steady.length > 0 && steady.every((f) => f === "curious"), [...seen].join(","));
   check("8 秒内脸上还换过别的表情（眨眼/扫一眼的节奏在走）", seen.size >= 2, [...seen].join(","));
+
+  // ---- 4.6 两只眼不是叠成一个“暂停”符号 ------------------------------------------------
+  // 多帧采样：单次会撞上眨眼（BLINK_BLOCKED 不含 curious）或走神，一次红/绿都不作数。
+  const eyeP = await sampleEyes();
+  const eyeWorst = eyeP.bad[0] ?? eyeP.good[0] ?? null;
+  check("两只眼是两条亮带、中间有真实暗缝（不是叠成一个“暂停”符号）",
+    eyeP.good.length >= 5 && eyeP.bad.length === 0,
+    JSON.stringify({ good: eyeP.good.length, bad: eyeP.bad.length,
+      worst: eyeWorst && { runs: eyeWorst.runs, gap: eyeWorst.gap, widths: eyeWorst.widths } }));
+  // 负例：按旧固定 21°（中心距 50.7 device px、眼宽 48.3）画一对“暂停”眼。
+  // 同一个采样器必须判它不合格 —— 否则“永远返回 runs=2”的坏探针也能装成绿。
+  const eyeNeg = await ev(`(() => {
+    const cv = document.createElement('canvas');
+    cv.width = 536; cv.height = 517; cv.id = 'nomi-eye-neg';
+    cv.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(cv);
+    const g = cv.getContext('2d');
+    const k = 1.42, w = 34 * k, h = 70 * k, cy = 258;
+    const c = 2 * 98 * Math.sin((21 * Math.PI) / 360) * k;   // 旧实现的中心距
+    g.fillStyle = 'rgba(255,255,255,1)';
+    for (const s of [-1, 1]) {
+      g.beginPath();
+      g.roundRect(268 + s * c / 2 - w / 2, cy - h / 2, w, h, Math.min(w, h) / 2);
+      g.fill();
+    }
+    const r = (${EYES})('#nomi-eye-neg');
+    cv.remove();
+    return r;
+  })()`);
+  check("眼睛判据能认出旧的 21° 叠眼（负例必须不合格）",
+    !!eyeNeg && (eyeNeg.runs !== 2 || eyeNeg.gap === null || eyeNeg.gap < 0.6 * Math.min(...eyeNeg.widths)),
+    JSON.stringify(eyeNeg && { runs: eyeNeg.runs, gap: eyeNeg.gap, widths: eyeNeg.widths }));
 
   // ---- 5. 记录是「原件缩小」，不是另写一份 -----------------------------------------------
   check("记录里是会话页自己的行（.msg/.bubble 存在）", nomi.bubbleH !== null, String(nomi.bubbleH));
@@ -334,6 +409,13 @@ try {
   const b1 = await ev(`(${SIG})('.nomi-face-canvas')`);
   check("横屏下脸仍然在画", b1 && b1.lit > 0.5, JSON.stringify(b1 && { lit: b1.lit }));
   fs.writeFileSync(`${SHOTS}/nomi-landscape.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  // 横屏是另一条比例尺路径（k 由高度决定），眼睛的判据要单独量一次。
+  const eyeL = await sampleEyes();
+  const eyeLWorst = eyeL.bad[0] ?? eyeL.good[0] ?? null;
+  check("横屏同一判据：两只眼仍然分开（不是叠成一个“暂停”符号）",
+    eyeL.good.length >= 5 && eyeL.bad.length === 0,
+    JSON.stringify({ good: eyeL.good.length, bad: eyeL.bad.length,
+      worst: eyeLWorst && { runs: eyeLWorst.runs, gap: eyeLWorst.gap, widths: eyeLWorst.widths } }));
 
   // ---- 6.5 表情通道端到端：提示词 → agent 写标签 → 页面剥掉 → 脸变 happy ------------------
   // mock 只在这一句真的到达时才吐标签（MOCK_EMO=1），所以这一段同时证明了三件事：

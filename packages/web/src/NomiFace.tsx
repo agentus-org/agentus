@@ -15,8 +15,8 @@ import type { CallPhase } from "./CallMode";
 import {
   BLINK_BLOCKED, CLIP_PRIORITY, CLIPS, LIFE_BEAT_MS, NO_OUTPUT_LOOK_MS, SLEEP_TRANSITION_MS, WARMTH_MS, WORK_FLICK_MS,
   WORK_STRETCH_MS, applyClip, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt, exprFor, eyeFrame,
-  eyeSpacing, lifeBeat, moodFor, nextBlinkMs, nextSaccadeMs, saccadeFor, smoothLevel, thinkingStage,
-  voiceCue, ballFrame, springStep, gazeAngles, projectEye,
+  lifeBeat, moodFor, nextBlinkMs, nextSaccadeMs, saccadeFor, smoothLevel, thinkingStage,
+  voiceCue, ballFrame, springStep, gazeAngles, projectEyes,
   type AgentActivity, type ClipName, type MicroAction, type NomiMood, type ToolSubstate,
 } from "./nomiMood";
 
@@ -327,8 +327,6 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
       const R = st.ball.r * k;
       const cx = w / 2 + pointer.x * 9 * k;
       const cy = h / 2 + pointer.y * 7 * k + st.ball.dy * k;
-      /** 中心距 = 空隙 + 眼宽（`eyeSpacing` 是 edge-to-edge 的间隙，见 nomiMood）。 */
-      const gap = eyeSpacing(mood) * k;
 
       // 呼吸：只在「不紧绷」的脸上升降（2 s 一个来回，±6）。
       const breathe = ["idle", "drowsy", "sleep", "curious", "asking", "working"].includes(mood)
@@ -379,15 +377,15 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
       g.translate(-cx, -cy);
 
       // 视点：指针 + 情绪决定眼睛往哪看；投影到球面上（正交），越往侧越窄。
+      // 两眼的位置/宽度统一由 `projectEyes` 给出（和单测同一套算式），这里只负责画。
       const gaze = gazeAngles({ mood, pointerX: pointer.x, pointerY: pointer.y, elapsed, level: st.level, substate: p.substate });
+      const pe = projectEyes({ mood, left, right, gaze, ballR: st.ball.r, k });
       for (const eye of [left, right]) {
         const side: -1 | 1 = eye === right ? 1 : -1;
-        const pj = projectEye({ ax: gaze.ax, ay: gaze.ay, side, R });
-        // 投影出的眼心 + 情绪自己那点水平偏移（`eye.x` 仍在用，量级很小）
-        const ex = cx + pj.x + eye.x * k * 0.5 + mx;
-        const ey = cy + pj.y + eye.y * k + breathe * 0.4 + my;
-        // 正对镜头 = 1；转到 60° 只剩一半宽，再往后就几乎看不见（真实球面就是这样）
-        const foreshorten = 0.55 + 0.45 * pj.cos;   // 收敛到 0.55–1：差 45% 是"透视"，差 75% 是"畸形"
+        const se = side === 1 ? pe.right : pe.left;
+        // 投影出的眼心 + 情绪自己那点水平偏移已经在 `projectEyes` 里算过
+        const ex = cx + se.x + mx;
+        const ey = cy + se.y + breathe * 0.4 + my;
         g.save();
         g.translate(ex, ey);
         g.rotate((eye.rot * Math.PI) / 180);
@@ -395,13 +393,13 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
         const tone = mood === "error" ? "248,113,113" : mood === "sad" ? "190,190,200" : "255,255,255";
         g.shadowColor = `rgba(${tone},${Math.min(0.5, 0.16 + st.level * 0.2 + warmth * 0.14)})`;
         // 光晕不能盖过形状：模糊半径收到眼睛短边的 45% 以内，否则放大之后只剩两团发白的光
-        // （实测：70px 的眼睛配 34px 模糊，读起来是两颗蛋，不是一双眼睛）。
+        // （实测：77px 的眼睛配 34px 模糊，读起来是两颗蛋，不是一双眼睛）。
         g.shadowBlur = Math.min(eye.w * k * 0.45, eye.glow * k);
         g.fillStyle = `rgba(${tone},1)`;
         g.strokeStyle = `rgba(${tone},1)`;
 
         if (eye.shape === "x") {
-          const s = (eye.w / 2) * k * foreshorten;
+          const s = se.w / 2;
           const j = Math.sin(t * 24) * eye.jitter * k;
           g.lineWidth = 6 * k;
           g.beginPath();
@@ -410,14 +408,14 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
           g.stroke();
         } else if (eye.shape === "arc") {
           // 开心朝上、难过朝下：一条半圆，线宽 6。
-          const r = (eye.w / 2) * k * foreshorten;
+          const r = se.w / 2;
           g.lineWidth = 6 * k;
           g.beginPath();
           if (eye.arc === "happy") g.arc(0, r, r, Math.PI, Math.PI * 2);
           else g.arc(0, -r, r, 0, Math.PI);
           g.stroke();
         } else {
-          const ew = Math.max(2, eye.w * k * eye.xScale * foreshorten);
+          const ew = se.w;
           const eh = Math.max(1, eye.h * k * eye.yScale);
           const rad = Math.min(ew, eh) / 2;
           const jx = eye.jitter ? Math.sin(t * 24) * eye.jitter * k : 0;
@@ -463,13 +461,4 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
   }
 
   return <canvas ref={ref} className="nomi-face-canvas" aria-hidden="true" />;
-}
-
-/** 给 QA 用：把某一帧的几何直接算出来（不画），让 sweep 能断言"这张脸长什么样"。 */
-export function nomiFaceProbe(mood: NomiMood, o: { level?: number; elapsed?: number; blink?: boolean } = {}): {
-  w: number; h: number; yScale: number; spacing: number; alpha: number;
-} {
-  const expr = exprFor("idle", o.level ?? 0, o.elapsed ?? 0, {});
-  const e = eyeFrame({ mood, right: false, blinking: o.blink ?? false, t: 0, level: o.level ?? 0, expr });
-  return { w: e.w, h: e.h, yScale: e.yScale, spacing: eyeSpacing(mood), alpha: e.alpha };
 }

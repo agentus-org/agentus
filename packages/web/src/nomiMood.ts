@@ -112,6 +112,26 @@ export function eyeSpacing(mood: NomiMood): number {
   }
 }
 
+/**
+ * 球面投影下两眼的角距（度）。
+ *
+ * WHY: 球面版的横向位置由 `projectEye` 的 ±sep/2 决定，而设计上两眼的**边到边**空隙是
+ * `eyeSpacing(mood)`（46–60 逻辑 px）。固定一个角度（旧实现 21°）时中心距只有
+ * 2·98·sin(10.5°) ≈ 35.7，比眼宽（focus 40–48）还小 —— 两只眼会叠成一个“暂停”符号。
+ * 这里从「空隙 + 两眼半宽」反推中心距，再换算成角度：**未投影的球面空间**里空隙等于
+ * `eyeSpacing`；投影后两眼各自按 foreshorten 收窄，屏幕上会等比再小一点。
+ *
+ * 非有限输入（未来某行 mood 写错 width）不能让整双眼睛消失：宽当 0、半径退回 98。
+ */
+export function eyeSepAngle(o: { mood: NomiMood; leftW: number; rightW: number; ballR?: number }): number {
+  const bw = (v: number) => (Number.isFinite(v) ? Math.max(0, v) : 0);
+  const br = o.ballR;
+  const R = br !== undefined && Number.isFinite(br) && br > 0 ? br : 98;
+  const want = eyeSpacing(o.mood) + (bw(o.leftW) + bw(o.rightW)) / 2;
+  const half = Math.min(1, Math.max(0, want / (2 * R)));
+  return (Math.asin(half) * 180 / Math.PI) * 2;
+}
+
 /** Blinking is OFF in these six faces — a closed eye would read as a different expression. */
 export const BLINK_BLOCKED: NomiMood[] = ["error", "scan", "drowsy", "sleep", "loading", "strive"];
 
@@ -1083,11 +1103,13 @@ export function blinkScale(blinking: boolean): number {
 //
 // 参数取自 Grok Bot 解剖里的实测值：眼睛活动范围 水平 14° / 垂直 18°（形状类眼睛 19°/26°）。
 // 14° 听着小，但把它乘到半径上就是 ±0.24R 的位移，肉眼足够读出"它在看哪"。
+// 注意它只是**视线**的范围：加上两眼自己的 ±sep/2（宽眼可到 45°），外眼可以到 ~60°，
+// 这就是 `projectEyes` 需要球缘收口的原因。
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-// sep 是**两只眼睛在球面上的夹角**。取 17° 而不是 26°：26° 时靠边的那只眼比另一只窄 8%，
-// 静止画面读起来是"歪掉的半边脸"；17° 的差只有 3%，体积感靠转头时的变化给出，静态仍然对称。
-export const SPHERE = { maxX: 14, maxY: 18, sep: 21 } as const;
+// 两眼在球面上的夹角不写死：它由当前表情的**边到边空隙**反推（见 `eyeSepAngle`）。
+// 固定角度在宽眼上会让两只眼叠成一个"暂停"符号。
+export const SPHERE = { maxX: 14, maxY: 18 } as const;
 
 /** 视点角度（度）。指针、情绪、思考都会把眼睛往某个方向拽。 */
 export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
@@ -1138,10 +1160,10 @@ export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: nu
   return { ax: ax * SPHERE.maxX, ay: ay * SPHERE.maxY };
 }
 
-/** 正交投影：把球面上某个角度的一个点投到屏幕坐标，并给出它的缩小系数（cos）。 */
-export function projectEye(o: { ax: number; ay: number; side: -1 | 1; R: number; sep?: number }): { x: number; y: number; cos: number } {
-  const sep = o.sep ?? SPHERE.sep;
-  const th = ((o.ax + o.side * sep / 2) * Math.PI) / 180;
+/** 正交投影：把球面上某个角度的一个点投到屏幕坐标，并给出它的缩小系数（cos）。
+ *  `sep` 必须由 `eyeSepAngle` 按当前表情的眼宽算出来 —— 固定角距会让宽眼重叠。 */
+export function projectEye(o: { ax: number; ay: number; side: -1 | 1; R: number; sep: number }): { x: number; y: number; cos: number } {
+  const th = ((o.ax + o.side * o.sep / 2) * Math.PI) / 180;
   const tv = (o.ay * Math.PI) / 180;
   // 球面上的点 (sinθ, sinφ, cosθ·cosφ)，正交投影只取前两维；cosθ·cosφ 就是"正对镜头的比例"。
   return {
@@ -1149,4 +1171,69 @@ export function projectEye(o: { ax: number; ay: number; side: -1 | 1; R: number;
     y: o.R * Math.sin(tv),
     cos: Math.max(0, Math.cos(th) * Math.cos(tv)),
   };
+}
+
+/** 一只眼在屏幕上的可见几何（x/y 是相对球心，w 是透视收窄后的可见宽）。 */
+export interface ScreenEye { x: number; y: number; w: number; cos: number }
+
+/**
+ * 渲染器真正使用的那条几何链：`eyeFrame` → `eyeSepAngle` → `projectEye` → 透视收窄。
+ *
+ * WHY 单独抽出来：单测如果只验 `eyeSepAngle` 的逆运算，渲染器哪怕退回固定 sep 也照样全绿
+ * —— 这正是 2026-10-24 live 上“两只眼叠成暂停符号”漏过去的原因。渲染器与 QA 必须吃同一份数字。
+ *
+ * 球缘保护：宽眼/横扫时外缘会越过球的轮廓，被 `g.clip` 切平。**先收横向滑移**（`eye.x` 是风格
+ * 位移，不该把眼带出球），只有宽眼本身越界时才反解一个更小的有效角距 —— 反过来的顺序会让
+ * 角距被压到接近 0、两只眼重新叠成“暂停”符号。1.05R 是允许的轻微擦边（旧实现最坏也是 1.05R）。
+ */
+export function projectEyes(o: {
+  mood: NomiMood;
+  left: EyeFrame;
+  right: EyeFrame;
+  gaze: { ax: number; ay: number };
+  ballR?: number;
+  k?: number;
+}): { left: ScreenEye; right: ScreenEye; gap: number; sep: number } {
+  const kk = o.k ?? 1;
+  const k = Number.isFinite(kk) && kk > 0 ? kk : 1;
+  const br = o.ballR;
+  const R = (br !== undefined && Number.isFinite(br) && br > 0 ? br : 98) * k;
+  const design = eyeSepAngle({ mood: o.mood, leftW: o.left.w, rightW: o.right.w, ballR: o.ballR });
+  const one = (e: EyeFrame, side: -1 | 1, sep: number, panScale: number): ScreenEye => {
+    const pj = projectEye({ ax: o.gaze.ax, ay: o.gaze.ay, side, R, sep });
+    const foreshorten = 0.55 + 0.45 * pj.cos;
+    return {
+      x: pj.x + e.x * k * 0.5 * panScale,
+      y: pj.y + e.y * k,
+      w: Math.max(2, e.w * k * e.xScale * foreshorten),
+      cos: pj.cos,
+    };
+  };
+  const cap = 1.05 * R;
+  const build = (sep: number, panScale: number) => {
+    const l = one(o.left, -1, sep, panScale), r = one(o.right, 1, sep, panScale);
+    return { l, r, out: Math.max(Math.abs(l.x) + l.w / 2, Math.abs(r.x) + r.w / 2) };
+  };
+  let sep = design;
+  let b = build(sep, 1);
+  if (b.out > cap) {
+    if (build(sep, 0).out <= cap) {
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        if (build(sep, mid).out > cap) hi = mid; else lo = mid;
+      }
+      b = build(sep, lo);
+    } else {
+      // 眼宽本身在视点边缘放不下：二分找“刚好放得下”的最大角距（pan 已收到 0）。
+      let lo = 0, hi = design;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        if (build(mid, 0).out > cap) hi = mid; else lo = mid;
+      }
+      sep = lo;
+      b = build(sep, 0);
+    }
+  }
+  return { left: b.l, right: b.r, gap: b.r.x - b.r.w / 2 - (b.l.x + b.l.w / 2), sep };
 }
