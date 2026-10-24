@@ -52,8 +52,8 @@ const ANON_SCAN_ROWS = 80;
  * a row are still two messages, because a tool call or the operator's turn sits between them — and
  * this is only ever used to decide whether to glue a row onto the row directly above it.
  */
-/** Print the fold state once per process, not once per store instance. */
-let foldStateLogged = false;
+/** Print the fold state once per store FILE per process (tests open several). */
+const foldStateLogged = new Set<string>();
 
 function isFragmentText(text: string): boolean {
   return text.length > 0 && text.length <= 24 && !text.includes("\n");
@@ -86,8 +86,11 @@ const PUNCT_ONLY = /^[\s\p{P}\p{S}]+$/u;
  * So a pair needs a second witness — the turn both rows belong to, or, for rows written before the
  * turn id existed, a tight time window plus the fact that no chunk boundary lands after a full stop.
  */
-function sameStream(prev: RawMessageRow, cur: RawMessageRow, prevFrame: string, text: string): boolean {
-  const gap = Math.abs(cur.created_at - prev.created_at);
+function sameStream(prev: RawMessageRow, prevAt: number, cur: RawMessageRow, prevFrame: string, text: string): boolean {
+  // The clock is measured from the LAST FRAME, not from the row's first one: `prev` is the surviving
+  // row and its `created_at` never moves, so using it means "how long has this message been growing"
+  // — which cuts a long stream at its first full stop after 750 ms and unconditionally after 2 s.
+  const gap = Math.abs(cur.created_at - prevAt);
   // The clock is the one witness that cannot lie. Frames of one reply are milliseconds apart; two
   // messages a minute apart are two messages — whatever their turn ids say, because a turn holds
   // MANY messages and the rows between them are exactly what the replay cleanup deletes.
@@ -577,6 +580,12 @@ export class Store {
     const row = this.#db.prepare("select version from repairs where name = ?").get(name) as
       | { version?: number } | undefined;
     if (row && typeof row.version === "number") return row.version;
+    // `pragma user_version` was the shared counter of the pre-`repairs` era, and one pass's number
+    // could satisfy another's: a store with a fold row and NO dedupe row read the fold's number from
+    // user_version and concluded the cleanup had run. Once a store carries any `repairs` row, a
+    // missing row means "this pass never ran here" — full stop.
+    const any = this.#db.prepare("select count(*) as c from repairs").get() as { c?: number } | undefined;
+    if (Number(any?.c ?? 0) > 0) return 0;
     const uv = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
     return Math.min(Number(uv?.user_version ?? 0), legacy);
   }
@@ -607,7 +616,11 @@ export class Store {
     // v2: the anonymous-re-emission rule got sharper (a short block is no longer a fold candidate,
     // but a ≥24-char one that covers most of a block is) — an already-folded DB is worth re-walking.
     // v3: id-less FRAGMENTS are glued onto the row directly above (the qoder word-per-line era).
-    const FOLD_VERSION = 3;
+    // v4: that rule was too eager (it merged messages that only LOOKED adjacent, once the replay
+    // cleanup had removed the rows between them) and too timid (it stopped folding after 24
+    // accumulated characters). A re-walk cannot un-merge what v3 glued — that is
+    // `scripts/repair-glued-rows.py`'s job — but it does re-join rows v3 split and stops new damage.
+    const FOLD_VERSION = 4;
     // A store that predates the repairs table recorded its fold in user_version (2 = the rules
     // shipped with it). Anything at 0/1 never folded at all.
     const seenFold = this.#repairVersion("fold", 2) >= 2;
@@ -617,8 +630,8 @@ export class Store {
       // (the second half's row is gone). Say the version once per process so "clean" and "folded
       // before the fix" are not indistinguishable in the log; the split lives in
       // tasks/20261001-agentus/scripts/repair-glued-rows.py.
-      if (!foldStateLogged) {
-        foldStateLogged = true;
+      if (!foldStateLogged.has(this.#path)) {
+        foldStateLogged.add(this.#path);
         console.log(`[store] 分片折叠：v${FOLD_VERSION}（已是当前版本，本次不改动历史行）`);
       }
       return;
@@ -638,11 +651,11 @@ export class Store {
         .prepare("select * from messages where session_id = ? order by seq asc")
         .all(id) as unknown as RawMessageRow[];
       before += rows.length;
-      const kept: { row: RawMessageRow; text: string | null; frame: string }[] = [];
+      const kept: { row: RawMessageRow; text: string | null; frame: string; frameAt: number }[] = [];
       const doomed: number[] = [];
       for (const r of rows) {
         if (r.kind !== "agent" && r.kind !== "thought") {
-          kept.push({ row: r, text: null, frame: "" });
+          kept.push({ row: r, text: null, frame: "", frameAt: r.created_at });
           continue;
         }
         const payload = parseJson(r.payload);
@@ -660,9 +673,10 @@ export class Store {
         if (!key && prev && prev.row.kind === r.kind && prev.text !== null
             && isFragmentText(prev.frame) && isFragmentText(text)
             && blockKeyOf(prev.row.kind, parseJson(prev.row.payload)) === null
-            && sameStream(prev.row, r, prev.frame, text)) {
+            && sameStream(prev.row, prev.frameAt, r, prev.frame, text)) {
           prev.text += text;
           prev.frame = text;
+          prev.frameAt = r.created_at;
           doomed.push(r.seq);
           continue;
         }
@@ -687,14 +701,14 @@ export class Store {
           // (it has the time window and the evidence). Deleting here would also eat a genuine short
           // repeat — "好的" sent twice is a conversation.
           if (key && !delta) {
-            kept.push({ row: r, text, frame: text });
+            kept.push({ row: r, text, frame: text, frameAt: r.created_at });
             continue;
           }
           if (delta) target.text = (target.text ?? "") + delta;
           doomed.push(r.seq);
           continue;
         }
-        kept.push({ row: r, text, frame: text });
+        kept.push({ row: r, text, frame: text, frameAt: r.created_at });
       }
       for (const seq of doomed) del.run(id, seq);
       for (const k of kept) {
@@ -733,7 +747,9 @@ export class Store {
         const base = path.basename(this.#path);
         const mine = fs
           .readdirSync(dir)
-          .filter((f) => f.startsWith(`${base}.pre-${tag}-v`))
+          // per tag AND per pass version: bumping the version must not evict the backup of the run
+          // that came before it (the one that may hold the rows the newer rule no longer produces)
+          .filter((f) => f.startsWith(`${base}.pre-${tag}-v${version}-`))
           .map((f) => ({ f, at: fs.statSync(path.join(dir, f)).mtimeMs }))
           .sort((a, b) => b.at - a.at);
         for (const old of mine.slice(3)) fs.unlinkSync(path.join(dir, old.f));

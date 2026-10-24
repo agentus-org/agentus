@@ -427,7 +427,8 @@ export class SessionManager {
       // That turn is already over (a prompt that threw after it started, a settle that ran before
       // this bookkeeping landed). Storing it would deliver it one turn late, describing the wrong
       // turn — so answer now, honestly.
-      void this.#deliverTurnReplies(target, [entry], { failed: "这一轮在你登记之前就已经结束了", failureKind: "turn" });
+      // NOT a failure: the turn may have succeeded. It simply cannot be reported by this receipt.
+      void this.#deliverTurnReplies(target, [entry], { note: "这一轮在你登记之前就结束了" });
       return id;
     }
     const rows = this.#turnReplies.get(target) ?? new Map<string, TurnReply>();
@@ -869,6 +870,10 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
       approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
       background: [], pendingCompletions: [],
+      // A rebuilt LiveSession restarts its turn counter at 0, so the "which turn has this session
+      // already finished" watermark no longer describes the same numbering — keeping it would make
+      // every registration of the new run look older than the last settled turn and be answered with
+      // a false 「已经结束了」.
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
@@ -883,6 +888,7 @@ export class SessionManager {
       replaying: true,
     };
     this.#sessions.set(id, live);
+    this.#lastSettledTurn.delete(id);   // the counter just went back to 0 — see the comment above
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
     // the home is recorded with the row: it is the thing a later resume has to be checked against
     this.#store.upsertSession(sessionRow(live.info, plan.home));
@@ -1069,6 +1075,10 @@ export class SessionManager {
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
       approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
       background: [], pendingCompletions: [],
+      // A rebuilt LiveSession restarts its turn counter at 0, so the "which turn has this session
+      // already finished" watermark no longer describes the same numbering — keeping it would make
+      // every registration of the new run look older than the last settled turn and be answered with
+      // a false 「已经结束了」.
       caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
@@ -1083,6 +1093,7 @@ export class SessionManager {
       replaying: true,
     };
     this.#sessions.set(id, live);
+    this.#lastSettledTurn.delete(id);
     live.info.lastAt = this.#store.lastActivityAt().get(id) ?? live.info.createdAt;
     this.#store.upsertSession(sessionRow(live.info));
 
@@ -1454,7 +1465,11 @@ export class SessionManager {
     const settleVoice = this.#applyVoiceMode(s, blocks, { operator: voiceAppliesToPrompt(opts) });
     s.turnSeq += 1;
     s.busy = true;
-    try { opts.onTurnStarted?.(s.turnSeq); } catch { /* a bookkeeping callback must never break a turn */ }
+    // Read ONCE, here. A `--interrupt` prompt leaves `busy` before this turn ends, so `s.turnSeq` at
+    // settle time can already be the NEXT turn's number — settling "up to" that number would mark a
+    // turn that has only just started as finished (and reject its own registration).
+    const mine = s.turnSeq;
+    try { opts.onTurnStarted?.(mine); } catch { /* a bookkeeping callback must never break a turn */ }
     // The operator has spoken: from here anything the agent says is an ANSWER, not its own history
     // being replayed (see the replay window in #onSessionUpdate).
     s.replaying = false;
@@ -1499,12 +1514,12 @@ export class SessionManager {
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
       // #59: 谁在等这一轮结束（跨会话 send --reply-on-done）
-      this.#settleTurnReplies(sessionId, s.turnSeq, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, mine, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
     } catch (err) {
       this.#finalizePlan(sessionId, "failed");
       this.#touch(s);
       this.#emit({ t: "turn-end", sessionId, error: errMessage(err), durationMs: Date.now() - turnStartedAt });
-      this.#settleTurnReplies(sessionId, s.turnSeq, { failed: errMessage(err), failureKind: "turn", durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, mine, { failed: errMessage(err), failureKind: "turn", durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
       if (s.info.status === "running") {
@@ -1565,13 +1580,15 @@ export class SessionManager {
   async #deliverTurnReplies(
     target: string,
     entries: (TurnReply & { id?: string })[],
-    outcome: { failed?: string; failureKind?: "send" | "turn"; durationMs?: number; stopReason?: string | null } = {},
+    outcome: { failed?: string; failureKind?: "send" | "turn"; note?: string; durationMs?: number; stopReason?: string | null } = {},
   ): Promise<void> {
     if (!entries.length) return;
     const title = this.#store.getSession(target)?.title ?? target.slice(0, 8);
     const secs = outcome.durationMs ? Math.round(outcome.durationMs / 1000) : null;
     for (const e of entries) {
-      const text = outcome.failed
+      const text = outcome.note
+        ? `【完成回推】「${title}」${outcome.note}。结果以 session messages ${target} 为准。`
+        : outcome.failed
         ? outcome.failureKind === "turn"
           ? `【完成回推】「${title}」这一轮跑失败了：${outcome.failed}。消息送到了，别重发。`
           : `【完成回推】给「${title}」的消息没送进去：${outcome.failed}。它这一轮不会跑，别等了。`

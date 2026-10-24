@@ -175,7 +175,6 @@ export function TusFace({ phase, activity, substate = "idle", emotion = null, ti
         st.phaseAt = ms;
         st.quietSince = ms;          // a phase change is a real event: it is not "quiet"
       }
-      if (st.micro && st.microAt === ms) st.quietSince = ms;
       if (p.ticks !== st.ticks) {
         st.ticks = p.ticks;
         st.lastEventAt = ms;

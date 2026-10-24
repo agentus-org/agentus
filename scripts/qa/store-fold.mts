@@ -127,7 +127,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     JSON.stringify((rows.find((r) => r.kind === "agent")?.payload as { content: { text: string } }).content.text).slice(0, 80));
   check("the other rows are untouched", rows.some((r) => r.kind === "user"));
   check("a backup file was written, named for this pass and this moment",
-    fs.readdirSync(path.dirname(dbPath)).some((f) => f.startsWith(`${path.basename(dbPath)}.pre-fold-v3-`)), dbPath);
+    fs.readdirSync(path.dirname(dbPath)).some((f) => f.startsWith(`${path.basename(dbPath)}.pre-fold-v`)), dbPath);
   // re-open: nothing should change
   store.close();
   const again = new Store(dbPath);
@@ -225,7 +225,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     rows.filter((r) => r.kind === "tool").length === 2 && rows.filter((r) => r.kind === "agent").length === 4,
     `${rows.filter((r) => r.kind === "tool").length} tool, ${rows.filter((r) => r.kind === "agent").length} agent`);
   check("a backup was made before deleting anything",
-    fs.readdirSync(path.dirname(rpDb)).some((f) => f.startsWith(`${path.basename(rpDb)}.pre-dedupe-v4-`)), rpDb);
+    fs.readdirSync(path.dirname(rpDb)).some((f) => f.startsWith(`${path.basename(rpDb)}.pre-dedupe-v`)), rpDb);
   store.close();
   const again = new Store(rpDb);
   check("re-opening does not clean again",
@@ -522,6 +522,36 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const txt = (r: { payload: unknown }) => (r.payload as { content?: { text?: string } }).content?.text ?? "";
   check("two messages 40 minutes apart in the SAME turn stay two rows", rows.length === 2,
     `${rows.length} rows: ${JSON.stringify(rows.map(txt))}`);
+  store.close();
+}
+
+// ---- 15. the boundary clock must be the LAST FRAME's, not the row's first ----------------------
+// `prev` is the surviving row and its `created_at` never moves, so a gap measured from it is "how
+// long has this message been growing" — which cut every reply longer than 750 ms at its first full
+// stop, and every reply longer than 2 s unconditionally.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 700;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id) values (?,?,?,?,?,?,?,?)",
+  );
+  const p6 = (text: string, update = "agent_message_chunk") => JSON.stringify({ sessionUpdate: update, content: { type: "text", text } });
+  // a) a 1.2 s multi-sentence reply (30 frames × 40 ms)
+  let at = Date.now() - 120_000;
+  const words = ["The ", "answer ", "is ", "42. ", "Then ", "the ", "second ", "point ", "is ", "simpler. ",
+    "Finally, ", "we ", "stop ", "here "];
+  for (let i = 0; i < 30; i += 1) { at += 40; ins.run(++seq, "s-long-reply", "agent", p6(words[i % words.length]), null, null, at, 7); }
+  // b) a 10 s punctuation-free thought (250 frames × 40 ms)
+  at = Date.now() - 60_000;
+  for (let i = 0; i < 250; i += 1) { at += 40; ins.run(++seq, "s-long-thought", "thought", p6("word ", "agent_thought_chunk"), null, null, at, 8); }
+  era(raw, 1);
+  raw.close();
+
+  const store = new Store(dbPath);
+  const replyRows = store.messagesTail("s-long-reply", 100).messages;
+  check("a 1.2 s multi-sentence reply is ONE row", replyRows.length === 1, `${replyRows.length} rows`);
+  const thoughtRows = store.messagesTail("s-long-thought", 100).messages;
+  check("a 10 s punctuation-free thought is ONE row", thoughtRows.length === 1, `${thoughtRows.length} rows`);
   store.close();
 }
 
