@@ -112,10 +112,17 @@ accepted rather than guessed away.
 2. **The row is the truth on reads; `delta` exists only so a live turn does not re-send the whole text
    every frame.** Anything that reads the transcript (`hotwords.ts` context, the phone's notifications)
    reads rows, so it sees accumulated text for free — it used to see 40 chunks of 3.8 characters.
+2b. **Two frames are one stream only if they are close in time.** The rule is: the gap from the
+   previous frame is at most 2 s, the turn id (when both rows carry one) agrees, and a sentence end
+   only counts as a boundary when that gap is over 750 ms. The accepted cost is written down rather
+   than hidden: two id-less messages written less than 750 ms apart, the first ending in a full stop,
+   are indistinguishable from one stream and get merged. Time is the only witness a store without
+   message ids has, and the alternative — the rule that shipped in v3 — cut every reply at its first
+   full stop.
 3. **Never fold on a guess.** Same id, or whitespace-insensitive equality, or ≥60% coverage. Everything
    else stays as it is, and the migration is logged (`[store] 历史分片已折叠：3804 行 → …`) with a
    one-time `VACUUM INTO` backup beside the DB (`agentus.sqlite.pre-fold-v<ver>-<timestamp>.bak`,
-   newest three kept per pass; what actually ran is in the `repairs` table).
+   newest three kept per pass version; what actually ran is in the `repairs` table).
 4. **A page boundary must not be able to cut a message.** Page sizes are row- and byte-bounded, and the
    store guarantees a message is one row; if either changes, re-run the checks below.
 
