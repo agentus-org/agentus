@@ -1,7 +1,7 @@
-// 糯米模式（nomi）—— 它是「另一种电话页面」，还是只是换了张图？
+// Tus 模式（tus）—— 它是「另一种电话页面」，还是只是换了张图？
 //
 // What can be observed, and therefore what this asserts:
-//   · 入口：短按 = 原来的电话，长按 480 ms = 糯米模式（两条路都真的打开了一个全屏 dialog）；
+//   · 入口：短按 = 原来的电话，长按 480 ms = Tus 模式（两条路都真的打开了一个全屏 dialog）；
 //   · 分区：竖屏脸在上/记录在下、横屏脸在左/记录在右 —— 用几何断言，不看截图；
 //   · 脸是活的：canvas 像素在两帧之间变了（不是一张静态图），且真的画了东西；
 //   · 记录是「原件的缩小版」：同一套行，字号变小（量的是同一行的盒子高度，不是猜 CSS）；
@@ -9,7 +9,7 @@
 //
 // Self-contained (its own instance + its own mock session + the QA Edge on :9223). No TTS stub:
 // 这张脸不需要声音，相位机自己会走到 listening/thinking。
-//   node scripts/qa/nomi-mode-sweep.mjs
+//   node scripts/qa/tus-mode-sweep.mjs
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { mkdtempSync } from "node:fs";
@@ -42,7 +42,7 @@ const freePort = () => new Promise((res, rej) => {
 });
 
 const PORT = await freePort();
-const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-nomi-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-tus-"));
 const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
@@ -113,12 +113,12 @@ const SHAPE = `(() => {
   const r = (s) => { const el = document.querySelector(s); if (!el) return null; const b = el.getBoundingClientRect();
     return { x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height),
       right: Math.round(b.right), bottom: Math.round(b.bottom) }; };
-  const face = r('.call-nomi-face'), chat = r('.call-cc'), canvas = r('.nomi-face-canvas');
+  const face = r('.call-tus-face'), chat = r('.call-cc'), canvas = r('.tus-face-canvas');
   const bubble = document.querySelector('.call-cc-inner .bubble');
   const modes = document.querySelector('.call-mode .call-modes');
   const modesVisible = !!modes && getComputedStyle(modes).display !== 'none'
     && modes.getBoundingClientRect().width > 0;
-  return { open: true, nomi: call.dataset.nomi === 'true', phase: call.dataset.phase,
+  return { open: true, tus: call.dataset.tus === 'true', phase: call.dataset.phase,
     err: document.querySelector('.call-err')?.textContent ?? null,
     vw: innerWidth, vh: innerHeight, face, chat, canvas,
     bubbleH: bubble ? Math.round(bubble.getBoundingClientRect().height * 10) / 10 : null,
@@ -132,12 +132,12 @@ const SHAPE = `(() => {
  *  in-progress 窗口），轮询会漏，MutationObserver 不会。canvas 的 data-clip 由帧循环设置，
  *  clip 本身持续 1.4–6 s，所以它是"这条动作真的播了"的最直接证据。 */
 const WATCH = `(() => {
-  window.__nomiSeen = { sub: [], clip: [], face: [], mood: [] };
-  const push = (k, v) => { const a = window.__nomiSeen[k]; if (v && a[a.length - 1] !== v) a.push(v); };
+  window.__tusSeen = { sub: [], clip: [], face: [], mood: [] };
+  const push = (k, v) => { const a = window.__tusSeen[k]; if (v && a[a.length - 1] !== v) a.push(v); };
   const read = () => {
     const c = document.querySelector('.call-mode');
     if (c) { push('sub', c.dataset.substate); push('face', c.dataset.face); push('mood', c.dataset.mood); }
-    const cv = document.querySelector('.nomi-face-canvas');
+    const cv = document.querySelector('.tus-face-canvas');
     if (cv) push('clip', cv.dataset.clip);
   };
   read();
@@ -153,8 +153,8 @@ const WATCH = `(() => {
     attributeFilter: ['data-substate', 'data-clip', 'data-face', 'data-mood'] });
   return true;
 })()`;
-const SEEN = `JSON.parse(JSON.stringify(window.__nomiSeen ?? { sub: [], clip: [], face: [], mood: [] }))`;
-const RESET_SEEN = `(window.__nomiSeen = { sub: [], clip: [], face: [], mood: [] }, true)`;
+const SEEN = `JSON.parse(JSON.stringify(window.__tusSeen ?? { sub: [], clip: [], face: [], mood: [] }))`;
+const RESET_SEEN = `(window.__tusSeen = { sub: [], clip: [], face: [], mood: [] }, true)`;
 
 /** canvas 的运动签名 + 亮像素比例（照 call-sweep 的做法：像素差，不是「元素存在」）。 */
 const SIG = `(sel) => { const cv = document.querySelector(sel); if (!cv) return null;
@@ -191,9 +191,9 @@ const sampleEyes = async (n = 8) => {
   for (let i = 0; i < n * 3 && good.length + bad.length < n; i++) {
     const s = await ev(`(() => {
       const face = document.querySelector('.call-mode')?.dataset.face;
-      const cv = document.querySelector('.nomi-face-canvas');
+      const cv = document.querySelector('.tus-face-canvas');
       if (!cv || face !== 'curious' || cv.dataset.clip) return null;
-      return (${EYES})('.nomi-face-canvas');
+      return (${EYES})('.tus-face-canvas');
     })()`);
     if (s) {
       const ok = s.runs === 2 && s.gap !== null && s.gap >= 0.6 * Math.min(...s.widths);
@@ -278,7 +278,7 @@ try {
   for (let i = 0; i < 20; i++) {
     const ok = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
       const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: '第一句：这是一段足够长的回答，用来量聊天区的行高和滚动。第二句：糯米模式要把这一页缩小放进下半屏。第三句：横屏时它应该在右边。' }) });
+        body: JSON.stringify({ text: '第一句：这是一段足够长的回答，用来量聊天区的行高和滚动。第二句：Tus 模式要把这一页缩小放进下半屏。第三句：横屏时它应该在右边。' }) });
       return r.status; })()`);
     if (ok >= 200 && ok < 300) break;
     await sleep(800);
@@ -293,7 +293,7 @@ try {
   await pressSel(callBtn, 120);
   await sleep(1400);
   let s1 = await ev(SHAPE);
-  check("短按打开的是原来的通话（data-nomi=false）", s1.open === true && s1.nomi === false, JSON.stringify({ open: s1.open, nomi: s1.nomi }));
+  check("短按打开的是原来的通话（data-tus=false）", s1.open === true && s1.tus === false, JSON.stringify({ open: s1.open, tus: s1.tus }));
   check("…并且那张脸不在场、orb 在场", s1.face === null && s1.orbVisible === true);
   // 打开记录量一下「同一行原来多高」
   await clickSel(".call-cc-btn");
@@ -303,36 +303,36 @@ try {
   await sleep(600);
   check("挂断真的关掉了这一页", (await ev(`!document.querySelector('.call-mode')`)) === true);
 
-  // ---- 2. 长按 480ms：糯米模式 ----------------------------------------------------------
+  // ---- 2. 长按 480ms：Tus 模式 ----------------------------------------------------------
   const beforeLocal = await ev(`localStorage.getItem('agentus.call')`);
   const beforeServer = await settingsCall();
   await pressSel(callBtn, 620);
   await sleep(1500);
-  const nomi = await ev(SHAPE);
-  check("长按 480ms 打开糯米模式（data-nomi=true）", nomi.open === true && nomi.nomi === true, JSON.stringify({ phase: nomi.phase, err: nomi.err }));
-  check("糯米模式里没有 orb（脸取代了它）", nomi.orbVisible === false);
-  check("三态打断开关在这个页面里不可见（固定关键词）", nomi.modesVisible === false);
+  const tus = await ev(SHAPE);
+  check("长按 480ms 打开 Tus 模式（data-tus=true）", tus.open === true && tus.tus === true, JSON.stringify({ phase: tus.phase, err: tus.err }));
+  check("Tus 模式里没有 orb（脸取代了它）", tus.orbVisible === false);
+  check("三态打断开关在这个页面里不可见（固定关键词）", tus.modesVisible === false);
   // 从这一刻起记录 data-substate / data-clip / data-face 的每一次变化（见 WATCH）。
   await ev(WATCH);
   const initialSub = await ev(`document.querySelector('.call-mode')?.dataset.substate ?? null`);
-  check("糯米模式一打开就带 data-substate（观测口，不靠猜）", initialSub === "idle", String(initialSub));
+  check("Tus 模式一打开就带 data-substate（观测口，不靠猜）", initialSub === "idle", String(initialSub));
 
   // ---- 3. 竖屏分区：上脸下记录 -----------------------------------------------------------
   check("竖屏 390×844：脸在上、记录在下",
-    nomi.face && nomi.chat && nomi.face.bottom <= nomi.chat.y + 2 && nomi.face.y < nomi.chat.y,
-    JSON.stringify({ face: nomi.face, chat: nomi.chat }));
-  const share = nomi.face ? nomi.face.h / nomi.vh : 0;
+    tus.face && tus.chat && tus.face.bottom <= tus.chat.y + 2 && tus.face.y < tus.chat.y,
+    JSON.stringify({ face: tus.face, chat: tus.chat }));
+  const share = tus.face ? tus.face.h / tus.vh : 0;
   check("脸拿到 38%–50% 的高度（再高记录就没地方，再低看不清表情）",
     share >= 0.38 && share <= 0.5, `${(share * 100).toFixed(1)}%`);
-  check("记录区是满宽的（不再是 560px 的栏）", nomi.chat ? nomi.chat.w >= nomi.vw - 40 : false, `${nomi.chat?.w}/${nomi.vw}`);
-  check("没有横向溢出", (nomi.overflowX ?? 99) <= 0);
+  check("记录区是满宽的（不再是 560px 的栏）", tus.chat ? tus.chat.w >= tus.vw - 40 : false, `${tus.chat?.w}/${tus.vw}`);
+  check("没有横向溢出", (tus.overflowX ?? 99) <= 0);
 
   // ---- 4. 脸在动，而且真的画了东西 -------------------------------------------------------
   // 取四次而不是两次：静止姿态也会有呼吸/眨眼，但任意 700 ms 窗口都可能恰好没动；
   // 四次里只要有一对帧不同，就证明帧循环还活着（这也是"冻结"最怕的误判）。
   const sigs = [];
   for (let i = 0; i < 4; i++) {
-    sigs.push(await ev(`(${SIG})('.nomi-face-canvas')`));
+    sigs.push(await ev(`(${SIG})('.tus-face-canvas')`));
     if (i < 3) await sleep(450);
   }
   const lit = sigs.find(Boolean);
@@ -369,7 +369,7 @@ try {
   // 同一个采样器必须判它不合格 —— 否则“永远返回 runs=2”的坏探针也能装成绿。
   const eyeNeg = await ev(`(() => {
     const cv = document.createElement('canvas');
-    cv.width = 536; cv.height = 517; cv.id = 'nomi-eye-neg';
+    cv.width = 536; cv.height = 517; cv.id = 'tus-eye-neg';
     cv.style.cssText = 'position:fixed;left:-9999px;top:0';
     document.body.appendChild(cv);
     const g = cv.getContext('2d');
@@ -381,7 +381,7 @@ try {
       g.roundRect(268 + s * c / 2 - w / 2, cy - h / 2, w, h, Math.min(w, h) / 2);
       g.fill();
     }
-    const r = (${EYES})('#nomi-eye-neg');
+    const r = (${EYES})('#tus-eye-neg');
     cv.remove();
     return r;
   })()`);
@@ -390,11 +390,11 @@ try {
     JSON.stringify(eyeNeg && { runs: eyeNeg.runs, gap: eyeNeg.gap, widths: eyeNeg.widths }));
 
   // ---- 5. 记录是「原件缩小」，不是另写一份 -----------------------------------------------
-  check("记录里是会话页自己的行（.msg/.bubble 存在）", nomi.bubbleH !== null, String(nomi.bubbleH));
+  check("记录里是会话页自己的行（.msg/.bubble 存在）", tus.bubbleH !== null, String(tus.bubbleH));
   check("字号真的变小了（同一行盒子比普通通话里矮）",
-    !!(plain.bubbleH && nomi.bubbleH) && nomi.bubbleH < plain.bubbleH * 0.95,
-    `plain ${plain.bubbleH} → nomi ${nomi.bubbleH}`);
-  fs.writeFileSync(`${SHOTS}/nomi-portrait.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    !!(plain.bubbleH && tus.bubbleH) && tus.bubbleH < plain.bubbleH * 0.95,
+    `plain ${plain.bubbleH} → tus ${tus.bubbleH}`);
+  fs.writeFileSync(`${SHOTS}/tus-portrait.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
 
   // ---- 6. 横屏分区：左脸右记录 -----------------------------------------------------------
   await viewport(844, 390);
@@ -406,9 +406,9 @@ try {
   check("横屏下脸不再占上半屏（高度铺满、宽度约 44%）",
     land.face && Math.abs(land.face.w / land.vw - 0.44) < 0.08, `${((land.face?.w ?? 0) / land.vw * 100).toFixed(1)}%`);
   check("横屏也没有横向溢出", (land.overflowX ?? 99) <= 0);
-  const b1 = await ev(`(${SIG})('.nomi-face-canvas')`);
+  const b1 = await ev(`(${SIG})('.tus-face-canvas')`);
   check("横屏下脸仍然在画", b1 && b1.lit > 0.5, JSON.stringify(b1 && { lit: b1.lit }));
-  fs.writeFileSync(`${SHOTS}/nomi-landscape.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
+  fs.writeFileSync(`${SHOTS}/tus-landscape.png`, Buffer.from((await send("Page.captureScreenshot", { format: "png" })).data, "base64"));
   // 横屏是另一条比例尺路径（k 由高度决定），眼睛的判据要单独量一次。
   const eyeL = await sampleEyes();
   const eyeLWorst = eyeL.bad[0] ?? eyeL.good[0] ?? null;
@@ -536,13 +536,13 @@ try {
   await sleep(700);
   const afterLocal = await ev(`localStorage.getItem('agentus.call')`);
   const afterServer = await settingsCall();
-  check("进出糯米模式没有写 localStorage 的 call 设置", beforeLocal === afterLocal, `${beforeLocal} → ${afterLocal}`);
+  check("进出 Tus 模式没有写 localStorage 的 call 设置", beforeLocal === afterLocal, `${beforeLocal} → ${afterLocal}`);
   check("…也没有写服务端的 call 设置", beforeServer === afterServer, `${beforeServer} → ${afterServer}`);
   check("挂断后回到会话页", (await ev(`!document.querySelector('.call-mode')`)) === true);
 
   // ---- 8. 关掉页面不留残余 ---------------------------------------------------------------
-  check("糯米模式的 DOM 已卸载（没有 .call-nomi-face / 没有 canvas 在跑）",
-    (await ev(`!document.querySelector('.call-nomi-face')`)) === true);
+  check("Tus 模式的 DOM 已卸载（没有 .call-tus-face / 没有 canvas 在跑）",
+    (await ev(`!document.querySelector('.call-tus-face')`)) === true);
 } catch (e) {
   fail++;
   exitCode = 1;

@@ -1,10 +1,10 @@
 // The face's mood engine: WHICH expression, and with what numbers.
 //
-// WHY THIS FILE EXISTS. 糯米模式（`CallMode` 的 nomi 变体）上半屏/左半屏是一张会动的脸。要让这张脸
+// WHY THIS FILE EXISTS. Tus 模式（`CallMode` 的 tus 变体）上半屏/左半屏是一张会动的脸。要让这张脸
 // 像 OpenNomi 那样「活着」，靠的不是美术资源（它自己也没有一张图，两只 capsule + 一条弧线就是全部），
 // 而是一张**情绪表**加四个**连续量**：attention（瞳孔多宽）、energy（多亮）、warmth（说完的余温）、
 // phaseElapsed（想了几秒）。这一层全是算术，能离开浏览器验证，所以它住在这里、由
-// `scripts/qa/nomi-mood.mts` 钉住；canvas 那边只管把数字画出来。
+// `scripts/qa/tus-mood.mts` 钉住；canvas 那边只管把数字画出来。
 //
 // 数字的来源：`kerwinyoung77/OpenNomi`（MIT）的 `NomiExpressionView.swift` / `EyeView`。
 // 我们**重写**而不是搬运：它用 SwiftUI 的 View 组合与动画曲线，我们用 canvas 每帧算数；
@@ -18,12 +18,12 @@
 import type { CallPhase } from "./CallMode";
 
 /** 16 faces from OpenNomi + THREE of our own, because our agent is not a chatbot. */
-export type NomiMood =
+export type TusMood =
   | "idle" | "talking" | "loading" | "sleep" | "lookLeft" | "lookRight" | "scan" | "strive"
   | "focus" | "drowsy" | "happy" | "sad" | "surprise" | "curious" | "wink" | "error"
   // ── 我们自己的三种「没有标准输出」的脸 ──────────────────────────────────────────────────
   // OpenNomi 后端就是一个聊天机器人：它只会有「在听 / 在想 / 在说」。Agentus 的 agent 会跑工具、
-  // 会停下来等你点授权，这些时刻**一个字都不输出**，而时长以分钟计。没有这三张脸，糯米模式在
+  // 会停下来等你点授权，这些时刻**一个字都不输出**，而时长以分钟计。没有这三张脸，Tus 模式在
   // 真实会话里会有一半时间是死的（或者更糟：看起来睡着了，而它其实正在干活）。
   | "working"   // 工具执行中 —— 低头看手上的活，不焦躁
   | "asking";   // 等你授权 —— 直视你，眼睛微微不对称（"你看这里"）
@@ -84,7 +84,7 @@ export interface EyeFrame {
   arc?: "happy" | "sad";
 }
 
-export const MOODS: NomiMood[] = [
+export const MOODS: TusMood[] = [
   "idle", "talking", "loading", "sleep", "lookLeft", "lookRight", "scan", "strive",
   "focus", "drowsy", "happy", "sad", "surprise", "curious", "wink", "error",
   "working", "asking",
@@ -93,7 +93,7 @@ export const MOODS: NomiMood[] = [
 /** The GAP between the two eyes (px at scale 1) — the original's `HStack(spacing:)`, i.e. edge to
  *  edge, not centre to centre. The renderer adds the eye's own width to get the centre distance;
  *  reading it as a centre distance is what made the face look cross-eyed at 1.6× scale. */
-export function eyeSpacing(mood: NomiMood): number {
+export function eyeSpacing(mood: TusMood): number {
   switch (mood) {
     case "focus":
     case "strive":
@@ -123,7 +123,7 @@ export function eyeSpacing(mood: NomiMood): number {
  *
  * 非有限输入（未来某行 mood 写错 width）不能让整双眼睛消失：宽当 0、半径退回 98。
  */
-export function eyeSepAngle(o: { mood: NomiMood; leftW: number; rightW: number; ballR?: number }): number {
+export function eyeSepAngle(o: { mood: TusMood; leftW: number; rightW: number; ballR?: number }): number {
   const bw = (v: number) => (Number.isFinite(v) ? Math.max(0, v) : 0);
   const br = o.ballR;
   const R = br !== undefined && Number.isFinite(br) && br > 0 ? br : 98;
@@ -133,7 +133,7 @@ export function eyeSepAngle(o: { mood: NomiMood; leftW: number; rightW: number; 
 }
 
 /** Blinking is OFF in these six faces — a closed eye would read as a different expression. */
-export const BLINK_BLOCKED: NomiMood[] = ["error", "scan", "drowsy", "sleep", "loading", "strive"];
+export const BLINK_BLOCKED: TusMood[] = ["error", "scan", "drowsy", "sleep", "loading", "strive"];
 
 /** Next blink, ms. 2.8–6.4 s in the original; it is random because a metronome looks dead. */
 export function nextBlinkMs(rand: () => number = Math.random): number {
@@ -165,7 +165,7 @@ export const LIFE_BEAT_P = 0.56;
  *  实测（操作者 2026-10-23「怎么还是呆呆的」）：早先这里只看 `phase`，于是
  *  `working`／`asking`／`curious` 这些 mood 拿到的都是 `thinking`／`listening` 的连续量 ——
  *  形状换了、神态没换，读起来还是同一张脸在发呆。 */
-export function exprFor(who: CallPhase | NomiMood | "idle", level: number, elapsed: number, o: { resting?: boolean; warmth?: number } = {}): ExprState {
+export function exprFor(who: CallPhase | TusMood | "idle", level: number, elapsed: number, o: { resting?: boolean; warmth?: number } = {}): ExprState {
   const warmth = clamp01(o.warmth ?? 0);
   switch (who) {
     case "listening":
@@ -215,11 +215,11 @@ export function moodFor(o: {
   phase: CallPhase | "idle";
   /** 比相位更细的「这一轮在干嘛」—— 工具、授权这些时刻没有标准输出，靠它出脸。 */
   activity?: AgentActivity;
-  emotion?: NomiMood | null;
-  life?: NomiMood | null;
+  emotion?: TusMood | null;
+  life?: TusMood | null;
   resting?: boolean;
   drowsy?: boolean;
-}): NomiMood {
+}): TusMood {
   const { phase, activity = "none", emotion, life, resting, drowsy } = o;
   if (phase === "error") return "error";
   if (phase === "connecting") return "loading";
@@ -260,7 +260,7 @@ export function thinkingStage(phaseElapsed: number): 0 | 1 | 2 {
  * the live audio 0..1, `sleep` the 0..1 eyelid-fall progress.
  */
 export function eyeFrame(o: {
-  mood: NomiMood;
+  mood: TusMood;
   right: boolean;
   blinking: boolean;
   t: number;
@@ -496,7 +496,7 @@ export function substateOf(o: {
 // --------------------------------------------------------------- the life beat
 
 export interface LifeBeat {
-  mood: NomiMood;
+  mood: TusMood;
   durationMs: number;
 }
 
@@ -514,7 +514,7 @@ export function lifeBeat(
 ): LifeBeat | "rest" | null {
   // 忙的时候不许睡：睡 = 「这一段结束了」，而它只是没在说话（工具跑 3 分钟很常见）。
   if (idleMs > IDLE_REST_MS) return o.busy ? null : "rest";
-  const pool: NomiMood[] = idleMs > IDLE_LOOK_MS
+  const pool: TusMood[] = idleMs > IDLE_LOOK_MS
     ? ["lookLeft", "lookRight", "curious", "wink", "focus"]
     : ["lookLeft", "lookRight", "wink"];
   if (rand() >= LIFE_BEAT_P) return null;
@@ -531,7 +531,7 @@ export function lifeBeat(
  * 一个短词表 + 否定词前缀，不做语气分析。理由：猜错了的表情比没有表情更糟（它会在你说
  * 「我不难过」的时候笑给你看），所以这里只认**明确的情绪词**，认不出就返回 null 让别人兜底。
  */
-const LEX: { mood: NomiMood; words: string[] }[] = [
+const LEX: { mood: TusMood; words: string[] }[] = [
   { mood: "happy", words: ["开心", "高兴", "太好了", "喜欢", "棒", "恭喜", "成功", "完成了", "搞定", "哈哈", "谢谢"] },
   { mood: "sad", words: ["抱歉", "难过", "遗憾", "可惜", "失败了", "没成功", "不舒服", "唉"] },
   { mood: "surprise", words: ["竟然", "居然", "没想到", "原来", "意外", "真的吗"] },
@@ -541,10 +541,10 @@ const LEX: { mood: NomiMood; words: string[] }[] = [
 /** 「不/没/别」紧跟情绪词时不算 —— 这一条就是那个「我不难过」的形状。 */
 const NEG = /[不没别未无](?:有|是|会|太|要)?\s*$/;
 
-export function deriveEmotion(text: string): NomiMood | null {
+export function deriveEmotion(text: string): TusMood | null {
   const t = String(text ?? "");
   if (!t) return null;
-  let best: { mood: NomiMood; at: number } | null = null;
+  let best: { mood: TusMood; at: number } | null = null;
   for (const { mood, words } of LEX) {
     for (const w of words) {
       let at = t.indexOf(w);
@@ -590,7 +590,7 @@ export function workBeat(o: {
 // --------------------------------------------------------------- emotion tags
 
 /** The tag vocabulary. Deliberately small: a bigger list is a bigger chance of a miss. */
-export const EMO_MOODS: Record<string, NomiMood> = {
+export const EMO_MOODS: Record<string, TusMood> = {
   happy: "happy", joy: "happy", love: "happy",
   sad: "sad",
   angry: "strive", strive: "strive",
@@ -606,8 +606,8 @@ export const EMO_MOODS: Record<string, NomiMood> = {
 const EMO_TAG = /\[\s*(?:emo|emotion)\s*[:：]\s*([a-zA-Z\u4e00-\u9fa5_-]{1,16})\s*\]/gi;
 
 /** Every mood the text asks for, in order. Unknown words are dropped, not guessed. */
-export function readEmoTags(text: string): NomiMood[] {
-  const out: NomiMood[] = [];
+export function readEmoTags(text: string): TusMood[] {
+  const out: TusMood[] = [];
   for (const m of String(text ?? "").matchAll(EMO_TAG)) {
     const mood = EMO_MOODS[m[1].toLowerCase()];
     if (mood) out.push(mood);
@@ -662,9 +662,9 @@ export const SACCADE_MAX_MS = 4600;
 export function nextSaccadeMs(rand: () => number = Math.random): number {
   return SACCADE_MIN_MS + rand() * (SACCADE_MAX_MS - SACCADE_MIN_MS);
 }
-export function saccadeFor(rand: () => number = Math.random): { mood: NomiMood; durationMs: number } {
+export function saccadeFor(rand: () => number = Math.random): { mood: TusMood; durationMs: number } {
   const r = rand();
-  const mood: NomiMood = r < 0.42 ? "lookLeft" : r < 0.84 ? "lookRight" : "wink";
+  const mood: TusMood = r < 0.42 ? "lookLeft" : r < 0.84 ? "lookRight" : "wink";
   return { mood, durationMs: 300 + rand() * 220 };
 }
 
@@ -691,14 +691,14 @@ export interface BallFrame {
 
 /** 每个 mood 的球体形状。数值是"安静可读"的区间：挤压超过 10% 会读成弹跳的果冻，不是呼吸。 */
 export function ballFrame(
-  mood: NomiMood,
+  mood: TusMood,
   o: { level?: number; breath?: number; sleep?: number; substate?: ToolSubstate } = {},
 ): BallFrame {
   const rest = ballMoodFrame(mood, o);
   return substateBall(rest, o.substate ?? "idle");
 }
 
-function ballMoodFrame(mood: NomiMood, o: { level?: number; breath?: number; sleep?: number }): BallFrame {
+function ballMoodFrame(mood: TusMood, o: { level?: number; breath?: number; sleep?: number }): BallFrame {
   const level = clamp01(o.level ?? 0);
   const breath = o.breath ?? 0;
   const sleeping = mood === "sleep";
@@ -769,7 +769,7 @@ export function substateBall(f: BallFrame, sub: ToolSubstate): BallFrame {
 // 当前 mood 的静止姿态。clip 是纯数据（下面的 CLIPS 就是全部），采样器只做插值 ——
 // 想加一个新动作是加一行数据，不是再加一个 if/else。
 //
-// 时钟：`clipFrameAt(clip, elapsedMs)` 的 elapsed 由调用方传（NomiFace 用 rAF 的时刻）。
+// 时钟：`clipFrameAt(clip, elapsedMs)` 的 elapsed 由调用方传（TusFace 用 rAF 的时刻）。
 // 这里**不读 Date.now()/performance.now()**，所以同一组输入在单测里永远得到同一帧。
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -797,7 +797,7 @@ export interface ClipFrame {
   rot: number;
 }
 
-export interface NomiClip {
+export interface TusClip {
   /** 2–4 帧；第一帧和最后一帧都是静止姿态（clip 以"回归"收尾）。 */
   frames: ClipFrame[];
   /** 帧与帧之间的时长，长度 = frames.length - 1。 */
@@ -826,7 +826,7 @@ export const OVERSHOOT = { min: 1.36, max: 1.5 } as const;
 const REST_FRAME: ClipFrame = { r: 1, sx: 1, sy: 1, dy: 0, rot: 0 };
 
 /** 作者写的数据。归一化发生在 `CLIPS` 的构造处，见 `normalizeClip`。 */
-const RAW_CLIPS: Record<ClipName, NomiClip> = {
+const RAW_CLIPS: Record<ClipName, TusClip> = {
   // 听开始（1.40 s）：先抬一下（dy 1.42 的过冲），再落回来。眼形由 curious 负责。
   "listen-in": {
     frames: [
@@ -939,7 +939,7 @@ const RAW_CLIPS: Record<ClipName, NomiClip> = {
 };
 
 /** 一帧里最大的"离开静止"的幅度。scale 通道看 |v-1|，dy/rot 看绝对值。 */
-export function clipPeak(c: NomiClip): number {
+export function clipPeak(c: TusClip): number {
   let peak = 0;
   for (const f of c.frames) {
     peak = Math.max(peak, Math.abs(f.r - 1), Math.abs(f.sx - 1), Math.abs(f.sy - 1), Math.abs(f.dy), Math.abs(f.rot));
@@ -948,7 +948,7 @@ export function clipPeak(c: NomiClip): number {
 }
 
 /** 把整条 clip 等比缩放进过冲带（见 OVERSHOOT 的注释）。 */
-export function normalizeClip(c: NomiClip): NomiClip {
+export function normalizeClip(c: TusClip): TusClip {
   const peak = clipPeak(c);
   if (!(peak > 0)) return c;
   const k = peak > OVERSHOOT.max ? OVERSHOOT.max / peak
@@ -963,9 +963,9 @@ export function normalizeClip(c: NomiClip): NomiClip {
   };
 }
 
-export const CLIPS: Record<ClipName, NomiClip> = Object.fromEntries(
+export const CLIPS: Record<ClipName, TusClip> = Object.fromEntries(
   (Object.keys(RAW_CLIPS) as ClipName[]).map((n) => [n, normalizeClip(RAW_CLIPS[n])]),
-) as Record<ClipName, NomiClip>;
+) as Record<ClipName, TusClip>;
 
 export const CLIP_NAMES = Object.keys(CLIPS) as ClipName[];
 
@@ -987,7 +987,7 @@ export const CLIP_PRIORITY: Record<ClipName, number> = {
   "error-frown": 4,
 };
 
-export function clipDurationMs(c: NomiClip): number {
+export function clipDurationMs(c: TusClip): number {
   return c.ms.reduce((a, b) => a + b, 0);
 }
 
@@ -1009,7 +1009,7 @@ function clampFrame(f: ClipFrame): ClipFrame {
  * 在 `elapsedMs` 时刻的那一帧（相对静止姿态）。播完返回 null —— 调用方据此回到静止姿态。
  * 纯函数：同一 (clip, elapsedMs) 永远同一帧，单测里可以逐帧钉住。
  */
-export function clipFrameAt(c: NomiClip, elapsedMs: number): ClipFrame | null {
+export function clipFrameAt(c: TusClip, elapsedMs: number): ClipFrame | null {
   if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
   let left = elapsedMs;
   for (let i = 0; i < c.ms.length; i++) {
@@ -1043,7 +1043,7 @@ export function applyClip(rest: BallFrame, f: ClipFrame): BallFrame {
 }
 
 export type FaceEvent =
-  | { kind: "mood"; from: NomiMood; to: NomiMood }
+  | { kind: "mood"; from: TusMood; to: TusMood }
   | { kind: "tool"; status: "start" | "done" | "failed" }
   | { kind: "think"; stage: 0 | 1 | 2 }
   | { kind: "blink" };
@@ -1112,7 +1112,7 @@ export function blinkScale(blinking: boolean): number {
 export const SPHERE = { maxX: 14, maxY: 18 } as const;
 
 /** 视点角度（度）。指针、情绪、思考都会把眼睛往某个方向拽。 */
-export function gazeAngles(o: { mood: NomiMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
+export function gazeAngles(o: { mood: TusMood; pointerX?: number; pointerY?: number; elapsed?: number; level?: number; substate?: ToolSubstate }): { ax: number; ay: number } {
   const px = Math.max(-1, Math.min(1, o.pointerX ?? 0));
   const py = Math.max(-1, Math.min(1, o.pointerY ?? 0));
   const el = o.elapsed ?? 0;
@@ -1187,7 +1187,7 @@ export interface ScreenEye { x: number; y: number; w: number; cos: number }
  * 角距被压到接近 0、两只眼重新叠成“暂停”符号。1.05R 是允许的轻微擦边（旧实现最坏也是 1.05R）。
  */
 export function projectEyes(o: {
-  mood: NomiMood;
+  mood: TusMood;
   left: EyeFrame;
   right: EyeFrame;
   gaze: { ax: number; ay: number };

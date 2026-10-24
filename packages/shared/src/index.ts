@@ -21,7 +21,7 @@
  *  One list, two consumers: the server composes the instruction, the browser parses what comes
  *  back. Keeping them apart is how you get a prompt that offers `[emo:excited]` while the face
  *  silently ignores it, so the vocabulary lives here and the web side carries a superset of
- *  synonyms on top (see `EMO_MOODS` in nomiMood.ts, guarded by the `nomi-mood` test). */
+ *  synonyms on top (see `EMO_MOODS` in tusMood.ts, guarded by the `tus-mood` test). */
 export const EMO_TAG_VALUES = ["happy", "sad", "angry", "surprise", "curious", "shy", "thinking", "neutral"] as const;
 
 /** The sentence the call prompt carries. Kept next to the vocabulary so they cannot drift. */

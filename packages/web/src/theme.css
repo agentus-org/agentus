@@ -3141,7 +3141,7 @@ body.pane-dragging * { cursor: col-resize !important; }
   .rail-more { min-height: 34px; font-size: 12px; }
 }
 
-/* ---------------------------------------------------------------- 糯米模式（nomi）---
+/* ---------------------------------------------------------------- Tus 模式（tus）---
    One surface, TWO partitions: portrait = the face above, the record below; landscape = the face
    left, the record right. Why the face gets the larger share: in a real Agentus turn the agent
    spends most of its time running tools or waiting for an approval, and during those minutes it
@@ -3149,7 +3149,7 @@ body.pane-dragging * { cursor: col-resize !important; }
 
    Everything about the conversation (phase machine, watchdog, barge, TTS queue, rows) is the same
    code as the normal call; this block only re-arranges and shrinks. */
-.call-mode[data-nomi="true"] {
+.call-mode[data-tus="true"] {
   display: grid;
   gap: 10px;
   /* grid, not the flex column above: reset the column's centring or every cell collapses to its
@@ -3159,70 +3159,70 @@ body.pane-dragging * { cursor: col-resize !important; }
   padding-top: calc(max(12px, env(safe-area-inset-top)) + 36px);
 }
 /* the orb and its ring/lines belong to the other page: in this one the face is the face */
-.call-mode[data-nomi="true"] .call-orb,
-.call-mode[data-nomi="true"] .call-lines,
-.call-mode[data-nomi="true"] .call-wave,
-.call-mode[data-nomi="true"] .call-hist,
-.call-mode[data-nomi="true"] .call-head { display: none; }
-/* 三态打断开关在这个页面里不出现：糯米模式固定关键词打断（操作者 2026-10-23 拍的），
-   而开关本身属于「另一个页面」的控件 —— 留着它就等于允许在糯米模式里改走语音打断。 */
-.call-mode[data-nomi="true"] .call-modes { display: none; }
+.call-mode[data-tus="true"] .call-orb,
+.call-mode[data-tus="true"] .call-lines,
+.call-mode[data-tus="true"] .call-wave,
+.call-mode[data-tus="true"] .call-hist,
+.call-mode[data-tus="true"] .call-head { display: none; }
+/* 三态打断开关在这个页面里不出现：Tus 模式固定关键词打断（操作者 2026-10-23 拍的），
+   而开关本身属于「另一个页面」的控件 —— 留着它就等于允许在 Tus 模式里改走语音打断。 */
+.call-mode[data-tus="true"] .call-modes { display: none; }
 /* the record takes the whole cell it is given instead of its usual 560px column */
-.call-mode[data-nomi="true"] .call-cc { width: 100%; max-width: none; }
+.call-mode[data-tus="true"] .call-cc { width: 100%; max-width: none; }
 
 /* 脸区是**浅底**，球是深色 —— 这是"有体积"的前提（操作者 2026-10-24：「圆球以外背景改成白色，
    球暗色也可以」）。暗底 + 暗球会糊成一团：球没有轮廓，眼睛又是白的，整块只剩两条发光竖线。
    浅底把球变成实体（黑球白眼是 Grok Bot 头像的观感），代价是通话页原本那套"暗场辉光"氛围
    在这一块不再成立 —— 所以这里刻意做成"页面上的一张浅色相纸"，而不是继续半透明玻璃。 */
-.call-nomi-face {
+.call-tus-face {
   position: relative; min-height: 0; min-width: 0; overflow: hidden;
   display: flex; flex-direction: column; align-items: stretch;
-  border: 1px solid var(--nomi-edge, rgba(16,20,26,0.08)); border-radius: 20px;
+  border: 1px solid var(--tus-edge, rgba(16,20,26,0.08)); border-radius: 20px;
   background:
-    radial-gradient(120% 90% at 50% 34%, var(--nomi-glow, rgba(16,20,26,0.055)) 0%, transparent 70%),
-    var(--nomi-bg, #fbfcfd);
+    radial-gradient(120% 90% at 50% 34%, var(--tus-glow, rgba(16,20,26,0.055)) 0%, transparent 70%),
+    var(--tus-bg, #fbfcfd);
   transition: background 500ms ease;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
 }
 /* 暗色主题：浅底不变（球靠对比出形），只把"纸"压暗一点点，避免夜里整块发白刺眼。 */
-:root[data-theme="dark"] .call-nomi-face {
-  --nomi-bg: #f2f4f7; --nomi-edge: rgba(255,255,255,0.14); --nomi-glow: rgba(16,20,26,0.07);
+:root[data-theme="dark"] .call-tus-face {
+  --tus-bg: #f2f4f7; --tus-edge: rgba(255,255,255,0.14); --tus-glow: rgba(16,20,26,0.07);
 }
-.nomi-face-canvas { display: block; flex: 1 1 auto; width: 100%; min-height: 0; }
-.nomi-face-foot {
+.tus-face-canvas { display: block; flex: 1 1 auto; width: 100%; min-height: 0; }
+.tus-face-foot {
   position: absolute; left: 12px; right: 12px; bottom: 9px;
   display: flex; align-items: baseline; gap: 8px;
   font-size: 11.5px; letter-spacing: 0.02em; pointer-events: none;
 }
-.nomi-face-state { color: var(--nomi-ink, #0f1419); font-weight: 650; }
-.nomi-face-warn { color: #8a5a12; }
+.tus-face-state { color: var(--tus-ink, #0f1419); font-weight: 650; }
+.tus-face-warn { color: #8a5a12; }
 
 /* 竖屏：上脸下记录。44% 是量出来的折中 —— 再高，390×844 上的记录区就剩不到 300px，
    最后一条消息会被挤到折线以下；再低，眼睛就小到看不出表情。 */
 @media (orientation: portrait) {
-  .call-mode[data-nomi="true"] {
+  .call-mode[data-tus="true"] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 44%) minmax(0, 1fr);
   }
-  .call-mode[data-nomi="true"] .call-nomi-face { grid-row: 1; }
-  .call-mode[data-nomi="true"] .call-cc { grid-row: 2; }
+  .call-mode[data-tus="true"] .call-tus-face { grid-row: 1; }
+  .call-mode[data-tus="true"] .call-cc { grid-row: 2; }
   /* 字号收小：这是「原件」，不是摘要（同一套行、同一套折叠），只是位置小了。
      zoom 在布局上真的变小（scrollHeight 跟着变），transform 不会 —— 所以用 zoom。 */
-  .call-mode[data-nomi="true"] .call-cc-inner { zoom: 0.78; }
-  .call-mode[data-nomi="true"] .call-cc-head { padding: 5px 10px; }
+  .call-mode[data-tus="true"] .call-cc-inner { zoom: 0.78; }
+  .call-mode[data-tus="true"] .call-cc-head { padding: 5px 10px; }
 }
-/* 横屏：左脸右记录。手机横屏只有 ~390px 高，所以脸按高度缩放（NomiFace 自己取 min(w,h)）。 */
+/* 横屏：左脸右记录。手机横屏只有 ~390px 高，所以脸按高度缩放（TusFace 自己取 min(w,h)）。 */
 @media (orientation: landscape) {
-  .call-mode[data-nomi="true"] {
+  .call-mode[data-tus="true"] {
     grid-template-columns: minmax(0, 44%) minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
   }
-  .call-mode[data-nomi="true"] .call-nomi-face { grid-column: 1; }
-  .call-mode[data-nomi="true"] .call-cc { grid-column: 2; }
-  .call-mode[data-nomi="true"] .call-cc-inner { zoom: 0.86; }
+  .call-mode[data-tus="true"] .call-tus-face { grid-column: 1; }
+  .call-mode[data-tus="true"] .call-cc { grid-column: 2; }
+  .call-mode[data-tus="true"] .call-cc-inner { zoom: 0.86; }
 }
 
-/* 通话按钮的长按进度：480 ms 内一条细线从左长到右，到点就是糯米模式。
+/* 通话按钮的长按进度：480 ms 内一条细线从左长到右，到点就是 Tus 模式。
    Why a line and not a ring: a ring needs a conic gradient whose sweep is not animatable without
    @property, and a line reads as "keep holding" to everyone who has ever held a shutter button. */
 .head-actions .icon-btn.call-entry { position: relative; overflow: hidden; }

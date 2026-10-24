@@ -30,8 +30,8 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
-import { NomiFace } from "./NomiFace";
-import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, type NomiMood, type ToolSubstate } from "./nomiMood";
+import { TusFace } from "./TusFace";
+import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, type TusMood, type ToolSubstate } from "./tusMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
 import {
@@ -155,17 +155,17 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
 }
 
 /** The full-screen call. Mount it and it takes over; unmounting (hang up) ends the call. */
-export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nomi = false, pending = 0 }: {
+export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus = false, pending = 0 }: {
   sessionId: string;
   onClose: () => void;
   onKeyboard: () => void;
-  /** 糯米模式（操作者 2026-10-23 口述）：通话按钮**长按**进来的另一种电话页面。
+  /** Tus 模式（操作者 2026-10-23 口述）：通话按钮**长按**进来的另一种电话页面。
    *
    *  它不是第二种通话实现 —— 相位机、看门狗、打断、TTS 队列、转录全部是同一份代码，只有两处不同：
-   *    · 表情区：orb 换成一整块会动的脸（`NomiFace`），竖屏在上、横屏在左；
+   *    · 表情区：orb 换成一整块会动的脸（`TusFace`），竖屏在上、横屏在左；
    *    · 对话区：始终展开的会话页（`renderTranscript`），字号收小。
    *  打断方式固定为关键词（不进三态开关，也不改写持久设置 —— 见下面的 `effCfg`）。 */
-  nomi?: boolean;
+  tus?: boolean;
   /** 等答复的授权请求条数（`App` 的 `v.perms.length`）。脸靠它切到「asking」：在通话里被一张
    *  授权卡挡住时，它一个字都不输出，没有这张脸就等于死了。 */
   pending?: number;
@@ -230,9 +230,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
    *  back) and fired one PUT per character whose out-of-order replies could roll the text back by a
    *  keystroke. Commit on blur / Enter — that is when the operator has finished a phrase. */
   const [wakeDraft, setWakeDraft] = useState<string | null>(null);
-  /** 糯米模式下**只在这一次通话里**把打断方式当成关键词：不写 localStorage、不写服务端设置，
+  /** Tus 模式下**只在这一次通话里**把打断方式当成关键词：不写 localStorage、不写服务端设置，
    *  退出后原来的三态开关还是原样（操作者要求「不要侵入现在的语音打断和关键词打断」）。 */
-  const effCfg = nomi ? { ...cfg, interruptMode: "keyword" as const } : cfg;
+  const effCfg = tus ? { ...cfg, interruptMode: "keyword" as const } : cfg;
   const cfgRef = useRef(effCfg);
   cfgRef.current = effCfg;
   const applyCfg = (patch: Partial<CallSettings>): void => {
@@ -622,8 +622,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
     : "";
   const busy = Boolean(active?.busy);
 
-  // ---- the face (糯米模式) ---------------------------------------------------------------
-  // 三层来源按操作者拍板叠加：相位层（永远在，见 NomiFace 的帧循环）→ 本地派生（无标签时的
+  // ---- the face (Tus 模式) ---------------------------------------------------------------
+  // 三层来源按操作者拍板叠加：相位层（永远在，见 TusFace 的帧循环）→ 本地派生（无标签时的
   // 兜底）→ agent 写的 [emo:x] 标签（最高保真）。标签最终由 `stripEmoTags` 从**被念出来的文本**
   // 里剥掉，所以它只影响表情，不影响你听到的和读到的。
   /** 工具帧计数：一变，脸就点一下头（"手上有活"）。只数是本轮之后的行。 */
@@ -658,8 +658,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   /** 脸此刻到底是哪一张（解析后的 mood）。只作为**观测钩子**：canvas 像素能证明在动，
    *  证明不了动的是哪张脸 —— sweep 和操作者都需要一个能读的答案。mood 变了才 setState，
    *  不是每帧（帧循环 30 fps，每帧 setState 会把整页会话一起重渲染）。 */
-  const [faceMood, setFaceMood] = useState<NomiMood | null>(null);
-  const faceEmotion: NomiMood | null = (() => {
+  const [faceMood, setFaceMood] = useState<TusMood | null>(null);
+  const faceEmotion: TusMood | null = (() => {
     const tagged = readEmoTags(agentText);
     if (tagged.length) return tagged[tagged.length - 1];
     return deriveEmotion(stripEmoTags(agentText));
@@ -1519,7 +1519,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
   );
 
   return createPortal(
-    <div className="call-mode" data-phase={phase} data-mood={nomi ? faceEmotion : undefined} data-face={nomi ? faceMood ?? undefined : undefined} data-substate={nomi ? faceSubstate : undefined} data-caption={caption} data-nomi={nomi ? "true" : "false"} role="dialog" aria-modal="true" aria-label={nomi ? "糯米模式通话" : "语音通话"}>
+    <div className="call-mode" data-phase={phase} data-mood={tus ? faceEmotion : undefined} data-face={tus ? faceMood ?? undefined : undefined} data-substate={tus ? faceSubstate : undefined} data-caption={caption} data-tus={tus ? "true" : "false"} role="dialog" aria-modal="true" aria-label={tus ? "Tus 模式通话" : "语音通话"}>
       <button
         type="button"
         className="call-gear"
@@ -1546,7 +1546,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
 
       {/* The stage header exists only in the stage view: the transcript view's toolbar carries the
           same switch, and drawing both would say the phase twice and cost the record 44px. */}
-      {!caption && !nomi ? (
+      {!caption && !tus ? (
         <div className="call-head">
           <span className="call-title">{PHASE_LABEL[phase]}</span>
           <span className="call-sub">{muted ? "麦克风已静音" : "免提 · 语音通话"}</span>
@@ -1564,11 +1564,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
         <canvas ref={canvasRef} className="call-orb-canvas" />
       </button>
 
-      {/* 表情区：竖屏在上、横屏在左（CSS 分区，见 theme.css 里的 data-nomi 段）。它不是装饰——
+      {/* 表情区：竖屏在上、横屏在左（CSS 分区，见 theme.css 里的 data-tus 段）。它不是装饰——
           通话里最长的那段时间（跑工具、等你授权）它一个字都不输出，屏幕上唯一的活物就是这张脸。 */}
-      {nomi ? (
-        <div className="call-nomi-face" data-substate={faceSubstate}>
-          <NomiFace
+      {tus ? (
+        <div className="call-tus-face" data-substate={faceSubstate}>
+          <TusFace
             phase={phase}
             activity={faceActivity}
             substate={faceSubstate}
@@ -1578,18 +1578,18 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, nom
             getLevel={faceLevel}
             onMood={setFaceMood}
           />
-          <div className="nomi-face-foot">
-            <span className="nomi-face-state">{PHASE_LABEL[phase]}</span>
-            {nomi && !cfg.wakePhrase ? (
-              <span className="nomi-face-warn" title="糯米模式固定用关键词打断；没设唤醒词时只有点圆球/按住说话能抢话筒">
-                糯米模式用关键词打断 · 还没设唤醒词
+          <div className="tus-face-foot">
+            <span className="tus-face-state">{PHASE_LABEL[phase]}</span>
+            {tus && !cfg.wakePhrase ? (
+              <span className="tus-face-warn" title="Tus 模式固定用关键词打断；没设唤醒词时只有点圆球/按住说话能抢话筒">
+                Tus 模式用关键词打断 · 还没设唤醒词
               </span>
             ) : null}
           </div>
         </div>
       ) : null}
 
-      {caption || nomi ? (
+      {caption || tus ? (
         /* The transcript view: the page is the words. The ball is still there (the canvas is
            untouched, `.call-orb` is just moved behind the frosted panel by CSS), so the phases keep
            their colour and the reply keeps pulsing — it is the LIGHT behind the text, not a

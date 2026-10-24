@@ -1,12 +1,12 @@
-// Unit checks for the face's mood engine (packages/web/src/nomiMood.ts).
+// Unit checks for the face's mood engine (packages/web/src/tusMood.ts).
 //
-// Why a unit test and not a browser sweep: every number that makes 糯米模式's face look ALIVE is
+// Why a unit test and not a browser sweep: every number that makes Tus 模式's face look ALIVE is
 // arithmetic — which eye height at which audio level, when it blinks, when it starts to doze off,
 // whether a `[emo:happy]` tag survives into the words we speak. A canvas sweep can prove the face
 // MOVES; it cannot prove the eye is the right shape at 3.4 s of thinking, nor that a tag was
 // stripped before TTS. Those are the two failure modes worth pinning, so they are pinned here.
 //
-// Run: npx tsx scripts/qa/nomi-mood.mts
+// Run: npx tsx scripts/qa/tus-mood.mts
 import { readFileSync } from "node:fs";
 import {
   BLINK_BLOCKED, CLIP_DY_UNIT, CLIP_MAX_MS, CLIP_MIN_MS, CLIP_NAMES, CLIP_PRIORITY, CLIP_ROT_UNIT, CLIPS, EMO_MOODS,
@@ -16,8 +16,8 @@ import {
   eyeSepAngle, eyeSpacing, gazeAngles, lifeBeat, moodFor, nextBlinkMs, normalizeClip, substateOf,
   smoothLevel, voiceCue, nextSaccadeMs, saccadeFor, projectEyes,
   readEmoTags, stripEmoTags, thinkingStage,
-  type ClipName, type NomiMood, type ToolSubstate,
-} from "../../packages/web/src/nomiMood.ts";
+  type ClipName, type TusMood, type ToolSubstate,
+} from "../../packages/web/src/tusMood.ts";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -28,7 +28,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 const seq = (...v: number[]) => { let i = 0; return () => v[Math.min(i++, v.length - 1)]; };
 const expr = (phase: "listening" | "thinking" | "speaking" | "idle", level = 0, elapsed = 0, o: { resting?: boolean; warmth?: number } = {}) =>
   exprFor(phase, level, elapsed, o);
-const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
+const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   eyeFrame({ mood, right: false, blinking: false, t: 0, level: 0, expr: expr("idle"), ...o });
 
 // 1. Sixteen faces, sixteen signatures. If two moods collapse onto the same geometry the operator
@@ -41,7 +41,7 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     return [e.shape, Math.round(e.w), Math.round(e.h), e.rot.toFixed(1), e.yScale.toFixed(2),
       Math.round(e.y), Math.round(e.x), e.xScale.toFixed(1), e.alpha.toFixed(2), e.arc ?? ""].join("|");
   }));
-  check("all 18 faces are distinct on screen (16 from Nomi + working/asking)",
+  check("all 18 faces are distinct on screen (16 from OpenNomi + working/asking)",
     MOODS.length === 18 && sig.size === MOODS.length, `${sig.size}/${MOODS.length} distinct`);
   check("table covers the arc pair + the error cross",
     eye("happy").shape === "arc" && eye("sad").shape === "arc" && eye("error").shape === "x");
@@ -63,7 +63,7 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
 
 // 2.5 渲染器那条链必须兑现「两只眼分开」：live 实测（2026-10-24）旧实现写死 sep=21°，
 //     中心距 35.7 < focus 眼宽 40，听你说话时两只眼贴成一个“暂停”符号。
-//     这里不再只验 eyeSepAngle 的逆运算 —— 直接走 NomiFace 用的那串
+//     这里不再只验 eyeSepAngle 的逆运算 —— 直接走 TusFace 用的那串
 //     eyeFrame → gazeAngles → projectEyes，把 mood × 子状态 × 球径 × 指针极端铺满；
 //     渲染器退回固定角度/平面布局，或宽眼在大角度上被球缘剪平，都会在这里转红。
 {
@@ -107,7 +107,7 @@ const eye = (mood: NomiMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("eyeSepAngle 对非有限宽度/半径仍然返回有限角",
     Number.isFinite(eyeSepAngle({ mood: "idle", leftW: NaN, rightW: 34, ballR: NaN })));
   // 几何函数再好，渲染器不调用它也守不住 —— 这条把“渲染器走 projectEyes”钉住。
-  const faceSrc = readFileSync(new URL("../../packages/web/src/NomiFace.tsx", import.meta.url), "utf8");
+  const faceSrc = readFileSync(new URL("../../packages/web/src/TusFace.tsx", import.meta.url), "utf8");
   check("渲染器真的走 projectEyes（自己另算一套 / 退回固定角距会在这里转红）",
     /projectEyes\(/.test(faceSrc) && !/sep:\s*21\b/.test(faceSrc));
 }

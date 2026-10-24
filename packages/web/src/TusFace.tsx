@@ -1,10 +1,10 @@
-// 糯米模式的脸 —— 一块 canvas，两只眼睛，和一套会被声音点亮的数字。
+// Tus 模式的脸 —— 一块 canvas，两只眼睛，和一套会被声音点亮的数字。
 //
 // WHY A CANVAS AND NOT DOM. 60 fps 的形状/光晕/抖动，如果走 React state 就是每秒 60 次渲染一整个
 // 会话页。这里沿用 `CallMode` 画 orb 的那套读法：**帧循环只读 ref**，React 只负责告诉它「相位变了」
 // 「来了一条工具」；电平也是每次进来取一次（`getLevel()`），不经过 state。
 //
-// 几何与情绪表在 `nomiMood.ts`（纯函数、有单测）；这个文件只做「把数字画出来」：
+// 几何与情绪表在 `tusMood.ts`（纯函数、有单测）；这个文件只做「把数字画出来」：
 //   · 眼睛 = capsule（圆角矩形，圆角取短边一半），happy/sad 换成弧线，error 换成 ✕；
 //   · 三个 continuous 量决定形状：attention 管眼宽、energy 管亮度、warmth 管说完之后的余温；
 //   · 会呼吸（2 s ±6 px）、会眨眼（2.8–6.4 s 随机）、会走神（每 6 s 56 %）、会犯困（90 s）；
@@ -17,17 +17,17 @@ import {
   WORK_STRETCH_MS, applyClip, blinkHoldMs, clipDurationMs, clipFor, clipFrameAt, exprFor, eyeFrame,
   lifeBeat, moodFor, nextBlinkMs, nextSaccadeMs, saccadeFor, smoothLevel, thinkingStage,
   voiceCue, ballFrame, springStep, gazeAngles, projectEyes,
-  type AgentActivity, type ClipName, type MicroAction, type NomiMood, type ToolSubstate,
-} from "./nomiMood";
+  type AgentActivity, type ClipName, type MicroAction, type TusMood, type ToolSubstate,
+} from "./tusMood";
 
-export interface NomiFaceProps {
+export interface TusFaceProps {
   phase: CallPhase;
   /** 这一轮 agent 在干嘛（工具 / 等授权 / 想）—— 比相位更细，见 `activityOf`。 */
   activity: AgentActivity;
   /** 工具执行的可观测子状态（读/跑/写/等/完成/失败）—— 五官在 working 脸上再分一层。 */
   substate?: ToolSubstate;
   /** 这一句的情绪（标签优先、本地派生兜底），null = 没有。 */
-  emotion?: NomiMood | null;
+  emotion?: TusMood | null;
   /** 单调递增的工具帧计数：一变就点一下头（"手上有活"）并播 tool-start。 */
   ticks?: number;
   /** 最后一个工具行的 status：终态变化时播 tool-done / tool-fail。 */
@@ -35,14 +35,14 @@ export interface NomiFaceProps {
   /** 实时电平 0..1（说话时是播放，听的时候是麦克风）。每帧取一次，不进 state。 */
   getLevel: () => number;
   /** 解析后的那张脸（不是相位）。给页面留一个可观测钩子：canvas 像素只能证明「在动」。 */
-  onMood?: (mood: NomiMood) => void;
+  onMood?: (mood: TusMood) => void;
 }
 
 /** 一帧里所有会衰减的东西。全部放进 ref：它们只在帧循环里读写。 */
 interface Mutable {
   /** 上一帧的相位：变了就重置 "这一段想了多久"（thinkingStage 的台阶靠它）。 */
   phase: CallPhase | "idle";
-  life: NomiMood | null;
+  life: TusMood | null;
   lifeUntil: number;
   nextBlinkAt: number;
   blinkUntil: number;
@@ -58,7 +58,7 @@ interface Mutable {
   micro: MicroAction | null;
   microAt: number;
   microUntil: number;
-  mood: NomiMood;
+  mood: TusMood;
   moodAt: number;
   ticks: number;
   /** 最后一个工具行的 status（终态变化 → 播完成/失败 clip）。 */
@@ -98,7 +98,7 @@ const fresh = (now: number): Mutable => ({
   ballRot: 0, ballRotV: 0,
 });
 
-export function NomiFace({ phase, activity, substate = "idle", emotion = null, ticks = 0, toolStatus = "", getLevel, onMood }: NomiFaceProps): JSX.Element {
+export function TusFace({ phase, activity, substate = "idle", emotion = null, ticks = 0, toolStatus = "", getLevel, onMood }: TusFaceProps): JSX.Element {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const props = useRef({ phase, activity, substate, emotion, ticks, toolStatus });
   props.current = { phase, activity, substate, emotion, ticks, toolStatus };
@@ -283,7 +283,7 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
       g.scale(dpr, dpr);
       const w = W / dpr, h = H / dpr;
       // ── 球（本体）────────────────────────────────────────────────────────────────
-      // 比例尺：球半径 ≈ 98 逻辑单位（和 nomiMood.ballFrame 的基准一致），整块高度装得下球
+      // 比例尺：球半径 ≈ 98 逻辑单位（和 tusMood.ballFrame 的基准一致），整块高度装得下球
       // 加上一圈留白；眼睛按同一个比例尺缩放，所以球变大时眼睛跟着变，不会「球大眼小」。
       const k = Math.max(0.5, Math.min(3.2, Math.min(w / 260, h / 260)));
       let target = ballFrame(mood, {
@@ -460,5 +460,5 @@ export function NomiFace({ phase, activity, substate = "idle", emotion = null, t
     lastPhase.current = phase;
   }
 
-  return <canvas ref={ref} className="nomi-face-canvas" aria-hidden="true" />;
+  return <canvas ref={ref} className="tus-face-canvas" aria-hidden="true" />;
 }
