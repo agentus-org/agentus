@@ -559,6 +559,7 @@ export class Store {
     if (!beCols.has("last_check_latency_ms")) {
       this.#db.exec("alter table backends add column last_check_latency_ms integer");
     }
+    this.#migrateLegacyRepairVersions();
     this.#foldStreamedChunks();
     // …then the one-time removal of what the REPLAYS already wrote (see #dedupeReplayedRows), and the
     // clock for a store that predates the column — computed after the cleanup, so a session's time is
@@ -580,14 +581,33 @@ export class Store {
     const row = this.#db.prepare("select version from repairs where name = ?").get(name) as
       | { version?: number } | undefined;
     if (row && typeof row.version === "number") return row.version;
-    // `pragma user_version` was the shared counter of the pre-`repairs` era, and one pass's number
-    // could satisfy another's: a store with a fold row and NO dedupe row read the fold's number from
-    // user_version and concluded the cleanup had run. Once a store carries any `repairs` row, a
-    // missing row means "this pass never ran here" — full stop.
-    const any = this.#db.prepare("select count(*) as c from repairs").get() as { c?: number } | undefined;
-    if (Number(any?.c ?? 0) > 0) return 0;
+    // Past the one-time migration below, a missing row really does mean "this pass never ran here".
+    return Math.min(this.#legacyUv(), legacy);
+  }
+
+  #legacyUv(): number {
     const uv = this.#db.prepare("pragma user_version").get() as { user_version?: number } | undefined;
-    return Math.min(Number(uv?.user_version ?? 0), legacy);
+    return Number(uv?.user_version ?? 0);
+  }
+
+  /**
+   * `pragma user_version` was the shared counter of the pre-`repairs` era, and one pass's number
+   * could satisfy another's — a store whose counter read 4 "had run" the cleanup even when only the
+   * fold had ever recorded anything. Read it as legacy exactly once, write what it implies into
+   * per-pass rows, and leave a marker so the reading never happens again. Without the marker, a
+   * destructive pass runs on a store whose record it cannot interpret (measured on the operator's
+   * file: 767 rows and 15 session clocks moved on a boot that had nothing to do).
+   */
+  #migrateLegacyRepairVersions(): void {
+    const marker = this.#db.prepare("select version from repairs where name = ?").get("per-pass-rows");
+    if (marker) return;
+    const any = this.#db.prepare("select count(*) as c from repairs").get() as { c?: number } | undefined;
+    if (Number(any?.c ?? 0) === 0 && this.#legacyUv() === 0) return;   // brand-new store: nothing to seed
+    const uv = this.#legacyUv();
+    const ins = this.#db.prepare("insert into repairs (name, version, at) values (?,?,?) on conflict(name) do nothing");
+    ins.run("fold", Math.min(uv, 2), Date.now());
+    ins.run("dedupe", uv >= 4 ? 4 : 0, Date.now());
+    ins.run("per-pass-rows", 1, Date.now());
   }
 
   #setRepairVersion(name: string, version: number): void {
@@ -623,7 +643,12 @@ export class Store {
     const FOLD_VERSION = 4;
     // A store that predates the repairs table recorded its fold in user_version (2 = the rules
     // shipped with it). Anything at 0/1 never folded at all.
-    const seenFold = this.#repairVersion("fold", 2) >= 2;
+    // Two different questions: whether the pass must run again (the version gate below) and whether
+    // this file was EVER folded — the un-windowed replay rule is only safe on a store that never was,
+    // and it has no time window, so a genuine repeat reads as a copy and the second message is
+    // deleted. `user_version >= 2` is the legacy record of a fold that never wrote a `repairs` row
+    // (a boot whose backup failed returns before recording anything).
+    const seenFold = this.#repairVersion("fold", 2) >= 2 || this.#legacyUv() >= 2;
     if (this.#repairVersion("fold", 2) >= FOLD_VERSION) {
       // v3 shipped a rule that could glue two DISTINCT messages when the replay cleanup had removed
       // the rows between them; a store folded by it keeps those rows — no re-run can un-merge them
@@ -741,7 +766,9 @@ export class Store {
     try {
       this.#db.exec(`vacuum into '${bak.replace(/'/g, "''")}'`);
       console.log(`[store] 修复前已备份：${bak}`);
-      // Keep the newest three per tag; a 400k-row store copies to hundreds of MB.
+      // Keep the newest copy of every pass version (the run before a rule change is the one that may
+      // hold rows the newer rule no longer produces) plus the newest three overall; a 400k-row store
+      // copies to hundreds of MB, so this must not grow with every version bump.
       try {
         const dir = path.dirname(this.#path);
         const base = path.basename(this.#path);
@@ -749,10 +776,17 @@ export class Store {
           .readdirSync(dir)
           // per tag AND per pass version: bumping the version must not evict the backup of the run
           // that came before it (the one that may hold the rows the newer rule no longer produces)
-          .filter((f) => f.startsWith(`${base}.pre-${tag}-v${version}-`))
+          .filter((f) => f.startsWith(`${base}.pre-${tag}-v`))
           .map((f) => ({ f, at: fs.statSync(path.join(dir, f)).mtimeMs }))
           .sort((a, b) => b.at - a.at);
-        for (const old of mine.slice(3)) fs.unlinkSync(path.join(dir, old.f));
+        const keep = new Set(mine.slice(0, 3).map((x) => x.f));
+        const perVersion = new Set<string>();
+        for (const x of mine) {
+          const m = /-v(\d+)-/.exec(x.f);
+          const v = m?.[1] ?? "";
+          if (!perVersion.has(v)) { perVersion.add(v); keep.add(x.f); }
+        }
+        for (const old of mine) if (!keep.has(old.f)) fs.unlinkSync(path.join(dir, old.f));
       } catch {
         /* pruning is a courtesy — never fail the repair over it */
       }
@@ -804,6 +838,7 @@ export class Store {
     let toolsDropped = 0;
     let textDropped = 0;
     let kept = 0;
+    const doomedSessions = new Set<string>();
     const sessions = this.#db
       .prepare("select distinct session_id as id from messages")
       .all() as unknown as { id: string }[];
@@ -860,6 +895,7 @@ export class Store {
         textDropped += 1;
       }
       for (const seq of doomed) del.run(id, seq);
+      if (doomed.size > 0) doomedSessions.add(id);
       after += rows.length - doomed.size;
     }
     // The same replay also bumped the session's ACTIVITY clock — `#touch` fires on any write, so a
@@ -867,14 +903,22 @@ export class Store {
     // eleven sessions at once, 10:44:52 → 10:45:20). With the copies now gone, a clock that sits
     // AHEAD of the session's newest surviving row is provably that bump and nothing else, so put it
     // back to the row that is actually there. A session with no messages left keeps what it has.
-    const clock = this.#db
-      .prepare(
-        `update sessions set last_activity_at =
-           (select max(m.created_at) from messages m where m.session_id = sessions.id)
-         where last_activity_at is not null
-           and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
-      )
-      .run();
+    // …and only where rows were actually removed. A session's clock legitimately sits ahead of its
+    // newest row after any long turn (`#touch` at turn end), so an unscoped version of this rewrote
+    // the rail order of every session in the file — 15 clocks moved on a boot that deleted from 5.
+    let clock = { changes: 0 as number | bigint };
+    if (doomedSessions.size > 0) {
+      const ids = [...doomedSessions];
+      clock = this.#db
+        .prepare(
+          `update sessions set last_activity_at =
+             (select max(m.created_at) from messages m where m.session_id = sessions.id)
+           where id in (${ids.map(() => "?").join(",")})
+             and last_activity_at is not null
+             and last_activity_at > (select max(m.created_at) from messages m where m.session_id = sessions.id)`,
+        )
+        .run(...ids);
+    }
     this.#setRepairVersion("dedupe", DEDUPE_VERSION);
     if (before !== after) {
       console.log(

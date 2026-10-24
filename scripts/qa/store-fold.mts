@@ -10,6 +10,9 @@ import { Store } from "../../packages/server/src/store/store.ts";
 
 let ok = 0;
 let failed = 0;
+/** Backups present in a directory now — diffed against a snapshot so the assertion is about THIS pass. */
+const baksNow = (db: string): Set<string> => new Set(fs.readdirSync(path.dirname(db)).filter((f) => f.endsWith(".bak")));
+
 function check(name: string, cond: boolean, detail = ""): void {
   if (cond) { ok += 1; console.log(`  ok   ${name}`); }
   else { failed += 1; console.error(`  FAIL ${name}${detail ? ` — ${detail}` : ""}`); }
@@ -118,6 +121,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   era(raw, 0);
   raw.close();
 
+  const baksBefore = baksNow(dbPath);
   const store = new Store(dbPath); // the constructor folds
   const rows = store.messagesTail("s-legacy", 100).messages;
   check("a legacy reply collapses to one row", rows.filter((r) => r.kind === "agent").length === 1,
@@ -126,8 +130,10 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     (rows.find((r) => r.kind === "agent")?.payload as { content: { text: string } }).content.text === legacy,
     JSON.stringify((rows.find((r) => r.kind === "agent")?.payload as { content: { text: string } }).content.text).slice(0, 80));
   check("the other rows are untouched", rows.some((r) => r.kind === "user"));
-  check("a backup file was written, named for this pass and this moment",
-    fs.readdirSync(path.dirname(dbPath)).some((f) => f.startsWith(`${path.basename(dbPath)}.pre-fold-v`)), dbPath);
+  const freshBaks = [...baksNow(dbPath)].filter((f) => !baksBefore.has(f));
+  check("a backup file was written by THIS pass, named for the pass version and the moment",
+    freshBaks.some((f) => f.startsWith(`${path.basename(dbPath)}.pre-fold-v4-`)),
+    JSON.stringify(freshBaks));
   // re-open: nothing should change
   store.close();
   const again = new Store(dbPath);
@@ -212,6 +218,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   era(raw, 2);
   raw.close();
 
+  const rpBaksBefore = baksNow(rpDb);
   const store = new Store(rpDb); // the constructor cleans up
   const rows = store.messagesTail("s-rp", 500).messages;
   const seqs = rows.map((r) => r.seq);
@@ -225,7 +232,8 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     rows.filter((r) => r.kind === "tool").length === 2 && rows.filter((r) => r.kind === "agent").length === 4,
     `${rows.filter((r) => r.kind === "tool").length} tool, ${rows.filter((r) => r.kind === "agent").length} agent`);
   check("a backup was made before deleting anything",
-    fs.readdirSync(path.dirname(rpDb)).some((f) => f.startsWith(`${path.basename(rpDb)}.pre-dedupe-v`)), rpDb);
+    [...baksNow(rpDb)].some((f) => !rpBaksBefore.has(f) && f.startsWith(`${path.basename(rpDb)}.pre-dedupe-v4-`)),
+    JSON.stringify([...baksNow(rpDb)]));
   store.close();
   const again = new Store(rpDb);
   check("re-opening does not clean again",
@@ -553,6 +561,80 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   const thoughtRows = store.messagesTail("s-long-thought", 100).messages;
   check("a 10 s punctuation-free thought is ONE row", thoughtRows.length === 1, `${thoughtRows.length} rows`);
   store.close();
+}
+
+
+// ---- 16. the 750 ms rule still bites: a full stop then a real pause is two messages -----------
+// Fixture 15 only proves long streams merge. The opposite direction needs its own row, or a rule
+// that quietly drops the sentence-boundary test (merge everything within 2 s) would still pass.
+{
+  const raw = new DatabaseSync(dbPath);
+  let seq = 1200;
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id) values (?,?,?,?,?,?,?,?)",
+  );
+  const p6 = (text: string) => JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+  const at = Date.now() - 200_000;
+  ins.run(++seq, "s-pause", "agent", p6("The answer is 42. "), null, null, at, 11);
+  ins.run(++seq, "s-pause", "agent", p6("And the second point."), null, null, at + 1000, 11);
+  ins.run(++seq, "s-pause-noid", "agent", p6("Done with step one. "), null, null, at, null);
+  ins.run(++seq, "s-pause-noid", "agent", p6("Now step two."), null, null, at + 1000, null);
+  // …and a 6 s stream WITH full stops throughout: the shape the 2 s window used to cut at 2 s
+  let t = Date.now() - 100_000;
+  for (let i = 0; i < 150; i += 1) { t += 40; ins.run(++seq, "s-6s", "agent", p6(i % 2 ? "done. " : "still going "), null, null, t, 12); }
+  era(raw, 1);
+  raw.close();
+
+  const store = new Store(dbPath);
+  check("a full stop then a 1 s pause is TWO messages (same turn id)",
+    store.messagesTail("s-pause", 50).messages.length === 2,
+    `${store.messagesTail("s-pause", 50).messages.length} rows`);
+  check("…and two messages without a turn id as well",
+    store.messagesTail("s-pause-noid", 50).messages.length === 2,
+    `${store.messagesTail("s-pause-noid", 50).messages.length} rows`);
+  check("a 6 s stream full of full stops is still ONE row",
+    store.messagesTail("s-6s", 200).messages.length === 1,
+    `${store.messagesTail("s-6s", 200).messages.length} rows`);
+  store.close();
+}
+
+// ---- 17. a legacy store is not read as "never folded" (round-4 M1) ----------------------------
+// `pragma user_version >= 2` is the record of a fold written by a build that had no `repairs` row,
+// and the un-windowed replay rule is only safe on a store that was NEVER folded: it has no clock, so
+// a genuine repeat 6 h later reads as a copy of the first and gets deleted.
+{
+  const dir7 = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-legacy-"));
+  const db7 = path.join(dir7, "agentus.sqlite");
+  new Store(db7).close();
+  const raw = new DatabaseSync(db7);
+  const ins = raw.prepare(
+    "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id) values (?,?,?,?,?,?,?,?)",
+  );
+  const long = "Summary of the change: the fold walk now measures its window from the last merged frame instead of the first one. ";
+  const inner = long.slice(0, 80);
+  const t0 = Date.now() - 6 * 3600_000;
+  ins.run(1, "s-legacy-gap", "agent", JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: long } }), null, null, t0, null);
+  ins.run(2, "s-legacy-gap", "agent", JSON.stringify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: inner } }), null, null, t0 + 6 * 3600_000, null);
+  // the shape the operator's own file has: a dedupe record, a user_version that says 4, no fold row
+  raw.exec("delete from repairs");
+  raw.prepare("pragma user_version = 4").run();
+  raw.prepare("insert into repairs (name, version, at) values ('dedupe',?,?)").run(4, Date.now());
+  raw.close();
+
+  const store = new Store(db7);
+  check("a legacy-folded store keeps a repeat written 6 h later",
+    store.messagesTail("s-legacy-gap", 50).messages.length === 2,
+    `${store.messagesTail("s-legacy-gap", 50).messages.length} rows`);
+  check("…and the legacy counter is now written down per pass, once",
+    (() => {
+      const r = new DatabaseSync(db7, { readOnly: true });
+      const names = (r.prepare("select name from repairs").all() as unknown as { name: string }[]).map((x) => x.name).sort();
+      r.close();
+      return names.includes("per-pass-rows");
+    })(),
+    "no per-pass-rows marker");
+  store.close();
+  fs.rmSync(dir7, { recursive: true, force: true });
 }
 
 fs.rmSync(dir, { recursive: true, force: true });
