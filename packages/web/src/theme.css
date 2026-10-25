@@ -2578,6 +2578,22 @@ body.pane-dragging * { cursor: col-resize !important; }
   --text-dim: rgba(238,242,247,0.60);
   --err: #f2555a;
   --on-accent: #0b1220;
+  /* The rows in this sheet are the chat page's OWN components (renderTranscript), so they reach for
+     surfaces this block did not override: `--bg` behind an expanded tool body, `--chip-bg` behind
+     inline code, the semantic tints on tool borders. Left at the light palette's values, a light chip
+     under this sheet's near-white `--text` measured 1.05:1 and the tool body's `pre` 1.04:1 — the
+     operator's 「代码是白色的，根本看不清」. A surface that puts text on it owns its colours, so the
+     whole set is stated here, not just the three that happened to look wrong. */
+  --bg: #0a0f14;
+  --code-bg: #0a0f14;
+  --code-fg: #d7e2ea;
+  --chip-bg: rgba(255, 255, 255, 0.10);
+  --bg-input: rgba(255, 255, 255, 0.10);
+  --ok: #4ec9a0;
+  --tool: #5ba8d4;
+  --thought: #8f7bd7;
+  --scroll-thumb: rgba(255, 255, 255, 0.18);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.34);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px;
   padding: max(20px, env(safe-area-inset-top)) 18px calc(20px + env(safe-area-inset-bottom));
