@@ -865,6 +865,23 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     } catch { /* no audio device: the line on screen still says it */ }
   };
 
+  /** 自动播放策略：AudioContext 在**用户手势的调用栈里**才允许出声，而这个 ctx 是挂载时建的。
+   *  没有这一步，预取的音都解码好了、source 也 start 了，但整个 context 是 suspended ——
+   *  听上去就是"什么都没改"。一次点击之后浏览器就记住这个页面可以出声了。 */
+  useEffect(() => {
+    const unlock = (): void => {
+      const c = sfxCtx();
+      if (c && c.state === "suspended") void c.resume().catch(() => { /* still no gesture */ });
+    };
+    window.addEventListener("pointerdown", unlock, { capture: true, once: true });
+    window.addEventListener("keydown", unlock, { capture: true, once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** 预取两个音：背景音要 32 秒、不能等它下完，打断音要快、不能第一次点时还空着。 */
   useEffect(() => {
     const c = sfxCtx();
@@ -1171,12 +1188,6 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *    而且不占用喇叭队列 —— 说完你马上就能开口。 */
   const confirmTakeFloor = (): void => {
     if (!aliveRef.current) return;
-    if (cfgRef.current.interruptMode !== "voice") {
-      void withSpeechLock(async () => {
-        await speaker.speak("好，停了", "call", prefs).catch(() => { /* nothing to confirm with */ });
-      });
-      return;
-    }
     playCut();       // 一声音就够：语义是「停了」，不是「叮咚」（#61）
   };
 
