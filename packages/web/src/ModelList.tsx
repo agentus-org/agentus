@@ -21,9 +21,13 @@ export type ModelItem = { modelId: string; name?: string | null; description?: s
 /** Above this many models the list gets a filter box. */
 const FILTER_FROM = 12;
 
-export function ModelList({ models, current, onPick, bad = {}, err = null }: {
+export function ModelList({ models, current, usage = {}, pending = null, onPick, bad = {}, err = null }: {
   models: ModelItem[];
   current: string;
+  /** #62-1 热度：`modelId → 成功切换次数`。两层排序 —— 组按累计热度，组内按各自热度。 */
+  usage?: Record<string, number>;
+  /** #62-2 冷会话上选定但还没生效的模型（没有 agent 可以发 set_model，等 resume 重放） */
+  pending?: string | null;
   /** the pick; the caller decides whether the list closes (a refusal keeps it open, to be read) */
   onPick: (modelId: string) => void;
   /** ids this agent has already refused, with the sentence it gave */
@@ -50,11 +54,23 @@ export function ModelList({ models, current, onPick, bad = {}, err = null }: {
     }
     const here = models.find((m) => m.modelId === current);
     const hereKey = here ? modelProvider(here) : "";
+    const heat = (id: string): number => usage[id] ?? 0;
     return [...byProvider.entries()]
-      .map(([provider, list]) => ({ provider, list: list.slice(0, 200), truncated: list.length > 200, current: provider === hereKey }))
-      // the operator's provider first, then alphabetically
-      .sort((a, b) => (a.current === b.current ? a.provider.localeCompare(b.provider) : a.current ? -1 : 1));
-  }, [models, query, current]);
+      .map(([provider, list]) => {
+        // 组内：常用在前。同分时按 id，保证顺序稳定（不会因为 Map 迭代顺序抖动）。
+        const sorted = [...list].sort((a, b) => (heat(b.modelId) - heat(a.modelId)) || a.modelId.localeCompare(b.modelId));
+        return {
+          provider,
+          list: sorted.slice(0, 200),
+          truncated: sorted.length > 200,
+          current: provider === hereKey,
+          // 组热度 = 组内累计：一个供应商用了很多次，哪怕单个模型分散，也该浮上来。
+          heat: sorted.reduce((n, m) => n + heat(m.modelId), 0),
+        };
+      })
+      // 当前模型所在的组永远置首（原有语义），其余按热度，最后才按名字。
+      .sort((a, b) => (a.current !== b.current ? (a.current ? -1 : 1) : (b.heat - a.heat) || a.provider.localeCompare(b.provider)));
+  }, [models, query, current, usage]);
 
   return (
     <div className="tb-list wide stacked" ref={listRef}>
@@ -96,7 +112,7 @@ export function ModelList({ models, current, onPick, bad = {}, err = null }: {
                   {g.list.map((m) => (
                     <button
                       key={m.modelId}
-                      className={`tb-opt ${m.modelId === current ? "sel" : ""} ${err?.id === m.modelId || bad[m.modelId] ? "bad" : ""}`}
+                      className={`tb-opt ${m.modelId === current ? "sel" : ""} ${pending === m.modelId ? "pending" : ""} ${err?.id === m.modelId || bad[m.modelId] ? "bad" : ""}`}
                       title={bad[m.modelId]
                         ? `${m.modelId} — this agent refused it: ${bad[m.modelId]}`
                         : (m.description ? `${m.modelId} — ${m.description}` : m.modelId)}
@@ -105,6 +121,7 @@ export function ModelList({ models, current, onPick, bad = {}, err = null }: {
                       onClick={() => onPick(m.modelId)}
                     >
                       <span className="tb-opt-name">{rowModelName(m, g.provider)}</span>
+                      {pending === m.modelId ? <span className="tb-opt-pending">待生效</span> : null}
                     </button>
                   ))}
                 </div>

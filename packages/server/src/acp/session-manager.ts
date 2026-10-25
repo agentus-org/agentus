@@ -15,6 +15,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import { applyContextWindow, BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
+import { providerFromDescription, writeModelDefault } from "../model-default.js";
 import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
 import { thinkingOptionOf, voiceAppliesToPrompt, voiceModeBlock } from "./voice-mode.js";
 import {
@@ -51,7 +52,7 @@ import type {
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
-import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, type PlanHintSettings } from "../settings.js";
+import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
 
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
@@ -1213,7 +1214,20 @@ export class SessionManager {
         }
       }
       live.info.status = "ready";
+      // 新进程的 info 不会自带 pending：如果这里不补，下面 #updateSession 会把操作者在冷槽上
+      // 选好的模型按"没有"持久化掉 —— 意图在下一次写库时静默消失。
+      live.info.pendingModelId = row.pendingModelId ?? null;
       this.#updateSession(live);
+      // #62-2 重放：操作者在冷会话上选过的模型，现在有 agent 了，把它补发出去。
+      // 被 agent 拒绝时不清 pending —— 下一次 resume 还会再试一次，操作者也能在列表上看到没生效。
+      const pendingModel = live.info.pendingModelId ?? row.pendingModelId ?? null;
+      if (pendingModel) {
+        try {
+          await this.setModel(id, pendingModel);
+        } catch (e) {
+          console.log(`[agentus] pending model ${pendingModel} for ${id} was refused: ${errMessage(e)}`);
+        }
+      }
       // a resumed slot is the same evidence as a fresh one: the row does work
       this.#noteBackendCheck(
         String(row.backend),
@@ -1354,12 +1368,31 @@ export class SessionManager {
   }
 
   /** One row in the shape list()/cold()/archived() produce, from a stored row. */
+  /** #62-3：把这次选择写进 agent 自己的配置。失败只记日志 —— 会话已经在新模型上跑起来了，
+   *  配置文件没写成是"下次新会话的默认没跟上"，不该回头把一次成功的切换报成失败。 */
+  #writeBackModelDefault(info: SessionInfo, modelId: string): void {
+    try {
+      const shape = this.#spawnShape(info.backend);
+      if (!shape) return;
+      const home = buildSpawnEnv(shape.spec).home;
+      const desc = (info.models?.availableModels ?? []).find((m) => m.modelId === modelId)?.description ?? null;
+      const r = writeModelDefault(info.backend, home, modelId, { provider: providerFromDescription(desc) });
+      if (!r.ok) console.log(`[agentus] model default not written (${info.backend}): ${r.reason}`);
+      else if (r.changed) {
+        console.log(`[agentus] model default → ${modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend}`);
+      }
+    } catch (e) {
+      console.log(`[agentus] model default write-back failed: ${errMessage(e)}`);
+    }
+  }
+
   #infoFromRow(r: SessionRow): SessionInfo {
     return {
       id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
       workspace: r.workspace ?? null,
       models: (r.models ?? null) as SessionInfo["models"],
       contextLimit: r.contextLimit ?? null,
+      pendingModelId: r.pendingModelId ?? null,
       title: r.title, autoTitle: r.autoTitle ?? null, titleBy: r.titleBy ?? null, status: r.status, pid: null,
       createdAt: r.createdAt,
       modes: (r.modes ?? null) as SessionModeState | null,
@@ -2999,14 +3032,42 @@ export class SessionManager {
    *  against hermes acp, which implements set_session_model). A cold slot has no agent
    *  to switch: resume it first, then pick (same rule as modes). */
   async setModel(id: string, modelId: string): Promise<SessionInfo> {
-    const s = this.#need(id);
-    if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready — resume it first");
+    const live = this.#sessions.get(id);
+    // 「能不能真的发出去」不是"map 里有没有这一条"，而是**进程还活着**：崩掉的槽位仍在 map 里、
+    // conn 也还挂着，对它发请求只会得到 `ACP connection closed`。所以先问进程。
+    const hot = Boolean(live && live.conn && live.info.acpSessionId && live.child
+      && live.child.exitCode === null && live.child.signalCode === null
+      && (live.info.status === "ready" || live.info.status === "running"));
+    // #62-2 冷会话：没有 agent 可以发 session/set_model —— 但"打开会话前先把它要用的模型定好"
+    // 恰恰是最常见的时机（夜里回收一批，早上逐个指定再开工）。所以把意图停在行上，resume 时重放；
+    // 以前这里第一行就 throw "session not ready — resume it first"，等于逼操作者先花 10–40 秒唤醒。
+    if (!hot) {
+      const row = this.#store.getSession(id);
+      if (!row) throw new Error(`no such session: ${id}`);
+      const known = ((row.models ?? null) as SessionInfo["models"])?.availableModels ?? [];
+      if (known.length && !known.some((m) => m.modelId === modelId)) {
+        throw new Error(`unknown model: ${modelId}`);
+      }
+      if (!this.#store.setPendingModel(id, modelId)) throw new Error(`no such session: ${id}`);
+      this.#emitSessions();
+      return this.#coldInfo(id);
+    }
+    const s = live as NonNullable<typeof live>;
+    const conn = s.conn;
+    if (!conn || !s.info.acpSessionId) throw new Error("session not ready — resume it first");
     const known = s.info.models?.availableModels ?? [];
     if (known.length && !known.some((m) => m.modelId === modelId)) {
       throw new Error(`unknown model: ${modelId}`);
     }
-    await s.conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
+    await conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
     if (s.info.models) s.info.models = { ...s.info.models, currentModelId: modelId };
+    if (s.info.pendingModelId) s.info.pendingModelId = null;
+    this.#store.setPendingModel(id, null);
+    // #62-1: 只有 agent **接受**过的切换才计数 —— 被拒的条目永不加分，于是"广告了但实际不可用"
+    // 的模型会自己沉到列表底部，不需要任何端点探活。
+    bumpModelUsage(`${s.info.backend}|${modelId}`);
+    // #62-3：选定即成为 agent 的全局默认（设置里可关）。同样只在这一行之后 —— 被拒的模型不落盘。
+    if (agentSettings().modelWriteBack) this.#writeBackModelDefault(s.info, modelId);
     this.#updateSession(s);
     this.#emitSessions();
     return s.info;

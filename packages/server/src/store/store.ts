@@ -168,6 +168,7 @@ export interface SessionRow {
   /** Models the agent advertised (JSON) + the operator's context-window override. */
   models?: unknown;
   contextLimit?: number | null;
+  pendingModelId?: string | null;
   /** The directory the cockpit works in for this slot: the file/terminal panel's
    *  root, and the cwd a cold slot is resumed with. Deliberately separate from
    *  `cwd` — a live ACP child cannot be re-cd'd (its cwd was fixed at newSession),
@@ -194,6 +195,7 @@ interface RawSessionRow {
   workspace?: string | null;
   home?: string | null;
   models?: string | null; context_limit?: number | null;
+  pending_model_id?: string | null;
   system?: number | null;
 }
 
@@ -263,6 +265,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     system: Boolean(r.system),
     models: parseJson(r.models),
     contextLimit: r.context_limit ?? null,
+    pendingModelId: r.pending_model_id ?? null,
   };
 }
 
@@ -479,6 +482,9 @@ export class Store {
     this.#db.exec("update sessions set auto_title = title where auto_title is null or auto_title = ''");
     // integer column, so it gets its own migration (the loop above assumes text)
     if (!cols.has("context_limit")) this.#db.exec("alter table sessions add column context_limit integer");
+    // #62-2: a cold slot has no agent to send session/set_model to, so the operator's pick is
+    // PARKED here and replayed on the next resume. text, so it rides the loop above.
+    if (!cols.has("pending_model_id")) this.#db.exec("alter table sessions add column pending_model_id text");
     // WHICH SESSIONS THE COCKPIT OWNS (issue #16): 1 = the 工作播报 observer, 0 = the operator's work.
     // Its own column rather than a title convention, because this flag decides whether a row is
     // allowed into the rail, the warm-slot ranking and the cockpit CLI's scope — a rename must not be
@@ -1702,6 +1708,14 @@ export class Store {
   }
 
   /** The operator's declared context window for a slot (null clears it). */
+  /** #62-2: the model a cold slot should adopt when it next wakes. */
+  setPendingModel(id: string, modelId: string | null): boolean {
+    const info = this.#db
+      .prepare("update sessions set pending_model_id = ? where id = ?")
+      .run(modelId || null, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
   setContextLimit(id: string, limit: number | null): boolean {
     const info = this.#db
       .prepare("update sessions set context_limit = ? where id = ?")

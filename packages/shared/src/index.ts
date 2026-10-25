@@ -88,6 +88,9 @@ export interface SessionInfo {
    *  what the agent reports via usage_update or this — the operator's declared window.
    *  null = use whatever the agent reports. */
   contextLimit?: number | null;
+  /** 冷会话上「下一个模型」（#62-2）：没有 agent 进程可以发 session/set_model，于是把意图存下来，
+   *  resume 成功后重放一次并清空。null = 没有待生效的选择。 */
+  pendingModelId?: string | null;
   /** The window the operator declared for the CURRENT model (remembered per model, the way
    *  hermes-studio stores a context length per provider+model). Precedence for the gauge:
    *  contextLimit (this session) → this → the agent's own usage_update.size. */

@@ -94,7 +94,7 @@ interface SettingsView {
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
-  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; modelWriteBack?: boolean; recallItemChars?: number; recallTotalChars?: number };
   /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
   observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number };
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
@@ -108,7 +108,7 @@ interface SettingsView {
   summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
   observerIntervalRange?: [number, number];
-  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; modelWriteBack?: boolean; recallItemChars?: number; recallTotalChars?: number };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
@@ -216,6 +216,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [planHintMsg, setPlanHintMsg] = useState("");
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
   const [cockpitSend, setCockpitSend] = useState<boolean | null>(null);
+  // 选定模型即回写 agent 配置 (#62-3) — 默认开，所以这里只表示"能不能关"。
+  const [modelWriteBack, setModelWriteBack] = useState<boolean | null>(null);
+  const [modelWbMsg, setModelWbMsg] = useState("");
   // 显示不唤醒的后台进程 (#35) — 默认关：后台任务行与 rail 角标回答的是「这个会话还在干活吗」,
   // 而静默进程是 agent 自己在轮询的活, 操作者不需要看见。
   const [showSilentBg, setShowSilentBg] = useState<boolean | null>(null);
@@ -253,6 +256,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.recallTotalChars === "number") setRecallTotal(data.agent.recallTotalChars);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
+      if (typeof data.agent?.modelWriteBack === "boolean") setModelWriteBack(data.agent.modelWriteBack);
       if (typeof data.agent?.showSilentBackground === "boolean") setShowSilentBg(data.agent.showSilentBackground);
       if (data.observer) setObserver(data.observer);
       if (data.summary) setSummary(data.summary);
@@ -452,6 +456,30 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
     } catch (e) {
       setCockpitSend(!next);
       setCockpitMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** #62-3 模型默认值回写开关。和 cockpitSend 同形状：先乐观改本地，再落库，失败回滚。 */
+  const saveModelWriteBack = async (next: boolean): Promise<void> => {
+    setModelWriteBack(next);
+    setModelWbMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { modelWriteBack: next } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setModelWriteBack(Boolean(data.agent?.modelWriteBack));
+      setModelWbMsg(next
+        ? "已开启：换一次模型，agent 的默认模型就跟着变（新会话、命令行都吃这个默认）。"
+        : "已关闭：换模型只影响当前会话，agent 自己的配置文件不动。");
+    } catch (e) {
+      setModelWriteBack(!next);
+      setModelWbMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -1127,6 +1155,36 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             进程一死就失效；也只听本机回环地址。改动立刻对下一轮生效，不用重启会话。
           </p>
           {cockpitMsg ? <p className="set-hint">{cockpitMsg}</p> : null}
+        </section>
+
+        <section className="set-card" id="set-model-default" data-setgroup="agent">
+          <h3>模型默认值</h3>
+          <p className="set-hint">
+            在会话里换一次模型，就是"以后都用这个"的意思 —— 所以选定<b>成功之后</b>，server 会把
+            它写进 agent 自己的配置文件（Hermes 的 <code>~/.hermes/config.yaml</code> 里
+            <code>model.default</code> 和 <code>model.provider</code> 两行）。新会话、常驻服务、
+            命令行都吃这个默认，重启也还在。
+          </p>
+          <p className="set-hint">
+            只动那两行，其它字节原样保留，写入是原子的（临时文件 + rename），权限保持 0600。
+            被 agent 拒绝的模型不会落盘 —— 和"用过才算数"的排序是同一个收口点。
+          </p>
+          <div className="set-row">
+            <label>选定模型时同步为全局默认</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={modelWriteBack ?? true}
+                onChange={(e) => void saveModelWriteBack(e.target.checked)}
+              />
+              <span className="set-hint">
+                {modelWriteBack === false
+                  ? "已关闭：换模型只影响当前会话"
+                  : "已开启：最近一次选择就是这个 agent 的默认模型"}
+              </span>
+            </div>
+          </div>
+          {modelWbMsg ? <p className="set-hint">{modelWbMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-background" data-setgroup="agent">
