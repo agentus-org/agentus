@@ -127,6 +127,25 @@ try {
   const replayed = (await usage())["mock|mock:vision"] ?? 0;
   check("the replayed switch counted as a use", replayed >= 1, String(replayed));
 
+  // ---- 新建会话的握手窗口里点模型：那一刻会话是 starting（不是冷），以前这个选择没有任何
+  // 路径会兑现 —— 徽标挂着、模型一直是老的，直到几小时后被回收再 resume。create 成功后必须重放。
+  {
+    const c = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "mock", cwd: "/tmp" }) });
+    const id2 = c.json().id;
+    const pick = await api(`/api/sessions/${id2}/model`, { method: "POST", body: JSON.stringify({ modelId: "mock:vision" }) });
+    check("a pick during the handshake is accepted", pick.status === 200 && pick.json()?.pendingModelId === "mock:vision",
+      `${pick.status} ${pick.text.slice(0, 80)}`);
+    let s2 = null;
+    for (let i = 0; i < 80; i++) {
+      s2 = find(await sessions(), id2);
+      if (s2?.status === "ready" && s2?.models?.currentModelId === "mock:vision") break;
+      await sleep(250);
+    }
+    check("…and is applied once the agent is ready", s2?.models?.currentModelId === "mock:vision" && !s2?.pendingModelId,
+      `current=${s2?.models?.currentModelId} pending=${s2?.pendingModelId}`);
+    await api(`/api/sessions/${id2}`, { method: "DELETE" }).catch(() => {});
+  }
+
   await api(`/api/sessions/${sid}`, { method: "DELETE" }).catch(() => {});
 } catch (e) {
   console.log("THREW:", e);
