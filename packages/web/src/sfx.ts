@@ -117,6 +117,15 @@ function bedElement(): HTMLAudioElement | null {
   return bedEl;
 }
 
+/** 有没有**任何**一条能放背景音的通道。
+ *
+ *  通话页不能拿 `ready().bed` 当判据：`decodeAudioData` 认不认容器依浏览器而定，Android WebView
+ *  常常解不开 m4a/aac —— 那台机器上 buffer 永远为空，于是"有 buffer 才响"会让 `<audio>` 兜底
+ *  在最需要它的环境里根本不被调用（设置页却因为走元素通道能听到，症状最难查）。 */
+export function bedAvailable(): boolean {
+  return Boolean(bedBuf) || typeof Audio !== "undefined";
+}
+
 export function channel(): "webaudio" | "element" | "none" {
   if (bedBuf) return "webaudio";
   if (bedEl) return "element";

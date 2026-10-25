@@ -190,21 +190,28 @@ try {
   const phasesSeen = [];
   for (let i = 0; i < 80; i++) {
     await sleep(200);
-    const st = await ev(`({ phase: document.querySelector('.call-mode')?.dataset.phase ?? null, bed: window.__callBed ?? null })`);
+    // 判据读**音频层的真状态**（`__sfx.bedPlaying()` = sfx 里真的有活着的 source/元素），
+    // 不读 `__callBed.playing` —— 那是产品自己写的意图布尔，删掉整个 setBed() 它照样为 true，
+    // 也就是"一个字节都不响"也能 PASS（review 抓到的假绿）。
+    const st = await ev(`({ phase: document.querySelector('.call-mode')?.dataset.phase ?? null, bed: window.__callBed ?? null, playing: (window.__sfx?.bedPlaying?.() ?? null), starts: (window.__started || []).length })`);
     if (st.phase && phasesSeen[phasesSeen.length - 1] !== st.phase) phasesSeen.push(st.phase);
     if (st.phase === "speaking") break;
-    if (st.bed && st.bed.playing) { sawWorking = true; bedWhileWorking = st.bed; break; }
+    if (st.playing === true) { sawWorking = true; bedWhileWorking = st; break; }
   }
   check("the bed plays while the turn is working (before it speaks)", sawWorking, JSON.stringify(bedWhileWorking) + " phases: " + phasesSeen.join(" → "));
 
   let bedWhileSpeaking = null, sawSpeaking = false;
   for (let i = 0; i < 80; i++) {
     await sleep(200);
-    const st = await ev(`({ phase: document.querySelector('.call-mode')?.dataset.phase ?? null, bed: window.__callBed ?? null })`);
-    if (st.phase === "speaking") { sawSpeaking = true; bedWhileSpeaking = st.bed?.playing ?? false; break; }
+    const st = await ev(`({ phase: document.querySelector('.call-mode')?.dataset.phase ?? null, bed: window.__callBed ?? null, playing: (window.__sfx?.bedPlaying?.() ?? null) })`);
+    if (st.phase === "speaking") { sawSpeaking = true; bedWhileSpeaking = st.playing === true; break; }
   }
   check("the call reached the speaking phase", sawSpeaking);
   check("the bed is gone once it starts talking", bedWhileSpeaking === false, String(bedWhileSpeaking));
+  // 兜底通道也算响：解不开 m4a 的 WebView 上 bedPlaying() 读的是 <audio> 元素。
+  check("…and whichever channel carried it, it was a real one",
+    (await ev(`(window.__sfx?.sfxStatus?.().channel ?? "none")`)) !== "none",
+    JSON.stringify(await ev(`(window.__sfx?.sfxStatus?.() ?? null)`)));
 
   const started = await ev(`window.__started || []`);
   check("the call's audio context is actually running (not suspended)", (await ev(`(window.__ctxs || []).some((c) => c.state === "running")`)) === true,

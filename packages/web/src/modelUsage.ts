@@ -6,50 +6,76 @@
 //
 // 计数口径见 server/src/acp/session-manager.ts：**agent 接受之后**才算一次，被拒的不加分 ——
 // 于是"广告了但实际不可用"的条目会自己沉底，不需要任何端点探活。
-import { useEffect, useMemo, useState } from "react";
+//
+// 这里是一个真的外部 store（`useSyncExternalStore`），不是"挂载时取一次快照"：`noteModelUse`
+// 改的是模块级 cache，没有订阅的话，已经挂载的列表永远不会重算 —— 组件在切换会话时也不重新挂载，
+// 于是排序会冻结在整页首次挂载那一刻，只有 F5 才变。文件里原来那句"下次打开立刻是新的顺序"
+// 正好把这件事说反了。
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 type RawUsage = Record<string, number>;
 
 let cache: RawUsage | null = null;
 let inflight: Promise<void> | null = null;
+let version = 0;
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  version += 1;
+  for (const l of listeners) l();
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => { listeners.delete(cb); };
+}
 
 function load(): Promise<void> {
   if (cache) return Promise.resolve();
   if (!inflight) {
     inflight = fetch("/api/model-usage", { headers: { accept: "application/json" } })
-      .then((r) => (r.ok ? r.json() : { usage: {} }))
-      .then((j: { usage?: RawUsage }) => { cache = j.usage ?? {}; })
-      .catch(() => { cache = {}; });
+      .then((r) => {
+        if (!r.ok) throw new Error(`model-usage ${r.status}`);
+        return r.json() as Promise<{ usage?: RawUsage }>;
+      })
+      .then((j) => { cache = j.usage ?? {}; emit(); })
+      .catch(() => {
+        // 一次失败不能把这一页永久钉成"没有热度"：清掉缓存让下次挂载重试（服务重启/502 期间
+        // 打开页面很常见）。
+        cache = null;
+        inflight = null;
+        emit();
+      });
   }
   return inflight;
 }
 
-/** 一次成功的切换之后调一下：下次打开列表立刻是新的顺序，不用等页面重载。 */
+/** 一次**真正生效**的切换之后调一下：列表立刻是新顺序，不用等页面重载。
+ *
+ *  只在该模型确实成了当前模型时调 —— 冷会话上点选只是记了意图（server 走 pending 分支，
+ *  不计分），把它算作一次"使用"会和服务端的口径相反。 */
 export function noteModelUse(backend: string, modelId: string): void {
   const key = `${backend}|${modelId}`;
   cache = { ...(cache ?? {}), [key]: ((cache ?? {})[key] ?? 0) + 1 };
+  emit();
 }
 
-/** `modelId → 次数`，只含当前 backend 的条目（不同 agent 的模型名会撞）。 */
+/** `modelId → 次数`，只含当前 backend 的条目（不同 agent 的模型名会撞：`openai/gpt-6` 与
+ *  `openrouter:…` 的前缀天然共享命名空间，合并会把另一个后端的用量算进来）。 */
 export function useModelUsage(backend: string): Record<string, number> {
-  const [raw, setRaw] = useState<RawUsage>(cache ?? {});
-  useEffect(() => {
-    let alive = true;
-    void load().then(() => { if (alive) setRaw(cache ?? {}); });
-    return () => { alive = false; };
-  }, []);
+  useSyncExternalStore(subscribe, () => version, () => 0);
+  useEffect(() => { void load(); }, []);
   return useMemo(() => {
     const out: Record<string, number> = {};
+    const raw = cache ?? {};
     const prefix = `${backend}|`;
     for (const [k, n] of Object.entries(raw)) {
       const bar = k.indexOf("|");
       if (bar < 0) continue;
-      // backend 为空 = 还没定下哪一个 agent（新建对话框）：把所有条目合并。
-      // 不同后端的模型 id 基本不重叠，合并只会让"我常用的模型"更早浮上来。
       if (backend && !k.startsWith(prefix)) continue;
       const id = k.slice(bar + 1);
       out[id] = (out[id] ?? 0) + n;
     }
     return out;
-  }, [raw, backend]);
+  }, [backend, version]);   // version 变了 = cache 变了，必须重算
 }

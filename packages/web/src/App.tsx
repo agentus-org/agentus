@@ -4972,7 +4972,12 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                       // Not closed up front: a refusal has to be read where the pick was made,
                       // with the list still in front of the operator.
                       void cockpit.setModel(v.info.id, modelId)
-                        .then(() => { noteModelUse(v.info.backend, modelId); setPop(null); setModelErr(null); setAttachErr(""); })
+                        .then((info) => {
+                          // 冷槽上点选只是"记了个意图"：server 走 pending 分支、不计分，
+                          // 前端若在这里 +1，就会让一个 agent 从没接受过的模型排到组首。
+                          if (info?.models?.currentModelId === modelId) noteModelUse(v.info.backend, modelId);
+                          setPop(null); setModelErr(null); setAttachErr("");
+                        })
                         .catch((e) => {
                           const text = String((e as Error)?.message ?? e);
                           setModelErr({ id: modelId, text });
@@ -5094,10 +5099,12 @@ function CardMark({ backend }: { backend: string }): JSX.Element {
  *  and opens it, so the prompt goes out on its own the moment the agent is up, and a failure lands IN
  *  that session rather than in a vanished HTTP call. */
 function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
-  // #62-1：这里还没定后端，热度按 modelId 合并全部（见 modelUsage.ts）。
-  const startModelHeat = useModelUsage("");
+
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
+  // #62-1：这个对话框早就知道后端了，别把别的 agent 的用量算进排序（模型 id 会撞）；
+  // 后端还没选出来时才退回"合并全部"。
+  const startModelHeat = useModelUsage(backend);
   // A rail group's 「+」 hands its directory in (`initialCwd`): then the only thing left to
   // choose is which agent runs there — the point of the + is that the folder is already
   // decided, and re-picking it is the step the operator asked to be rid of.

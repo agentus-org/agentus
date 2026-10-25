@@ -1501,8 +1501,12 @@ class Cockpit {
     return info.id;
   }
 
-  /** Switch the model of a live slot (ACP `session/set_model`). */
-  async setModel(id: string, modelId: string): Promise<void> {
+  /** Switch the model of a live slot (ACP `session/set_model`).
+   *
+   *  Returns the server's session info: on a COLD slot the server only parks the choice as
+   *  `pendingModelId` (no agent to talk to), so the caller has to tell "it took effect" from
+   *  "it is queued" — `models.currentModelId === modelId` is that difference. */
+  async setModel(id: string, modelId: string): Promise<SessionInfo> {
     // The agent may re-init its provider client when the model changes (Hermes rebuilds
     // the session), which takes a while — a short timeout here shows a bogus "network
     // degraded" banner for a switch that is actually in flight. No retry: a retry would
@@ -1517,6 +1521,7 @@ class Cockpit {
     const i = this.sessions.findIndex((s) => s.id === id);
     if (i >= 0) this.sessions[i] = { ...this.sessions[i], ...info };
     this.bump();
+    return info;
   }
 
   /** The operator's context-window override (null = whatever the agent reports). */

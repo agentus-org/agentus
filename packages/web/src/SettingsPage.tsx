@@ -1161,13 +1161,19 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           <h3>模型默认值</h3>
           <p className="set-hint">
             在会话里换一次模型，就是"以后都用这个"的意思 —— 所以选定<b>成功之后</b>，server 会把
-            它写进 agent 自己的配置文件（Hermes 的 <code>~/.hermes/config.yaml</code> 里
-            <code>model.default</code> 和 <code>model.provider</code> 两行）。新会话、常驻服务、
-            命令行都吃这个默认，重启也还在。
+            它写进 agent 自己的配置文件。新会话、常驻服务、命令行都吃这个默认，重启也还在。
           </p>
           <p className="set-hint">
-            只动那两行，其它字节原样保留，写入是原子的（临时文件 + rename），权限保持 0600。
-            被 agent 拒绝的模型不会落盘 —— 和"用过才算数"的排序是同一个收口点。
+            <b>只对 Hermes 后端生效</b>：写的是 <code>$HERMES_HOME/config.yaml</code> 里的
+            <code>model.default</code>（用了 <code>-p</code> profile 的会话写
+            <code>profiles/&lt;名字&gt;/config.yaml</code>）。<code>model.provider</code> 只在 agent
+            自己报了 provider 时才一起同步 —— 描述里带人话标签（"Anthropic (Claude Sonnet 4.5)"）
+            的就不猜，宁可只改一行。Qoder 等其它后端目前不回写，开关留在开也没有副作用。
+          </p>
+          <p className="set-hint">
+            只动那两行，其它字节原样保留；写入是原子的（临时文件 + rename），比 0600 宽的权限会被
+            收紧，改之前留一份 <code>.bak</code>。写完会用 YAML 解析器验一遍能不能读回来 ——
+            验不过就一个字都不写。被 agent 拒绝的模型不会落盘，和"用过才算数"的排序是同一个收口点。
           </p>
           <div className="set-row">
             <label>选定模型时同步为全局默认</label>
