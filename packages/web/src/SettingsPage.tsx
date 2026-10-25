@@ -17,7 +17,7 @@ import { NotifySettings } from "./NotifySettings";
 import { TrustCard } from "./TrustCard";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
-import { loadSfx, playCut, previewBed, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
+import { getBedLevel, loadSfx, playCut, previewBed, setBedLevel, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -189,6 +189,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   // 通话状态音的试听/诊断（#61）：音频上下文是不是真的在 running、两个音解码出来多长。
   // 通话里这一段听不见也看不见，出问题时只能靠这里把它照出来。
   const [sfxNote, setSfxNote] = useState("");
+  const [bedPct, setBedPct] = useState(() => Math.round(getBedLevel() * 100));
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -1243,15 +1244,32 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             这里放的和通话里放的是同一份素材、同一个音频上下文，所以这里能听到、通话里就该能听到。
           </p>
           <div className="set-row">
+            <label>音量</label>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              value={bedPct}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setBedPct(v);
+                unlockSfxAudio();
+                void loadSfx().then(() => setBedLevel(v / 100, 1.6));   // 拖动即试听，松手后也还在放
+              }}
+            />
+            <span className="set-hint">{bedPct}%</span>
+          </div>
+          <div className="set-row">
             <button
               type="button"
               className="set-btn"
               onClick={() => {
                 unlockSfxAudio();
+                setSfxNote("正在解码…");
                 void loadSfx().then(() => {
                   const st = sfxStatus();
                   previewBed(3);
-                  setSfxNote(`上下文 ${st.ctxState} · 背景音 ${st.bed ? st.bed.toFixed(1) + "s" : "没解码"} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                  setSfxNote(`上下文 ${st.ctxState} · 通道 ${st.channel} · 背景音 ${st.bed ? st.bed.toFixed(1) + "s" : "没解码"} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
                 });
               }}
             >
@@ -1262,10 +1280,11 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
               className="set-btn"
               onClick={() => {
                 unlockSfxAudio();
+                setSfxNote("正在解码…");
                 void loadSfx().then(() => {
                   const st = sfxStatus();
                   playCut();
-                  setSfxNote(`上下文 ${st.ctxState} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                  setSfxNote(`上下文 ${st.ctxState} · 通道 ${st.channel} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
                 });
               }}
             >
