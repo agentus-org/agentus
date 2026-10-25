@@ -617,6 +617,39 @@ const agent = () => ({
       return { stopReason: "end_turn" };
     }
 
+    // `[tail-probe]` — 一次「说一半就去做工具」的回合，用来钉住朗读队列的那条规矩（#60）：
+    // 第一段文字以**没有句末标点的半句**结尾（朗读器会先扣着等合并），紧接着调一个工具（回合
+    // 因此不结束），然后**另一条消息**接着说。真实后端就是这个形状，而扣着的半句曾经在这里蒸发。
+    // QA only：别的提示词完全不走这条路。
+    if (/\[tail-probe\]/.test(text)) {
+      const first = `第一段：我先把结论说一遍。然后我去看文件，最后半句没有句号`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `tail-a-${sessionId}`,
+        content: { type: "text", text: first },
+      });
+      await sleep(60);
+      const id = `tc-${sessionId}-tail`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "read_file docs/notes.md", kind: "read", status: "in_progress",
+        rawInput: { path: "docs/notes.md" },
+      });
+      await sleep(400);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "42 lines",
+      });
+      await sleep(120);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `tail-b-${sessionId}`,
+        content: { type: "text", text: "文件看完了，这里是第二段。" },
+      });
+      await sleep(400);          // let the frame land before the turn closes (same as the other fixtures)
+      return { stopReason: "end_turn" };
+    }
+
     if (wantThink) {
       // ONE `messageId` per burst, like the real adapter sends: ACP gives every chunk of one
       // thought block the same id, and the cockpit/server coalesce on it (`block_key`). A mock

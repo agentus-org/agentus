@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>背景音 · 只接缝上动一点</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:22px 18px 4px; max-width:860px; margin:0 auto; }
+  h1 { margin:0 0 6px; font-size:19px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:860px; margin:0 auto; padding:10px 18px 70px; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:10px 0; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:12px; }
+  .card.old { opacity:.62; }
+  .card h2 { margin:0 0 3px; font-size:16px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; }
+  .card.old .tag { color:var(--dim); }
+  .card p { margin:7px 0 12px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:9px; padding:9px 15px; font-size:14px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .state { color:var(--dim); font-size:13px; }
+</style>
+<header>
+  <h1>背景音 · 音没动，只把接缝接上</h1>
+  <div class="sub">和弦里的音跟原来一模一样（同一套音、同一个合成方式），只改了换和弦那一瞬间：以前是旧的刚好退完、新的刚好进满，交界处两边各剩一半；现在让<b>旧的带一点余音退下去，新的同时在进来</b>，重叠 0.35 / 0.6 / 0.9 秒。就是你要的「音还是那些音，只是中间连一下」。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+    <span class="state">音量 <input id="vol" type="range" min="0" max="150" value="100" style="width:130px;vertical-align:middle"></span>
+  </div>
+
+  <div class="card old">
+    <div class="tag">对照 · 你没听够衔接的那个</div>
+    <h2>X0 · 原来的 v5</h2>
+    <p>2 秒一换，交界处只叠 0.3 秒对称淡化。</p>
+    <div class="row"><button data-f="deep-v2/v5-2s-four.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">余音重叠 0.35 秒 · 只一点点</div>
+    <h2>X1 · 最小衔接</h2>
+    <p>换和弦时旧的多留 0.35 秒，能听出「连过去」但和声还是清清楚楚一个个的。</p>
+    <div class="row"><button class="primary" data-f="deep-v4/x1-tail-0.35.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">余音重叠 0.6 秒 · 推荐</div>
+    <h2>X2 · 适中</h2>
+    <p>旧和弦退得慢一点，交界处像一件乐器余音还没停下一件就进来了。</p>
+    <div class="row"><button class="primary" data-f="deep-v4/x2-tail-0.60.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">余音重叠 0.9 秒</div>
+    <h2>X3 · 最连</h2>
+    <p>几乎每时每刻都有两个和弦在响，和声边界会变模糊。</p>
+    <div class="row"><button data-f="deep-v4/x3-tail-0.90.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">重叠 0.35 秒 + 起音更软</div>
+    <h2>X4 · 最小衔接，但进来得软</h2>
+    <p>跟 X1 一样只叠 0.35 秒，但新和弦不是「切进来」，而是缓缓升起 0.4 秒。</p>
+    <div class="row"><button data-f="deep-v4/x4-tail-0.35-soft.wav">循环播放</button></div>
+  </div>
+
+  <div class="row"><button id="stopAll">停</button></div>
+</main>
+<script>
+let ctx = null, master = null, vol = 1, cur = null;
+const stateEl = document.getElementById("state");
+const say = (t) => { stateEl.textContent = t; };
+function ac() {
+  if (!ctx) { const C = window.AudioContext || window.webkitAudioContext; ctx = new C();
+    master = ctx.createGain(); master.gain.value = vol; master.connect(ctx.destination); }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+const cache = new Map();
+async function play(file) {
+  const c = ac();
+  let b = cache.get(file);
+  if (!b) { b = await fetch(file).then(r => r.arrayBuffer()).then(a => c.decodeAudioData(a)); cache.set(file, b); }
+  if (cur) { try { cur.stop(); } catch (e) {} cur = null; }
+  const s = c.createBufferSource(); s.buffer = b; s.loop = true; s.connect(master); s.start(); cur = s;
+}
+document.getElementById("unlock").onclick = () => { ac(); document.getElementById("unlock").textContent = "声音已开 ✓"; say("点下面任意一个"); };
+document.getElementById("vol").oninput = (e) => { vol = Number(e.target.value) / 100; if (master) master.gain.value = vol; };
+document.querySelectorAll("button[data-f]").forEach(btn => {
+  btn.onclick = () => { say("循环中：" + btn.closest(".card").querySelector("h2").textContent);
+    play(btn.dataset.f).catch(e => say("播不了：" + e.message)); };
+});
+document.getElementById("stopAll").onclick = () => { if (cur) { try { cur.stop(); } catch (e) {} cur = null; } say("停了"); };
+</script>

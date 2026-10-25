@@ -311,6 +311,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** 这一条回复里**扣着还没念**的那半句（等后半句接上再合并）。回合中途去做工具时，
+   *  这个值就是唯一还欠着耳朵的话 —— 见下面换 key 那段（#60）。 */
+  const heldTailRef = useRef("");
+  const tailQueuedRef = useRef(false);  // 那半句是否已经进了队列（回合收尾时补念过）
   /** 干活期间的进度播报（#58）：判定（说什么、隔多久、什么时候闭嘴）在 call-brief.ts，
    *  这里只负责把 cue 交给喇叭和一句字幕。 */
   const briefRef = useRef<BriefPlanner>(new BriefPlanner());
@@ -754,11 +758,22 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     }
     if (agentKey !== replyKeyRef.current) {          // a new reply started
       replyKeyRef.current = agentKey;
+      // The previous reply may still OWE a sentence. A turn that switches to a tool does not end
+      // its message: `busy` stays true, so the fragment held back for merging is never flushed —
+      // and clearing the queue here dropped it for good, which is exactly the reported
+      // 「话说一半就跳去干活了」(#60). Nothing is kept that was not already promised: a finished
+      // turn has flushed its tail (`tailQueuedRef`) and its queue is drained by the reader.
+      if (heldTailRef.current && !tailQueuedRef.current) {
+        queueRef.current.push(heldTailRef.current);
+        tailQueuedRef.current = true;
+        warmQueue();
+      }
       queuedRef.current = 0;
-      queueRef.current = [];
     }
     // [emo:x] 是给脸看的，不是给人念的。`splitForSpeech` 不剥方括号，所以必须在**进队列之前**剥。
     const { done, tail } = splitSentences(tidyForSpeech(stripEmoTags(agentText)));
+    heldTailRef.current = tail;            // still owed to the ear until the turn ends
+    tailQueuedRef.current = false;
     const fresh = done.slice(queuedRef.current);
     if (fresh.length) {
       queuedRef.current = done.length;
@@ -770,6 +785,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     if (!busy && tail) {                             // turn over: flush the last fragment
       if (queuedRef.current >= done.length) {
         queuedRef.current = done.length + 1;
+        tailQueuedRef.current = true;
         queueRef.current.push(tail);
         setReply((r) => `${r}${r ? " " : ""}${tail}`);
       }
@@ -788,6 +804,44 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const [approvalLine, setApprovalLine] = useState("");
   const approvalAtRef = useRef(0);           // when the CURRENT request arrived
   const approvalDoneRef = useRef(0);         // how many reminders went out for it
+
+  // ---- 状态音（#61）：干活时的背景音 + 打断时的短音
+  const sfxCtxRef = useRef<AudioContext | null>(null);
+  const bedBufRef = useRef<AudioBuffer | null>(null);      // 32s 循环（和弦每 2 秒换一次）
+  const cutBufRef = useRef<AudioBuffer | null>(null);      // 0.3s 打断音
+  const bedRef = useRef<{ gain: GainNode; src: AudioBufferSourceNode | null } | null>(null);
+  const [sfxReady, setSfxReady] = useState(false);
+
+  /** 通话页自己的音频上下文（#61）。chime 那种「每次 new 一个、800ms 后关掉」的用法适合一声
+   *  提示音，但撑不住一个**持续循环**的背景音，所以状态音单独用一个长命的 ctx。 */
+  const sfxCtx = (): AudioContext | null => {
+    try {
+      if (!sfxCtxRef.current) {
+        const C = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!C) return null;
+        sfxCtxRef.current = new C();
+      }
+      const c = sfxCtxRef.current;
+      if (c.state === "suspended") void c.resume().catch(() => { /* no gesture yet */ });
+      return c;
+    } catch { return null; }
+  };
+
+  /** 打断音（#61 选定）：一声 0.3 秒的短促提示。它是「停」，不是「叮咚」——所以不用音阶，
+   *  只是一个干净的单音加尾巴。波形和包络在 scripts/qa/ 里生成，换音色只换文件。 */
+  const playCut = (): void => {
+    const c = sfxCtx();
+    const buf = cutBufRef.current;
+    if (!c || !buf || !aliveRef.current) return;
+    try {
+      const src = c.createBufferSource();
+      const g = c.createGain();
+      g.gain.value = 0.6;
+      src.buffer = buf;
+      src.connect(g).connect(c.destination);
+      src.start();
+    } catch { /* no audio device: the line on screen still says it */ }
+  };
 
   /** 两声短提示音，纯 WebAudio：不要网络、不占 TTS 配额、不会跟正在念的句子抢喇叭。 */
   const chime = (tones: number[] = [880, 1180]): void => {
@@ -810,6 +864,75 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       window.setTimeout(() => void ctx.close().catch(() => {}), 800);
     } catch { /* no audio device: the line on screen still says it */ }
   };
+
+  /** 预取两个音：背景音要 32 秒、不能等它下完，打断音要快、不能第一次点时还空着。 */
+  useEffect(() => {
+    const c = sfxCtx();
+    if (!c) return;
+    let alive = true;
+    const grab = async (url: string): Promise<AudioBuffer> =>
+      fetch(url).then((r) => r.arrayBuffer()).then((a) => c.decodeAudioData(a));
+    void Promise.all([grab("/sfx/thinking.m4a"), grab("/sfx/interrupt.wav")])
+      .then(([bed, cut]) => {
+        if (!alive) return;
+        bedBufRef.current = bed;
+        cutBufRef.current = cut;
+        setSfxReady(true);
+      })
+      .catch(() => { /* 静音降级：没有音也不该挡住通话 */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 状态音跟着相位走：**thinking 时淡入，一开口说话就淡出**。
+   *  这条规则比"什么时候响"更重要 —— 说话时还垫着底噪，人声会被糊掉，那比没有背景音更差。 */
+  useEffect(() => {
+    const c = sfxCtx();
+    if (!c) return;
+    const bed = bedRef.current;
+    // 触发条件不是「thinking 相位」——那个窗口只有几十毫秒（第一段思考一到就转 speaking），
+    // 真正的「在干活」是整轮在跑：思考、调工具、等授权。它一开口说话就停，说完再响。
+    const want = (busy || phase === "thinking") && phase !== "speaking" && sfxReady && !!bedBufRef.current;
+    const dbg = (window as unknown as { __callBed?: { playing: boolean; level: number } });
+    if (want) {
+      if (!bed) {
+        const gain = c.createGain();
+        gain.gain.value = 0.0001;
+        gain.connect(c.destination);
+        bedRef.current = { gain, src: null };
+      }
+      const b = bedRef.current as { gain: GainNode; src: AudioBufferSourceNode | null };
+      if (!b.src) {
+        const src = c.createBufferSource();
+        src.buffer = bedBufRef.current as AudioBuffer;
+        src.loop = true;
+        src.connect(b.gain);
+        src.start();
+        b.src = src;
+      }
+      b.gain.gain.cancelScheduledValues(c.currentTime);
+      b.gain.gain.setValueAtTime(Math.max(0.0001, b.gain.gain.value), c.currentTime);
+      b.gain.gain.exponentialRampToValueAtTime(0.05, c.currentTime + 1.2);   // ≈ -26 dB：它是底色，不是音乐
+      dbg.__callBed = { playing: true, level: 0.05 };
+      return;
+    }
+    if (!bed) return;
+    bed.gain.gain.cancelScheduledValues(c.currentTime);
+    bed.gain.gain.setValueAtTime(Math.max(0.0001, bed.gain.gain.value), c.currentTime);
+    bed.gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.35);
+    const src = bed.src;
+    bed.src = null;
+    window.setTimeout(() => { try { src?.stop(); } catch { /* already stopped */ } }, 500);
+    dbg.__callBed = { playing: false, level: 0 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, phase, sfxReady]);
+
+  // 离开通话页时别把底噪留在后台
+  useEffect(() => () => {
+    const bed = bedRef.current;
+    if (bed?.src) { try { bed.src.stop(); } catch { /* gone */ } }
+    bedRef.current = null;
+  }, []);
 
   // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
   // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
@@ -1054,7 +1177,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       });
       return;
     }
-    chime([520, 400]);
+    playCut();       // 一声音就够：语义是「停了」，不是「叮咚」（#61）
   };
 
   const bargeIn = async (): Promise<void> => {

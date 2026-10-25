@@ -19,3 +19,12 @@ node_modules
 
 # QA screenshots (scripts/qa/*.mjs default SHOTS dir)
 .qa-shots/
+
+# 试听素材（scripts/qa）：合成音由 make-*.py 重生成；product-sfx / livekit-sfx / oss-sfx 是第三方音，带版权，不入库
+scripts/qa/deep-*/
+scripts/qa/think-sfx/
+scripts/qa/livekit-sfx/
+scripts/qa/product-sfx/
+scripts/qa/oss-sfx/
+scripts/qa/cut-*.wav
+scripts/qa/think-final.m4a

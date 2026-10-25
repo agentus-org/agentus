@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>背景音 · 接起来听</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:22px 18px 4px; max-width:860px; margin:0 auto; }
+  h1 { margin:0 0 6px; font-size:19px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:860px; margin:0 auto; padding:10px 18px 70px; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:10px 0; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; margin-bottom:12px; }
+  .card.old { opacity:.62; }
+  .card h2 { margin:0 0 3px; font-size:16px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; }
+  .card.old .tag { color:var(--dim); }
+  .card p { margin:7px 0 12px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:9px; padding:9px 15px; font-size:14px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .state { color:var(--dim); font-size:13px; }
+  .playing { color:var(--ok); }
+</style>
+<header>
+  <h1>背景音 · 把和弦接起来</h1>
+  <div class="sub">现在是同一段和声走到 2 秒就换一块，块与块之间是贴上去的。这几个版本换了根：四个声部一直不停，换和弦的时候是<b>滑过去</b>的（相位连续），并且按声部进行选音，相邻和弦只动最少的音。听差别，选一个滑的长度。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+    <span class="state">音量 <input id="vol" type="range" min="0" max="150" value="100" style="width:130px;vertical-align:middle"></span>
+  </div>
+
+  <div class="card old">
+    <div class="tag">对照 · 现在这版（块与块之间是贴的）</div>
+    <h2>A0 · 原来的 v5</h2>
+    <p>每 2 秒换和弦、每块单独生成再交叉淡化 0.3 秒。听起来是「一块一块地跳」。</p>
+    <div class="row"><button data-f="deep-v2/v5-2s-four.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">滑音 0.3 秒 · 只连一点点</div>
+    <h2>W2 · 短滑</h2>
+    <p>还是听得出来在换和弦，但换的瞬间不是硬的，音是「挪」过去的。</p>
+    <div class="row"><button class="primary" data-f="deep-v3/w2-glide-0.3.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">滑音 0.7 秒 · 推荐先听这个</div>
+    <h2>W1 · 平衡</h2>
+    <p>切换点听不出边界，像一条一直在流的和声。这是我的默认推荐。</p>
+    <div class="row"><button class="primary" data-f="deep-v3/w1-glide-0.7.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">滑音 1.4 秒 · 几乎一直在滑</div>
+    <h2>W3 · 最连</h2>
+    <p>2 秒一段里有 1.4 秒在滑移，和声边界几乎消失。有的人会觉得「飘、没有落点」。</p>
+    <div class="row"><button data-f="deep-v3/w3-glide-1.4.wav">循环播放</button></div>
+  </div>
+
+  <div class="card">
+    <div class="tag">滑音 0.7 秒 + 稀疏高音点缀</div>
+    <h2>W4 · 平衡 + 一点「在动」</h2>
+    <p>在 W1 上加了每两秒冒一下的高音点（很轻），让它在干活时显得有反应。</p>
+    <div class="row"><button data-f="deep-v3/w4-glide-0.7-spark.wav">循环播放</button></div>
+  </div>
+
+  <div class="row"><button id="stopAll">停</button></div>
+</main>
+<script>
+let ctx = null, master = null, vol = 1, cur = null;
+const stateEl = document.getElementById("state");
+const say = (t) => { stateEl.textContent = t; };
+function ac() {
+  if (!ctx) { const C = window.AudioContext || window.webkitAudioContext; ctx = new C();
+    master = ctx.createGain(); master.gain.value = vol; master.connect(ctx.destination); }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+const cache = new Map();
+async function play(file) {
+  const c = ac();
+  let b = cache.get(file);
+  if (!b) { b = await fetch(file).then(r => r.arrayBuffer()).then(a => c.decodeAudioData(a)); cache.set(file, b); }
+  if (cur) { try { cur.stop(); } catch (e) {} cur = null; }
+  const s = c.createBufferSource(); s.buffer = b; s.loop = true; s.connect(master); s.start(); cur = s;
+}
+document.getElementById("unlock").onclick = () => { ac(); document.getElementById("unlock").textContent = "声音已开 ✓"; say("点下面任意一个"); };
+document.getElementById("vol").oninput = (e) => { vol = Number(e.target.value) / 100; if (master) master.gain.value = vol; };
+document.querySelectorAll("button[data-f]").forEach(btn => {
+  btn.onclick = () => {
+    say("循环中：" + btn.closest(".card").querySelector("h2").textContent);
+    play(btn.dataset.f).catch(e => say("播不了：" + e.message));
+  };
+});
+document.getElementById("stopAll").onclick = () => { if (cur) { try { cur.stop(); } catch (e) {} cur = null; } say("停了"); };
+</script>

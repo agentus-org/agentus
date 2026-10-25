@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>背景音：加密度变体</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:20px 18px 4px; max-width:1000px; margin:0 auto; }
+  h1 { margin:0 0 5px; font-size:18px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:1000px; margin:0 auto; padding:6px 18px 70px; }
+  h2.sec { font-size:14px; color:var(--dim); margin:22px 0 10px; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; text-transform:uppercase; }
+  .card p { margin:6px 0 11px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 13px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:10px 0 8px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .state { color:var(--dim); font-size:13px; }
+</style>
+<header>
+  <h1>背景音：同一个音色，换和弦的频率 ×2 / ×4</h1>
+  <div class="sub">你说「干活是动态的」—— 这批就是同一套音色，只把变化变快。全部 32 秒无缝循环。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+    <span class="state" id="volwrap" hidden>音量 <input id="vol" type="range" min="0" max="140" value="100" style="width:120px;vertical-align:middle"></span>
+  </div>
+
+    <h2 class="sec">A · 干活背景音：同一个音色，越来越「动」</h2>
+  <div class="grid" id="deep"></div>
+
+  <h2 class="sec">B · 打断音（已定 D5 钉钉挂断，这里只作确认）</h2>
+  <div class="grid" id="short"></div>
+</main>
+<script>
+let ctx=null,master=null,vol=1;
+const stateEl=document.getElementById("state");const say=t=>{stateEl.textContent=t};
+function ac(){if(!ctx){const C=window.AudioContext||window.webkitAudioContext;ctx=new C();master=ctx.createGain();master.gain.value=vol;master.connect(ctx.destination);}if(ctx.state==="suspended")ctx.resume();return ctx;}
+let srcs=[];function quiet(){for(const s of srcs){try{s.stop()}catch(e){}}srcs=[]}
+const cache=new Map();
+async function playFile(f,loop){const c=ac();let b=cache.get(f);if(!b){b=await fetch(f).then(r=>r.arrayBuffer()).then(a=>c.decodeAudioData(a));cache.set(f,b)}quiet();const s=c.createBufferSource();s.buffer=b;s.loop=!!loop;s.connect(master);s.start();srcs.push(s);}
+const deeps=[
+ {file:"deep-v2/v1-4s.wav",name:"V1 · 每 4 秒换和弦",tag:"32s 循环 · 4 和弦 × 2 轮",desc:"H1 的两倍速。Am→F→C→G 每 4 秒一次，一轮 16 秒，循环里走两遍。"},
+ {file:"deep-v2/v2-2s.wav",name:"V2 · 每 2 秒换和弦",tag:"32s 循环 · 8 和弦 × 2 轮",desc:"最密的一档，八和弦两秒一切，几乎一直在动。可能会显得有点忙。"},
+ {file:"deep-sfx/h1-progression.wav",name:"H1 · 原来那个（对照）",tag:"32s · 8 秒一换",desc:"你刚听过的版本，放这儿对比。"},
+ {file:"deep-v2/v3-sparkle.wav",name:"V3 · 4 秒换 + 高音点缀",tag:"32s · 有「动作」",desc:"在 V1 上撒了 34 颗极轻的高音，平均不到一秒一颗 —— 最像有人在敲、在一件件做事。"},
+ {file:"deep-v2/v4-pulse.wav",name:"V4 · 4 秒换 + 低频推力",tag:"32s · 有心跳",desc:"在 V1 上每 2 秒加一次极轻的低频推力，像在往前推进。推进感最强。"},
+];
+const shorts=[
+ {file:"product-sfx/dingtalk-hangup.mp3",name:"D5 · 钉钉挂断（已定）",tag:"真实产品 · 0.65s",desc:"你选的打断音。"},
+];
+const de=document.getElementById("deep");
+for(const it of deeps){const el=document.createElement("div");el.className="card";
+ el.innerHTML=`<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+ const row=document.createElement("div");row.className="row";
+ const b=document.createElement("button");b.className="primary";b.textContent="循环播放";
+ b.onclick=()=>{say(it.name+"（循环中）");playFile(it.file,true).catch(e=>say("播不了："+e.message))};
+ const s=document.createElement("button");s.textContent="停";s.onclick=()=>{quiet();say("停了")};
+ row.append(b,s);el.appendChild(row);de.appendChild(el);}
+const se=document.getElementById("short");
+for(const it of shorts){const el=document.createElement("div");el.className="card";
+ el.innerHTML=`<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+ const row=document.createElement("div");row.className="row";
+ const b=document.createElement("button");b.className="primary";b.textContent="响一次";
+ b.onclick=()=>{quiet();say(it.name);playFile(it.file,false).catch(e=>say("播不了："+e.message))};
+ row.appendChild(b);el.appendChild(row);se.appendChild(el);}
+document.getElementById("unlock").onclick=()=>{ac();document.getElementById("unlock").textContent="声音已开 ✓";say("A 组循环着听，注意和弦多久换一次")};
+document.getElementById("vol").oninput=e=>{vol=Number(e.target.value)/100;if(master)master.gain.value=vol};
+</script>
+</body></html>

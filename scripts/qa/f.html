@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>F 组 · 开源 AI/语音 agent 的真音</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:20px 18px 6px; max-width:900px; margin:0 auto; }
+  h1 { margin:0 0 6px; font-size:18px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:900px; margin:0 auto; padding:8px 18px 60px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; margin-top:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h2 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; text-transform:uppercase; }
+  .card p { margin:6px 0 11px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 13px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .bar { position:sticky; top:0; z-index:2; background:var(--bg); padding:10px 0 8px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .state { color:var(--dim); font-size:13px; }
+</style>
+<header>
+  <h1>F 组 · 开源 AI / 语音 agent 的真音</h1>
+  <div class="sub">Pipecat（Apache-2.0）与 Open WebUI 仓库里的原始文件，可以直接进产品。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+  </div>
+  <div class="grid" id="list"></div>
+</main>
+<script>
+let ctx = null, master = null;
+const state = document.getElementById("state");
+function ac() {
+  if (!ctx) {
+    const C = window.AudioContext || window.webkitAudioContext;
+    ctx = new C(); master = ctx.createGain(); master.gain.value = 1; master.connect(ctx.destination);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+let srcs = [];
+function stopAll() { for (const s of srcs) { try { s.stop(); } catch (e) {} } srcs = []; }
+const cache = new Map();
+async function play(file, loop) {
+  const c = ac();
+  let buf = cache.get(file);
+  if (!buf) { buf = await fetch(file).then(r => r.arrayBuffer()).then(a => c.decodeAudioData(a)); cache.set(file, buf); }
+  stopAll();
+  const s = c.createBufferSource(); s.buffer = buf; s.loop = !!loop; s.connect(master); s.start();
+  srcs.push(s);
+}
+const items = [
+  { f: "oss-sfx/ding1.wav", name: "F1 · Pipecat ding1", tag: "Apache-2.0 · 2.97s", desc: "语音 agent 的「确认/结束」音，尾巴长、带回响。" },
+  { f: "oss-sfx/ding2.wav", name: "F2 · Pipecat ding2", tag: "Apache-2.0 · 1.15s", desc: "同一个的短版，更克制。" },
+  { f: "oss-sfx/ready.wav", name: "F3 · Nova Sonic ready", tag: "Apache-2.0 · 0.73s", desc: "AWS Nova Sonic「可以说话了」的待命音。" },
+  { f: "oss-sfx/notification.mp3", name: "F4 · Open WebUI 通知", tag: "open-webui · 1.75s", desc: "「有回复了」。" },
+  { f: "oss-sfx/greeting.mp3", name: "F5 · Open WebUI 问候", tag: "open-webui · 0.82s", desc: "打开会话的开场。" },
+  { f: "oss-sfx/office-ambience-24000-mono.mp3", name: "F6 · Pipecat 办公室底噪", tag: "Apache-2.0 · 142s", desc: "他们的官方背景音素材，长任务垫底用。" },
+  { f: "oss-sfx/hold_music.wav", name: "F7 · Pipecat 等待音乐", tag: "Apache-2.0 · 155s", desc: "传统 hold music，反例。" },
+];
+const list = document.getElementById("list");
+for (const it of items) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${it.tag}</div><h2>${it.name}</h2><p>${it.desc}</p>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const once = document.createElement("button");
+  once.className = "primary"; once.textContent = "听一次";
+  once.onclick = () => { state.textContent = it.name; play(it.f, false).catch(e => state.textContent = "播不了：" + e.message); };
+  const loop = document.createElement("button");
+  loop.textContent = "循环";
+  loop.onclick = () => { state.textContent = it.name + "（循环中）"; play(it.f, true).catch(e => state.textContent = "播不了：" + e.message); };
+  const stop = document.createElement("button");
+  stop.textContent = "停"; stop.onclick = () => { stopAll(); state.textContent = "停了"; };
+  row.append(once, loop, stop);
+  el.appendChild(row);
+  list.appendChild(el);
+}
+document.getElementById("unlock").onclick = () => { ac(); document.getElementById("unlock").textContent = "声音已开 ✓"; state.textContent = "点下面任意一张卡"; };
+</script>

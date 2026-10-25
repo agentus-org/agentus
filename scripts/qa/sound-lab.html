@@ -1,0 +1,374 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>音效试听台 · Agentus 通话页</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:22px 20px 8px; max-width:1080px; margin:0 auto; }
+  h1 { margin:0 0 6px; font-size:19px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:1080px; margin:0 auto; padding:10px 20px 60px; }
+  .bar { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin:14px 0 18px; padding:12px 14px;
+         background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+  .bar label { font-size:13px; color:var(--dim); display:flex; align-items:center; gap:8px; }
+  input[type=range] { width:150px; accent-color:var(--accent); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .card .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; text-transform:uppercase; }
+  .card p { margin:6px 0 12px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:8px;
+           padding:7px 12px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  button.stop { color:#ff9a9a; }
+  .hint { margin-top:26px; color:var(--dim); font-size:13px; }
+  code { color:#9ad; font-size:12px; }
+</style>
+<header>
+  <h1>音效试听台 · 通话页</h1>
+  <div class="sub">全部现场合成（WebAudio），零音频文件。选中的音型会原样落进 <code>CallMode.tsx</code>。</div>
+</header>
+<main>
+  <div class="bar">
+    <label>音量 <input id="vol" type="range" min="0" max="130" value="100"></label>
+    <span class="sub" id="volText">100%</span>
+    <button id="unlock" class="primary">先点这里开启声音</button>
+    <span class="sub" id="state">（浏览器要求先有一次点击才允许出声）</span>
+  </div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:20px 0 10px;font-weight:600">A · 干活时（思考 / 工具执行）</h2>
+  <div class="grid" id="think"></div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:26px 0 10px;font-weight:600">B · 打断时</h2>
+  <div class="grid" id="cut"></div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:26px 0 10px;font-weight:600">C · LiveKit 官方内置（真音频，可循环）</h2>
+  <div class="grid" id="lk"></div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:26px 0 10px;font-weight:600">F · 开源 AI / 语音 agent 项目的真音（可合法抄）</h2>
+  <div class="grid" id="oss"></div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:26px 0 10px;font-weight:600">D · 真实产品音（从你机器上的 App 里直接拷的）</h2>
+  <div class="grid" id="prod"></div>
+
+  <h2 style="font-size:14px;color:var(--dim);margin:26px 0 10px;font-weight:600">E · macOS 系统音</h2>
+  <div class="grid" id="mac"></div>
+
+  <div class="hint">
+    提示：手机上如果要听得准，先把系统媒体音量调到你平时听通话的位置。「跑一轮」会按真实节奏演一遍
+    （立刻 → 2s → 4s → 8s），做工具时的实际间隔就是这个顺序。
+  </div>
+</main>
+<script>
+// ---------------------------------------------------------------- audio plumbing
+let ctx = null, master = null, vol = 1;
+const noiseBuf = (() => {
+  let buf = null;
+  return (c) => {
+    if (buf) return buf;
+    buf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return buf;
+  };
+})();
+function ac() {
+  if (!ctx) {
+    const C = window.AudioContext || window.webkitAudioContext;
+    ctx = new C();
+    master = ctx.createGain();
+    master.gain.value = vol;
+    master.connect(ctx.destination);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+class Stop extends Error {}
+let current = { srcs: [], nodes: [] };
+function quiet() {
+  for (const s of current.srcs) { try { s.stop(); } catch {} }
+  for (const n of current.nodes) { try { n.disconnect(); } catch {} }
+  current = { srcs: [], nodes: [] };
+}
+const track = (n, isSrc) => { (isSrc ? current.srcs : current.nodes).push(n); return n; };
+
+/** a short sine with a click-free envelope: attack ~8ms, exponential release */
+function blip(c, { f = 660, at = 0, dur = 0.11, gain = 0.16, type = "sine", glideTo = null }) {
+  const o = track(c.createOscillator(), true);
+  const g = track(c.createGain());
+  o.type = type;
+  o.frequency.setValueAtTime(f, c.currentTime + at);
+  if (glideTo) o.frequency.exponentialRampToValueAtTime(glideTo, c.currentTime + at + dur);
+  g.gain.setValueAtTime(0.0001, c.currentTime + at);
+  g.gain.exponentialRampToValueAtTime(gain, c.currentTime + at + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + at + dur);
+  o.connect(g).connect(master);
+  o.start(c.currentTime + at);
+  o.stop(c.currentTime + at + dur + 0.02);
+}
+/** a filtered noise burst — the "wooden" / "pop" family */
+function thud(c, { at = 0, dur = 0.05, freq = 900, q = 1.2, gain = 0.22, low = true }) {
+  const s = track(c.createBufferSource(), true);
+  s.buffer = noiseBuf(c);
+  const f = track(c.createBiquadFilter());
+  f.type = low ? "lowpass" : "bandpass";
+  f.frequency.value = freq;
+  f.Q.value = q;
+  const g = track(c.createGain());
+  g.gain.setValueAtTime(0.0001, c.currentTime + at);
+  g.gain.exponentialRampToValueAtTime(gain, c.currentTime + at + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + at + dur);
+  s.connect(f).connect(g).connect(master);
+  s.start(c.currentTime + at, Math.random());
+  s.stop(c.currentTime + at + dur + 0.02);
+}
+/** very quiet continuous bed: brown-ish noise through a low lowpass, slowly breathing */
+function bed(c, { gain = 0.055, seconds = 12 } = {}) {
+  const s = track(c.createBufferSource(), true);
+  s.buffer = noiseBuf(c);
+  s.loop = true;
+  const f = track(c.createBiquadFilter());
+  f.type = "lowpass"; f.frequency.value = 220; f.Q.value = 0.7;
+  const g = track(c.createGain());
+  const lfo = track(c.createOscillator(), true);
+  const lg = track(c.createGain());
+  lfo.frequency.value = 0.14; lg.gain.value = gain * 0.35;
+  lfo.connect(lg).connect(g.gain);
+  g.gain.setValueAtTime(0.0001, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(gain, c.currentTime + 0.5);
+  g.gain.setValueAtTime(gain, c.currentTime + seconds - 0.8);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + seconds);
+  s.connect(f).connect(g).connect(master);
+  s.start(); lfo.start();
+  lfo.stop(c.currentTime + seconds + 0.05);
+  s.stop(c.currentTime + seconds + 0.05);
+}
+
+// ---------------------------------------------------------------- A: working sounds
+const think = [
+  {
+    id: "heartbeat", name: "A1 · 心跳两音", tag: "最像「在工作」",
+    desc: "660Hz 两声，间隔 90ms；立刻 → 2s → 4s → 8s 渐疏。像电话转接的等待音，但更轻更快。",
+    once: (c) => { blip(c, { f: 660, dur: 0.10, gain: 0.15 }); blip(c, { f: 660, at: 0.09, dur: 0.10, gain: 0.12 }); },
+    run: (c) => { const beat = () => { blip(c, { f: 660, dur: 0.10, gain: 0.15 }); blip(c, { f: 660, at: 0.09, dur: 0.10, gain: 0.12 }); };
+      [0, 2000, 6000, 14000].forEach((t) => setTimeout(beat, t)); },
+  },
+  {
+    id: "hum", name: "A2 · 极轻底噪", tag: "最不烦",
+    desc: "220Hz 低通的白噪，-30dB 上下，缓慢起伏。全程铺着，像「线路还通着」，停手即消失。",
+    once: (c) => bed(c, { gain: 0.05, seconds: 6 }),
+    run: (c) => bed(c, { gain: 0.05, seconds: 16 }),
+  },
+  {
+    id: "wood", name: "A3 · 木质轻敲", tag: "设计感最强",
+    desc: "40ms 的滤波噪声脉冲 + 220Hz 短促正弦，iOS 那种「有质感」的敲击。重复久了最容易被注意到。",
+    once: (c) => { thud(c, { dur: 0.045, freq: 1100, gain: 0.2 }); blip(c, { f: 220, dur: 0.06, gain: 0.1 }); },
+    run: (c) => { const hit = () => { thud(c, { dur: 0.045, freq: 1100, gain: 0.2 }); blip(c, { f: 220, dur: 0.06, gain: 0.1 }); };
+      [0, 2000, 6000, 14000].forEach((t) => setTimeout(hit, t)); },
+  },
+  {
+    id: "breath", name: "A4 · 呼吸（噪声渐起）", tag: "备选",
+    desc: "每次触发是一段 600ms 的极轻气流，不是音高，不会和任何声音打架。和 A2 的区别：它是一阵一阵的。",
+    once: (c) => { thud(c, { dur: 0.6, freq: 700, q: 0.4, gain: 0.09 }); },
+    run: (c) => { const puff = () => thud(c, { dur: 0.6, freq: 700, q: 0.4, gain: 0.09 });
+      [0, 2000, 6000, 14000].forEach((t) => setTimeout(puff, t)); },
+  },
+];
+
+// ---------------------------------------------------------------- B: interruption sounds
+const cut = [
+  {
+    id: "now", name: "B0 · 现在的（对照）", tag: "线上版本",
+    desc: "520 → 400Hz 下行两声。能用，但听起来像「通知」，不像「停了」。",
+    once: (c) => { blip(c, { f: 520, dur: 0.15, gain: 0.16 }); blip(c, { f: 400, at: 0.16, dur: 0.15, gain: 0.16 }); },
+  },
+  {
+    id: "down1", name: "B1 · 单声下行", tag: "推荐",
+    desc: "600 → 280Hz，一次滑音 110ms，干脆收尾。语义是「停」，不是「叮咚」。",
+    once: (c) => blip(c, { f: 600, glideTo: 280, dur: 0.11, gain: 0.2 }),
+  },
+  {
+    id: "click", name: "B2 · 干脆一咔", tag: "最短",
+    desc: "35ms 滤波脉冲，几乎只是一声「咔」。最快让步，但存在感偏弱。",
+    once: (c) => thud(c, { dur: 0.035, freq: 1600, q: 0.9, gain: 0.24 }),
+  },
+  {
+    id: "double", name: "B3 · 双低敲", tag: "最明确",
+    desc: "两次 300Hz 短敲，间隔 80ms —— 像按了两次挂机键，明确「到此为止」。",
+    once: (c) => { blip(c, { f: 300, dur: 0.05, gain: 0.18 }); thud(c, { dur: 0.03, freq: 800, gain: 0.14 }); blip(c, { f: 300, at: 0.08, dur: 0.05, gain: 0.18 }); },
+  },
+];
+
+// ---------------------------------------------------------------- C: LiveKit built-ins
+// 这些是 livekit/agents 包里真实内置的音频（resources/*.ogg，GitHub LFS 原件）。
+// LiveKit 的用法不是「滴一声」，而是 BackgroundAudioPlayer：一层常驻环境音 + 按 agent 状态切 clip。
+const lk = [
+  { f: "office-ambience.ogg", name: "C1 · 办公室环境音", tag: "LiveKit 内置", desc: "22s 循环。低音量铺着，像隔壁有人在工作 —— 最容易让人相信「它在干活」。" },
+  { f: "keyboard-typing.ogg", name: "C2 · 键盘敲击 1", tag: "LiveKit 内置", desc: "9.7s。真实键盘声，是最直白的「它在敲字」信号，但也最容易被认为吵。" },
+  { f: "keyboard-typing2.ogg", name: "C3 · 键盘敲击 2", tag: "LiveKit 内置", desc: "3.3s，更短更轻的一版。" },
+  { f: "city-ambience.ogg", name: "C4 · 城市环境", tag: "LiveKit 内置", desc: "30s 循环。街道底噪，人味最重，和「技术助手」的气质不太搭。" },
+  { f: "forest-ambience.ogg", name: "C5 · 森林环境", tag: "LiveKit 内置", desc: "30s 循环。鸟叫虫鸣，放松但会让人出戏。" },
+  { f: "crowded-room.ogg", name: "C6 · 嘈杂房间", tag: "LiveKit 内置", desc: "30s 循环。多人低语，像呼叫中心的背景。" },
+  { f: "hold_music.ogg", name: "C7 · 等待音乐", tag: "LiveKit 内置", desc: "55s。传统电话 hold music —— 放这儿当反例：它就是「体验差」的定义。" },
+];
+
+// ---------------------------------------------------------------- D/E: real product sounds
+// 全部是本机 App 包里原封不动的文件（钉钉/飞书/企业微信/微信/iTerm + macOS 系统音）。
+// ⚠️ 版权：这些是各家/Apple 的资产，本地试听可以，**不能随 Agentus 分发**。
+// 真要落地，就照听感用 WebAudio 合成一个等价音，或换 CC0 素材。
+const prod = [
+  { f: "dingtalk-ding.mp3", name: "D1 · 钉钉「叮」", tag: "≈ 干活提示", desc: "1.9s。中国人最熟的「有事发生」音，干净、有结论感。" },
+  { f: "dingtalk-octave.mp3", name: "D2 · 钉钉八度", tag: "≈ 干活 / 完成", desc: "1.6s。音阶上行，天然的「向前推进」语义。" },
+  { f: "dingtalk-special.mp3", name: "D3 · 钉钉特别提醒", tag: "≈ 审批", desc: "1.2s。比普通提示更有分量，适合「有个操作等你批」。" },
+  { f: "dingtalk-message.mp3", name: "D4 · 钉钉消息", tag: "≈ 消息到", desc: "1.4s。" },
+  { f: "dingtalk-hangup.mp3", name: "D5 · 钉钉挂断「嘟嘟」", tag: "≈ 打断", desc: "0.65s。挂断的物理隐喻，短促、明确、一点不含糊。" },
+  { f: "wecom-closecall.mp3", name: "D6 · 企业微信挂断", tag: "≈ 打断", desc: "1.0s。另一家的挂断音，比钉钉软一点。" },
+  { f: "lark-normal.wav", name: "D7 · 飞书普通消息", tag: "≈ 干活 / 完成", desc: "1.8s。轻、清、不吵。" },
+  { f: "lark-at.wav", name: "D8 · 飞书 @我", tag: "≈ 审批", desc: "1.6s。比普通消息明显高一档，正好对应「要你动手」。" },
+  { f: "lark-urgent.wav", name: "D9 · 飞书加急", tag: "≈ 审批超时", desc: "0.8s。最短最急，适合挂了很久没人批。" },
+  { f: "wecom-msg.wav", name: "D10 · 企业微信新消息", tag: "≈ 消息到", desc: "0.78s。" },
+  { f: "wechat-notify.wav", name: "D11 · 微信「咚」", tag: "≈ 消息到", desc: "0.9s。全国人民的肌肉记忆。" },
+  { f: "iterm-success.mp3", name: "D12 · iTerm 成功", tag: "≈ 完成", desc: "2.5s。命令行跑完的味道，开发者的直觉。" },
+  { f: "iterm-error.mp3", name: "D13 · iTerm 出错", tag: "≈ 出错", desc: "0.6s。跟 D12 是一对。" },
+  { f: "iterm-keyclick.wav", name: "D14 · iTerm 键击", tag: "≈ 干活（键盘）", desc: "2ms，真正的机械键击采样。极短，可以高频重复。" },
+  { f: "dingtalk-busy.wav", name: "D15 · 钉钉忙音", tag: "反例", desc: "4.8s。占线音，放这儿当「别学这个」。" },
+];
+const oss = [
+  { f: "ding1.wav", name: "F1 · Pipecat ding1", tag: "Apache-2.0 · 验收音", base: "oss-sfx/", desc: "2.97s。Pipecat 语音 agent 官方示例里的「结束/确认」音，尾巴长，有回响。" },
+  { f: "ding2.wav", name: "F2 · Pipecat ding2", tag: "Apache-2.0 · 短 ding", base: "oss-sfx/", desc: "1.15s。同上的短线版，更克制。" },
+  { f: "ready.wav", name: "F3 · Nova Sonic ready", tag: "Apache-2.0 · 待命", base: "oss-sfx/", desc: "0.73s。AWS Nova Sonic 语音服务「可以说话了」的提示音。" },
+  { f: "notification.mp3", name: "F4 · Open WebUI 通知", tag: "open-webui · 通知", base: "oss-sfx/", desc: "1.75s。开源 ChatGPT 界面里「有回复了」的音。" },
+  { f: "greeting.mp3", name: "F5 · Open WebUI 问候", tag: "open-webui · 开场", base: "oss-sfx/", desc: "0.82s。打开会话时的开场音。" },
+  { f: "office-ambience-24000-mono.mp3", name: "F6 · Pipecat 办公室底噪", tag: "Apache-2.0 · 长任务背景", base: "oss-sfx/", desc: "142s。Pipecat 官方的「背景音」示例素材，就是拿它垫在长任务下面。" },
+  { f: "hold_music.wav", name: "F7 · Pipecat 等待音乐", tag: "Apache-2.0 · 反例", base: "oss-sfx/", desc: "155s。传统 hold music，当反例听。" },
+];
+const mac = [
+  { f: "mac-tink.wav", name: "E1 · Tink", tag: "系统音", desc: "0.56s。最轻的一颗水滴。" },
+  { f: "mac-pop.wav", name: "E2 · Pop", tag: "系统音", desc: "1.6s。气泡破裂。" },
+  { f: "mac-glass.wav", name: "E3 · Glass", tag: "系统音", desc: "1.65s。玻璃杯，清亮。" },
+  { f: "mac-ping.wav", name: "E4 · Ping", tag: "系统音", desc: "1.5s。" },
+  { f: "mac-purr.wav", name: "E5 · Purr", tag: "系统音", desc: "0.76s。像猫打呼，很软。" },
+  { f: "mac-morse.wav", name: "E6 · Morse", tag: "系统音", desc: "0.7s。电报感。" },
+  { f: "mac-submarine.wav", name: "E7 · Submarine", tag: "系统音", desc: "1.5s。低频闷响，最「深处有东西在动」的一个。" },
+  { f: "mac-bottle.wav", name: "E8 · Bottle", tag: "系统音", desc: "0.77s。" },
+  { f: "mac-basso.wav", name: "E9 · Basso", tag: "系统音", desc: "0.77s。低沉，天然是「错误/停止」。" },
+  { f: "mac-funk.wav", name: "E10 · Funk", tag: "系统音", desc: "2.16s。" },
+  { f: "mac-hero.wav", name: "E11 · Hero", tag: "系统音", desc: "1.06s。上扬，完成感强。" },
+  { f: "mac-sosumi.wav", name: "E12 · Sosumi", tag: "系统音", desc: "1.54s。经典警报。" },
+  { f: "mac-frog.wav", name: "E13 · Frog", tag: "系统音", desc: "0.72s。" },
+  { f: "mac-blow.wav", name: "E14 · Blow", tag: "系统音", desc: "1.4s。" },
+];
+
+// ---------------------------------------------------------------- UI
+const $ = (s) => document.querySelector(s);
+const stateEl = $("#state");
+function say(t) { stateEl.textContent = t; }
+
+$("#unlock").onclick = () => { ac(); $("#unlock").textContent = "声音已开启 ✓"; say("现在可以点下面任何一张卡"); };
+
+const volEl = $("#vol");
+volEl.oninput = () => {
+  vol = Number(volEl.value) / 100;
+  if (master) master.gain.value = vol;
+
+  $("#volText").textContent = volEl.value + "%";
+};
+
+function card(item, host, withRun) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${item.tag}</div><h2>${item.name}</h2><p>${item.desc}</p>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const play = document.createElement("button");
+  play.className = "primary";
+  play.textContent = "听一次";
+  play.onclick = () => { quiet(); item.once(ac()); say(item.name + "：听一次"); };
+  row.appendChild(play);
+  if (withRun) {
+    const run = document.createElement("button");
+    run.textContent = "跑一轮（按真实节奏）";
+    run.onclick = () => { quiet(); item.run(ac()); say(item.name + "：按 0/2/4/8s 的节奏演示中…"); };
+    row.appendChild(run);
+  }
+  const stop = document.createElement("button");
+  stop.className = "stop";
+  stop.textContent = "停";
+  stop.onclick = () => { quiet(); say("停了"); };
+  row.appendChild(stop);
+  el.appendChild(row);
+  host.appendChild(el);
+}
+let lkBufCache = new Map();
+async function playClip(file, base = "livekit-sfx/") {
+  // 走同一个 AudioContext：网页上 <audio> 元素会被自动播放策略拦，走 WebAudio 只要页面有过一次点击就稳。
+  const c = ac();
+  let buf = lkBufCache.get(file);
+  if (!buf) {
+    buf = await fetch(base + file).then((r) => r.arrayBuffer()).then((a) => c.decodeAudioData(a));
+    lkBufCache.set(file, buf);
+  }
+  const s = track(c.createBufferSource(), true);
+  s.buffer = buf; s.loop = true; s.connect(master); s.start();
+}
+function lkCard(item, host) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${item.tag}</div><h2>${item.name}</h2><p>${item.desc}</p>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const play = document.createElement("button");
+  play.className = "primary";
+  play.textContent = "循环播放";
+  play.onclick = () => {
+    quiet();
+    say(item.name + "：加载中…");
+    void playClip(item.f, item.base).then(() => say(item.name + "：循环播放中（点「停」结束）")).catch((e) => say("播不了：" + (e?.message || e)));
+  };
+  const stop = document.createElement("button");
+  stop.className = "stop";
+  stop.textContent = "停";
+  stop.onclick = () => { quiet(); say("停了"); };
+  row.append(play, stop);
+  el.appendChild(row);
+  host.appendChild(el);
+}
+think.forEach((t) => card(t, $("#think"), true));
+cut.forEach((c) => card(c, $("#cut"), false));
+lk.forEach((i) => lkCard(i, $("#lk")));
+
+function realCard(item, host) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${item.tag}</div><h2>${item.name}</h2><p>${item.desc}</p>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const once = document.createElement("button");
+  once.className = "primary";
+  once.textContent = "听一次";
+  once.onclick = () => {
+    quiet();
+    void playClip(item.f, item.base || "product-sfx/").then(() => say(item.name)).catch((e) => say("播不了：" + (e?.message || e)));
+  };
+  const loop = document.createElement("button");
+  loop.textContent = "循环";
+  loop.onclick = () => {
+    quiet();
+    void playClip(item.f, item.base || "product-sfx/").then(() => say(item.name + "：循环中")).catch((e) => say("播不了：" + (e?.message || e)));
+  };
+  const stop = document.createElement("button");
+  stop.className = "stop";
+  stop.textContent = "停";
+  stop.onclick = () => { quiet(); say("停了"); };
+  row.append(once, loop, stop);
+  el.appendChild(row);
+  host.appendChild(el);
+}
+oss.forEach((i) => realCard(i, $("#oss")));
+prod.forEach((i) => realCard(i, $("#prod")));
+mac.forEach((i) => realCard(i, $("#mac")));
+</script>
