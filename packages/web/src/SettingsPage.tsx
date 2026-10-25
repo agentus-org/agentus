@@ -17,6 +17,7 @@ import { NotifySettings } from "./NotifySettings";
 import { TrustCard } from "./TrustCard";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
+import { loadSfx, playCut, previewBed, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -185,6 +186,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [caps, setCaps] = useState<VoiceCaps>(NO_CAPS);
   const [hot, setHot] = useState<HotwordList | null>(null);
   const [keyInput, setKeyInput] = useState("");
+  // 通话状态音的试听/诊断（#61）：音频上下文是不是真的在 running、两个音解码出来多长。
+  // 通话里这一段听不见也看不见，出问题时只能靠这里把它照出来。
+  const [sfxNote, setSfxNote] = useState("");
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -1232,6 +1236,48 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 热词 ---------- */}
+        <section className="set-card" id="set-sfx" data-setgroup="voice">
+          <h3>通话状态音</h3>
+          <p className="set-hint">
+            它干活的时候有一点很轻的底音，它开口说话就停；你打断它的时候响一声短的。
+            这里放的和通话里放的是同一份素材、同一个音频上下文，所以这里能听到、通话里就该能听到。
+          </p>
+          <div className="set-row">
+            <button
+              type="button"
+              className="set-btn"
+              onClick={() => {
+                unlockSfxAudio();
+                void loadSfx().then(() => {
+                  const st = sfxStatus();
+                  previewBed(3);
+                  setSfxNote(`上下文 ${st.ctxState} · 背景音 ${st.bed ? st.bed.toFixed(1) + "s" : "没解码"} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                });
+              }}
+            >
+              试听背景音（3 秒）
+            </button>
+            <button
+              type="button"
+              className="set-btn"
+              onClick={() => {
+                unlockSfxAudio();
+                void loadSfx().then(() => {
+                  const st = sfxStatus();
+                  playCut();
+                  setSfxNote(`上下文 ${st.ctxState} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                });
+              }}
+            >
+              试听打断音
+            </button>
+          </div>
+          {sfxNote ? <p className="set-hint"><b>{sfxNote}</b></p> : null}
+          <p className="set-hint">
+            如果这里显示「上下文 suspended」或者「没解码」，问题在浏览器或格式，不在通话页 —— 把这一行发我。
+          </p>
+        </section>
+
         <section className="set-card" id="set-hotwords" data-setgroup="voice">
           <h3>热词</h3>
           <p className="set-hint">

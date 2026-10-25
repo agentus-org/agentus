@@ -28,6 +28,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { audioCtx as sfxCtx, loadSfx, playCut as playCutSound, setBed, ready as sfxReadyBufs, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import { BriefPlanner, type Cue } from "./call-brief";
@@ -805,43 +806,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const approvalAtRef = useRef(0);           // when the CURRENT request arrived
   const approvalDoneRef = useRef(0);         // how many reminders went out for it
 
-  // ---- 状态音（#61）：干活时的背景音 + 打断时的短音
-  const sfxCtxRef = useRef<AudioContext | null>(null);
-  const bedBufRef = useRef<AudioBuffer | null>(null);      // 32s 循环（和弦每 2 秒换一次）
-  const cutBufRef = useRef<AudioBuffer | null>(null);      // 0.3s 打断音
-  const bedRef = useRef<{ gain: GainNode; src: AudioBufferSourceNode | null } | null>(null);
+  // ---- 状态音（#61）：实现搬到了 sfx.ts —— 设置页要能播同一条音、显示同一个上下文状态，
+  //      一段"只在通话里、听不见摸不着"的代码没法诊断（第一版就是栽在这上面）。
   const [sfxReady, setSfxReady] = useState(false);
-
-  /** 通话页自己的音频上下文（#61）。chime 那种「每次 new 一个、800ms 后关掉」的用法适合一声
-   *  提示音，但撑不住一个**持续循环**的背景音，所以状态音单独用一个长命的 ctx。 */
-  const sfxCtx = (): AudioContext | null => {
-    try {
-      if (!sfxCtxRef.current) {
-        const C = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-        if (!C) return null;
-        sfxCtxRef.current = new C();
-      }
-      const c = sfxCtxRef.current;
-      if (c.state === "suspended") void c.resume().catch(() => { /* no gesture yet */ });
-      return c;
-    } catch { return null; }
-  };
-
-  /** 打断音（#61 选定）：一声 0.3 秒的短促提示。它是「停」，不是「叮咚」——所以不用音阶，
-   *  只是一个干净的单音加尾巴。波形和包络在 scripts/qa/ 里生成，换音色只换文件。 */
-  const playCut = (): void => {
-    const c = sfxCtx();
-    const buf = cutBufRef.current;
-    if (!c || !buf || !aliveRef.current) return;
-    try {
-      const src = c.createBufferSource();
-      const g = c.createGain();
-      g.gain.value = 0.6;
-      src.buffer = buf;
-      src.connect(g).connect(c.destination);
-      src.start();
-    } catch { /* no audio device: the line on screen still says it */ }
-  };
 
   /** 两声短提示音，纯 WebAudio：不要网络、不占 TTS 配额、不会跟正在念的句子抢喇叭。 */
   const chime = (tones: number[] = [880, 1180]): void => {
@@ -869,10 +836,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *  没有这一步，预取的音都解码好了、source 也 start 了，但整个 context 是 suspended ——
    *  听上去就是"什么都没改"。一次点击之后浏览器就记住这个页面可以出声了。 */
   useEffect(() => {
-    const unlock = (): void => {
-      const c = sfxCtx();
-      if (c && c.state === "suspended") void c.resume().catch(() => { /* still no gesture */ });
-    };
+    const unlock = (): void => { unlockAudio(); };
     window.addEventListener("pointerdown", unlock, { capture: true, once: true });
     window.addEventListener("keydown", unlock, { capture: true, once: true });
     return () => {
@@ -884,72 +848,24 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
 
   /** 预取两个音：背景音要 32 秒、不能等它下完，打断音要快、不能第一次点时还空着。 */
   useEffect(() => {
-    const c = sfxCtx();
-    if (!c) return;
     let alive = true;
-    const grab = async (url: string): Promise<AudioBuffer> =>
-      fetch(url).then((r) => r.arrayBuffer()).then((a) => c.decodeAudioData(a));
-    void Promise.all([grab("/sfx/thinking.m4a"), grab("/sfx/interrupt.wav")])
-      .then(([bed, cut]) => {
-        if (!alive) return;
-        bedBufRef.current = bed;
-        cutBufRef.current = cut;
-        setSfxReady(true);
-      })
-      .catch(() => { /* 静音降级：没有音也不该挡住通话 */ });
+    void loadSfx().then(() => { if (alive) setSfxReady(true); });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** 状态音跟着相位走：**thinking 时淡入，一开口说话就淡出**。
    *  这条规则比"什么时候响"更重要 —— 说话时还垫着底噪，人声会被糊掉，那比没有背景音更差。 */
   useEffect(() => {
-    const c = sfxCtx();
-    if (!c) return;
-    const bed = bedRef.current;
     // 触发条件不是「thinking 相位」——那个窗口只有几十毫秒（第一段思考一到就转 speaking），
     // 真正的「在干活」是整轮在跑：思考、调工具、等授权。它一开口说话就停，说完再响。
-    const want = (busy || phase === "thinking") && phase !== "speaking" && sfxReady && !!bedBufRef.current;
-    const dbg = (window as unknown as { __callBed?: { playing: boolean; level: number } });
-    if (want) {
-      if (!bed) {
-        const gain = c.createGain();
-        gain.gain.value = 0.0001;
-        gain.connect(c.destination);
-        bedRef.current = { gain, src: null };
-      }
-      const b = bedRef.current as { gain: GainNode; src: AudioBufferSourceNode | null };
-      if (!b.src) {
-        const src = c.createBufferSource();
-        src.buffer = bedBufRef.current as AudioBuffer;
-        src.loop = true;
-        src.connect(b.gain);
-        src.start();
-        b.src = src;
-      }
-      b.gain.gain.cancelScheduledValues(c.currentTime);
-      b.gain.gain.setValueAtTime(Math.max(0.0001, b.gain.gain.value), c.currentTime);
-      b.gain.gain.exponentialRampToValueAtTime(0.10, c.currentTime + 1.2);   // ≈ -20 dB：底色，但手机上要能分辨出「有」
-      dbg.__callBed = { playing: true, level: 0.10 };
-      return;
-    }
-    if (!bed) return;
-    bed.gain.gain.cancelScheduledValues(c.currentTime);
-    bed.gain.gain.setValueAtTime(Math.max(0.0001, bed.gain.gain.value), c.currentTime);
-    bed.gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.35);
-    const src = bed.src;
-    bed.src = null;
-    window.setTimeout(() => { try { src?.stop(); } catch { /* already stopped */ } }, 500);
-    dbg.__callBed = { playing: false, level: 0 };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const want = (busy || phase === "thinking") && phase !== "speaking" && sfxReady && !!sfxReadyBufs().bed;
+    setBed(want);
+    (window as unknown as { __callBed?: { playing: boolean; level: number } }).__callBed =
+      want ? { playing: true, level: 0.1 } : { playing: false, level: 0 };
   }, [busy, phase, sfxReady]);
 
   // 离开通话页时别把底噪留在后台
-  useEffect(() => () => {
-    const bed = bedRef.current;
-    if (bed?.src) { try { bed.src.stop(); } catch { /* gone */ } }
-    bedRef.current = null;
-  }, []);
+  useEffect(() => () => { setBed(false, 0); }, []);
 
   // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
   // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
@@ -1188,7 +1104,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *    而且不占用喇叭队列 —— 说完你马上就能开口。 */
   const confirmTakeFloor = (): void => {
     if (!aliveRef.current) return;
-    playCut();       // 一声音就够：语义是「停了」，不是「叮咚」（#61）
+    playCutSound();  // 一声音就够：语义是「停了」，不是「叮咚」（#61）
   };
 
   const bargeIn = async (): Promise<void> => {
