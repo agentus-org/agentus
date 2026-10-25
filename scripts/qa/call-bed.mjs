@@ -87,7 +87,18 @@ try {
   await send("Page.enable").catch(() => {});
   await send("Page.addScriptToEvaluateOnNewDocument", { source: `
     (() => {
-      window.__decoded = []; window.__started = [];
+      window.__decoded = []; window.__started = []; window.__ctxs = [];
+      // 记录每一个被创建的 AudioContext：只有 state 是 "running" 才真的出声。
+      // 之前只断言 "source.start() 被调用过"，那是假绿 —— suspended 的 context 里
+      // start() 照常执行，但一个字节都不会响。
+      const Base = window.AudioContext || window.webkitAudioContext;
+      if (Base && !window.__ctxWrapped) {
+        window.__ctxWrapped = true;
+        window.AudioContext = class extends Base {
+          constructor(...a) { super(...a); window.__ctxs.push(this); }
+        };
+        window.webkitAudioContext = window.AudioContext;
+      }
       const wrap = () => {
         const C = window.AudioContext || window.webkitAudioContext;
         if (!C || window.__sfxWrapped) return;
@@ -129,7 +140,17 @@ try {
   for (let i = 0; i < 40; i++) { await sleep(500); if (await ev(`!!document.querySelector('.composer, .chat-head')`)) break; }
   await sleep(900);
 
-  await click('button[aria-label="开始语音通话"]');
+  // 用 CDP 真鼠标事件点，而不是 element.click()：自动播放策略只认 isTrusted 的输入，
+  // 脚本 click() 不给 user activation，AudioContext 会一直是 suspended ——
+  // 那样测出来的红全是浏览器策略，不是产品问题。
+  const box = await ev(`(() => { const b = document.querySelector('button[aria-label="开始语音通话"]'); if (!b) return null;
+    const r = b.getBoundingClientRect(); return [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)]; })()`);
+  check("the call button is on screen", Array.isArray(box), JSON.stringify(box));
+  if (Array.isArray(box)) {
+    const [cx, cy] = box;
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx, y: cy, button: "left", clickCount: 1 });
+  }
   await sleep(1600);
   await ev(`window.__asFeed = { level: 0.0, text: '', interim: '' }; true`);   // 自动化里不给它开麦
   const opened = await ev(`({ open: !!document.querySelector('.call-mode'), phase: document.querySelector('.call-mode')?.dataset.phase ?? null,
@@ -186,6 +207,8 @@ try {
   check("the bed is gone once it starts talking", bedWhileSpeaking === false, String(bedWhileSpeaking));
 
   const started = await ev(`window.__started || []`);
+  check("the call's audio context is actually running (not suspended)", (await ev(`(window.__ctxs || []).some((c) => c.state === "running")`)) === true,
+    JSON.stringify(await ev(`(window.__ctxs || []).map((c) => c.state)`)));
   check("the bed really reached the audio graph (a 32s source was started)", started.some((ms) => ms > 30000), JSON.stringify(started));
   const sid2 = sid;
   check("the session under test is the one we created", typeof sid2 === "string" && sid2.length >= 6, sid2);

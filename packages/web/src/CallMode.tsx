@@ -929,8 +929,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       }
       b.gain.gain.cancelScheduledValues(c.currentTime);
       b.gain.gain.setValueAtTime(Math.max(0.0001, b.gain.gain.value), c.currentTime);
-      b.gain.gain.exponentialRampToValueAtTime(0.05, c.currentTime + 1.2);   // ≈ -26 dB：它是底色，不是音乐
-      dbg.__callBed = { playing: true, level: 0.05 };
+      b.gain.gain.exponentialRampToValueAtTime(0.10, c.currentTime + 1.2);   // ≈ -20 dB：底色，但手机上要能分辨出「有」
+      dbg.__callBed = { playing: true, level: 0.10 };
       return;
     }
     if (!bed) return;
