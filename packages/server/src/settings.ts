@@ -209,6 +209,9 @@ export interface AgentSettings {
    *  (`context`/`messages`/`plan`) is NOT gated: it cannot change anything, and it is what the
    *  工作播报 observer runs on. */
   cockpitSend: boolean;
+  /** #62-3：选定模型后回写 agent 自己的配置文件（`model.default`）。默认开 —— 一人一环境里
+   *  "我最近选的模型就是我想要的默认"是正确语义；留这个开关只是为了能关掉别动别人的配置。 */
+  modelWriteBack: boolean;
   /** Let a finished background process wake the agent with its own result (issue #22). ON by default:
    *  this is what the CLI and the gateway already do, and the failure it prevents is the silent one —
    *  a session that looks finished while a build is still running, whose result nobody ever reads. */
@@ -230,7 +233,7 @@ export interface AgentSettings {
 }
 
 export const AGENT_DEFAULT: AgentSettings = {
-  idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false, completionWake: true,
+  idleKillMin: 5, warmSlots: 5, warmTtlHours: 24, cockpitSend: false, completionWake: true, modelWriteBack: true,
   showSilentBackground: false, recallItemChars: 400, recallTotalChars: 12000,
 };
 
@@ -427,7 +430,25 @@ export interface Settings {
   agent: AgentSettings;
   observer: ObserverSettings;
   summary: SummarySettings;
+  /** 模型使用计数（#62-1）：key = `<backend>|<provider>|<modelId>`，value = 成功切换的次数。
+   *  放 server 而不是前端 localStorage —— 排序要跨会话、跨设备一致，且所有切换入口都收敛
+   *  在 server 的 setModel 上，记这一处就不漏。被 agent 拒的条目永不计数。 */
+  modelUsage: Record<string, number>;
   updatedAt: number;
+}
+
+/** 计数表的上限：一个 agent 广告几百个模型，键会脏（换过 provider 名字等），别让它无限长。 */
+const MODEL_USAGE_MAX = 3000;
+
+function pickModelUsage(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== "object") return out;
+  const entries = Object.entries(raw as Record<string, unknown>)
+    .filter(([k, v]) => typeof k === "string" && k.length <= 200 && typeof v === "number" && Number.isFinite(v) && v > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, MODEL_USAGE_MAX);
+  for (const [k, v] of entries) out[k] = Math.min(1e9, Math.round(Number(v)));
+  return out;
 }
 
 const DEFAULTS: VoiceSettings = {
@@ -454,7 +475,7 @@ let legacyFile = "";
 let cache: Settings = {
   voice: { ...DEFAULTS }, theme: { ...THEME_DEFAULT }, call: { ...CALL_DEFAULT },
   prefs: { ...PREFS_DEFAULT }, agent: { ...AGENT_DEFAULT },
-  observer: { ...OBSERVER_DEFAULT }, summary: { ...SUMMARY_DEFAULT }, updatedAt: 0,
+  observer: { ...OBSERVER_DEFAULT }, summary: { ...SUMMARY_DEFAULT }, modelUsage: {}, updatedAt: 0,
 };
 /** keys that came from env/.env (shown as "auto-detected" and used when settings are empty) */
 let envCreds: { apiKey: string; baseUrl: string; source: string } | null = null;
@@ -521,6 +542,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
     agent: pickAgent(stored.agent),
     observer: pickObserver(stored.observer),
     summary: pickSummary(stored.summary),
+    modelUsage: pickModelUsage((stored as Partial<Settings>).modelUsage),
     updatedAt: Number((stored as Settings).updatedAt ?? 0),
   };
   // an unset baseUrl/apiKey bootstrap from the environment: the operator said the
@@ -577,6 +599,7 @@ function pickAgent(raw: unknown): AgentSettings {
     take("recallItemChars", AGENT_RECALL_ITEM_RANGE);
     take("recallTotalChars", AGENT_RECALL_TOTAL_RANGE);
     if (typeof r.cockpitSend === "boolean") out.cockpitSend = r.cockpitSend;
+    if (typeof r.modelWriteBack === "boolean") out.modelWriteBack = r.modelWriteBack;
     if (typeof r.completionWake === "boolean") out.completionWake = r.completionWake;
     if (typeof r.showSilentBackground === "boolean") out.showSilentBackground = r.showSilentBackground;
   }
@@ -646,9 +669,25 @@ function persist(): void {
     db.setSetting("agent", cache.agent);
     db.setSetting("observer", cache.observer);
     db.setSetting("summary", cache.summary);
+    db.setSetting("modelUsage", cache.modelUsage);
   } catch (e) {
     console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
   }
+}
+
+/** 模型计数快照（#62-1）。前端拿它给模型列表排序 —— 只是读，改不了。 */
+export function modelUsage(): Record<string, number> {
+  return cache.modelUsage;
+}
+
+/** 一次**成功**的模型切换。调用点在 session-manager.setModel 里 agent 接受之后 —— 被拒的
+ *  条目不加分，于是"广告了但实际不可用"的模型会自己沉底，不需要任何端点探活。 */
+export function bumpModelUsage(key: string): void {
+  if (!key) return;
+  const next = { ...cache.modelUsage };
+  next[key] = (next[key] ?? 0) + 1;
+  cache = { ...cache, modelUsage: pickModelUsage(next), updatedAt: Date.now() };
+  persist();
 }
 
 export function getSettings(): Settings {
@@ -907,6 +946,10 @@ export function saveAgent(patch: Record<string, unknown>): Settings {
   if ("cockpitSend" in patch) {
     if (typeof patch.cockpitSend !== "boolean") throw new Error("invalid cockpitSend: expected true or false");
     a.cockpitSend = patch.cockpitSend;
+  }
+  if ("modelWriteBack" in patch) {
+    if (typeof patch.modelWriteBack !== "boolean") throw new Error("invalid modelWriteBack: expected true or false");
+    a.modelWriteBack = patch.modelWriteBack;
   }
   if ("completionWake" in patch) {
     if (typeof patch.completionWake !== "boolean") throw new Error("invalid completionWake: expected true or false");

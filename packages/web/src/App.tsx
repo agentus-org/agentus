@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
 import { ModelList } from "./ModelList";
 import { modelProvider, shortModelName } from "./modelNames";
+import { noteModelUse, useModelUsage } from "./modelUsage";
 import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick, type StatusNote } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
@@ -4307,6 +4308,8 @@ const draftsBySession = new Map<string, string>();
 
 function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean; tus: boolean; onCloseCall: () => void }): JSX.Element {
   const [text, setText] = useState(() => draftsBySession.get(v.info.id) ?? "");
+  // #62-1 冷却排序：server 记的是"这个 agent 上每个模型被成功切过几次"，这里只读。
+  const modelHeat = useModelUsage(v.info.backend);
   // a phone-width placeholder that wraps to a second line just looks broken
   const placeholder = window.innerWidth < 720 ? "message… (/ for commands)" : "message… (Enter send, Shift+Enter newline, / for commands)";
   // 插话 (issue #14) is only discoverable where the operator is actually typing. While a turn runs,
@@ -4958,6 +4961,8 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                   <ModelList
                     models={models}
                     current={currentModel}
+                    usage={modelHeat}
+                    pending={v.info.pendingModelId ?? null}
                     bad={modelBad}
                     err={modelErr}
                     onPick={(modelId) => {
@@ -4967,7 +4972,12 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                       // Not closed up front: a refusal has to be read where the pick was made,
                       // with the list still in front of the operator.
                       void cockpit.setModel(v.info.id, modelId)
-                        .then(() => { setPop(null); setModelErr(null); setAttachErr(""); })
+                        .then((info) => {
+                          // 冷槽上点选只是"记了个意图"：server 走 pending 分支、不计分，
+                          // 前端若在这里 +1，就会让一个 agent 从没接受过的模型排到组首。
+                          if (info?.models?.currentModelId === modelId) noteModelUse(v.info.backend, modelId);
+                          setPop(null); setModelErr(null); setAttachErr("");
+                        })
                         .catch((e) => {
                           const text = String((e as Error)?.message ?? e);
                           setModelErr({ id: modelId, text });
@@ -5089,8 +5099,12 @@ function CardMark({ backend }: { backend: string }): JSX.Element {
  *  and opens it, so the prompt goes out on its own the moment the agent is up, and a failure lands IN
  *  that session rather than in a vanished HTTP call. */
 function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => void }): JSX.Element {
+
   useEscape(true, onClose);
   const [backend, setBackend] = useState("");
+  // #62-1：这个对话框早就知道后端了，别把别的 agent 的用量算进排序（模型 id 会撞）；
+  // 后端还没选出来时才退回"合并全部"。
+  const startModelHeat = useModelUsage(backend);
   // A rail group's 「+」 hands its directory in (`initialCwd`): then the only thing left to
   // choose is which agent runs there — the point of the + is that the folder is already
   // decided, and re-picking it is the step the operator asked to be rid of.
@@ -5419,6 +5433,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                     <ModelList
                       models={modelIds.map((id) => ({ modelId: id }))}
                       current={modelValue}
+                      usage={startModelHeat}
                       onPick={(id) => { setPickModel(id); setPop(null); }}
                     />
                   </ToolbarSelect>

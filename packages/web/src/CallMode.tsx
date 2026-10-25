@@ -28,6 +28,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { splitSentences } from "./speech";
 import { BriefPlanner, type Cue } from "./call-brief";
@@ -311,6 +312,13 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const queueRunRef = useRef(false);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
+  /** 这一条回复里**扣着还没念**的那半句（等后半句接上再合并）。回合中途去做工具时，
+   *  这个值就是唯一还欠着耳朵的话 —— 见下面换 key 那段（#60）。 */
+  const heldTailRef = useRef("");
+  /** 那半句属于哪条 agent 消息（= `agentKey`）。没有归属的裸字符串会在打断之后
+   *  被下一次 key 变更当成"上一轮欠的那句"念出来 —— 也就是新答案的第一句是旧答案说了一半的话。 */
+  const heldTailKeyRef = useRef("");
+  const tailQueuedRef = useRef(false);  // 那半句是否已经进了队列（回合收尾时补念过）
   /** 干活期间的进度播报（#58）：判定（说什么、隔多久、什么时候闭嘴）在 call-brief.ts，
    *  这里只负责把 cue 交给喇叭和一句字幕。 */
   const briefRef = useRef<BriefPlanner>(new BriefPlanner());
@@ -753,12 +761,29 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       setCueLine("");                     // …so the progress line is stale the moment it starts
     }
     if (agentKey !== replyKeyRef.current) {          // a new reply started
+      const replacedKey = replyKeyRef.current;       // the reply this one is replacing
       replyKeyRef.current = agentKey;
+      // The previous reply may still OWE a sentence. A turn that switches to a tool does not end
+      // its message: `busy` stays true, so the fragment held back for merging is never flushed —
+      // and clearing the queue here dropped it for good, which is exactly the reported
+      // 「话说一半就跳去干活了」(#60). Nothing is kept that was not already promised: a finished
+      // turn has flushed its tail (`tailQueuedRef`) and its queue is drained by the reader.
+      // …but only if that fragment is the one THIS new reply replaced. After an interruption the
+      // cut reply keeps streaming (guarded above), so a fragment left over from it belongs to a
+      // turn the operator already took the floor from — carrying it here would open the new answer
+      // with the old answer's half sentence.
+      if (heldTailRef.current && !tailQueuedRef.current && heldTailKeyRef.current === replacedKey) {
+        queueRef.current.push(heldTailRef.current);
+        tailQueuedRef.current = true;
+        warmQueue();
+      }
       queuedRef.current = 0;
-      queueRef.current = [];
     }
     // [emo:x] 是给脸看的，不是给人念的。`splitForSpeech` 不剥方括号，所以必须在**进队列之前**剥。
     const { done, tail } = splitSentences(tidyForSpeech(stripEmoTags(agentText)));
+    heldTailRef.current = tail;            // still owed to the ear until the turn ends
+    if (tail) heldTailKeyRef.current = agentKey;
+    tailQueuedRef.current = false;
     const fresh = done.slice(queuedRef.current);
     if (fresh.length) {
       queuedRef.current = done.length;
@@ -770,6 +795,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     if (!busy && tail) {                             // turn over: flush the last fragment
       if (queuedRef.current >= done.length) {
         queuedRef.current = done.length + 1;
+        tailQueuedRef.current = true;
         queueRef.current.push(tail);
         setReply((r) => `${r}${r ? " " : ""}${tail}`);
       }
@@ -788,6 +814,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const [approvalLine, setApprovalLine] = useState("");
   const approvalAtRef = useRef(0);           // when the CURRENT request arrived
   const approvalDoneRef = useRef(0);         // how many reminders went out for it
+
+  // ---- 状态音（#61）：实现搬到了 sfx.ts —— 设置页要能播同一条音、显示同一个上下文状态，
+  //      一段"只在通话里、听不见摸不着"的代码没法诊断（第一版就是栽在这上面）。
+  const [sfxReady, setSfxReady] = useState(false);
 
   /** 两声短提示音，纯 WebAudio：不要网络、不占 TTS 配额、不会跟正在念的句子抢喇叭。 */
   const chime = (tones: number[] = [880, 1180]): void => {
@@ -810,6 +840,51 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       window.setTimeout(() => void ctx.close().catch(() => {}), 800);
     } catch { /* no audio device: the line on screen still says it */ }
   };
+
+  /** 自动播放策略：AudioContext 在**用户手势的调用栈里**才允许出声，而这个 ctx 是挂载时建的。
+   *  没有这一步，预取的音都解码好了、source 也 start 了，但整个 context 是 suspended ——
+   *  听上去就是"什么都没改"。一次点击之后浏览器就记住这个页面可以出声了。 */
+  useEffect(() => {
+    // 不用 `once`：语音优先的流程里操作者可能只说不动手，第一次 resume() 若被拒就没有第二次机会，
+    // 整通电话会一个状态音都没有。条件改成"真的 running 了才摘"，再多挂几种手势（触摸/点击）。
+    const unlock = (): void => {
+      unlockAudio();
+      const st = sfxStatus();
+      if (st.ctxState === "running" || st.ctxState === "unavailable") detach();
+    };
+    const events = ["pointerdown", "touchstart", "keydown", "click"] as const;
+    const detach = (): void => {
+      for (const e of events) window.removeEventListener(e, unlock, true);
+    };
+    for (const e of events) window.addEventListener(e, unlock, { capture: true });
+    // 进页时若已经有手势历史（比如从列表点电话进来），这里顺手试一次；失败等下个手势。
+    unlock();
+    return detach;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 预取两个音：背景音要 32 秒、不能等它下完，打断音要快、不能第一次点时还空着。 */
+  useEffect(() => {
+    let alive = true;
+    void loadSfx().then(() => { if (alive) setSfxReady(true); });
+    return () => { alive = false; };
+  }, []);
+
+  /** 状态音跟着相位走：**thinking 时淡入，一开口说话就淡出**。
+   *  这条规则比"什么时候响"更重要 —— 说话时还垫着底噪，人声会被糊掉，那比没有背景音更差。 */
+  useEffect(() => {
+    // 触发条件不是「thinking 相位」——那个窗口只有几十毫秒（第一段思考一到就转 speaking），
+    // 真正的「在干活」是整轮在跑：思考、调工具、等授权。它一开口说话就停，说完再响。
+    // 「有音」的判据是**任一通道可用**，不是 buffer 解码成功：解不开 m4a 的 WebView 上
+    // buffer 永远为空，按 buffer 判就把 `<audio>` 兜底也一起关了（见 sfx.ts `bedAvailable`）。
+    const want = (busy || phase === "thinking") && phase !== "speaking" && sfxReady && bedAvailable();
+    setBed(want);
+    (window as unknown as { __callBed?: { playing: boolean; level: number } }).__callBed =
+      want ? { playing: true, level: 0.1 } : { playing: false, level: 0 };
+  }, [busy, phase, sfxReady]);
+
+  // 离开通话页时别把底噪留在后台
+  useEffect(() => () => { setBed(false, 0); }, []);
 
   // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
   // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
@@ -1048,13 +1123,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *    而且不占用喇叭队列 —— 说完你马上就能开口。 */
   const confirmTakeFloor = (): void => {
     if (!aliveRef.current) return;
-    if (cfgRef.current.interruptMode !== "voice") {
-      void withSpeechLock(async () => {
-        await speaker.speak("好，停了", "call", prefs).catch(() => { /* nothing to confirm with */ });
-      });
-      return;
-    }
-    chime([520, 400]);
+    playCutSound();  // 一声音就够：语义是「停了」，不是「叮咚」（#61）
   };
 
   const bargeIn = async (): Promise<void> => {
@@ -1080,6 +1149,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    // 被打断的那条回复还欠着半句 —— 但那是它的，不是下一轮的。`tailQueuedRef = true`
+    // 表示"这一轮不欠了"，于是 key 变更分支不会把它搬进新答案。
+    heldTailRef.current = "";
+    heldTailKeyRef.current = "";
+    tailQueuedRef.current = true;
     audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     // 关键词模式在回答期间一直开着 relay（它得听见唤醒词），所以那个识别任务里装的是
     // 我们自己念出来的回答。换手时把任务换掉：只 resetText() 清的是本地文本，服务端
@@ -1098,6 +1172,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
+    heldTailRef.current = "";            // 同 takeFloor：上一轮的半句不跟着走
+    heldTailKeyRef.current = "";
+    tailQueuedRef.current = true;
     audibleRef.current = Date.now();     // the floor changed hands: no clip is owed a sound
     setPhase("listening");
     setReply("");

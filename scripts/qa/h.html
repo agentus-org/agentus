@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>深音 + 打断音 第二轮</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:20px 18px 4px; max-width:1000px; margin:0 auto; }
+  h1 { margin:0 0 5px; font-size:18px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:1000px; margin:0 auto; padding:6px 18px 70px; }
+  h2.sec { font-size:14px; color:var(--dim); margin:22px 0 10px; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; text-transform:uppercase; }
+  .card p { margin:6px 0 11px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 13px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:10px 0 8px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .state { color:var(--dim); font-size:13px; }
+</style>
+<header>
+  <h1>第二轮：深音（会走的和声）+ 更多打断音</h1>
+  <div class="sub">H 组全部 32 秒无缝循环、和弦会换；每张卡点「循环播放」后放着听一分钟再判断。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+    <span class="state" id="volwrap" hidden>音量 <input id="vol" type="range" min="0" max="140" value="100" style="width:120px;vertical-align:middle"></span>
+  </div>
+
+  <h2 class="sec">A · 思考背景音（深、会走、有点分量）</h2>
+  <div class="grid" id="deep"></div>
+
+  <h2 class="sec">B · 打断短音（点一次响一次）</h2>
+  <div class="grid" id="short"></div>
+</main>
+<script>
+let ctx = null, master = null, vol = 1;
+const stateEl = document.getElementById("state");
+const say = (t) => { stateEl.textContent = t; };
+function ac() {
+  if (!ctx) {
+    const C = window.AudioContext || window.webkitAudioContext;
+    ctx = new C();
+    master = ctx.createGain(); master.gain.value = vol; master.connect(ctx.destination);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+let srcs = [];
+function quiet() { for (const s of srcs) { try { s.stop(); } catch (e) {} } srcs = []; }
+const cache = new Map();
+async function playFile(file, loop) {
+  const c = ac();
+  let buf = cache.get(file);
+  if (!buf) { buf = await fetch(file).then(r => r.arrayBuffer()).then(a => c.decodeAudioData(a)); cache.set(file, buf); }
+  quiet();
+  const s = c.createBufferSource(); s.buffer = buf; s.loop = !!loop; s.connect(master); s.start();
+  srcs.push(s);
+}
+// ---- synthetic short sounds
+function blip(o) {
+  const c = ac(), src = c.createOscillator(), g = c.createGain();
+  src.type = o.type || "sine";
+  src.frequency.setValueAtTime(o.f, c.currentTime);
+  if (o.glideTo) src.frequency.exponentialRampToValueAtTime(o.glideTo, c.currentTime + o.dur);
+  g.gain.setValueAtTime(0.0001, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(o.gain || 0.2, c.currentTime + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + o.dur);
+  src.connect(g).connect(master);
+  src.start(); src.stop(c.currentTime + o.dur + 0.02); srcs.push(src);
+}
+function noise(o) {
+  const c = ac();
+  const n = c.createBuffer(1, Math.ceil(c.sampleRate * (o.dur + 0.05)), c.sampleRate);
+  const d = n.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const src = c.createBufferSource(); src.buffer = n;
+  const f = c.createBiquadFilter(); f.type = o.filter || "bandpass";
+  f.frequency.setValueAtTime(o.from || 1200, c.currentTime);
+  if (o.to) f.frequency.exponentialRampToValueAtTime(o.to, c.currentTime + o.dur);
+  f.Q.value = o.q || 1.0;
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(o.gain || 0.22, c.currentTime + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + o.dur);
+  src.connect(f).connect(g).connect(master);
+  src.start(); src.stop(c.currentTime + o.dur + 0.05); srcs.push(src);
+}
+const at = (ms, fn) => setTimeout(fn, ms);
+
+const deeps = [
+  { file: "deep-sfx/h1-progression.wav", name: "H1 · 缓慢和声", tag: "32s 循环 · Am→F→C→G", desc: "四个和弦每 8 秒换一次，低音一直挂着 A。最接近你说的「和声但不单调」。" },
+  { file: "deep-sfx/h2-descent.wav", name: "H2 · 深渊下行", tag: "32s 循环 · 半音下沉", desc: "低音一声一声往下沉，配 27.5Hz 的 sub。最深、最有压迫感的一个。" },
+  { file: "deep-sfx/h3-stardust.wav", name: "H3 · 星尘", tag: "32s 循环 · 高频弧线", desc: "低频不动，一条高频慢慢扫上去，偶尔落下几声钟。科幻感，但不吵。" },
+  { file: "deep-sfx/h4-cathedral.wav", name: "H4 · 大教堂", tag: "32s 循环 · 五度堆叠", desc: "管风琴音色 + 五度，长混响。庄严、有分量，像「正在郑重地计算」。" },
+  { file: "deep-sfx/h5-evolving.wav", name: "H5 · 电子进化", tag: "32s 循环 · 滤波扫动", desc: "锯齿 pad，滤波器缓慢打开又关上。有机器在思考的电子味，最「AI」的一个。" },
+  { file: "deep-sfx/h6-float.wav", name: "H6 · 悬浮", tag: "32s 循环 · 无调性漂移", desc: "没有明确和声，几个音互相缓慢漂移。最不打扰，也最「不确定」。" },
+  { file: "think-sfx/t1-drone-low.wav", name: "T1 · 上一版低频（对照）", tag: "23s · 单音", desc: "上一轮那个不换调的，放这儿对比。" },
+  { file: "think-sfx/t2-pad-warm.wav", name: "T2 · 上一版和声（对照）", tag: "23s · 单和弦", desc: "就是你说「一直一个调」的那个。" },
+];
+
+const shorts = [
+  { synth: () => blip({ f: 600, glideTo: 280, dur: 0.11, gain: 0.22 }), name: "B1 · 单声下行", tag: "110ms", desc: "600→280 一次滑音，语义是「停」。" },
+  { synth: () => noise({ dur: 0.035, from: 1600, q: 0.9, gain: 0.26 }), name: "B2 · 干脆一咔", tag: "35ms", desc: "最短的一声「咔」。" },
+  { synth: () => { blip({ f: 300, dur: 0.05, gain: 0.2 }); noise({ dur: 0.03, from: 800, gain: 0.15 }); at(80, () => blip({ f: 300, dur: 0.05, gain: 0.2 })); }, name: "B3 · 双低敲", tag: "两下", desc: "像按了两次挂机键。" },
+  { synth: () => { blip({ f: 620, dur: 0.07, gain: 0.19 }); at(70, () => blip({ f: 460, dur: 0.07, gain: 0.19 })); at(140, () => blip({ f: 330, dur: 0.11, gain: 0.2 })); }, name: "B4 · 三连下坠", tag: "新 · 210ms", desc: "三声快速往下走，收尾最明确，也最有「关机」的仪式感。" },
+  { synth: () => noise({ dur: 0.14, from: 3200, to: 420, q: 1.4, gain: 0.24 }), name: "B5 · 下扫 whoosh", tag: "新 · 140ms", desc: "一口气从头扫到底。有「切走」的物理感，但比纯音软。" },
+  { synth: () => { blip({ f: 95, glideTo: 62, dur: 0.13, gain: 0.3 }); noise({ dur: 0.05, from: 300, gain: 0.1 }); }, name: "B6 · 低频 thump", tag: "新 · 130ms", desc: "一下闷响，几乎没有音高。最不打断思路，但存在感很强。" },
+  { synth: () => blip({ f: 1250, glideTo: 520, dur: 0.12, gain: 0.2 }), name: "B7 · 玻璃下滑", tag: "新 · 120ms", desc: "清亮的短滑音，偏「界面音」而不是「通话音」。" },
+  { synth: () => blip({ f: 420, dur: 0.025, gain: 0.2, type: "square" }), name: "B8 · 方波 tick", tag: "新 · 25ms", desc: "最极客的一声，几乎只有质感没有音高。" },
+  { file: "product-sfx/dingtalk-hangup.mp3", name: "D5 · 钉钉挂断", tag: "真实产品 · 0.65s", desc: "挂断音。" },
+  { file: "oss-sfx/ding2.wav", name: "F2 · Pipecat ding2", tag: "Apache-2.0 · 1.15s", desc: "开源项目里的确认音。" },
+  { file: "oss-sfx/ready.wav", name: "F3 · Nova Sonic ready", tag: "Apache-2.0 · 0.73s", desc: "「轮到你」的待命音。" },
+];
+
+const deepEl = document.getElementById("deep");
+for (const it of deeps) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+  const row = document.createElement("div"); row.className = "row";
+  const b = document.createElement("button"); b.className = "primary"; b.textContent = "循环播放";
+  b.onclick = () => { say(it.name + "（循环中）"); playFile(it.file, true).catch(e => say("播不了：" + e.message)); };
+  const s = document.createElement("button"); s.textContent = "停"; s.onclick = () => { quiet(); say("停了"); };
+  row.append(b, s); el.appendChild(row); deepEl.appendChild(el);
+}
+const shortEl = document.getElementById("short");
+for (const it of shorts) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+  const row = document.createElement("div"); row.className = "row";
+  const b = document.createElement("button"); b.className = "primary"; b.textContent = "响一次";
+  b.onclick = () => {
+    quiet(); say(it.name);
+    try { if (it.file) playFile(it.file, false).catch(e => say("播不了：" + e.message)); else it.synth(); }
+    catch (e) { say("播不了：" + e.message); }
+  };
+  row.appendChild(b); el.appendChild(row); shortEl.appendChild(el);
+}
+document.getElementById("unlock").onclick = () => {
+  ac();
+  document.getElementById("unlock").textContent = "声音已开 ✓";
+  document.getElementById("volwrap").hidden = false;
+  say("A 组放着听，B 组挨个点");
+};
+document.getElementById("vol").oninput = (e) => { vol = Number(e.target.value) / 100; if (master) master.gain.value = vol; };
+</script>

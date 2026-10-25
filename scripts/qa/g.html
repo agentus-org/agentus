@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, max-age=0">
+<title>两个音 · 思考背景音 + 打断音</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0a0f14; --panel:#111a22; --line:#1e2b36; --text:#e6eef5; --dim:#8fa3b3; --accent:#5ba8d4; --ok:#4ec9a0; --warn:#e8b45a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif; }
+  header { padding:20px 18px 4px; max-width:980px; margin:0 auto; }
+  h1 { margin:0 0 5px; font-size:18px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { max-width:980px; margin:0 auto; padding:6px 18px 70px; }
+  h2.sec { font-size:14px; color:var(--dim); margin:22px 0 10px; font-weight:600; letter-spacing:.02em; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:13px 15px; }
+  .card h3 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .tag { font-size:11px; color:var(--ok); letter-spacing:.04em; text-transform:uppercase; }
+  .card p { margin:6px 0 11px; color:var(--dim); font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button { background:#182631; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 13px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04131c; border-color:var(--accent); font-weight:600; }
+  .bar { position:sticky; top:0; z-index:3; background:var(--bg); padding:10px 0 8px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .state { color:var(--dim); font-size:13px; }
+</style>
+<header>
+  <h1>两个音：干活时的背景音 · 打断时的短音</h1>
+  <div class="sub">上面选长音（会一直循环，判断"烦不烦"），下面选短音（判断"停得干不干脆"）。同一时间只会响一个。</div>
+</header>
+<main>
+  <div class="bar">
+    <button id="unlock" class="primary">先点这里开声音</button>
+    <span class="state" id="state">浏览器要点一次才允许出声</span>
+    <span class="state" id="volwrap" hidden>音量 <input id="vol" type="range" min="0" max="140" value="100" style="width:120px;vertical-align:middle;accent-color:#5ba8d4"></span>
+  </div>
+
+  <h2 class="sec">A · 干活时的背景音（长音，循环播放）</h2>
+  <div class="grid" id="long"></div>
+
+  <h2 class="sec">B · 打断时的短音（点一次响一次）</h2>
+  <div class="grid" id="short"></div>
+</main>
+<script>
+// ---------------------------------------------------------------- audio core
+let ctx = null, master = null, vol = 1;
+const stateEl = document.getElementById("state");
+const say = (t) => { stateEl.textContent = t; };
+function ac() {
+  if (!ctx) {
+    const C = window.AudioContext || window.webkitAudioContext;
+    ctx = new C();
+    master = ctx.createGain(); master.gain.value = vol; master.connect(ctx.destination);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+let srcs = [];
+function quiet() { for (const s of srcs) { try { s.stop(); } catch (e) {} } srcs = []; }
+const cache = new Map();
+async function playFile(file, loop) {
+  const c = ac();
+  let buf = cache.get(file);
+  if (!buf) { buf = await fetch(file).then(r => r.arrayBuffer()).then(a => c.decodeAudioData(a)); cache.set(file, buf); }
+  quiet();
+  const s = c.createBufferSource(); s.buffer = buf; s.loop = !!loop; s.connect(master); s.start();
+  srcs.push(s);
+}
+// synthetic short sounds (same shapes as the candidates in CallMode)
+function blip(o) {
+  const c = ac();
+  const src = c.createOscillator(), g = c.createGain();
+  src.type = "sine";
+  src.frequency.setValueAtTime(o.f, c.currentTime);
+  if (o.glideTo) src.frequency.exponentialRampToValueAtTime(o.glideTo, c.currentTime + o.dur);
+  g.gain.setValueAtTime(0.0001, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(o.gain || 0.2, c.currentTime + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + o.dur);
+  src.connect(g).connect(master);
+  src.start(); src.stop(c.currentTime + o.dur + 0.02);
+  srcs.push(src);
+}
+function thud(o) {
+  const c = ac();
+  const n = c.createBuffer(1, c.sampleRate * 0.3, c.sampleRate);
+  const d = n.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const src = c.createBufferSource(); src.buffer = n;
+  const f = c.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = o.freq || 1200; f.Q.value = o.q || 1.0;
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0001, c.currentTime);
+  g.gain.exponentialRampToValueAtTime(o.gain || 0.24, c.currentTime + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + (o.dur || 0.04));
+  src.connect(f).connect(g).connect(master);
+  src.start(); src.stop(c.currentTime + (o.dur || 0.04) + 0.05);
+  srcs.push(src);
+}
+
+// ---------------------------------------------------------------- A: long "thinking" bed
+const longs = [
+  { file: "think-sfx/t1-drone-low.wav", name: "T1 · 低频运转", tag: "合成 · 23s 循环", desc: "55Hz 底 + 轻微泛音，慢起伏。像一个马达在低速跑 —— 最「它在运转」的一个。" },
+  { file: "think-sfx/t4-pulse.wav", name: "T4 · 脉冲", tag: "合成 · 23s 循环", desc: "60Hz + 每秒两次的轻微脉动。有「计算中」的节奏感，比 T1 更有推进感。" },
+  { file: "think-sfx/t2-pad-warm.wav", name: "T2 · 温暖和声垫", tag: "合成 · 23s 循环", desc: "A 大三和弦（220/277/330），极慢呼吸。听着舒服，但几乎没有「正在干活」的信息。" },
+  { file: "think-sfx/t3-air.wav", name: "T3 · 空气", tag: "合成 · 23s 循环", desc: "纯噪声、没有音高。最像「房间里有人」，最不抢耳朵。" },
+  { file: "think-sfx/t5-sparkle.wav", name: "T5 · 微光", tag: "合成 · 24s 循环", desc: "低频底 + 稀疏的高频点缀。有「有东西在发生」的暗示，但也最容易被注意到。" },
+  { file: "oss-sfx/office-ambience-24000-mono.mp3", name: "F6 · Pipecat 办公室", tag: "Apache-2.0 · 142s", desc: "真实现场录音式环境音。有人味，但会被听成「隔壁在开会」。" },
+  { file: "livekit-sfx/office-ambience.ogg", name: "C1 · LiveKit 办公室", tag: "LiveKit 内置 · 22s", desc: "同类的另一个版本，更干净一点。" },
+];
+const shorts = [
+  { synth: () => blip({ f: 600, glideTo: 280, dur: 0.11, gain: 0.22 }), name: "B1 · 单声下行", tag: "合成 · 110ms", desc: "600→280 一次滑音。语义是「停」，不是「叮咚」。" },
+  { synth: () => { thud({ dur: 0.035, freq: 1600, q: 0.9, gain: 0.26 }); }, name: "B2 · 干脆一咔", tag: "合成 · 35ms", desc: "几乎只是一声「咔」，让步最快。" },
+  { synth: () => { blip({ f: 300, dur: 0.05, gain: 0.2 }); thud({ dur: 0.03, freq: 800, gain: 0.15 }); setTimeout(() => blip({ f: 300, dur: 0.05, gain: 0.2 }), 80); }, name: "B3 · 双低敲", tag: "合成 · 两下", desc: "像按了两次挂机键，最明确。" },
+  { file: "product-sfx/dingtalk-hangup.mp3", name: "D5 · 钉钉挂断", tag: "真实产品 · 0.65s", desc: "挂断音的物理隐喻，短促不含糊。" },
+  { file: "oss-sfx/ding2.wav", name: "F2 · Pipecat ding2", tag: "Apache-2.0 · 1.15s", desc: "开源项目里最接近「确认」的一个。" },
+  { file: "oss-sfx/ready.wav", name: "F3 · Nova Sonic ready", tag: "Apache-2.0 · 0.73s", desc: "「可以说话了」的待命音，语气是「轮到你」而不是「停」。" },
+];
+
+const longEl = document.getElementById("long");
+for (const it of longs) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+  const row = document.createElement("div"); row.className = "row";
+  const b = document.createElement("button"); b.className = "primary"; b.textContent = "循环播放";
+  b.onclick = () => { say(it.name + "（循环中）"); playFile(it.file, true).catch(e => say("播不了：" + e.message)); };
+  const s = document.createElement("button"); s.textContent = "停"; s.onclick = () => { quiet(); say("停了"); };
+  row.append(b, s); el.appendChild(row); longEl.appendChild(el);
+}
+const shortEl = document.getElementById("short");
+for (const it of shorts) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `<div class="tag">${it.tag}</div><h3>${it.name}</h3><p>${it.desc}</p>`;
+  const row = document.createElement("div"); row.className = "row";
+  const b = document.createElement("button"); b.className = "primary"; b.textContent = "响一次";
+  b.onclick = () => {
+    quiet(); say(it.name);
+    try { if (it.file) playFile(it.file, false).catch(e => say("播不了：" + e.message)); else it.synth(); }
+    catch (e) { say("播不了：" + e.message); }
+  };
+  row.appendChild(b); el.appendChild(row); shortEl.appendChild(el);
+}
+
+document.getElementById("unlock").onclick = () => {
+  ac();
+  document.getElementById("unlock").textContent = "声音已开 ✓";
+  document.getElementById("volwrap").hidden = false;
+  say("上面选长音，下面选短音");
+};
+document.getElementById("vol").oninput = (e) => {
+  vol = Number(e.target.value) / 100;
+  if (master) master.gain.value = vol;
+};
+</script>

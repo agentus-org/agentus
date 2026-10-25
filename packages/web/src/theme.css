@@ -1977,6 +1977,10 @@ body.pane-dragging * { cursor: col-resize !important; }
 }
 .tb-opt:hover { background: var(--bg-panel); border-color: var(--line); }
 .tb-opt.sel { background: rgba(var(--accent-rgb), 0.10); border-color: var(--accent-dim); color: var(--accent-text); }
+/* #62-2 冷会话上选定的模型：意图已记下、resume 时才真正生效，所以不能伪装成"当前"。
+   虚线 + 一个小标签，和 .sel 的实心状态区分开。 */
+.tb-opt.pending { border-style: dashed; }
+.tb-opt-pending { margin-left: 6px; font-size: 10px; color: var(--text-dim); opacity: .85; white-space: nowrap; }
 /* The pick the agent refused: marked in place, next to the sentence explaining why. */
 .tb-opt.bad { border-color: var(--err); color: var(--err); }
 .tb-opt.bad:hover { background: rgba(var(--err-rgb), 0.08); }

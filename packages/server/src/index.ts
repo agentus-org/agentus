@@ -27,6 +27,7 @@ import {
   SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
   saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
+  modelUsage,
 } from "./settings.js";
 import { ObserverHub } from "./observer/hub.js";
 import * as auth from "./auth.js";
@@ -1478,6 +1479,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     }
     // Operator settings: the page reads and writes this. Secrets only ever leave
     // through a mask (publicSettings) — an unchanged mask round-trips as "keep".
+    // #62-1: 模型使用计数。列表排序要跨会话、跨设备一致，所以它在 server 上；前端只读。
+    if (url.pathname === "/api/model-usage" && req.method === "GET") {
+      return send(res, 200, { usage: modelUsage() });
+    }
     if (url.pathname === "/api/settings" && req.method === "GET") {
       return send(res, 200, publicSettings());
     }

@@ -17,6 +17,7 @@ import { NotifySettings } from "./NotifySettings";
 import { TrustCard } from "./TrustCard";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
+import { getBedLevel, loadSfx, playCut, previewBed, setBedLevel, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -93,7 +94,7 @@ interface SettingsView {
   themeDefaults: ThemeConfig;
   ttsVoices: string[];
   /** agent-process knobs (settings.agent): the idle-reclaim threshold + the 热备 floor, 0 = off */
-  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
+  agent?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; modelWriteBack?: boolean; recallItemChars?: number; recallTotalChars?: number };
   /** 观察智能体 (issue #16). The observer that turns 「回合结束了」 into one spoken line. */
   observer?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number; intervalSec: number };
   observerDefaults?: { enabled: boolean; backend: string | null; systemPrompt: string; throttleSec: number };
@@ -107,7 +108,7 @@ interface SettingsView {
   summaryModelDefault?: string;
   observerThrottleRange?: [number, number];
   observerIntervalRange?: [number, number];
-  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; recallItemChars?: number; recallTotalChars?: number };
+  agentDefaults?: { idleKillMin: number; warmSlots?: number; warmTtlHours?: number; cockpitSend?: boolean; showSilentBackground?: boolean; modelWriteBack?: boolean; recallItemChars?: number; recallTotalChars?: number };
   agentIdleRange?: [number, number];
   agentWarmRange?: [number, number];
   agentWarmTtlRange?: [number, number];
@@ -185,6 +186,10 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [caps, setCaps] = useState<VoiceCaps>(NO_CAPS);
   const [hot, setHot] = useState<HotwordList | null>(null);
   const [keyInput, setKeyInput] = useState("");
+  // 通话状态音的试听/诊断（#61）：音频上下文是不是真的在 running、两个音解码出来多长。
+  // 通话里这一段听不见也看不见，出问题时只能靠这里把它照出来。
+  const [sfxNote, setSfxNote] = useState("");
+  const [bedPct, setBedPct] = useState(() => Math.round(getBedLevel() * 100));
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -211,6 +216,9 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [planHintMsg, setPlanHintMsg] = useState("");
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
   const [cockpitSend, setCockpitSend] = useState<boolean | null>(null);
+  // 选定模型即回写 agent 配置 (#62-3) — 默认开，所以这里只表示"能不能关"。
+  const [modelWriteBack, setModelWriteBack] = useState<boolean | null>(null);
+  const [modelWbMsg, setModelWbMsg] = useState("");
   // 显示不唤醒的后台进程 (#35) — 默认关：后台任务行与 rail 角标回答的是「这个会话还在干活吗」,
   // 而静默进程是 agent 自己在轮询的活, 操作者不需要看见。
   const [showSilentBg, setShowSilentBg] = useState<boolean | null>(null);
@@ -248,6 +256,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.recallTotalChars === "number") setRecallTotal(data.agent.recallTotalChars);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
+      if (typeof data.agent?.modelWriteBack === "boolean") setModelWriteBack(data.agent.modelWriteBack);
       if (typeof data.agent?.showSilentBackground === "boolean") setShowSilentBg(data.agent.showSilentBackground);
       if (data.observer) setObserver(data.observer);
       if (data.summary) setSummary(data.summary);
@@ -447,6 +456,30 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
     } catch (e) {
       setCockpitSend(!next);
       setCockpitMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
+    }
+  };
+
+  /** #62-3 模型默认值回写开关。和 cockpitSend 同形状：先乐观改本地，再落库，失败回滚。 */
+  const saveModelWriteBack = async (next: boolean): Promise<void> => {
+    setModelWriteBack(next);
+    setModelWbMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent: { modelWriteBack: next } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setModelWriteBack(Boolean(data.agent?.modelWriteBack));
+      setModelWbMsg(next
+        ? "已开启：换一次模型，agent 的默认模型就跟着变（新会话、命令行都吃这个默认）。"
+        : "已关闭：换模型只影响当前会话，agent 自己的配置文件不动。");
+    } catch (e) {
+      setModelWriteBack(!next);
+      setModelWbMsg(`保存失败：${String((e as Error)?.message ?? e)}`);
     }
   };
 
@@ -1124,6 +1157,42 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           {cockpitMsg ? <p className="set-hint">{cockpitMsg}</p> : null}
         </section>
 
+        <section className="set-card" id="set-model-default" data-setgroup="agent">
+          <h3>模型默认值</h3>
+          <p className="set-hint">
+            在会话里换一次模型，就是"以后都用这个"的意思 —— 所以选定<b>成功之后</b>，server 会把
+            它写进 agent 自己的配置文件。新会话、常驻服务、命令行都吃这个默认，重启也还在。
+          </p>
+          <p className="set-hint">
+            <b>只对 Hermes 后端生效</b>：写的是 <code>$HERMES_HOME/config.yaml</code> 里的
+            <code>model.default</code>（用了 <code>-p</code> profile 的会话写
+            <code>profiles/&lt;名字&gt;/config.yaml</code>）。<code>model.provider</code> 只在 agent
+            自己报了 provider 时才一起同步 —— 描述里带人话标签（"Anthropic (Claude Sonnet 4.5)"）
+            的就不猜，宁可只改一行。Qoder 等其它后端目前不回写，开关留在开也没有副作用。
+          </p>
+          <p className="set-hint">
+            只动那两行，其它字节原样保留；写入是原子的（临时文件 + rename），比 0600 宽的权限会被
+            收紧，改之前留一份 <code>.bak</code>。写完会用 YAML 解析器验一遍能不能读回来 ——
+            验不过就一个字都不写。被 agent 拒绝的模型不会落盘，和"用过才算数"的排序是同一个收口点。
+          </p>
+          <div className="set-row">
+            <label>选定模型时同步为全局默认</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={modelWriteBack ?? true}
+                onChange={(e) => void saveModelWriteBack(e.target.checked)}
+              />
+              <span className="set-hint">
+                {modelWriteBack === false
+                  ? "已关闭：换模型只影响当前会话"
+                  : "已开启：最近一次选择就是这个 agent 的默认模型"}
+              </span>
+            </div>
+          </div>
+          {modelWbMsg ? <p className="set-hint">{modelWbMsg}</p> : null}
+        </section>
+
         <section className="set-card" id="set-background" data-setgroup="agent">
           <h3>后台任务行</h3>
           <p className="set-hint">
@@ -1232,6 +1301,66 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         </section>
 
         {/* ---------- 热词 ---------- */}
+        <section className="set-card" id="set-sfx" data-setgroup="voice">
+          <h3>通话状态音</h3>
+          <p className="set-hint">
+            它干活的时候有一点很轻的底音，它开口说话就停；你打断它的时候响一声短的。
+            这里放的和通话里放的是同一份素材、同一个音频上下文，所以这里能听到、通话里就该能听到。
+          </p>
+          <div className="set-row">
+            <label>音量</label>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              value={bedPct}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setBedPct(v);
+                unlockSfxAudio();
+                void loadSfx().then(() => setBedLevel(v / 100, 1.6));   // 拖动即试听，松手后也还在放
+              }}
+            />
+            <span className="set-hint">{bedPct}%</span>
+          </div>
+          <div className="set-row">
+            <button
+              type="button"
+              className="set-btn"
+              onClick={() => {
+                unlockSfxAudio();
+                setSfxNote("正在解码…");
+                void loadSfx().then(() => {
+                  const st = sfxStatus();
+                  previewBed(3);
+                  setSfxNote(`上下文 ${st.ctxState} · 通道 ${st.channel} · 背景音 ${st.bed ? st.bed.toFixed(1) + "s" : "没解码"} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                });
+              }}
+            >
+              试听背景音（3 秒）
+            </button>
+            <button
+              type="button"
+              className="set-btn"
+              onClick={() => {
+                unlockSfxAudio();
+                setSfxNote("正在解码…");
+                void loadSfx().then(() => {
+                  const st = sfxStatus();
+                  playCut();
+                  setSfxNote(`上下文 ${st.ctxState} · 通道 ${st.channel} · 打断音 ${st.cut ? st.cut.toFixed(2) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                });
+              }}
+            >
+              试听打断音
+            </button>
+          </div>
+          {sfxNote ? <p className="set-hint"><b>{sfxNote}</b></p> : null}
+          <p className="set-hint">
+            如果这里显示「上下文 suspended」或者「没解码」，问题在浏览器或格式，不在通话页 —— 把这一行发我。
+          </p>
+        </section>
+
         <section className="set-card" id="set-hotwords" data-setgroup="voice">
           <h3>热词</h3>
           <p className="set-hint">

@@ -274,18 +274,35 @@ try {
   check("while the agent is working the left button says 打断", sawTake, JSON.stringify((await ev(FLOOR)).btns?.[0]));
   if (sawTake) {
     await ev(`window.__asFeed = { level: 0.45, text: '', interim: '' }; true`);
+    // 用一个 AudioBufferSourceNode.start 计数器区分「响了什么」：打断音 0.295s、背景音 32s。
+    // 必须挂在点击**之前** —— 打断音是即时的，点完再挂就计不到。
+    await ev(`(() => {
+      window.__sfxStarted = window.__sfxStarted ?? [];
+      if (!window.__sfxPatched) {
+        const os = AudioBufferSourceNode.prototype.start;
+        AudioBufferSourceNode.prototype.start = function (...a) {
+          if (this.buffer) window.__sfxStarted.push(Math.round(this.buffer.duration * 1000));
+          return os.apply(this, a);
+        };
+        window.__sfxPatched = true;
+      }
+      return true;
+    })()`);
     await click(".call-floor-row .call-floor.is-take");
     await sleep(900);
     f = await ev(FLOOR);
     check("打断 then puts you in «结束» — the floor is yours, mic open",
       f.btns[0]?.text === "结束" && f.phase === "listening", JSON.stringify({ t: f.btns[0]?.text, p: f.phase }));
-    // #58: an interrupt must not be silent. In 按键/按住说话 the mic is CLOSED, so the call may say it
-    // out loud — that is the difference from 语音模式, where the same words would be re-heard as the
-    // operator's next sentence and are therefore replaced by a short chime.
+    // #61 之后这条契约反了：#58 时代按键模式靠**念一句「好，停了」**证明打断不是静默的；现在两种
+    // 模式统一走打断音（`playCut()`），念台词会让操作者以为 agent 还在说话。所以判据改成
+    // 「发声效 + 不念台词」，并且必须真的验到声音 —— 只看 spoken 为空是假绿（静默也满足）。
     const ttsSeen = (await ev(`window.__tts ?? []`)).join("\n");
-    check("…and it says 好，停了 out loud (button mode: the microphone is closed, so words are safe)",
-      spoken.some((t) => t.includes("好，停了")) || /好，停了/.test(ttsSeen),
-      JSON.stringify({ spoken: spoken.slice(-3), tts: ttsSeen.slice(-160), takes: await ev("window.__takes ?? 0"), dbg: await ev("window.__busyDbg ?? null"), acks: await ev("window.__acks ?? 0"), mode: await ev("localStorage.getItem('agentus.voice')") }));
+    const spokenCut = spoken.some((t) => t.includes("好，停了")) || /好，停了/.test(ttsSeen);
+    const starts = (await ev("window.__sfxStarted ?? []")) ?? [];
+    const heardCut = starts.some((ms) => ms > 0 && ms < 1000);
+    check("…and it plays the interrupt sound instead of saying 好，停了 (#61: both modes use the chime)",
+      heardCut && !spokenCut,
+      JSON.stringify({ starts: starts.slice(-4), saysWords: spokenCut, tts: ttsSeen.slice(-120), takes: await ev("window.__takes ?? 0"), mode: await ev("localStorage.getItem('agentus.voice')") }));
     // 空文本结束 = 取消，不该发一条空消息出去
     const count = (t) => (t.match(/"role":"user"/g) ?? []).length;
     const c0 = count(await transcript(SID));
