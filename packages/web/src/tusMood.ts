@@ -176,6 +176,21 @@ export const GROK_EXPRESSION_MOOD: Record<GrokExpression, TusMood> = {
   confused: "confused",
 };
 
+/** 九张官方脸各自落到哪张 mood。渲染器对表里的每一张都直接用描述符的盒子
+ *  （off / wid / lidY / oval / tilt / ridge），不再逐张手调宽高 —— 2026-10-26 起
+ *  「九张全用上」，此前只有 surprised / calm / confused 三张走了描述符。 */
+export const GROK_FACE: Partial<Record<TusMood, GrokExpression>> = {
+  idle: "neutral",
+  happy: "happy",
+  surprise: "surprised",
+  curious: "inspecting",
+  sad: "sad",
+  drowsy: "sleepy",
+  focus: "squinted",
+  calm: "calm",
+  confused: "confused",
+};
+
 /** 官方规定：这五张脸上眨眼要走完整的眼睑曲线，不能简单压扁。我们另外五张也压不得
  *  （error 的 ✕、scan 的横扫线、loading 的方点、strive 的眯眼是思考的读数、sleep 本来就闭着）。 */
 export const GROK_BLINK_BLOCKED: GrokExpression[] = ["sad", "happy", "confused", "squinted", "sleepy"];
@@ -443,28 +458,27 @@ export function eyeFrame(o: {
   const level = clamp01(o.level);
   const sleep = clamp01(o.sleep ?? 0);
   const { right: r } = { right };
-  // 官方描述符驱动的三张脸：surprise 是「neutral 放大」、calm 是宽椭圆、confused 是左移的窄胶囊。
-  // 只在需要时算（每帧两只眼各一次，开销可忽略）。
-  const grokBox = mood === "surprise" ? grokEyeBox("surprised", right)
-    : mood === "calm" ? grokEyeBox("calm", right)
-      : mood === "confused" ? grokEyeBox("confused", right)
-        : null;
+  // 九张官方脸全部由描述符驱动（见 GROK_FACE）：尺寸、偏移、倾斜都从原引擎的数据来，
+  // 不再逐张手调。只在需要时算（每帧两只眼各一次，开销可忽略）。
+  const desc = GROK_FACE[mood];
+  const grokBox = desc ? grokEyeBox(desc, right) : null;
 
   // --- shape ------------------------------------------------------------------------------
   if (mood === "error") {
     return substateEye({ shape: "x", w: 45, h: 45, yScale: 1, xScale: 1, rot: 0, x: 0, y: 0, alpha: 0.86, glow: 10, jitter: 6 }, substate, right, t);
   }
   if (mood === "happy" || mood === "sad") {
-    // Arcs, not capsules: joy curves up out of the eye, sadness curves down.
+    // 官方 happy/sad 的脊线是带弧度的，我们的原语画不出弧度，用一条弧线近似；
+    // 但**尺寸与偏移**仍取描述符，不再自己写 45×30。
     return substateEye({
       shape: "arc",
-      w: 45,
-      h: 30,
+      w: grokBox!.w,
+      h: grokBox!.h,
       yScale: 1,
       xScale: 1,
-      rot: 0,
-      x: 0,
-      y: mood === "happy" ? 20 + Math.sin(t * 10) * 3 : -10,
+      rot: grokBox!.rot,
+      x: grokBox!.x * 2,
+      y: (mood === "happy" ? 20 + Math.sin(t * 10) * 3 : -10) + grokBox!.y,
       alpha: clamp01(0.72 + expr.energy * 0.22 + expr.warmth * 0.06),
       glow: 9 + level * 12 + expr.warmth * 5,
       jitter: 0,
@@ -481,47 +495,41 @@ export function eyeFrame(o: {
   const isThinking = mood === "focus" && expr.mode === "thinking";
   const isListening = mood === "focus" && expr.mode === "listening";
 
+  // 九张官方脸的宽高一律来自描述符；其余（我们自己加的脸）仍按原来的手感调。
   let w: number;
-  switch (mood) {
-    case "scan": w = 65 + level * 8; break;
-    case "strive": w = thinkingW; break;
-    case "drowsy": w = 42 + sleep * 5; break;
-    case "sleep": w = 45; break;
-    case "surprise": w = grokBox!.w; break;      // neutral 放大 1.5 倍（官方 surprised）
-    case "calm": w = grokBox!.w; break;          // 宽椭圆：64×27
-    case "confused": w = grokBox!.w; break;      // 比 idle 宽、整对左移
-    case "loading": w = 16; break;
-    case "curious": w = 34; break;   // 球面眼里 35×74 才读成"竖着的胶囊"；40×64 会变成圆角方块
-    case "working": w = 46; break;
-    case "asking": w = 38; break;
-    case "focus": w = isListening ? 40 + level * 8 : isThinking ? 46 + Math.min(expr.phaseElapsed, 3) * 2.5 : 32 + expr.attention * 8; break;
-    default: w = 34;
-  }
-
   let h: number;
-  switch (mood) {
-    case "scan": h = 12 + level * 8; break;
-    case "strive": h = thinkingH; break;
-    case "drowsy": h = Math.max(8, 78 - sleep * 66); break;
-    case "sleep": h = 4 + Math.sin(t * 1.1) * 1.2 + 1.2; break;
-    case "surprise": h = grokBox!.h; break;
-    case "calm": h = grokBox!.h; break;
-    case "confused": h = grokBox!.h; break;
-    case "loading": h = 16; break;
-    case "wink": h = r ? 2 : 40; break;
-    case "working": h = 46; break;
-    case "asking": h = 74; break;
-    case "focus": h = isListening ? 68 + level * 14 : isThinking ? 44 - Math.min(expr.phaseElapsed, 3) * 3.5 : 78 + expr.attention * 12 + level * 8; break;
-    default: h = 70;   // 球里的眼睛：34×70 约 2:1，才读成"竖着的胶囊"（64 高会变圆角方块）
+  if (grokBox) {
+    w = grokBox.w;
+    h = grokBox.h;
+  } else {
+    switch (mood) {
+      case "scan": w = 65 + level * 8; break;
+      case "strive": w = thinkingW; break;
+      case "sleep": w = 45; break;
+      case "loading": w = 16; break;
+      case "working": w = 46; break;
+      case "asking": w = 38; break;
+      default: w = 34;
+    }
+    switch (mood) {
+      case "scan": h = 12 + level * 8; break;
+      case "strive": h = thinkingH; break;
+      case "sleep": h = 4 + Math.sin(t * 1.1) * 1.2 + 1.2; break;
+      case "loading": h = 16; break;
+      case "wink": h = r ? 2 : 40; break;
+      case "working": h = 46; break;
+      case "asking": h = 74; break;
+      default: h = 70;   // 球里的眼睛：34×70 约 2:1，才读成"竖着的胶囊"（64 高会变圆角方块）
+    }
   }
 
   let rot = 0;
   if (mood === "strive") rot = r ? -thinkingRot : thinkingRot;
-  else if (mood === "curious") rot = 6;
   else if (mood === "asking") rot = 8;
   // 官方 confused 是「胶囊中间往左拱」；capsule 画不出拱，用整体左倾近似（rot 由描述符的
   // tilt 给出，九张全是 0，所以这里补的是原语误差）。
   else if (mood === "confused") rot = grokBox!.rot - 8;
+  else if (grokBox) rot = grokBox.rot;
   else if (isThinking) rot = r ? 4 : -4;
 
   let x = 0;
@@ -531,13 +539,16 @@ export function eyeFrame(o: {
     case "scan": x = Math.sin(t * 3.5) * 45; break;
     case "working": x = 0; break;
     case "asking": x = Math.sin(t * 0.9) * 1.2; break;
-    // `projectEyes` 把风格位移按 0.5 权重叠到球面投影上；描述符的 `off` 是整对眼在屏幕上的
-    // 实际位移，所以这里 ×2（否则 confused 的左移只剩 6 px，读不出来）。
-    case "calm": x = grokBox!.x * 2 + Math.sin(t * 0.7) * 1.2; break;
-    case "confused": x = grokBox!.x * 2 + Math.sin(t * 1.3) * 2; break;
-    case "surprise": x = grokBox!.x * 2; break;
     case "strive": x = Math.sin(t * (stage === 0 ? 1.8 : stage === 1 ? 4.2 : 5)) * thinkAmp; break;
-    case "focus": x = isListening ? Math.sin(t * 1.2) * 1.8 : isThinking ? Math.sin(t * 2.4) * (expr.phaseElapsed < 1.2 ? 2.5 : 6) : Math.sin(t * 1.8) * (2 + expr.attention * 2); break;
+  }
+  // `projectEyes` 把风格位移按 0.5 权重叠到球面投影上；描述符的 `off` 是整对眼在屏幕上的
+  // 实际位移，所以这里 ×2（否则 confused 的左移只剩 6 px，读不出来）。漂移是「活着」的余量。
+  if (grokBox) {
+    const drift = mood === "calm" ? Math.sin(t * 0.7) * 1.2
+      : mood === "confused" ? Math.sin(t * 1.3) * 2
+        : mood === "focus" ? Math.sin(t * 2.4) * (expr.phaseElapsed < 1.2 ? 2.5 : 6)
+          : 0;
+    x = grokBox.x * 2 + drift;
   }
 
   let y = 0;
@@ -547,9 +558,12 @@ export function eyeFrame(o: {
     case "drowsy": y = 4 + sleep * 12 + Math.sin(t * 1.2) * 1.4; break;
     case "wink": y = r ? 0 : -10; break;
     case "working": y = 6 + Math.sin(t * 1.6) * 1.2; break;   // 低头看手上的活
-    case "surprise": y = grokBox!.y; break;
-    case "calm": y = grokBox!.y + Math.sin(t * 1.1) * 1.1; break;   // 缓慢起伏，像在呼吸
-    case "confused": y = grokBox!.y + Math.sin(t * 1.7) * 1.5; break;
+  }
+  if (grokBox) {
+    const float = mood === "calm" ? Math.sin(t * 1.1) * 1.1
+      : mood === "confused" ? Math.sin(t * 1.7) * 1.5
+        : 0;
+    y += grokBox.y + float;
   }
 
   let yScale = 1;

@@ -447,7 +447,8 @@ try {
     }
     return { sent, mood, face, phase, leaked, shotAt };
   };
-  const HAPPY = await probeEmo("happy");
+  // happy 从手调 45×30 的弧线改成描述符给的 64×52 盒子，留一张截图供人眼比对。
+  const HAPPY = await probeEmo("happy", "tus-happy.png");
   check("agent 照提示词写了标签（data-mood）", HAPPY.mood === "happy", String(HAPPY.mood));
   check("脸真的画成 happy（data-face，不是只解析了标签）", HAPPY.face === "happy", String(HAPPY.face));
   check("标签没有漏进气泡（[emo: 在渲染文本里不存在）", HAPPY.leaked && HAPPY.leaked.hasTag === false,
