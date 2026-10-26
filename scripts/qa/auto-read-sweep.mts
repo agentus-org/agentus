@@ -9,6 +9,7 @@
 //
 //   node_modules/.bin/tsx scripts/qa/auto-read-sweep.mts
 import { settledReplies, AUTO_READ_FRESH_MS } from "../../packages/web/src/autoRead";
+import { createSpeakQueue } from "../../packages/web/src/speakQueue";
 
 let pass = 0;
 let fail = 0;
@@ -103,6 +104,69 @@ check(
   "exactly at the freshness edge is still fresh",
   settledReplies(view([user("u1", "x"), agent("a1", "y")], { lastAt: NOW - AUTO_READ_FRESH_MS }), NOW)?.length === 1,
 );
+
+// ---- the queue: never cut what is playing, keep only the newest waiting segment ---------------
+// The operator's rule: 1 is being read aloud; 2 and 3 arrive while 1 is still playing; when 1 ends,
+// read 3 and forget 2 — but never cut 1 off mid-sentence to get to them.
+function harness() {
+  const played: string[] = [];
+  const open: Array<() => void> = [];
+  const queue = createSpeakQueue(async (seg) => {
+    played.push(seg.key);
+    await new Promise<void>((resolve) => open.push(resolve));
+  });
+  return { queue, played, open };
+}
+const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+// 1 playing, then 2 and 3 arrive → 1 finishes → 3 plays, 2 is dropped
+{
+  const h = harness();
+  h.queue.push({ key: "s1", text: "一" });
+  h.queue.push({ key: "s2", text: "二" });
+  h.queue.push({ key: "s3", text: "三" });
+  check("queue: the newest waiting segment replaces the older one", h.queue.waiting?.key === "s3", String(h.queue.waiting?.key));
+  check("queue: the playing segment is not interrupted", h.queue.speaking && h.played.join(",") === "s1", h.played.join(","));
+  h.open.shift()!();                                  // 1 finished
+  await tick();
+  check("queue: after 1 ends it reads 3, not 2", h.played.join(",") === "s1,s3", h.played.join(","));
+  h.open.shift()!();
+  await h.queue.settled();
+  check("queue: the replaced segment is never read late", !h.played.includes("s2"), h.played.join(","));
+}
+
+// 1 playing, only 2 arrives → 2 is still the newest, so it plays after 1
+{
+  const h = harness();
+  h.queue.push({ key: "t1", text: "一" });
+  h.queue.push({ key: "t2", text: "二" });
+  h.open.shift()!();
+  await tick();
+  check("queue: a waiting segment that no newer one replaced still plays", h.played.join(",") === "t1,t2", h.played.join(","));
+  h.open.shift()!();
+  await h.queue.settled();
+}
+
+// hush (the operator spoke / sent) drops whatever was waiting
+{
+  const h = harness();
+  h.queue.push({ key: "h1", text: "一" });
+  h.queue.push({ key: "h2", text: "二" });
+  h.queue.hush();
+  check("queue: hush clears the waiting segment", h.queue.waiting === null);
+  h.open.shift()!();
+  await tick();
+  check("queue: nothing is read after hush", h.played.join(",") === "h1", h.played.join(","));
+}
+
+// idle → a pushed segment starts immediately, without waiting for anything
+{
+  const h = harness();
+  h.queue.push({ key: "i1", text: "一" });
+  check("queue: an idle push starts at once", h.queue.speaking && h.played.join(",") === "i1", h.played.join(","));
+  h.open.shift()!();
+  await h.queue.settled();
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
