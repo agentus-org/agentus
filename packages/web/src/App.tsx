@@ -33,10 +33,11 @@ import {
   type SpeechSummary,
 } from "./speechSummary";
 import {
-  browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
+  browserDictationAvailable, dictation, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
+import { settledReplies } from "./autoRead";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
@@ -1298,7 +1299,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // Voice capabilities are fetched once; the buttons fall back to browser-only until
   // the answer arrives.
   useEffect(() => { void loadVoiceCaps(); }, []);
-  useAutoRead(lastFinishedReply(active), Boolean(active && !active.busy && active.loaded));
+  useAutoRead(settledReplies(active), Boolean(active && active.loaded));
   // 工作播报: the cockpit's own one-line briefs about this session (issue #16). Same speaker, a
   // different source — and the SERVER owns the policy (throttle, what is worth saying, the fallback
   // when no observer can speak), so this side never has to decide.
@@ -1357,18 +1358,6 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
       )}
     </div>
   );
-}
-
-/** The reply an auto-read should speak: the newest agent message, but only when it
- *  just arrived (a slot opened from history must not start talking to the room). */
-function lastFinishedReply(v: SessionView | undefined): { key: string; text: string } | null {
-  if (!v || v.busy || !v.loaded) return null;
-  if (Date.now() - v.lastAt > 30_000) return null;
-  for (let i = v.msgs.length - 1; i >= 0; i -= 1) {
-    const m = v.msgs[i];
-    if (m.kind === "agent" && m.text.trim()) return { key: m.key, text: stripEmoTags(m.text) };
-  }
-  return null;
 }
 
 /** The newest 工作播报 line for this session, as a speaker target. Keyed by the line's own id so
@@ -4468,6 +4457,9 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const send = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
+    // Sending is taking over: the reply being read aloud is stale the moment this turn starts, and
+    // the new turn's own auto-read must not have to fight the old voice for the speaker (#66).
+    hushSpeech();
     const attachments = attachmentsOf();
     // A busy agent is not a dead composer any more (Studio's message queue): what he types now is
     // filed in the queue and goes out by itself when the running turn ends. The send button is still
@@ -4520,6 +4512,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const sendNow = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
+    hushSpeech();     // 插话 = 发起新回合，旧播报同样没有资格念下去 (#66)
     const attachments = attachmentsOf();
     if (v.info.cold) {
       cockpit.sendToCold(v.info.id, t, attachments);
