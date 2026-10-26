@@ -30,6 +30,14 @@ const waitFor = async (expr, ms = 20_000) => { const until = Date.now() + ms; wh
 await send("Page.enable"); await send("Runtime.enable");
 
 const apiPrefs = () => ev(`(async () => { const s = await (await fetch('/api/settings')).json(); return { prefs: s.prefs, observer: s.observer }; })()`);
+// #68: the horn belongs to a CONVERSATION. Picking a level writes that session's row and must leave
+// the global default alone — the old assertions here read `/api/settings` and expected the global to
+// move, which was exactly the behaviour #68 removed (they went red the day it shipped).
+const apiSessionSpeak = () => ev(`(async () => {
+  const r = await (await fetch('/api/speak-modes')).json();
+  const rows = Object.values(r.sessions || {}).sort((a, b) => (b.at || 0) - (a.at || 0));
+  return { session: rows[0] ?? null, rows: rows.length, defaults: r.defaults, observerEnabled: r.observerEnabled };
+})()`);
 const original = await (async () => {
   const tok = (await import("node:fs")).readFileSync("/tmp/agentus-qa-account/auth.token", "utf8").trim();
   return (await (await fetch(`${BASE}/api/settings`, { headers: { authorization: `Bearer ${tok}` } })).json());
@@ -76,29 +84,33 @@ try {
 
   const options = await ev(`[...document.querySelectorAll('.speak-menu [data-speak-option]')].map(b => b.getAttribute('data-speak-option'))`);
   // issue #24: the menu is flat and carries the beat, so 「每 1/2/5 分钟」 are first-class options.
-  check("the menu offers 关 / 自动朗读 / 四个工作播报档位 / 自定义",
-    JSON.stringify(options) === JSON.stringify(["off", "reply", "brief", "brief-60", "brief-120", "brief-300", "custom"]),
+  // issue #69 §4: 30 秒 is a level too (the server already accepted it) — five beats, not four.
+  check("the menu offers 关 / 自动朗读 / 五个工作播报档位 / 自定义",
+    JSON.stringify(options) === JSON.stringify(["off", "reply", "brief", "brief-30", "brief-60", "brief-120", "brief-300", "custom"]),
     JSON.stringify(options));
   const checkedCount = await ev(`document.querySelectorAll('.speak-menu [aria-checked="true"]').length`);
   check("exactly ONE item is checked (自动朗读 and 工作播报 are one switch, never two)", checkedCount === 1, String(checkedCount));
   const replyLabel = await ev(`document.querySelector('.speak-menu [data-speak-option="reply"] .speak-name').textContent`);
   check("自动朗读 is labelled as the click default", /默认/.test(replyLabel), JSON.stringify(replyLabel));
 
-  // Choosing 工作播报 persists the new pref AND keeps the old boolean in step.
-  const before = await apiPrefs();
+  // Choosing 工作播报 writes THIS session's row (#68) and leaves the global default where it was.
   await ev(`document.querySelector('.speak-menu [data-speak-option="brief"]').click()`);
   await sleep(1200);
-  const afterBrief = await apiPrefs();
-  check("choosing 工作播报 writes speakMode=brief (and autoRead=false)",
-    afterBrief.prefs.speakMode === "brief" && afterBrief.prefs.autoRead === false, JSON.stringify(afterBrief.prefs));
+  const afterBrief = await apiSessionSpeak();
+  check("choosing 工作播报 writes this session's mode=brief",
+    afterBrief.session?.mode === "brief", JSON.stringify(afterBrief.session));
+  check("…and leaves the global default alone (that is what #68 changed)",
+    afterBrief.defaults?.mode === "off", JSON.stringify(afterBrief.defaults));
 
   // ---- 节拍 (issue #24): picking 「每 2 分钟」 writes the beat in ONE click, and the ✓ moves ----
   await press(650);
   await ev(`document.querySelector('.speak-menu [data-speak-option="brief-120"]').click()`);
   await sleep(1200);
-  const afterBeat = await apiPrefs();
-  check("…and 「每 2 分钟」 writes observer.intervalSec=120 with the same speakMode=brief",
-    afterBeat.prefs.speakMode === "brief" && afterBeat.observer?.intervalSec === 120, JSON.stringify(afterBeat.observer));
+  const afterBeat = await apiSessionSpeak();
+  check("…and 「每 2 分钟」 writes the session beat intervalSec=120 with mode=brief",
+    afterBeat.session?.mode === "brief" && afterBeat.session?.intervalSec === 120, JSON.stringify(afterBeat.session));
+  check("…without touching the global observer beat",
+    afterBeat.defaults?.intervalSec === 0, JSON.stringify(afterBeat.defaults));
   await press(650);
   const beatChecked = await ev(`document.querySelector('.speak-menu [aria-checked="true"]')?.getAttribute('data-speak-option')`);
   const checkedNow = await ev(`document.querySelectorAll('.speak-menu [aria-checked="true"]').length`);
@@ -115,9 +127,11 @@ try {
   await press(650);
   await ev(`document.querySelector('.speak-menu [data-speak-option="reply"]').click()`);
   await sleep(1000);
-  const afterReply = await apiPrefs();
-  check("choosing 自动朗读 writes speakMode=reply and autoRead=true",
-    afterReply.prefs.speakMode === "reply" && afterReply.prefs.autoRead === true, JSON.stringify(afterReply.prefs));
+  const afterReply = await apiSessionSpeak();
+  check("choosing 自动朗读 writes this session's mode=reply",
+    afterReply.session?.mode === "reply", JSON.stringify(afterReply.session));
+  check("…global default still untouched",
+    afterReply.defaults?.mode === "off", JSON.stringify(afterReply.defaults));
 
   // Right-click is the desktop half of the long press.
   await press(90, "right");

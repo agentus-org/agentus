@@ -18,6 +18,7 @@
 // at a time, so a per-component hook would be a lie.
 import { useEffect, useSyncExternalStore } from "react";
 import type { ReadTarget, SpeakMode } from "./autoRead";
+import { createSpeakQueue } from "./speakQueue";
 
 // ---------------------------------------------------------------- preferences
 
@@ -733,34 +734,26 @@ export function useSpeaker(): SpeakState {
 const readKeys = new Set<string>();
 const READ_KEYS_MAX = 1024;
 
-/** This turn's segments are played serially: there is one speaker, so the next paragraph has to WAIT
- *  for the previous one instead of calling `speak()` on top of it (which stops it mid-sentence).
- *  `readEpoch` is what lets `hushSpeech()` drop whatever is still queued — the operator took over,
- *  so the rest of the turn must not be read at him. */
-let readChain: Promise<void> = Promise.resolve();
-let readEpoch = 0;
+/** One speaker, one segment at a time — and the queue holds only the NEWEST waiting segment.
+ *  `speakQueue.ts` owns that rule: never cut the sentence being played, but a paragraph that has
+ *  not started yet is stale the moment a newer one lands, so it is dropped instead of being read
+ *  late (the operator's rule: 1 is playing, 2 and 3 arrive, 1 finishes → read 3, skip 2). */
+const readQueue = createSpeakQueue((seg) => speaker.speak(seg.text, seg.key, prefsState));
 
 export type { ReadTarget };
 
-/** The operator is about to speak, or sent a new message: the playback stops NOW and the segments
- *  that have not been read yet are dropped (issue #66). It is called from ONE place per entry point
+/** The operator is about to speak, or sent a new message: the playback stops NOW and the segment
+ *  waiting behind it is dropped (issue #66). It is called from ONE place per entry point
  *  — `Dictation.start()` and the composer's send — rather than from every button's onClick, because
  *  the next recording entry point (a global shortcut, a phone button) must not have to remember it.
  *  Nothing about the new turn is suppressed: its messages carry new keys and queue up normally. */
 export function hushSpeech(): void {
-  readEpoch += 1;
-  readChain = Promise.resolve();
+  readQueue.hush();
   speaker.stop();
 }
 
-function enqueueRead(target: ReadTarget, prefs: VoicePrefs): void {
-  const epoch = readEpoch;
-  readChain = readChain
-    .then(async () => {
-      if (epoch !== readEpoch) return;                 // hushed: this segment is not read
-      await speaker.speak(target.text, target.key, prefs);
-    })
-    .catch(() => { /* one broken sentence must not poison the segments behind it */ });
+function enqueueRead(target: ReadTarget): void {
+  readQueue.push({ key: target.key, text: target.text });
 }
 
 /** A call is open (CallMode) → it owns the voice: it reads the reply sentence by sentence,
@@ -776,9 +769,12 @@ export function isCallActive(): boolean {
   return callActive;
 }
 
-export function shouldAutoRead(key: string, prefs: VoicePrefs, isNewTurn: boolean): boolean {
+/** Whether this message may be read. `enabled` is the level RESOLVED for this session (#68) — not
+ *  the global `prefs.autoRead` mirror, which is only the default layer: a session whose horn was
+ *  turned on must not be silenced by a global that is still "off". */
+export function shouldAutoRead(key: string, isNewTurn: boolean, enabled: boolean): boolean {
   if (callActive) return false;
-  if (!prefs.autoRead || !isNewTurn) return false;
+  if (!enabled || !isNewTurn) return false;
   if (readKeys.has(key)) return false;
   readKeys.add(key);
   // Bounded: a long-lived tab reads thousands of messages and this must not grow forever.
@@ -1824,8 +1820,8 @@ export function useAutoRead(targets: ReadTarget[] | null, ready: boolean, mode?:
     if (!on || !ready || !targets?.length) return;
     for (const t of targets) {
       if (!t.text.trim()) continue;
-      if (!shouldAutoRead(t.key, prefs, true)) continue;
-      enqueueRead(t, prefs);
+      if (!shouldAutoRead(t.key, true, on)) continue;
+      enqueueRead(t);
     }
   }, [sig, ready, on]);
 }

@@ -41,7 +41,7 @@ import { settledReplies, type SpeakMode } from "./autoRead";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
-  IconPause, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
+  IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
 import { stripEmoTags } from "./tusMood";
@@ -1489,6 +1489,8 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   const intervalSec = speak.intervalSec;
   const [speakMenu, setSpeakMenu] = useState(false);
   const speakRef = useRef<HTMLSpanElement | null>(null);
+  // 「现在有没有在念」— 单击喇叭时据此决定这一下是「停」还是「开/关档位」。
+  const spoken = useSpeaker();
   useDismiss(speakMenu, [speakRef], () => setSpeakMenu(false));
   // 节拍 (issue #24). It rides the SAME switch as the mode: 「工作播报」 without a beat and 「每 2
   // 分钟」 are different positions on one decision, and since #68 both belong to this session.
@@ -1525,6 +1527,9 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
    *  operator asked for without asking). */
   const speakClick = (): void => {
     if (speakPress.current.fired) { speakPress.current.fired = false; return; }
+    // 正在念 → 这一下就是「停」：停掉音频，并清掉还在排队的那一段（hushSpeech），档位不动。
+    // 这是操作者要的心智：喇叭按一下就停，不必再去找一个单独的暂停按钮。
+    if (spoken.speaking) { hushSpeech(); return; }
     setMode(mode === "off" ? "reply" : "off");
   };
   // The menu, as data: one flat list, each row carrying the mode AND the beat it means. Flat on
@@ -3592,7 +3597,7 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
           aria-expanded={menu}
           onClick={() => {
             if (press.current.fired) { press.current.fired = false; return; }
-            if (playing) speaker.stop();
+            if (playing) hushSpeech();
             else void speaker.speak(text, id, prefs);
           }}
           onPointerDown={pressStart}
@@ -5056,11 +5061,6 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               </ToolbarSelect>
             ) : null}
             <span className="head-spacer" />
-            {spoken.speaking ? (
-              <button className="icon-btn on" title="stop reading aloud" aria-label="stop reading" onClick={() => speaker.stop()}>
-                <IconPause size={14} />
-              </button>
-            ) : null}
             <button
               className={`icon-btn ${listening ? "on rec" : ""}`}
               title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
