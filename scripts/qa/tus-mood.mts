@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import {
   ASKING_DOZE_MS, BLINK_BLOCKED, BLINK_CLOSE_MS, BLINK_HOLD_MS, BLINK_MS, BLINK_OVERSHOOT,
   CLIP_DY_UNIT, CLIP_MAX_MS, CLIP_MIN_MS, CLIP_NAMES, CLIP_PRIORITY, CLIP_ROT_UNIT, CLIPS, EMO_MOODS,
-  GROK_BLINK_BLOCKED, GROK_EXPRESSION_ALIASES, GROK_EXPRESSION_MOOD, GROK_EXPRESSION_NAMES, GROK_EXPRESSIONS,
+  GROK_BLINK_BLOCKED, GROK_EXPRESSION_ALIASES, GROK_EXPRESSION_MOOD, GROK_EXPRESSION_NAMES, GROK_EXPRESSIONS, GROK_FACE,
   IDLE_LOOK_MS, IDLE_REST_MS, MOODS, NO_OUTPUT_LOOK_MS, OVERSHOOT, TOOL_SUBSTATES, WAKE_MS, WARMTH_MS,
   WORK_FLICK_MS, activityOf, applyClip, ballFrame, blinkClosureAt, blinkScaleAt, clipDurationMs, clipFor,
   clipFrameAt, clipPeak, deriveEmotion, workBeat, emoTagHint, EMO_TAG_VALUES, stripEmoTags, exprFor, eyeFrame,
@@ -37,7 +37,7 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
 //    sees "它好像没什么反应" and there is nothing in the code to point at.
 {
   // The signature is everything the operator can SEE at rest — geometry, squash, tilt, light.
-  // Two faces that differ only in `y` (happy vs sad are both 45×30 arcs) must not read as one.
+  // Two faces that differ only in `y` (happy vs sad are both arcs) must not read as one.
   const sig = new Set(MOODS.map((m) => {
     const e = eye(m);
     return [e.shape, Math.round(e.w), Math.round(e.h), e.rot.toFixed(1), e.yScale.toFixed(2),
@@ -165,9 +165,28 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
   check("eyes widen as it thinks (48 → 56 → 60)", e0.w < e1.w && e1.w < e2.w, `${e0.w}/${e1.w}/${e2.w}`);
   check("…and flatten (18 → 13 → ~10)", e0.h > e1.h && e1.h > e2.h, `${e0.h}/${e1.h}/${e2.h}`);
   check("…and tilt further (12 → 22 → 28)", Math.abs(e0.rot) < Math.abs(e1.rot) && Math.abs(e1.rot) < Math.abs(e2.rot));
-  check("focus still measures WHERE it is (listening ≠ thinking)",
-    eyeFrame({ mood: "focus", right: false, blinking: false, t: 0, level: 0.5, expr: expr("listening", 0.5, 2) }).h !==
-    eyeFrame({ mood: "focus", right: false, blinking: false, t: 0, level: 0.5, expr: expr("thinking", 0.5, 2) }).h);
+  // 2026-10-26：九张官方脸全部改由描述符给盒子（此前只有三张）。这张表就是判据 ——
+  // 谁再退回手调宽高，尺寸对不上，这里立刻转红。
+  const bad = (Object.entries(GROK_FACE) as Array<[TusMood, keyof typeof GROK_EXPRESSIONS]>)
+    .filter(([mood, name]) => {
+      return [false, true].some((right) => {
+        const box = grokEyeBox(name, right);
+        const f = eyeFrame({ mood, right, blinking: false, t: 0, level: 0, expr: expr("idle") });
+        // confused 的 -8° 是胶囊画不出拱形的已知补偿，不在这里判。
+        const rotOk = mood === "confused" || Math.abs(f.rot - box.rot) < 0.01;
+        return Math.abs(f.w - box.w) > 0.01 || Math.abs(f.h - box.h) > 0.01 || !rotOk;
+      });
+    });
+  check("九张官方脸的宽高/倾斜都来自描述符（不再手调）",
+    Object.keys(GROK_FACE).length === 9 && bad.length === 0, bad.map(([m]) => m).join(","));
+  check("focus 就是官方 squinted（64×31，宽扁），不再自己按相位算高",
+    Math.round(eye("focus").w) === Math.round(grokEyeBox("squinted", false).w)
+    && Math.round(eye("focus").h) === Math.round(grokEyeBox("squinted", false).h),
+    `${Math.round(eye("focus").w)}×${Math.round(eye("focus").h)}`);
+  check("inspecting 是两颗不等大的圆点（大 64 / 小 47），不是一对竖胶囊",
+    Math.abs(eyeFrame({ mood: "curious", right: false, blinking: false, t: 0, level: 0, expr: expr("idle") }).w -
+      eyeFrame({ mood: "curious", right: true, blinking: false, t: 0, level: 0, expr: expr("idle") }).w) > 10,
+    `${eye("curious").w.toFixed(0)} vs ${eyeFrame({ mood: "curious", right: true, blinking: false, t: 0, level: 0, expr: expr("idle") }).w.toFixed(0)}`);
 }
 
 // 4. The voice drives the face: louder speech opens the eye wider and makes it glow harder.
@@ -308,8 +327,9 @@ const eye = (mood: TusMood, o: Partial<Parameters<typeof eyeFrame>[0]> = {}) =>
     const w = eye("working"), d = eye("drowsy", { sleep: 0.9 });
     return w.yScale < 0.7 && w.yScale > 0.4 && w.alpha > 0.6 && d.alpha < 0.4;
   })(), `working yScale ${eye("working").yScale.toFixed(2)} / drowsy alpha ${eye("drowsy", { sleep: 0.9 }).alpha.toFixed(2)}`);
-  check("asking 看着你：比 curious 更宽、更近", eye("asking").w > eye("curious").w && eyeSpacing("asking") < eyeSpacing("curious"),
-    `${eye("asking").w}/${eye("curious").w} · ${eyeSpacing("asking")}/${eyeSpacing("curious")}`);
+  check("asking 看着你：竖胶囊（高 > 宽），和 inspecting 的圆点不是一张脸",
+    eye("asking").h > eye("asking").w && eye("curious").w > eye("curious").h * 0.9,
+    `${eye("asking").w.toFixed(0)}×${eye("asking").h.toFixed(0)} · ${eye("curious").w.toFixed(0)}×${eye("curious").h.toFixed(0)}`);
   check("干活时眼睛往中间收", eyeSpacing("working") < eyeSpacing("idle"));
   check("忙到 3 分钟也不许睡（睡=这段结束了）", lifeBeat(180_000, seq(0), { busy: true }) === null);
   check("闲到 3 分钟才睡", lifeBeat(180_000, seq(0)) === "rest");
