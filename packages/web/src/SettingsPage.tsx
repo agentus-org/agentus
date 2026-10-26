@@ -193,6 +193,15 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  /** Which input the server blamed (issue #65). A banner at the top of a page this long is invisible
+   *  from the bottom of it — the message has to appear where the offending box is. */
+  const [errField, setErrField] = useState("");
+  /** The API Key box is NOT rendered until the operator asks to change it. A `type="password"` input
+   *  sitting in the page is a magnet for the browser's saved-site-password autofill, and
+   *  `autocomplete="off"` is not honoured for password fields: the injected value then rode into the
+   *  save payload, failed the `sk-…` shape check, and took the whole voice section down with it
+   *  (one PUT, all-or-nothing) — which the operator experienced as 「点了保存没反应」. */
+  const [keyEdit, setKeyEdit] = useState(false);
   const [ttsText, setTtsText] = useState("Agentus 语音合成自测：龙安欢音色。");
   // account, sessions and login locks live in Account.tsx (their own endpoints, their own
   // loading); this page only carries the identity the 账号 card prints.
@@ -549,15 +558,24 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         hotwords: draft.hotwordsText.split("\n").map((s) => s.trim()).filter(Boolean),
       };
       delete voice.hotwordsText;
-      if (keyInput.trim()) voice.apiKey = keyInput.trim();
+      // Only a key the operator actually typed is sent (#65). Anything the browser injected on its
+      // own is not his intent, and must not be able to fail the request.
+      if (keyEdit && keyInput.trim()) voice.apiKey = keyInput.trim();
       const res = await fetch("/api/settings", {
         method: "PUT",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ voice }),
       });
-      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
-      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string; field?: string };
+      if (!res.ok) {
+        // The validator names the field (#65); showing it under that input is the difference between
+        // 「保存没反应」 and 「这行不合规」.
+        setErrField(typeof data.field === "string" ? data.field : "");
+        throw new Error(data.error ?? `save failed (${res.status})`);
+      }
+      setErrField("");
+      setKeyEdit(false);
       setView(data);
       setDraft(draftOf(data));
       setKeyInput("");
@@ -1258,16 +1276,59 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           </div>
           <div className="set-row">
             <label>API Key</label>
-            <input
-              className="set-input"
-              type="password"
-              placeholder={view?.apiKeySet ? `已保存 ${view.apiKeyMasked}（留空不改）` : "sk-…"}
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-            />
+            {keyEdit ? (
+              <div className="set-pair">
+                <input
+                  className="set-input"
+                  type="password"
+                  // NOT a login form: a unique name + `new-password` keeps the browser's saved site
+                  // password out of a field that has nothing to do with it (#65).
+                  name="agentus-voice-apikey"
+                  autoComplete="new-password"
+                  placeholder={view?.apiKeySet ? `已保存 ${view.apiKeyMasked}（留空不改）` : "sk-…"}
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  spellCheck={false}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="set-btn"
+                  onClick={() => { setKeyEdit(false); setKeyInput(""); setErr(""); setErrField(""); }}
+                >
+                  取消
+                </button>
+              </div>
+            ) : (
+              <div className="set-pair">
+                <span className="set-hint">{view?.apiKeySet ? `已保存 ${view.apiKeyMasked}` : "未设置"}</span>
+                <button type="button" className="set-btn" onClick={() => setKeyEdit(true)}>改密钥</button>
+                {view?.apiKeySet ? (
+                  <button
+                    type="button"
+                    className="set-btn"
+                    onClick={() => {
+                      // 主动清除仍然是空串 (#65 验收 3)，只是现在要按这个按钮，而不是靠留空。
+                      void fetch("/api/settings", {
+                        method: "PUT",
+                        credentials: "same-origin",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ voice: { apiKey: "" } }),
+                      })
+                        .then((r) => (r.ok ? r.json() : null))
+                        .then((d: SettingsView | null) => { if (d) { setView(d); setDraft(draftOf(d)); setMsg("已清除密钥"); } })
+                        .catch(() => { /* the next load shows the truth */ });
+                    }}
+                  >
+                    清除
+                  </button>
+                ) : null}
+              </div>
+            )}
           </div>
+          {err && errField === "voice.apiKey" ? (
+            <p className="set-hint" style={{ color: "#e5534b" }}>{err}</p>
+          ) : null}
           {view?.apiKeySource ? (
             <p className="set-hint">密钥来自环境：<code>{view.apiKeySource}</code>（<code>DASHSCOPE_API_KEY</code> / <code>DASHSCOPE_BASE_URL</code>）</p>
           ) : null}

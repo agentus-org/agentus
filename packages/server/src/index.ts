@@ -1503,7 +1503,12 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer && !body.summary) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
-        return send(res, 400, { error: String((e as Error)?.message ?? e) });
+        // `field` rides along when the validator named one (#65): the page shows it under that input.
+        const field = (e as { field?: unknown })?.field;
+        return send(res, 400, {
+          error: String((e as Error)?.message ?? e),
+          ...(typeof field === "string" ? { field } : {}),
+        });
       }
     }
     // The model ids the configured endpoint really serves, for the settings dropdowns
