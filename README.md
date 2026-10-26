@@ -57,7 +57,7 @@ background process comes back as a turn of its own), an **ACP session that write
 cockpit-side failure is diagnosable afterwards), and a **DeepSeek web backend** (search +
 extract on the model key) — come from the fork's integration build instead. That is a five-line install:
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
-`agentus/v0.22.0/merge-20261023-1851`, on Hermes `v0.22.0`.
+`agentus/v0.22.0/merge-20261026-1237`, on Hermes `v0.22.0`.
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
