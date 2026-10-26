@@ -17,6 +17,7 @@
 // `cockpit` uses: only one utterance can play and only one microphone can be open
 // at a time, so a per-component hook would be a lie.
 import { useEffect, useSyncExternalStore } from "react";
+import type { ReadTarget, SpeakMode } from "./autoRead";
 
 // ---------------------------------------------------------------- preferences
 
@@ -725,9 +726,42 @@ export function useSpeaker(): SpeakState {
   return useSyncExternalStore(speaker.subscribe, speaker.getSnapshot);
 }
 
-/** Auto-read plumbing: which message id we already read aloud, so a re-render or a
- *  history load never re-reads the same reply. */
-let lastAutoReadKey = "";
+/** Auto-read plumbing: which message ids were already read aloud, so a re-render, a history load or
+ *  a second hook instance never re-reads the same reply. This used to be a single slot — one turn
+ *  split by tool calls produces SEVERAL agent messages, and one slot meant only the last of them was
+ *  ever spoken while the earlier paragraphs were dropped for good (issue #67). */
+const readKeys = new Set<string>();
+const READ_KEYS_MAX = 1024;
+
+/** This turn's segments are played serially: there is one speaker, so the next paragraph has to WAIT
+ *  for the previous one instead of calling `speak()` on top of it (which stops it mid-sentence).
+ *  `readEpoch` is what lets `hushSpeech()` drop whatever is still queued — the operator took over,
+ *  so the rest of the turn must not be read at him. */
+let readChain: Promise<void> = Promise.resolve();
+let readEpoch = 0;
+
+export type { ReadTarget };
+
+/** The operator is about to speak, or sent a new message: the playback stops NOW and the segments
+ *  that have not been read yet are dropped (issue #66). It is called from ONE place per entry point
+ *  — `Dictation.start()` and the composer's send — rather than from every button's onClick, because
+ *  the next recording entry point (a global shortcut, a phone button) must not have to remember it.
+ *  Nothing about the new turn is suppressed: its messages carry new keys and queue up normally. */
+export function hushSpeech(): void {
+  readEpoch += 1;
+  readChain = Promise.resolve();
+  speaker.stop();
+}
+
+function enqueueRead(target: ReadTarget, prefs: VoicePrefs): void {
+  const epoch = readEpoch;
+  readChain = readChain
+    .then(async () => {
+      if (epoch !== readEpoch) return;                 // hushed: this segment is not read
+      await speaker.speak(target.text, target.key, prefs);
+    })
+    .catch(() => { /* one broken sentence must not poison the segments behind it */ });
+}
 
 /** A call is open (CallMode) → it owns the voice: it reads the reply sentence by sentence,
  *  and the auto-read of the SAME reply would preempt it mid-sentence (one speaker, two
@@ -745,8 +779,14 @@ export function isCallActive(): boolean {
 export function shouldAutoRead(key: string, prefs: VoicePrefs, isNewTurn: boolean): boolean {
   if (callActive) return false;
   if (!prefs.autoRead || !isNewTurn) return false;
-  if (key === lastAutoReadKey) return false;
-  lastAutoReadKey = key;
+  if (readKeys.has(key)) return false;
+  readKeys.add(key);
+  // Bounded: a long-lived tab reads thousands of messages and this must not grow forever.
+  while (readKeys.size > READ_KEYS_MAX) {
+    const oldest = readKeys.values().next().value;
+    if (oldest === undefined) break;
+    readKeys.delete(oldest);
+  }
   return true;
 }
 
@@ -1063,6 +1103,11 @@ class Dictation {
    *  `sessionId` is what lets the recogniser carry this conversation's hotwords. */
   async start(prefs: VoicePrefs, sessionId?: string): Promise<boolean> {
     if (this.#state.status !== "idle" && this.#state.status !== "error") return false;
+    // Starting to talk takes the room: playback stops at once and unread segments are dropped
+    // (#66). Done HERE, not in each button's onClick — the chat page's microphone button, the
+    // hold-Ctrl keyboard entry and any future recorder all come through this door, and the call
+    // page already stopped the speaker at five separate points to get the same thing.
+    hushSpeech();
     // This start owns the microphone until something newer (a stop, a cancel, another start) takes the
     // ticket. Every await below is a place the operator can change his mind (#51).
     const gen = ++this.#gen;
@@ -1761,27 +1806,36 @@ export function useVoicePrefs(): [VoicePrefs, (patch: Partial<VoicePrefs>) => vo
   return [prefs, updateVoicePrefs];
 }
 
-/** Speak a message when it lands, if the operator asked for that. `ready` is the
- *  caller's "this reply just finished" signal — auto-read must never fire while a
- *  turn is still streaming, and never for history that was merely loaded. */
-export function useAutoRead(target: { key: string; text: string } | null, ready: boolean): void {
+/** Speak the segments of this turn that have LANDED, in order, if the operator asked for that.
+ *  `ready` is the caller's "this transcript is real" signal — NOT "the turn finished": issue #67
+ *  asked for a paragraph to be read as soon as it settles, instead of one silent stretch followed by
+ *  only the turn's tail. History that was merely loaded never fires, because the caller hands over
+ *  null once its freshness window has passed.
+ *  Segments are queued on one serial chain, so the next paragraph waits for the previous one instead
+ *  of calling stop() on it mid-sentence. */
+export function useAutoRead(targets: ReadTarget[] | null, ready: boolean, mode?: SpeakMode): void {
   const [prefs] = useVoicePrefs();
-  // `speakMode` is the truth; a pre-#16 stored pref has only `autoRead`, which the loader maps onto
-  // it, so this single test covers both.
-  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "reply";
+  // `mode` is the position that applies to THIS session (issue #68); without one, fall back to the
+  // global pref (`speakMode` is the truth; a pre-#16 stored pref only has `autoRead`, which the
+  // loader maps onto it).
+  const on = (mode ?? prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "reply";
+  const sig = targets?.length ? targets.map((t) => t.key).join("\u0001") : "";
   useEffect(() => {
-    if (!on || !ready || !target || !target.text.trim()) return;
-    if (!shouldAutoRead(target.key, prefs, true)) return;
-    void speaker.speak(target.text, target.key, prefs);
-  }, [target?.key, ready, on]);
+    if (!on || !ready || !targets?.length) return;
+    for (const t of targets) {
+      if (!t.text.trim()) continue;
+      if (!shouldAutoRead(t.key, prefs, true)) continue;
+      enqueueRead(t, prefs);
+    }
+  }, [sig, ready, on]);
 }
 
 /** 工作播报 (issue #16): speak the cockpit's own one-line briefs. The server throttles, decides what
  *  is worth saying and falls back on its own when no observer can speak — so this hook is only the
  *  last mile: a line arrived, the operator asked for briefs, say it. */
-export function useBriefSpeak(target: { key: string; text: string } | null, ready: boolean): void {
+export function useBriefSpeak(target: { key: string; text: string } | null, ready: boolean, mode?: SpeakMode): void {
   const [prefs] = useVoicePrefs();
-  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "brief";
+  const on = (mode ?? prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "brief";
   useEffect(() => {
     if (!on || !ready || !target || !target.text.trim()) return;
     void speaker.speak(target.text, target.key, prefs);

@@ -315,6 +315,21 @@ export class NotifyCenter {
     return this.presence.visible || Boolean(this.presence.call);
   }
 
+  /** Is this the session the operator is ON right now — sessionId + TTL only, with no 「page visible
+   *  / keyboard touched」 requirement (issue #69 §5).
+   *
+   *  `operatorWatching` above answers 「is he in front of the screen」, which is the right question for
+   *  a notification: do not make a sound at someone who is already looking. 工作播报 asks the opposite
+   *  question — it exists so that he can look AWAY and still hear progress — so reusing the
+   *  screen-presence test there meant the beat required him to sit and watch, and it stayed silent
+   *  exactly when it was needed. Same presence record, one TTL, two questions.
+   */
+  operatorOnSession(sessionId: string): boolean {
+    if (!sessionId) return false;
+    if (this.presence.sessionId !== sessionId) return false;
+    return Date.now() - this.presence.at < NotifyCenter.WATCH_TTL_MS;
+  }
+
   constructor(opts: NotifyCenterOptions) {
     this.dir = path.join(opts.dataDir, "notify");
     fs.mkdirSync(this.dir, { recursive: true });
