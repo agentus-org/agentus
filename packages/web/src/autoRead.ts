@@ -10,6 +10,10 @@
 // server, an agent slot or a browser.
 import { stripEmoTags } from "./tusMood";
 
+/** The three speaker positions. It used to be one global setting; since #68 it is resolved PER
+ *  SESSION (a session's own value wins, otherwise the global default). */
+export type SpeakMode = "off" | "reply" | "brief";
+
 /** One thing to read: the message key (the dedupe handle) and the text as spoken. */
 export interface ReadTarget { key: string; text: string; }
 

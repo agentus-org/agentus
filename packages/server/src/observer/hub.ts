@@ -40,6 +40,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { BackendId, ServerEvent } from "../../../shared/src/index.js";
 import type { ObserverSettings } from "../settings.js";
+import type { SpeakMode } from "../session-speak.js";
 import { OBSERVER_PROMPT_DEFAULT } from "../settings.js";
 
 /** Spoken lines are short on purpose: they are heard once, in the middle of other work. */
@@ -59,8 +60,12 @@ const TICK_MS = 15_000;
 export interface ObserverDeps {
   /** Live settings, read per event — the switch must work without a restart. */
   settings(): ObserverSettings;
-  /** Whether the operator's speaker is in 工作播报 mode. False = do not even try. */
-  speakEnabled(): boolean;
+  /** The speaker position that applies to ONE session (issue #68): a session the operator set up
+   *  itself wins, otherwise the global default. This replaced a single global `speakEnabled()`,
+   *  which was why turning the horn on in one session made every other session start talking. */
+  speakOf?(sessionId: string): { mode: SpeakMode; intervalSec: number };
+  /** Legacy fallback for hosts and unit tests that only know the global switch. */
+  speakEnabled?(): boolean;
   /** Spawn a SYSTEM session (out of the rail); returns our id for it. */
   createSession(backend: BackendId, cwd: string, title: string): Promise<string>;
   /** Send one line to a session. Never `interrupt`: an observer must not take the floor. */
@@ -77,9 +82,14 @@ export interface ObserverDeps {
   disposeSession?(observerId: string): Promise<void>;
   /** Best-effort: move a session into a read-only mode if the backend offers one. */
   preferReadonly?(sessionId: string): void;
-  /** Is the operator looking at THIS session right now (the notify centre's presence)? Absent = every
-   *  session counts, which is the #16 behaviour and what a unit test without a presence wants. */
+  /** Is the operator looking at THIS session right now — the NOTIFY centre's presence, which asks
+   *  「is he in front of the screen」. Absent = every session counts. */
   watching?(sessionId: string): boolean;
+  /** 播报的「这是他当前那个会话吗」(issue #69 §5): sessionId + TTL only, NO 「2 分钟内动过键鼠」.
+   *  工作播报 exists precisely so the operator can look away — reusing the notification's
+   *  screen-presence test for it made the beat require him to be watching, which defeats the feature.
+   *  Absent = fall back to `watching`, so an old host keeps working. */
+  onSession?(sessionId: string): boolean;
   /** Does this session still have a live ACP process? Absent = assume yes. This is the half of #23
    *  that turns a reaped observer into a recoverable one instead of a permanent 「播报失败」. */
   alive?(sessionId: string): boolean;
@@ -117,7 +127,22 @@ interface Watch {
   startedAt: number;
   /** Model-backed briefs spent on the CURRENT turn (the MAX_BRIEFS_PER_TURN counter). */
   briefsThisTurn: number;
+  /** Why the last beat skipped this watch (issue #69 §6): the beat used to be silent in every sense —
+   *  no sound, no log line, no field on the diagnostic endpoint, so 「它到底有没有在跑」 could only be
+   *  guessed at. Kept per watch and cheap (one small object). */
+  lastSkip: { reason: SkipReason; at: number } | null;
 }
+
+/** Every reason a beat can decline to speak. The names are the contract with `/api/observer`. */
+export type SkipReason =
+  | "disabled"        // the observer section itself is off
+  | "speaker-off"     // this session's speaker is not in 工作播报
+  | "no-beat"         // speaker is on 工作播报 but no interval was chosen
+  | "busy"            // a brief is already being produced
+  | "not-inflight"    // no turn running → nothing to report
+  | "not-current"     // not the session the operator is on
+  | "no-beat-yet"     // the interval has not elapsed
+  | "per-turn-cap";   // MAX_BRIEFS_PER_TURN reached
 
 const NOTHING = "（没有可播报的进展）";
 
@@ -173,7 +198,11 @@ export class ObserverHub {
     return this.#ticks;
   }
 
-  debug(): { watched: string; observerId: string | null; inflight: boolean; busy: boolean; briefs: number; watching: boolean; quietMs: number }[] {
+  debug(): {
+    watched: string; observerId: string | null; inflight: boolean; busy: boolean; briefs: number;
+    watching: boolean; quietMs: number; mode: SpeakMode; intervalSec: number;
+    skip: SkipReason | null; skipAgoMs: number | null;
+  }[] {
     const now = this.#now();
     return [...this.#watch.values()].map((w) => ({
       watched: w.observedId,
@@ -183,6 +212,10 @@ export class ObserverHub {
       briefs: w.briefsThisTurn,
       watching: this.#watching(w.observedId),
       quietMs: now - w.lastActivityAt,
+      mode: this.#mode(w.observedId),
+      intervalSec: this.#beat(w.observedId),
+      skip: w.lastSkip?.reason ?? null,
+      skipAgoMs: w.lastSkip ? now - w.lastSkip.at : null,
     }));
   }
 
@@ -225,8 +258,12 @@ export class ObserverHub {
    *  Until #23 this was invisible — `speakEnabled()` only made the hub idle, while the observer
    *  process (a whole ACP runtime, ~137 MB) sat there for the reaper's five minutes. */
   onPolicyChanged(): void {
-    if (this.#deps.speakEnabled() && this.#deps.settings().enabled) return;
-    for (const w of [...this.#watch.values()]) void this.#dispose(w);
+    const enabled = this.#deps.settings().enabled;
+    for (const w of [...this.#watch.values()]) {
+      // The section itself off, or THIS session no longer on 工作播报 (issue #69 §2: leaving the
+      // 档位 must reap its observer instead of leaving an orphan behind for the idle reaper).
+      if (!enabled || this.#mode(w.observedId) !== "brief") void this.#dispose(w);
+    }
   }
 
   /** Every ServerEvent in the process passes through here (index.ts wires it in front of the
@@ -278,7 +315,7 @@ export class ObserverHub {
       // still delivers it (approvals are never suppressed by 「我在看」), so the voice follows the
       // same scope as everything else here. Flip this to `#speaking()` alone if 「后台审批也念出来」
       // turns out to be wanted.
-      if (!this.#speaking()) return;
+      if (!this.#speaking(evt.request.sessionId)) return;
       if (!this.#watching(evt.request.sessionId)) return;
       const sid = evt.request.sessionId;
       const title = evt.request.toolCallTitle?.trim();
@@ -287,7 +324,7 @@ export class ObserverHub {
     }
 
     if (evt.t === "plan") {
-      if (!this.#speaking()) return;
+      if (!this.#speaking(evt.sessionId)) return;
       const plan = evt.plan;
       if (!plan) return;
       // Zero-cost, but still an announcement: the rail is where you read progress on a session you
@@ -315,23 +352,30 @@ export class ObserverHub {
   tick(): void {
     this.#ticks++;
     const s = this.#deps.settings();
-    if (!s.enabled || s.intervalSec <= 0 || !this.#deps.speakEnabled()) return;
+    if (!s.enabled) return;                                      // the observer section itself is off
     const now = this.#now();
     for (const w of [...this.#watch.values()]) {
+      const mode = this.#mode(w.observedId);
+      if (mode !== "brief") { this.#skip(w, "speaker-off"); continue; }
+      const beat = this.#beat(w.observedId);
+      if (beat <= 0) { this.#skip(w, "no-beat"); continue; }
       this.#ensure(w);                                           // a dead observer is not 「busy」
-      if (w.busy || w.spawning) continue;                        // a brief is already on its way
-      if (!w.inflight) continue;                                 // no turn → nothing to report
-      if (!this.#watching(w.observedId)) continue;               // not the session on screen
-      if (now - w.lastBriefAt < s.intervalSec * 1000) continue;  // the beat
-      if (now - w.lastBriefAt < s.throttleSec * 1000) continue;  // the min-gap still guards
-      if (w.briefsThisTurn >= MAX_BRIEFS_PER_TURN) continue;     // the per-turn wall
+      if (w.busy || w.spawning) { this.#skip(w, "busy"); continue; }
+      if (!w.inflight) { this.#skip(w, "not-inflight"); continue; }
+      // #69 §5: the beat asks 「is this the session he is on」, NOT 「has he touched the keyboard in
+      // the last two minutes」 — asking the operator to sit and watch is the opposite of the feature.
+      if (!this.#onSession(w.observedId)) { this.#skip(w, "not-current"); continue; }
+      if (now - w.lastBriefAt < beat * 1000) { this.#skip(w, "no-beat-yet"); continue; }
+      // #69 §3: `throttleSec` is the de-duplicating gap for EVENT-driven briefs (see #maybeBrief).
+      // Applying it here as well meant 「每 1 分钟」 could never fire faster than 2 minutes.
+      if (w.briefsThisTurn >= MAX_BRIEFS_PER_TURN) { this.#skip(w, "per-turn-cap"); continue; }
       void this.#maybeBrief(w.observedId, undefined, "heartbeat");
     }
   }
 
   /** A turn ended (or a beat came due) on a session the operator owns: is it worth a brief? */
   async #maybeBrief(sessionId: string, error?: string, kind: "turn-end" | "heartbeat" = "turn-end"): Promise<void> {
-    if (!this.#speaking()) return;
+    if (!this.#speaking(sessionId)) return;
     if (this.#observers.has(sessionId)) return;
     if (!this.#watching(sessionId)) return;
     const w = this.#watchFor(sessionId);
@@ -362,8 +406,12 @@ export class ObserverHub {
       w.queuedKind = kind;
       return;
     }
+    // #69 §3: `throttleSec` de-duplicates EVENT-driven briefs (two turn-ends a second apart must not
+    // buy two model calls). A beat the operator picked himself was already spaced by `intervalSec`
+    // in tick(), and applying the gap a second time here is exactly what made 「每 1 分钟」 faster
+    // than every 2 minutes on the wire — the gate passed, then this line shut it again.
     const gap = settings.throttleSec * 1000;
-    if (gap > 0 && this.#now() - w.lastBriefAt < gap) return;
+    if (kind !== "heartbeat" && gap > 0 && this.#now() - w.lastBriefAt < gap) return;
 
     let observerId = w.observerId;
     if (!observerId) {
@@ -377,7 +425,6 @@ export class ObserverHub {
       // event arriving during the spawn must queue instead of starting a rival turn.
       w.busy = true;
       w.lastBriefAt = this.#now();
-      w.briefsThisTurn++;
       try {
         observerId = await this.#spawnObserver(w);
       } catch (e) {
@@ -403,7 +450,9 @@ export class ObserverHub {
 
     w.busy = true;
     w.lastBriefAt = this.#now();
-    w.briefsThisTurn++;
+    // `briefsThisTurn` is charged in #finishBrief, and only for a line that really went out (#69 §6):
+    // charging it here meant a sentinel answer （没有可播报的进展）or a degraded fallback still spent
+    // one of the MAX_BRIEFS_PER_TURN, so eight quiet answers could mute the rest of a long turn.
     // The ONE thing an event passes the observer: that something happened. Everything else is read.
     const why =
       kind === "heartbeat"
@@ -429,7 +478,10 @@ export class ObserverHub {
     const text = oneLine(w.answer);
     w.answer = "";
     w.busy = false;
-    if (text && text !== NOTHING) this.#speak(w.observedId, text, "brief", 1);
+    if (text && text !== NOTHING) {
+      this.#speak(w.observedId, text, "brief", 1);
+      w.briefsThisTurn++;                       // spent by a line the operator actually heard
+    }
     if (w.queued) {
       const kind = w.queuedKind;
       w.queued = false;
@@ -489,7 +541,7 @@ export class ObserverHub {
       w = {
         observedId: sessionId, observerId: null, spawning: false, lastBriefAt: 0, queued: false,
         queuedKind: "turn-end", answer: "", busy: false, announcedSteps: new Set(),
-        inflight: false, lastActivityAt: now, startedAt: now, briefsThisTurn: 0,
+        inflight: false, lastActivityAt: now, startedAt: now, briefsThisTurn: 0, lastSkip: null,
       };
       this.#watch.set(sessionId, w);
     }
@@ -508,9 +560,34 @@ export class ObserverHub {
     w.answer = "";
   }
 
-  #speaking(): boolean {
-    if (!this.#deps.speakEnabled()) return false;
-    return true;
+  /** 这个会话现在开着工作播报吗 (issue #68: per session, not one global switch). */
+  #speaking(sessionId: string): boolean {
+    return this.#mode(sessionId) === "brief";
+  }
+
+  /** The speaker position that applies to one session: the host resolves session row → global
+   *  default. `speakEnabled` is the single-switch fallback for hosts and tests that predate #68. */
+  #mode(sessionId: string): SpeakMode {
+    const fn = this.#deps.speakOf;
+    if (fn) return fn(sessionId).mode;
+    return this.#deps.speakEnabled?.() ? "brief" : "off";
+  }
+
+  /** The beat for one session, in seconds (0 = the operator did not ask for a beat). */
+  #beat(sessionId: string): number {
+    const fn = this.#deps.speakOf;
+    if (fn) return fn(sessionId).intervalSec;
+    return this.#deps.settings().intervalSec;
+  }
+
+  /** Broadcasting asks a weaker question than notifying (issue #69 §5). */
+  #onSession(sessionId: string): boolean {
+    const fn = this.#deps.onSession;
+    return fn ? fn(sessionId) : this.#watching(sessionId);
+  }
+
+  #skip(w: Watch, reason: SkipReason): void {
+    w.lastSkip = { reason, at: this.#now() };
   }
 
   /** Is the operator on THIS session? The scope gate of #23; no dep = no scope (tests, old hosts). */

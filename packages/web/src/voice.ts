@@ -17,7 +17,7 @@
 // `cockpit` uses: only one utterance can play and only one microphone can be open
 // at a time, so a per-component hook would be a lie.
 import { useEffect, useSyncExternalStore } from "react";
-import type { ReadTarget } from "./autoRead";
+import type { ReadTarget, SpeakMode } from "./autoRead";
 
 // ---------------------------------------------------------------- preferences
 
@@ -1813,11 +1813,12 @@ export function useVoicePrefs(): [VoicePrefs, (patch: Partial<VoicePrefs>) => vo
  *  null once its freshness window has passed.
  *  Segments are queued on one serial chain, so the next paragraph waits for the previous one instead
  *  of calling stop() on it mid-sentence. */
-export function useAutoRead(targets: ReadTarget[] | null, ready: boolean): void {
+export function useAutoRead(targets: ReadTarget[] | null, ready: boolean, mode?: SpeakMode): void {
   const [prefs] = useVoicePrefs();
-  // `speakMode` is the truth; a pre-#16 stored pref has only `autoRead`, which the loader maps onto
-  // it, so this single test covers both.
-  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "reply";
+  // `mode` is the position that applies to THIS session (issue #68); without one, fall back to the
+  // global pref (`speakMode` is the truth; a pre-#16 stored pref only has `autoRead`, which the
+  // loader maps onto it).
+  const on = (mode ?? prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "reply";
   const sig = targets?.length ? targets.map((t) => t.key).join("\u0001") : "";
   useEffect(() => {
     if (!on || !ready || !targets?.length) return;
@@ -1832,9 +1833,9 @@ export function useAutoRead(targets: ReadTarget[] | null, ready: boolean): void 
 /** 工作播报 (issue #16): speak the cockpit's own one-line briefs. The server throttles, decides what
  *  is worth saying and falls back on its own when no observer can speak — so this hook is only the
  *  last mile: a line arrived, the operator asked for briefs, say it. */
-export function useBriefSpeak(target: { key: string; text: string } | null, ready: boolean): void {
+export function useBriefSpeak(target: { key: string; text: string } | null, ready: boolean, mode?: SpeakMode): void {
   const [prefs] = useVoicePrefs();
-  const on = (prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "brief";
+  const on = (mode ?? prefs.speakMode ?? (prefs.autoRead ? "reply" : "off")) === "brief";
   useEffect(() => {
     if (!on || !ready || !target || !target.text.trim()) return;
     void speaker.speak(target.text, target.key, prefs);
