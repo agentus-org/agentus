@@ -30,6 +30,9 @@ import {
   modelUsage,
 } from "./settings.js";
 import { ObserverHub } from "./observer/hub.js";
+import {
+  SPEAK_INTERVAL_MAX, allSessionSpeak, clearSessionSpeak, initSessionSpeak, resolveSpeak, setSessionSpeak,
+} from "./session-speak.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
@@ -273,7 +276,15 @@ hub = new ObserverHub({
   settings: observerSettings,
   // 工作播报 is the operator's third speaker position; in the other two the cockpit says nothing, so
   // no observer is spawned and no tokens are spent.
-  speakEnabled: () => getSettings().prefs.speakMode === "brief",
+  //
+  // Per SESSION since #68: the horn belongs to the conversation it was switched on in, and the
+  // global `prefs.speakMode` is only the DEFAULT for sessions that were never given their own value.
+  // Resolved in one place (`resolveSpeak`) so the horn, the hub and the diagnostic endpoint can
+  // never disagree about what a session is set to.
+  speakOf: (id) => resolveSpeak(id, {
+    mode: getSettings().prefs.speakMode,
+    intervalSec: getSettings().observer.intervalSec,
+  }),
   createSession: async (backend, cwd, title) => (await mgr.create(backend, cwd, title, { system: true })).id,
   prompt: (id, text) => mgr.prompt(id, text, []),
   waitReady: (id, ms) => mgr.awaitReady(id, ms).then(() => undefined),
@@ -304,6 +315,9 @@ hub = new ObserverHub({
   // wrong session. `notify` is a `const` declared below — this closure only ever runs from an event
   // handler, never during construction.
   watching: (id) => notify.operatorWatching(id),
+  // 播报的「他在看这个会话」是另一件事 (issue #69 §5): broadcasting exists so he can look AWAY, so it
+  // asks only whether this is the session he is on, not whether he touched the keyboard recently.
+  onSession: (id) => notify.operatorOnSession(id),
   // The reaped-observer fix: a `system` session the idle reaper took no longer accepts prompts, and
   // trusting its id forever is what made the brief say 「播报失败：no such session」 until a restart.
   // `hasSession` (not `list()`) on purpose: `list()` is the RAIL's view and excludes system sessions,
@@ -411,6 +425,8 @@ notify.onNotice((notice) => {
 // `settings` table: the UI owns them and env only bootstraps them (settings.ts). Read
 // before anything asks.
 initSettings(DATA_DIR, store);
+// 会话级喇叭档位 (issue #68) rides the same settings table under its own key.
+initSessionSpeak(store);
 // Dynamic hotwords are mined from the transcript — the store's business, not voice.ts's,
 // so the lookup is injected rather than imported.
 setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word));
@@ -1061,6 +1077,61 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
+    // ---- 会话级喇叭档位 (issue #68) -------------------------------------------------------
+    // The horn in the corner belongs to the conversation it was switched on in: turning it on in one
+    // session used to make EVERY session start reading aloud. The global `prefs.speakMode` is now the
+    // DEFAULT layer — a session without its own row inherits it, which is the whole compatibility
+    // story (nothing changes for anyone who never touched a horn).
+    if (url.pathname === "/api/speak-modes" && req.method === "GET") {
+      if (!auth.authenticate(req.headers, url)) return send(res, 401, { error: "login required" });
+      const p = getSettings().prefs;
+      const o = getSettings().observer;
+      return send(res, 200, {
+        sessions: allSessionSpeak(),
+        defaults: { mode: p.speakMode, intervalSec: o.intervalSec },
+        // The observer is an ACP process that spends tokens, so a beat on it cannot fire while that
+        // section is off — the menu has to say so instead of showing a tickmark (#69 §1).
+        observerEnabled: o.enabled,
+      });
+    }
+    // 一个会话的档位：GET 解析，PUT 写会话行，DELETE 回到「跟全局默认走」。
+    const speakRoute = /^\/api\/sessions\/([\w.-]+)\/speak$/.exec(url.pathname);
+    if (speakRoute) {
+      if (!auth.authenticate(req.headers, url)) return send(res, 401, { error: "login required" });
+      const sid = speakRoute[1];
+      if (req.method === "GET") {
+        return send(res, 200, { speak: resolveSpeak(sid, { mode: getSettings().prefs.speakMode, intervalSec: getSettings().observer.intervalSec }) });
+      }
+      if (req.method === "PUT" || req.method === "POST") {
+        const body = await readJson(req);
+        const mode = String(body.mode ?? "");
+        if (mode !== "off" && mode !== "reply" && mode !== "brief") {
+          return send(res, 400, { error: `invalid mode: ${JSON.stringify(body.mode)}` });
+        }
+        const intervalSec = Number(body.intervalSec ?? 0);
+        if (!Number.isFinite(intervalSec) || intervalSec < 0 || intervalSec > SPEAK_INTERVAL_MAX) {
+          return send(res, 400, { error: `invalid intervalSec: ${JSON.stringify(body.intervalSec)}` });
+        }
+        const speak = setSessionSpeak(sid, mode, intervalSec);
+        // 档位离开 brief 就是收尾 (#69 §2): the observer is a whole ACP process, and waiting for the
+        // idle reaper would be five more minutes of paying for a feature that was just switched off.
+        hub?.onPolicyChanged();
+        return send(res, 200, {
+          speak,
+          resolved: resolveSpeak(sid, { mode: getSettings().prefs.speakMode, intervalSec: getSettings().observer.intervalSec }),
+        });
+      }
+      if (req.method === "DELETE") {
+        // 回到默认层。删掉这一行而不是写 off：写 off 会让它永远不再继承默认。
+        clearSessionSpeak(sid);
+        hub?.onPolicyChanged();
+        return send(res, 200, {
+          resolved: resolveSpeak(sid, { mode: getSettings().prefs.speakMode, intervalSec: getSettings().observer.intervalSec }),
+        });
+      }
+      return send(res, 405, { error: "method not allowed" });
+    }
+
     // ---- the phone's onboarding page + the APK, both behind the operator login ----------
     // The pairing code lives on this page, so it is NOT public: an unauthenticated visitor is
     // sent to the login screen (the SPA at /) and comes back with a session cookie.
@@ -1503,7 +1574,12 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (!body.voice && !body.theme && !body.call && !body.prefs && !body.agent && !body.observer && !body.summary) saveSettings(body);
         return send(res, 200, publicSettings());
       } catch (e) {
-        return send(res, 400, { error: String((e as Error)?.message ?? e) });
+        // `field` rides along when the validator named one (#65): the page shows it under that input.
+        const field = (e as { field?: unknown })?.field;
+        return send(res, 400, {
+          error: String((e as Error)?.message ?? e),
+          ...(typeof field === "string" ? { field } : {}),
+        });
       }
     }
     // The model ids the configured endpoint really serves, for the settings dropdowns

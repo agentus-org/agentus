@@ -753,7 +753,12 @@ export function publicSettings(): Record<string, unknown> {
   };
 }
 
-/** Merge a partial update. `apiKey: null` keeps the stored key (the UI round-trips a
+/** A validation failure that names the field it rejected. */
+function fieldError(field: string, message: string): Error {
+  return Object.assign(new Error(message), { field });
+}
+
+/** Merge a partial update. `apiKey: *** keeps the stored key (the UI round-trips a
  *  mask, never the secret). Empty strings clear. Values are validated narrowly: this
  *  config reaches an external API with the operator's credentials. */
 export function saveSettings(patch: Record<string, unknown>): Settings {
@@ -781,7 +786,10 @@ export function saveSettings(patch: Record<string, unknown>): Settings {
     if (raw === null || raw === undefined) { /* keep */ }
     else if (typeof raw === "string" && (raw === "" || /^sk-[\w.-]{6,}$/.test(raw))) v.apiKey = raw;
     else if (typeof raw === "string" && raw.startsWith("••••")) { /* unchanged mask: keep */ }
-    else throw new Error("invalid apiKey (expected sk-…, or empty to clear)");
+    // `field` is what lets the page put this message under the box that caused it. A banner at the
+    // top of a long settings page is invisible from the bottom of it, which is how 「保存没反应」
+    // became the reported bug (#65) when the server had answered 400 with the exact reason.
+    else throw fieldError("voice.apiKey", "invalid apiKey (expected sk-…, or empty to clear)");
   }
   // a baseUrl typed as the compatible-mode URL still works: store the root for the
   // native endpoints and derive the compatible path from it

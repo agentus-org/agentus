@@ -33,10 +33,11 @@ import {
   type SpeechSummary,
 } from "./speechSummary";
 import {
-  browserDictationAvailable, dictation, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
+  browserDictationAvailable, dictation, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
+import { settledReplies, type SpeakMode } from "./autoRead";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
@@ -1298,11 +1299,14 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // Voice capabilities are fetched once; the buttons fall back to browser-only until
   // the answer arrives.
   useEffect(() => { void loadVoiceCaps(); }, []);
-  useAutoRead(lastFinishedReply(active), Boolean(active && !active.busy && active.loaded));
+  // 喇叭档位是**这个会话**的 (issue #68): resolved here once, then read by the head, the auto-read
+  // and the brief speaker — one answer, three consumers.
+  const speak = useSessionSpeak(active?.info.id);
+  useAutoRead(settledReplies(active), Boolean(active && active.loaded), speak.mode);
   // 工作播报: the cockpit's own one-line briefs about this session (issue #16). Same speaker, a
   // different source — and the SERVER owns the policy (throttle, what is worth saying, the fallback
   // when no observer can speak), so this side never has to decide.
-  useBriefSpeak(lastBrief(active), Boolean(active));
+  useBriefSpeak(lastBrief(active), Boolean(active), speak.mode);
 
   if (settingsOpen) {
     return <SettingsPage onClose={onCloseSettings} sessionId={active?.info.id} />;
@@ -1332,6 +1336,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         call={call}
         onCall={(wantTus) => { dictation.stop(); setTus(wantTus); setCall(true); }}
         onPerm={onPermClick}
+        speak={speak}
       />
       <div className="main-body">
         <div className="chat-col">
@@ -1357,18 +1362,6 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
       )}
     </div>
   );
-}
-
-/** The reply an auto-read should speak: the newest agent message, but only when it
- *  just arrived (a slot opened from history must not start talking to the room). */
-function lastFinishedReply(v: SessionView | undefined): { key: string; text: string } | null {
-  if (!v || v.busy || !v.loaded) return null;
-  if (Date.now() - v.lastAt > 30_000) return null;
-  for (let i = v.msgs.length - 1; i >= 0; i -= 1) {
-    const m = v.msgs[i];
-    if (m.kind === "agent" && m.text.trim()) return { key: m.key, text: stripEmoTags(m.text) };
-  }
-  return null;
 }
 
 /** The newest 工作播报 line for this session, as a speaker target. Keyed by the line's own id so
@@ -1423,7 +1416,7 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
  *  它有守卫（`scripts/qa/tus-mode-sweep.mjs`）：短按 300 ms 必须还是原来的电话。 */
 const TUS_LONG_PRESS_MS = 480;
 
-function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall, onPerm }: {
+function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall, onPerm, speak }: {
   v: SessionView;
   onMenu: () => void;
   panelOpen: boolean;
@@ -1433,6 +1426,8 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   /** `true` = 长按进入 Tus 模式，`false` = 普通通话。 */
   onCall: (tus: boolean) => void;
   onPerm: () => void;
+  /** 这个会话自己的喇叭档位 (issue #68) — one horn per conversation, not one for the whole cockpit. */
+  speak: SessionSpeakState;
 }): JSX.Element {
   const info = v.info;
   const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
@@ -1476,7 +1471,6 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   useEffect(() => () => {
     if (pressTimer.current !== null) { window.clearTimeout(pressTimer.current); pressTimer.current = null; }
   }, []);
-  const [prefs, setPrefs] = useVoicePrefs();
   // capabilities land after boot (loadVoiceCaps) — subscribe, or a browser with no local
   // voice would keep the button disabled after the server answered that it can speak
   const caps = useSyncExternalStore(subscribeVoiceCaps, voiceCaps);
@@ -1489,20 +1483,22 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
   // 三档 (issue #16): 关 / 自动朗读（念整条回复）/ 工作播报（念驾驶舱的一句话播报）。 One position on
   // the header, three states — a fourth switch in 设置 would be a second place to look for the same
   // decision. `speakMode` is the server's word; `autoRead` is only the pre-#16 alias for "reply".
-  const mode: "off" | "reply" | "brief" =
-    prefs.speakMode ?? (prefs.autoRead ? "reply" : "off");
+  // 这个会话的档位 (issue #68): 会话自己设过就用它，否则继承全局默认。以前这里读的是全局
+  // `prefs.speakMode`，于是在一个会话里打开喇叭，所有会话一起开始念。
+  const mode: SpeakMode = speak.mode;
+  const intervalSec = speak.intervalSec;
   const [speakMenu, setSpeakMenu] = useState(false);
   const speakRef = useRef<HTMLSpanElement | null>(null);
   useDismiss(speakMenu, [speakRef], () => setSpeakMenu(false));
-  // 节拍 (issue #24). Read here, next to the mode, because the menu shows ONE ✓ across all six
-  // items: 「工作播报」 without a beat and 「每 2 分钟」 are different positions on the same switch.
-  const [intervalSec, saveInterval] = useObserverInterval();
-  const setMode = (next: "off" | "reply" | "brief", interval?: number): void => {
+  // 节拍 (issue #24). It rides the SAME switch as the mode: 「工作播报」 without a beat and 「每 2
+  // 分钟」 are different positions on one decision, and since #68 both belong to this session.
+  const setMode = (next: SpeakMode, interval = 0): void => {
     setSpeakMenu(false);
-    // Mutual exclusion is the data model, not a UI convention: `speakMode` is ONE field, so 自动朗读
-    // and 工作播报 cannot both be on. A beat is only ever written together with `brief`.
-    setPrefs({ speakMode: next, autoRead: next === "reply" });
-    if (next === "brief" && interval !== undefined) saveInterval(interval);
+    // Mutual exclusion is the data model, not a UI convention: one position at a time. Leaving
+    // 工作播报 also clears the beat and reaps the observer — sending `intervalSec: 0` with a non-brief
+    // mode is how the server is told 「this conversation no longer has a beat」 (#69 §2), instead of
+    // leaving 「每 60 秒已开启」 on the diagnostic endpoint while the horn is off.
+    speak.save(next, next === "brief" ? interval : 0);
   };
   // 单击 = 开/关，长按（手机）/ 右键（桌面）/ Shift+F10（键盘）= 选档。
   // Why this split (the operator, 2026-10-18): the three-way menu had taken over the ONE gesture
@@ -1538,6 +1534,9 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
     { key: "off", mode: "off", interval: null, label: "关" },
     { key: "reply", mode: "reply", interval: null, label: "自动朗读（点一下就是这个 · 默认）" },
     { key: "brief", mode: "brief", interval: 0, label: "工作播报（有进展就说一句）" },
+    // 30 秒档 (#69 §4): 盯长任务时 1 分钟起步还是太粗。服务端本来就接受 30 秒
+    // (OBSERVER_INTERVAL_RANGE) — 缺的只是这一行。量化误差：tick 是 15 秒，实际落在 30～45 秒。
+    { key: "brief-30", mode: "brief", interval: 30, label: "工作播报（每 30 秒也报一次）" },
     { key: "brief-60", mode: "brief", interval: 60, label: "工作播报（每 1 分钟也报一次）" },
     { key: "brief-120", mode: "brief", interval: 120, label: "工作播报（每 2 分钟也报一次）" },
     { key: "brief-300", mode: "brief", interval: 300, label: "工作播报（每 5 分钟也报一次）" },
@@ -1665,14 +1664,23 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
                 </span>
               </button>
               <p className="speak-hint">
-                {mode === "brief"
-                  ? intervalSec > 0
-                    ? `有任务在跑时每 ${intervalLabel(intervalSec)} 念一句；没任务在跑不念。观察员在 设置 → 观察智能体`
-                    : "回合结束、待审批时由一个观察智能体念一句（设置 → 观察智能体）"
-                  : mode === "reply"
-                    ? "每条回复结束后念全文 —— 长回复会被截断"
-                    : "不自动出声；点消息旁的喇叭可以按需念"}
+                {mode === "brief" && !speak.observerEnabled
+                  // #69 §1: the ticking slot used to look ON while the first gate was shut. Say it
+                  // here, where the operator just made the choice, instead of leaving him to wonder
+                  // why nothing is ever spoken.
+                  ? "⚠ 观察智能体没启用，这一档现在不会响 —— 它要起一个 agent 替你盯着。去 设置 → 观察智能体 打开。"
+                  : mode === "brief"
+                    ? intervalSec > 0
+                      ? `有任务在跑时每 ${intervalLabel(intervalSec)} 念一句；没任务在跑不念`
+                      : "回合结束、待审批时由一个观察智能体念一句"
+                    : mode === "reply"
+                      ? "每条回复结束后念全文 —— 长回复会被截断"
+                      : "不自动出声；点消息旁的喇叭可以按需念"}
               </p>
+              {speak.source === "session" ? (
+                // #68: 这一行是会话自己的值，不是设置页那份默认 —— 说清楚，否则下次改设置页会以为没生效。
+                <p className="speak-hint">只对这个会话生效；其它会话仍按 设置 里的默认档位。</p>
+              ) : null}
             </div>
           ) : null}
         </span>
@@ -3431,34 +3439,77 @@ function intervalLabel(sec: number): string {
   return `${sec} 秒`;
 }
 
-/** 工作播报 (issue #24): the beat lives in the OBSERVER settings, not in the voice prefs — it is the
- *  cockpit's timer, not the browser's voice. One fetch per pane; a `null` answer (settings route
- *  unavailable) simply means 「no beat」, which is the shipped default.
+/** 一个会话实际生效的喇叭档位 (issue #68), plus how to change it.
  *
- *  `save` posts immediately: picking 「每 2 分钟」 must not need a trip to 设置. It also updates local
- *  state first, so the ✓ moves on the same click the operator made. */
-function useObserverInterval(): [number, (sec: number) => void] {
-  const [sec, setSec] = useState<number | null>(null);
+ *  Why it is session-scoped: 「我在盯这个长任务, 把它念出来」 is about ONE conversation. The global
+ *  `prefs.speakMode` stays the default layer (settings.ts explains what it is for — it follows the
+ *  operator across devices), and a session that never had a horn turned on in it inherits it.
+ *
+ *  `save` is optimistic: the ✓ moves on the click the operator made, and the server's answer
+ *  replaces it when it arrives. `reset` drops the session row so the session follows the default
+ *  again — deliberately NOT 「write off」, which would freeze it against future default changes. */
+export interface SessionSpeakState {
+  mode: SpeakMode;
+  intervalSec: number;
+  /** `session` = this conversation has its own value; `default` = it inherits the settings page. */
+  source: "session" | "default";
+  /** The observer section's own switch. A beat cannot fire while it is off (#69 §1). */
+  observerEnabled: boolean;
+  save: (mode: SpeakMode, intervalSec?: number) => void;
+  reset: () => void;
+}
+
+function useSessionSpeak(sessionId: string | undefined): SessionSpeakState {
+  const sid = sessionId ?? "";
+  const [state, setState] = useState<{ mode: SpeakMode; intervalSec: number; source: "session" | "default" }>({
+    mode: "off",
+    intervalSec: 0,
+    source: "default",
+  });
+  const [observerEnabled, setObserverEnabled] = useState(true);   // assume yes: never nag without proof
+  useEffect(() => {
+    if (!sid) return;
+    let live = true;
+    void fetch(`/api/sessions/${encodeURIComponent(sid)}/speak`, { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { speak?: { mode: SpeakMode; intervalSec: number; source: "session" | "default" } } | null) => {
+        if (live && d?.speak) setState(d.speak);
+      })
+      .catch(() => { /* keep the last known value: the horn never lies about being on */ });
+    return () => { live = false; };
+  }, [sid]);
+  // The observer switch is global (it decides whether an ACP process may be spawned at all), so it is
+  // read once rather than per session.
   useEffect(() => {
     let live = true;
-    void fetch("/api/settings", { credentials: "same-origin" })
+    void fetch("/api/speak-modes", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d: { observer?: { intervalSec?: number } } | null) => {
-        if (live) setSec(Number(d?.observer?.intervalSec ?? 0));
+      .then((d: { observerEnabled?: boolean } | null) => {
+        if (live && typeof d?.observerEnabled === "boolean") setObserverEnabled(d.observerEnabled);
       })
-      .catch(() => { if (live) setSec(0); });
+      .catch(() => { /* unknown = do not nag */ });
     return () => { live = false; };
   }, []);
-  const save = useCallback((next: number): void => {
-    setSec(next);
-    void fetch("/api/settings", {
-      method: "POST",
+  const save = useCallback((mode: SpeakMode, intervalSec = 0): void => {
+    if (!sid) return;
+    setState({ mode, intervalSec: mode === "brief" ? intervalSec : 0, source: "session" });
+    void fetch(`/api/sessions/${encodeURIComponent(sid)}/speak`, {
+      method: "PUT",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ observer: { intervalSec: next } }),
-    }).catch(() => { /* the label keeps the picked value; the next save fixes it */ });
-  }, []);
-  return [sec ?? 0, save];
+      body: JSON.stringify({ mode, intervalSec: mode === "brief" ? intervalSec : 0 }),
+    }).catch(() => { /* optimistic value stays; the next GET corrects it */ });
+  }, [sid]);
+  const reset = useCallback((): void => {
+    if (!sid) return;
+    void fetch(`/api/sessions/${encodeURIComponent(sid)}/speak`, { method: "DELETE", credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { resolved?: { mode: SpeakMode; intervalSec: number; source: "session" | "default" } } | null) => {
+        if (d?.resolved) setState(d.resolved);
+      })
+      .catch(() => { /* keep the current value */ });
+  }, [sid]);
+  return { ...state, observerEnabled, save, reset };
 }
 
 /** Read this reply aloud / stop reading — and, on a LONG press, offer 「语音播报总结」.
@@ -4468,6 +4519,9 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const send = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
+    // Sending is taking over: the reply being read aloud is stale the moment this turn starts, and
+    // the new turn's own auto-read must not have to fight the old voice for the speaker (#66).
+    hushSpeech();
     const attachments = attachmentsOf();
     // A busy agent is not a dead composer any more (Studio's message queue): what he types now is
     // filed in the queue and goes out by itself when the running turn ends. The send button is still
@@ -4520,6 +4574,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const sendNow = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
+    hushSpeech();     // 插话 = 发起新回合，旧播报同样没有资格念下去 (#66)
     const attachments = attachmentsOf();
     if (v.info.cold) {
       cockpit.sendToCold(v.info.id, t, attachments);

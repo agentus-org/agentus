@@ -29,7 +29,7 @@ const killGroup = (target) => {
   try { process.kill(-pid, "SIGKILL"); } catch { try { killGroup(pid); } catch { /* already gone */ } }
 };
 
-const CDP = "http://127.0.0.1:9222";
+const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const SHOTS = process.env.SHOTS ?? path.resolve(ROOT, "../../tasks/20261001-agentus/screens");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
