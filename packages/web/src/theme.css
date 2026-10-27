@@ -517,6 +517,12 @@ button { font: inherit; }
 /* 两种值得区分的语气：警告（降级/被拦截）与完成（压缩结束）。其余保持安静。 */
 .status-note[data-kind="warn"] { color: var(--warn, #c07a12); border-left-color: var(--warn, #c07a12); }
 .status-note[data-kind="compacted"] { color: var(--ok, #3f8f5f); border-left-color: var(--ok, #3f8f5f); }
+/* 一轮的 token 账（issue #70）：比状态行更安静 —— 数字用等宽好对齐，整行略暗，
+   别抢回复本身；「未上报」时更淡（它不是错误，只是这个 agent 没有这个能力）。 */
+.turn-usage { font-size: 11px; color: var(--text-dim); opacity: 0.85; }
+.turn-usage .status-note-text { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.turn-usage.na { opacity: 0.6; }
+.turn-usage.na .status-note-text { font-family: inherit; }
 /* 记忆条目（#37）：`recalled 8 memories` 后面那个「4 条」按钮，点开是这 4 条记忆本身。
    行本身是 flex，条目列表要整行铺开 —— `flex-basis:100%` + `wrap` 让它在下一行占满，
    而不是被挤成右侧一条窄柱。句子不再抢满整行（`0 1 auto`）：否则短句 + 按钮会被拉开到

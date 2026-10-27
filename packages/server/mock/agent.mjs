@@ -949,7 +949,23 @@ const agent = () => ({
       used: s.used,
       size: picked > 0 ? picked : Number(process.env.MOCK_USAGE_SIZE || 200_000),
     });
-    return { stopReason: "end_turn" };
+    // The prompt response's `usage`, shaped like the hermes adapter's (issue #70). ACP's semantics
+    // are "Total … across all turns", so the counters ACCUMULATE on the session state — a cockpit
+    // that forgot to diff would show the whole conversation on every turn, and a two-turn QA sweep
+    // is what proves it does not. `cachedWriteTokens` is filled too, because the fork's adapter
+    // still omits it and the cockpit must not depend on that omission.
+    const outChars = words.join(" ").length + MOCK_MARKDOWN.length;
+    s.tokens = s.tokens || {
+      totalTokens: 0, inputTokens: 0, outputTokens: 0, thoughtTokens: 0,
+      cachedReadTokens: 0, cachedWriteTokens: 0,
+    };
+    s.tokens.inputTokens += text.length + 200;
+    s.tokens.cachedReadTokens += 4096;
+    s.tokens.cachedWriteTokens += 128;
+    s.tokens.outputTokens += Math.ceil(outChars / 4);
+    s.tokens.thoughtTokens += 32;
+    s.tokens.totalTokens = s.tokens.inputTokens + s.tokens.outputTokens + s.tokens.thoughtTokens;
+    return { stopReason: "end_turn", usage: s.tokens };
   },
 });
 
