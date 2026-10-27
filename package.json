@@ -1,6 +1,6 @@
 {
   "name": "agentus",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence \u2014 the agent lives in spawned CLI subprocesses.",
   "license": "Apache-2.0",
   "repository": {
