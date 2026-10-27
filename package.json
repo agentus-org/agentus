@@ -92,7 +92,9 @@
     "tus-mode-sweep": "node scripts/qa/tus-mode-sweep.mjs",
     "usage-row-sweep": "node scripts/qa/usage-row-sweep.mjs",
     "call-brief-sweep": "node scripts/qa/call-brief-sweep.mjs",
-    "reply-on-done": "node scripts/qa/reply-on-done.mjs"
+    "reply-on-done": "node scripts/qa/reply-on-done.mjs",
+    "turn-usage": "tsx scripts/qa/turn-usage.mts",
+    "turn-usage-sweep": "node scripts/qa/turn-usage-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"

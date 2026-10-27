@@ -26,7 +26,7 @@ import { RAIL_RECENT, railRows, splitRecent } from "./rail";
 import { fitPlanSteps } from "./plan-fit";
 import { delegSummary, parseBgNotice, parseDelegNotice, shortCommand, type DelegNotice } from "./bgNotice";
 import { copyText } from "./clipboard";
-import { fmtTokens } from "./tokens";
+import { fmtTokens, turnUsageText } from "./tokens";
 import {
   forgetSummary, getLatestSummary, getSummary, subscribeSummaries, summariesVersion, summarizeMessage,
   summaryKey, SummaryError,
@@ -1724,6 +1724,18 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
   const traceText = trace && (trace.effort || trace.mode)
     ? ` · this turn: ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}`
     : "";
+  // issue #70: the gauge knows the agent's SESSION-CUMULATIVE cache buckets (they arrive on the
+  // prompt response, not on usage_update), so the tooltip can say what the cache actually saved —
+  // hermes-webui's denominator: input + cache read + cache write. Absent when the agent reports
+  // no cache buckets at all (Qoder), which must read as unknown rather than 0%.
+  const tot = usage.totals;
+  const cacheText = tot && (tot.cacheRead > 0 || tot.cacheWrite > 0)
+    ? (() => {
+      const prompt = tot.input + tot.cacheRead + tot.cacheWrite;
+      const hit = prompt > 0 ? ` (${Math.min(100, Math.round((tot.cacheRead / prompt) * 100))}% hit)` : "";
+      return ` · session cache: read ${tot.cacheRead} / write ${tot.cacheWrite}${hit}`;
+    })()
+    : "";
   return (
     <span
       className={`ctx ${level}`}
@@ -1732,6 +1744,7 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
           ? `context window: ${usage.used} / ${usage.size} tokens (${pct}%)`
           : `context used: ${usage.used} tokens (this agent reports no window size)`)
         + (usage.cost != null ? `, cost $${usage.cost.toFixed(4)}` : "")
+        + cacheText
         + traceText
       }
     >
@@ -2567,6 +2580,9 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
       return <ApprovalRow m={m} sid={sid} />;
     case "project-skills":
       return <ProjectSkillsRow m={m} sid={sid} />;
+    // 一轮的 token 账（issue #70）：服务端在 turn-end 才写，所以它永远贴在那一轮回复的尾巴上。
+    case "turn-usage":
+      return <TurnUsageRow m={m} />;
     case "tool":
       return <MemoToolCard m={m} />;
     case "plan":
@@ -3091,6 +3107,26 @@ function ApprovalSettled({ m, lapsed }: { m: Extract<MsgView, { kind: "approval"
         <PermSubject req={{ requestId: m.requestId, sessionId: "", toolCallTitle: m.title, kind: m.kind2, options: m.options, createdAt: m.at ?? 0, path: m.path, diff: m.diff }} />
         <div className="perm-decision">{label}</div>
       </div>
+    </div>
+  );
+}
+
+/** 一轮的 token 账（issue #70）：一行，低调地贴在那一轮回复的尾巴上。
+ *
+ *  位置不是猜的：服务端在 turn-end 才写这一行，seq 天然排在回复之后，刷新/重连也一样。
+ *  「未上报」是一个必须画出来的状态（Qoder 既不发 usage_update 也不回 usage），画成 0
+ *  会让操作者以为这一轮免费。 */
+function TurnUsageRow({ m }: { m: Extract<MsgView, { kind: "turn-usage" }> }): JSX.Element {
+  return (
+    <div
+      className={`status-note turn-usage${m.available ? "" : " na"}`}
+      data-kind="usage"
+      role="note"
+      title={m.available
+        ? "这一轮的真实用量：agent 上报的会话累计值 · 本次差分；缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存写）"
+        : "这个 agent 不通过 ACP 上报 token 用量"}
+    >
+      <span className="status-note-text">{turnUsageText(m)}</span>
     </div>
   );
 }

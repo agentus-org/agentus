@@ -132,6 +132,41 @@ export interface UsageView {
   size: number;
   cost?: number | null;
   at: number;
+  /** SESSION-CUMULATIVE token counters from `PromptResponse.usage`, as the agent reported them
+   *  (ACP's own semantics: "Total ... across all turns"). Kept beside the context gauge because
+   *  that is the only place a reload can learn them again — `usage_update` carries no token
+   *  breakdown, and the per-turn numbers are differences of these. Absent = the agent never
+   *  reported any (Qoder), which reads as "not available", NEVER as measured zero. */
+  totals?: UsageTotals | null;
+}
+
+/** Cumulative token buckets a turn's usage is measured against (ACP `Usage`). */
+export interface UsageTotals {
+  total: number;
+  input: number;
+  output: number;
+  thought: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** One turn's token bill (issue #70) — the DELTA of the agent's cumulative counters.
+ *
+ *  `cacheHitPercent` uses the webui's definition (prompt cache reads over the full prompt total:
+ *  input + cache read + cache write), and is null when the agent reports no cache buckets at all —
+ *  a Qoder session must read as unavailable, not as a 0% hit rate. `tps` is the turn AVERAGE
+ *  (output tokens over wall time, tool calls included); it is deliberately labelled as an average
+ *  rather than sold as instantaneous speed. */
+export interface TurnUsage {
+  input: number;
+  output: number;
+  thought: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  durationMs?: number;
+  cacheHitPercent?: number | null;
+  tps?: number | null;
 }
 
 export interface SessionModeState {
@@ -228,7 +263,10 @@ export type ServerEvent =
       /** Wall time from the moment the turn was announced to the moment the agent answered (ms).
        *  Exists so a notification can say "用时 1m12s" instead of a protocol token like `end_turn`,
        *  which is a fact about the wire, not about the operator's wait (absent when unknowable). */
-      durationMs?: number }
+      durationMs?: number;
+      /** What this turn cost in tokens (issue #70), subtracted from the agent's cumulative
+       *  counters. Absent when the agent reports none — the page then says 「未上报」, never 0. */
+      usage?: TurnUsage | null }
   /** per-turn trace: what model/effort/mode this turn is actually running with
    *  (AionUi F-DISPLAY-11 lineage — "why did it behave differently?" ) */
   /** `pid` is the id of the prompt that started this turn, copied from the client's command (issue
@@ -491,8 +529,11 @@ export interface StoredMessage {
    *  `approval` = an approval request as a transcript row (it asks a question, then carries the
    *  decision), and `project-skills` = the agent reporting that this repo ships skills it is NOT
    *  loading. Both are DUrable on purpose: a modal that vanishes leaves no record of what was
-   *  asked or what was answered. */
-  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta" | "note" | "approval" | "project-skills";
+   *  asked or what was answered. `turn-usage` = one turn's token bill (issue #70): it is written at
+   *  turn-end, so it sits at the TAIL of the reply it bills, and it is persisted because a reload
+   *  must show the same numbers instead of losing the one part of the turn the agent will never
+   *  re-send. */
+  kind: "user" | "agent" | "thought" | "tool" | "plan" | "meta" | "note" | "approval" | "project-skills" | "turn-usage";
   payload: unknown; // raw ACP content/update fragment (kept lossless)
   toolCallId?: string; // set for kind=tool; upsert key
   createdAt: number;

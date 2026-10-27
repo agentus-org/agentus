@@ -96,7 +96,15 @@ export type MsgView =
     }
   /** 「这个仓库有 N 个项目 skill 没启用」的一张卡（`messages.kind = "project-skills"`）。
    *  `state` 是那次决定：ask（还没答）/ trusted / ignore。 */
-  | { key: string; kind: "project-skills"; root: string; count: number; text: string; state: string; at?: number };
+  | { key: string; kind: "project-skills"; root: string; count: number; text: string; state: string; at?: number }
+  /** 一轮的 token 账（`messages.kind = "turn-usage"`，issue #70）。服务端在 turn-end 时写进
+   *  转录，所以它永远贴在那一轮回复的尾巴上，刷新之后也在。`available: false` 表示这个 agent
+   *  没上报用量（Qoder）—— 画成「未上报」，绝不画成 0。 */
+  | {
+      key: string; kind: "turn-usage"; available: boolean;
+      input: number; output: number; thought: number; cacheRead: number; cacheWrite: number;
+      total: number; durationMs?: number; cacheHitPercent?: number | null; tps?: number | null; at?: number;
+    };
 
 /** One backend registry row as the cockpit sees it (M6). "which hermes" is three independent
  *  choices — which COMMAND (and env, e.g. PYTHONPATH at a source tree), which HERMES_HOME, and
@@ -2417,6 +2425,28 @@ class Cockpit {
         const at0 = index.get(key);
         if (at0 !== undefined && list[at0]?.kind === "project-skills") list[at0] = row;
         else {
+          list.push(row);
+          index.set(key, list.length - 1);
+        }
+        break;
+      }
+      case "turn-usage": {
+        // 一轮的 token 账（issue #70）：append-only，位置由 seq 定 —— 服务端在 turn-end 时才写，
+        // 所以它天然排在那一轮回复之后。`available: false` 是「这个 agent 没上报」，不是零。
+        const key = `u${m.seq}`;
+        const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+        const row: MsgView = {
+          key,
+          kind: "turn-usage",
+          available: p.available !== false,
+          input: n(p.input), output: n(p.output), thought: n(p.thought),
+          cacheRead: n(p.cacheRead), cacheWrite: n(p.cacheWrite), total: n(p.total),
+          durationMs: typeof p.durationMs === "number" ? p.durationMs : undefined,
+          cacheHitPercent: typeof p.cacheHitPercent === "number" ? p.cacheHitPercent : null,
+          tps: typeof p.tps === "number" ? p.tps : null,
+          at,
+        };
+        if (index.get(key) === undefined) {
           list.push(row);
           index.set(key, list.length - 1);
         }

@@ -30,6 +30,7 @@ import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
+import { turnUsageText } from "./tokens";
 import { splitSentences } from "./speech";
 import { BriefPlanner, type Cue } from "./call-brief";
 import { TusFace } from "./TusFace";
@@ -155,6 +156,8 @@ function histLine(m: MsgView): { kind: "user" | "agent" | "meta" | "tool"; who: 
       text: `审批：${m.title}${m.decision ? (m.decision.outcome === "selected" ? "（已答）" : "（已取消）") : ""}`,
     };
     case "project-skills": return { kind: "meta", who: "", text: m.text };
+    // 一轮的 token 账：通话里也留一行（声音场景不看，但翻历史时能看到这一轮花了多少）。
+    case "turn-usage": return { kind: "meta", who: "", text: turnUsageText(m) };
   }
 }
 

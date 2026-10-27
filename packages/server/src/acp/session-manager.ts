@@ -49,6 +49,8 @@ import type {
   SessionModeState,
   StatusNoteItem,
   TurnTrace,
+  TurnUsage,
+  UsageTotals,
 } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
@@ -1564,13 +1566,30 @@ export class SessionManager {
       // The agent has the block (a cancelled turn still received it): NOW the boundary is spent.
       settleVoice();
       this.#finalizePlan(sessionId, terminalState);
-      // Turn END is the second and last ordering event of a turn (issue #50): start moved the session,
-      // this settles it where the conversation now is. Mid-turn rows deliberately do NOT touch — see
-      // #touch.
+      const durationMs = Date.now() - turnStartedAt;
+      // issue #70: the agent's CUMULATIVE token counters arrive on the prompt RESPONSE — a frame
+      // nothing else reads — so the per-turn bill and the cache-hit rate were simply thrown away.
+      // One row per turn, at the tail of the reply it bills: persisted, because a reload must show
+      // the same numbers (the agent will never re-send them), and it sits AFTER the reply by seq.
+      const bill = turnUsageOf(res?.usage, s.info.usage?.totals ?? null, durationMs);
+      if (bill) {
+        s.info.usage = {
+          ...(s.info.usage ?? { used: 0, size: 0, cost: null, at: Date.now() }),
+          totals: bill.totals,
+          at: Date.now(),
+        };
+      }
       this.#touch(s);
-      this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs: Date.now() - turnStartedAt });
+      const usageRow = this.#store.appendMessage({
+        sessionId,
+        kind: "turn-usage",
+        payload: bill ? bill.bill : { available: false, durationMs },
+        createdAt: Date.now(),
+      });
+      this.#emit({ t: "message", message: usageRow });
+      this.#emit({ t: "turn-end", sessionId, stopReason: res?.stopReason, durationMs, ...(bill ? { usage: bill.bill } : {}) });
       // #59: 谁在等这一轮结束（跨会话 send --reply-on-done）
-      this.#settleTurnReplies(sessionId, mine, { stopReason: res?.stopReason ?? null, durationMs: Date.now() - turnStartedAt });
+      this.#settleTurnReplies(sessionId, mine, { stopReason: res?.stopReason ?? null, durationMs });
     } catch (err) {
       this.#finalizePlan(sessionId, "failed");
       this.#touch(s);
@@ -2654,6 +2673,10 @@ export class SessionManager {
           size: Number.isFinite(size) ? size : 0,
           cost: uu.cost && typeof uu.cost.amount === "number" ? uu.cost.amount : null,
           at: Date.now(),
+          // issue #70: this frame carries NO token breakdown, so the cumulative baseline that the
+          // per-turn bills are subtracted from must survive it — replacing the object wholesale is
+          // what would make the next bill report the whole session again.
+          ...(live.info.usage?.totals ? { totals: live.info.usage.totals } : {}),
         };
         this.#updateSession(live);
         this.#emit({ t: "usage", sessionId: live.info.id, usage: live.info.usage });
@@ -3518,6 +3541,65 @@ function normConfigOptions(raw: unknown): ConfigOptionView[] {
       const meta = _meta ?? (o as { meta?: Record<string, unknown> | null }).meta ?? null;
       return { ...rest, meta } as unknown as ConfigOptionView;
     });
+}
+
+/** One turn's token bill, from the agent's CUMULATIVE counters (issue #70).
+ *
+ *  ACP documents `PromptResponse.usage` as "Total … across all turns", so a turn's number is a
+ *  subtraction against the baseline kept beside the context gauge (`UsageView.totals`). Three
+ *  deliberate rules:
+ *  · a bucket the agent did not report stays ABSENT — a Qoder session must read 「未上报」, never a
+ *    made-up zero;
+ *  · a total that SHRANK means the agent's counters reset (a resumed process): the raw value is
+ *    then this turn's own number and the baseline resets, instead of emitting a negative bill;
+ *  · a turn that reported nothing at all returns null (the row still says 「未上报」).
+ *  The FIRST bill of a session that predates this baseline is therefore cumulative — one turn of
+ *  honest over-reporting beats inventing a difference. */
+export function turnUsageOf(
+  raw: unknown, base: UsageTotals | null | undefined, durationMs: number,
+): { bill: TurnUsage; totals: UsageTotals } | null {
+  const u = (raw && typeof raw === "object" ? raw : null) as Record<string, unknown> | null;
+  if (!u) return null;
+  const num = (v: unknown): number | null =>
+    (typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : null);
+  const total = num(u.totalTokens);
+  const input = num(u.inputTokens);
+  const output = num(u.outputTokens);
+  const thought = num(u.thoughtTokens);
+  const cacheRead = num(u.cachedReadTokens);
+  const cacheWrite = num(u.cachedWriteTokens);
+  if ([total, input, output, thought, cacheRead, cacheWrite].every((x) => x === null)) return null;
+  const cur: UsageTotals = {
+    total: total ?? (input ?? 0) + (output ?? 0),
+    input: input ?? 0,
+    output: output ?? 0,
+    thought: thought ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+  };
+  const delta = (now: number, before: number | undefined): number =>
+    (before === undefined ? now : now >= before ? now - before : now);
+  const bill: TurnUsage = {
+    total: delta(cur.total, base?.total),
+    input: delta(cur.input, base?.input),
+    output: delta(cur.output, base?.output),
+    thought: delta(cur.thought, base?.thought),
+    cacheRead: delta(cur.cacheRead, base?.cacheRead),
+    cacheWrite: delta(cur.cacheWrite, base?.cacheWrite),
+    durationMs,
+    // Webui's denominator: the FULL prompt = input + cache read + cache write. Only when the agent
+    // reports a cache bucket at all — otherwise the page says 「未上报」, not a 0% hit rate.
+    cacheHitPercent: cacheRead === null && cacheWrite === null
+      ? null
+      : (() => {
+        const prompt = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
+        return prompt > 0 ? Math.min(100, Math.round(((cacheRead ?? 0) / prompt) * 100)) : null;
+      })(),
+  };
+  // Average speed: this turn's OWN output over wall time (tool calls included, so a long tool
+  // turn honestly reads slow rather than being dressed up as model speed).
+  bill.tps = bill.output > 0 && durationMs > 0 ? Math.round((bill.output / (durationMs / 1000)) * 10) / 10 : null;
+  return { bill, totals: cur };
 }
 
 function errMessage(e: unknown): string {

@@ -17,3 +17,44 @@ export function fmtTokens(n: number): string {
 function trim(x: number): string {
   return Number.isInteger(x) ? String(x) : x.toFixed(1);
 }
+
+/** One turn's token bill as a single line (issue #70).
+ *
+ *  The vocabulary is hermes-webui's (`N in · N out`), because that is what the operator already
+ *  reads there. Three rules this function owns, all of them about not lying:
+ *  · `available: false` prints 「未上报」 — a Qoder session has no usage, and a row of zeros would
+ *    read as "this turn was free";
+ *  · a bucket the agent never reports is OMITTED rather than shown as 0 (thinking / cache buckets
+ *    only some backends fill);
+ *  · speed says 「平均」: it is output tokens over the WHOLE turn, tool calls included, not an
+ *    instantaneous reading — the live chip is a separate feature (issue #70 step 1). */
+export interface TurnUsageLine {
+  available: boolean;
+  input: number; output: number; thought: number;
+  cacheRead: number; cacheWrite: number; total: number;
+  durationMs?: number;
+  cacheHitPercent?: number | null;
+  tps?: number | null;
+}
+
+export function turnUsageText(u: TurnUsageLine): string {
+  if (!u.available) return "agent 未上报用量";
+  const parts = [`${fmtTokens(u.input)} in`, `${fmtTokens(u.output)} out`];
+  if (u.thought > 0) parts.push(`思考 ${fmtTokens(u.thought)}`);
+  if (u.cacheRead > 0 || u.cacheWrite > 0) {
+    parts.push(`缓存 读 ${fmtTokens(u.cacheRead)} / 写 ${fmtTokens(u.cacheWrite)}`);
+  }
+  if (u.cacheHitPercent != null) parts.push(`命中 ${u.cacheHitPercent}%`);
+  if (u.tps != null && u.tps > 0) {
+    parts.push(`${u.tps >= 100 ? Math.round(u.tps) : u.tps.toFixed(1)} t/s 平均`);
+  }
+  if (u.durationMs != null && u.durationMs > 0) parts.push(shortDuration(u.durationMs));
+  return parts.join(" · ");
+}
+
+function shortDuration(ms: number): string {
+  const total = Math.max(1, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  return total % 60 ? `${m}m ${total % 60}s` : `${m}m`;
+}
