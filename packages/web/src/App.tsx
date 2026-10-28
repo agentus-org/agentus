@@ -1724,16 +1724,14 @@ function ContextGauge({ usage, trace }: { usage?: UsageView | null; trace?: Turn
   const traceText = trace && (trace.effort || trace.mode)
     ? ` · this turn: ${[trace.effort && `effort ${trace.effort}`, trace.mode && `mode ${trace.mode}`].filter(Boolean).join(", ")}`
     : "";
-  // issue #70: the gauge knows the agent's SESSION-CUMULATIVE cache buckets (they arrive on the
-  // prompt response, not on usage_update), so the tooltip can say what the cache actually saved —
-  // hermes-webui's denominator: input + cache read + cache write. Absent when the agent reports
-  // no cache buckets at all (Qoder), which must read as unknown rather than 0%.
+  // issue #71: inputTokens is ALREADY the full prompt (cache buckets are a subset of it) —
+  // dividing by input + read + write counted cached tokens twice, same defect as the bill row.
   const tot = usage.totals;
-  const cacheText = tot && (tot.cacheRead > 0 || tot.cacheWrite > 0)
+  const cacheText = tot && (tot.cacheRead != null || tot.cacheWrite != null)
     ? (() => {
-      const prompt = tot.input + tot.cacheRead + tot.cacheWrite;
-      const hit = prompt > 0 ? ` (${Math.min(100, Math.round((tot.cacheRead / prompt) * 100))}% hit)` : "";
-      return ` · session cache: read ${tot.cacheRead} / write ${tot.cacheWrite}${hit}`;
+      const hit = tot.input > 0 ? ` (${Math.min(100, Math.round(((tot.cacheRead ?? 0) / tot.input) * 100))}% hit)` : "";
+      const write = tot.cacheWrite != null ? ` / write ${tot.cacheWrite}` : "";
+      return ` · session cache: read ${tot.cacheRead ?? 0}${write}${hit}`;
     })()
     : "";
   return (
@@ -3123,7 +3121,7 @@ function TurnUsageRow({ m }: { m: Extract<MsgView, { kind: "turn-usage" }> }): J
       data-kind="usage"
       role="note"
       title={m.available
-        ? "这一轮的真实用量：agent 上报的会话累计值 · 本次差分；缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存写）"
+        ? "这一轮的真实用量：agent 上报的会话累计值 · 本次差分。in = 本回合所有 API 调用的 prompt 累加（计费口径，含缓存读；工具回合会超过上下文窗口，窗口占用看上面的环）；缓存命中率 = 缓存读 / in"
         : "这个 agent 不通过 ACP 上报 token 用量"}
     >
       <span className="status-note-text">{turnUsageText(m)}</span>

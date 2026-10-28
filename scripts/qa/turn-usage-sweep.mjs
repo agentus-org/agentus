@@ -90,14 +90,19 @@ check("turn-end 带着同一份账（一轮一个数）",
 // The mock counts `text.length + 200` where `text` is its blocks joined by " " (the operator's
 // text plus the server's own blocks), so the exact length is not the point — the point is that it
 // is ONE turn's worth, not a running total.
-check("第一轮的 input 就是它自己的量（mock: 文本长度 + 200 上下）",
-  Math.abs((firstRow?.message.payload.input ?? 0) - (firstText.length + 200)) <= 3,
-  `${firstRow?.message.payload.input} vs ~${firstText.length + 200}`);
-check("缓存命中率 = 缓存读 /（input + 缓存读 + 缓存写）", (() => {
+check("第一轮的 input 就是它自己的量（mock: 文本长度 + 200 + 缓存 4224，与 hermes prompt_tokens 同口径）",
+  Math.abs((firstRow?.message.payload.input ?? 0) - (firstText.length + 200 + 4096 + 128)) <= 3,
+  `${firstRow?.message.payload.input} vs ~${firstText.length + 200 + 4096 + 128}`);
+// Issue #71: inputTokens IS the prompt total, so the denominators' cache buckets must NOT be
+// added back. The defect this pins: read/(in+read+write) reads ~50% on any cache-heavy turn.
+check("缓存命中率 = 缓存读 / input（不再把缓存桶加进分母，issue #71）", (() => {
   const p = firstRow?.message.payload;
   if (!p) return false;
-  const prompt = p.input + 4096 + 128;
-  return p.cacheHitPercent === Math.min(100, Math.round((4096 / prompt) * 100));
+  return p.cacheHitPercent === Math.min(100, Math.round((4096 / p.input) * 100));
+})(), String(firstRow?.message.payload.cacheHitPercent));
+check("命中率不再被钳在 50% 附近（缓存重的回合必须读成 ~92%）", (() => {
+  const p = firstRow?.message.payload;
+  return p && p.cacheHitPercent !== null && p.cacheHitPercent > 80;
 })(), String(firstRow?.message.payload.cacheHitPercent));
 check("速度是整回合平均（output / 用时），不是瞬时值",
   typeof firstRow?.message.payload.tps === "number" && firstRow.message.payload.tps >= 0,
@@ -108,8 +113,8 @@ ws.send(JSON.stringify({ t: "prompt", sessionId: sid, text: secondText }));
 const secondRow = await until(() => rowOf(1));
 check("第二轮也写出了一条 turn-usage 行", Boolean(secondRow));
 check("第二轮报的是增量：input 只有本轮的量（不是两轮累计）",
-  Math.abs((secondRow?.message.payload.input ?? 0) - (secondText.length + 200)) <= 3,
-  `${secondRow?.message.payload.input} vs ~${secondText.length + 200}`);
+  Math.abs((secondRow?.message.payload.input ?? 0) - (secondText.length + 200 + 4096 + 128)) <= 3,
+  `${secondRow?.message.payload.input} vs ~${secondText.length + 200 + 4096 + 128}`);
 check("两行的 seq 递增，所以它们各自贴在对应回复之后",
   (secondRow?.message.seq ?? 0) > (firstRow?.message.seq ?? 0),
   `${firstRow?.message.seq} → ${secondRow?.message.seq}`);

@@ -102,7 +102,9 @@ export type MsgView =
    *  没上报用量（Qoder）—— 画成「未上报」，绝不画成 0。 */
   | {
       key: string; kind: "turn-usage"; available: boolean;
-      input: number; output: number; thought: number; cacheRead: number; cacheWrite: number;
+      input: number; output: number; thought: number;
+      // issue #71: null = the agent never reports this bucket (省略, not 0).
+      cacheRead: number | null; cacheWrite: number | null;
       total: number; durationMs?: number; cacheHitPercent?: number | null; tps?: number | null; at?: number;
     };
 
@@ -2435,12 +2437,15 @@ class Cockpit {
         // 所以它天然排在那一轮回复之后。`available: false` 是「这个 agent 没上报」，不是零。
         const key = `u${m.seq}`;
         const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+        // issue #71: cache buckets keep their null — "the agent never reports this" must not be
+        // coerced to 0 on the way in, or tokens.ts prints 「写 0」 and the operator reads 免费.
+        const bucket = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
         const row: MsgView = {
           key,
           kind: "turn-usage",
           available: p.available !== false,
           input: n(p.input), output: n(p.output), thought: n(p.thought),
-          cacheRead: n(p.cacheRead), cacheWrite: n(p.cacheWrite), total: n(p.total),
+          cacheRead: bucket(p.cacheRead), cacheWrite: bucket(p.cacheWrite), total: n(p.total),
           durationMs: typeof p.durationMs === "number" ? p.durationMs : undefined,
           cacheHitPercent: typeof p.cacheHitPercent === "number" ? p.cacheHitPercent : null,
           tps: typeof p.tps === "number" ? p.tps : null,

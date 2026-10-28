@@ -140,29 +140,34 @@ export interface UsageView {
   totals?: UsageTotals | null;
 }
 
-/** Cumulative token buckets a turn's usage is measured against (ACP `Usage`). */
+/** Cumulative token buckets a turn's usage is measured against (ACP `Usage`).
+ *  `cacheRead`/`cacheWrite` are null = the agent never reports that bucket (issue #71); a
+ *  baseline of null diffs the first REPORTED value as the turn's own, same as undefined. */
 export interface UsageTotals {
   total: number;
   input: number;
   output: number;
   thought: number;
-  cacheRead: number;
-  cacheWrite: number;
+  cacheRead: number | null;
+  cacheWrite: number | null;
 }
 
 /** One turn's token bill (issue #70) — the DELTA of the agent's cumulative counters.
  *
- *  `cacheHitPercent` uses the webui's definition (prompt cache reads over the full prompt total:
- *  input + cache read + cache write), and is null when the agent reports no cache buckets at all —
- *  a Qoder session must read as unavailable, not as a 0% hit rate. `tps` is the turn AVERAGE
+ *  `cacheHitPercent` is cacheRead / input, where ACP's `inputTokens` is ALREADY the full prompt
+ *  (fresh + cache read + cache write — issue #71; do not add the buckets back, it counts cached
+ *  tokens twice and pins the reading near 50%). Null when the agent reports no cache buckets at
+ *  all — a Qoder session must read as unavailable, not as a 0% hit rate. `tps` is the turn AVERAGE
  *  (output tokens over wall time, tool calls included); it is deliberately labelled as an average
  *  rather than sold as instantaneous speed. */
 export interface TurnUsage {
   input: number;
   output: number;
   thought: number;
-  cacheRead: number;
-  cacheWrite: number;
+  /** NULL = the agent never reports this bucket (issue #71). A reported 0 is a real 0 — the
+   *  two must not collapse into one number, or 「写 0」 lies about cache writes (1.25× billed). */
+  cacheRead: number | null;
+  cacheWrite: number | null;
   total: number;
   durationMs?: number;
   cacheHitPercent?: number | null;

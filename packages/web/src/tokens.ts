@@ -31,7 +31,8 @@ function trim(x: number): string {
 export interface TurnUsageLine {
   available: boolean;
   input: number; output: number; thought: number;
-  cacheRead: number; cacheWrite: number; total: number;
+  /** null = the agent never reports this bucket (issue #71) — OMITTED, never printed as 0. */
+  cacheRead: number | null; cacheWrite: number | null; total: number;
   durationMs?: number;
   cacheHitPercent?: number | null;
   tps?: number | null;
@@ -41,8 +42,13 @@ export function turnUsageText(u: TurnUsageLine): string {
   if (!u.available) return "agent 未上报用量";
   const parts = [`${fmtTokens(u.input)} in`, `${fmtTokens(u.output)} out`];
   if (u.thought > 0) parts.push(`思考 ${fmtTokens(u.thought)}`);
-  if (u.cacheRead > 0 || u.cacheWrite > 0) {
-    parts.push(`缓存 读 ${fmtTokens(u.cacheRead)} / 写 ${fmtTokens(u.cacheWrite)}`);
+  if (u.cacheRead != null || u.cacheWrite != null) {
+    // Issue #71: 「in」 here is the turn's billed prompt TOTAL across its API calls (it grows with
+    // tool calls and can exceed the context window — the gauge up top is the occupancy), and a
+    // bucket the agent never reported is dropped, not shown as 0.
+    const seg = [`读 ${fmtTokens(u.cacheRead ?? 0)}`];
+    if (u.cacheWrite != null) seg.push(`写 ${fmtTokens(u.cacheWrite)}`);
+    parts.push(`缓存 ${seg.join(" / ")}`);
   }
   if (u.cacheHitPercent != null) parts.push(`命中 ${u.cacheHitPercent}%`);
   if (u.tps != null && u.tps > 0) {

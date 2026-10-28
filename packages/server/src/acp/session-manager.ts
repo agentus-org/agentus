@@ -3574,27 +3574,44 @@ export function turnUsageOf(
     input: input ?? 0,
     output: output ?? 0,
     thought: thought ?? 0,
-    cacheRead: cacheRead ?? 0,
-    cacheWrite: cacheWrite ?? 0,
+    // issue #71: never `?? 0` here — the baseline is also what a persisted session reloads, and a
+    // washed-in 0 is indistinguishable from a measured zero on the next diff.
+    cacheRead,
+    cacheWrite,
   };
   const delta = (now: number, before: number | undefined): number =>
     (before === undefined ? now : now >= before ? now - before : now);
+  // Issue #71: a bucket the agent never reports stays NULL through the bill. 「写 0」 reads as
+  // "this turn's cache writes were measured at zero", and cache writes are the billed kind
+  // (Anthropic 1.25×). Omission is the honest shape; see tokens.ts. A null BASELINE means the
+  // first reported value is the turn's own — undefined and null never had a prior count.
+  const deltaOpt = (now: number | null, before: number | null | undefined): number | null =>
+    (now === null ? null : delta(now, before ?? undefined));
+  // Computed up front: the hit rate below divides by THIS turn's prompt delta, not the raw one.
+  const billInput = delta(cur.input, base?.input);
+  const billCacheRead = deltaOpt(cur.cacheRead, base?.cacheRead);
   const bill: TurnUsage = {
     total: delta(cur.total, base?.total),
-    input: delta(cur.input, base?.input),
+    input: billInput,
     output: delta(cur.output, base?.output),
     thought: delta(cur.thought, base?.thought),
-    cacheRead: delta(cur.cacheRead, base?.cacheRead),
-    cacheWrite: delta(cur.cacheWrite, base?.cacheWrite),
+    cacheRead: billCacheRead,
+    cacheWrite: deltaOpt(cur.cacheWrite, base?.cacheWrite),
     durationMs,
-    // Webui's denominator: the FULL prompt = input + cache read + cache write. Only when the agent
-    // reports a cache bucket at all — otherwise the page says 「未上报」, not a 0% hit rate.
+    // Issue #71 — the denominator is this turn's prompt total, i.e. the billed `input` DELTA.
+    // ACP's Usage.inputTokens is the FULL prompt (hermes' adapter fills it with `prompt_tokens`,
+    // which by definition = fresh input + cache read + cache write; see agent/usage_pricing.py in
+    // the fork), so the cache buckets are a SUBSET of input, not peers beside it. Adding them
+    // back counted every cached token twice and pinned the reading at cacheRead/(input+cacheRead)
+    // ≈ 50% for any cache-heavy session — the exact defect #71 measured (real hits 91–100%, page
+    // 50%). webui keeps one invariant across both of its sources: the denominator is a number
+    // that already IS the full prompt (api/models.py passes input_tokens alone); its additive
+    // form exists only for a rollup that stored uncached input separately. We read the first
+    // source, so no addition. `min(100, …)` stays as a clamp against a skewed diff, never as the
+    // thing that makes the ratio believable: with correct semantics normal data cannot exceed 100.
     cacheHitPercent: cacheRead === null && cacheWrite === null
       ? null
-      : (() => {
-        const prompt = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
-        return prompt > 0 ? Math.min(100, Math.round(((cacheRead ?? 0) / prompt) * 100)) : null;
-      })(),
+      : (billInput > 0 ? Math.min(100, Math.round(((billCacheRead ?? 0) / billInput) * 100)) : null),
   };
   // Average speed: this turn's OWN output over wall time (tool calls included, so a long tool
   // turn honestly reads slow rather than being dressed up as model speed).

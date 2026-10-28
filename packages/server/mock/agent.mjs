@@ -949,17 +949,23 @@ const agent = () => ({
       used: s.used,
       size: picked > 0 ? picked : Number(process.env.MOCK_USAGE_SIZE || 200_000),
     });
-    // The prompt response's `usage`, shaped like the hermes adapter's (issue #70). ACP's semantics
-    // are "Total … across all turns", so the counters ACCUMULATE on the session state — a cockpit
-    // that forgot to diff would show the whole conversation on every turn, and a two-turn QA sweep
-    // is what proves it does not. `cachedWriteTokens` is filled too, because the fork's adapter
-    // still omits it and the cockpit must not depend on that omission.
+    // The prompt response's `usage`, shaped like the hermes adapter's (issue #70, #71). ACP's
+    // semantics are "Total … across all turns", so the counters ACCUMULATE on the session state —
+    // a cockpit that forgot to diff would show the whole conversation on every turn, and a
+    // two-turn QA sweep is what proves it does not.
+    //
+    // Issue #71: `inputTokens` is the FULL prompt — hermes fills it from `prompt_tokens`, which
+    // its own accounting defines as fresh input + cache read + cache write. The mock therefore
+    // adds the cache buckets INTO the input counter, exactly as the real adapter does: a mock that
+    // kept them separate would let the old 「input + read + write」 denominator stay green.
+    // `cachedWriteTokens` is filled too, because the fork's adapter still omits it and the cockpit
+    // must not depend on that omission.
     const outChars = words.join(" ").length + MOCK_MARKDOWN.length;
     s.tokens = s.tokens || {
       totalTokens: 0, inputTokens: 0, outputTokens: 0, thoughtTokens: 0,
       cachedReadTokens: 0, cachedWriteTokens: 0,
     };
-    s.tokens.inputTokens += text.length + 200;
+    s.tokens.inputTokens += text.length + 200 + 4096 + 128;
     s.tokens.cachedReadTokens += 4096;
     s.tokens.cachedWriteTokens += 128;
     s.tokens.outputTokens += Math.ceil(outChars / 4);
