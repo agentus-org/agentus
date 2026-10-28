@@ -1402,7 +1402,11 @@ export class SessionManager {
         // 就会改到默认 profile 的默认模型上，当前会话那个 profile 反而没变。
         profile: shape.spec.profile ?? null,
       });
-      if (!r.ok) console.log(`[agentus] model default not written (${info.backend}): ${r.reason}`);
+      if (!r.ok) {
+        // 唯一一处"操作者需要动手"的失败：set-model 已经把成功回给页面了，这句日志如果不显眼，
+        // 下一次新会话会悄悄退回到旧默认（#72 的症状原样回来）。所以带上 backend 与会话，稳定可 grep。
+        console.warn(`[agentus] modelWriteBack: refused for ${info.id} (${info.backend}, picked ${modelId}): ${r.reason}`);
+      }
       else if (r.changed) {
         console.log(`[agentus] model default → ${r.model ?? modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend} (picked ${modelId})`);
       }
@@ -3092,6 +3096,9 @@ export class SessionManager {
       if (!row) throw new Error(`no such session: ${id}`);
       const known = ((row.models ?? null) as SessionInfo["models"])?.availableModels ?? [];
       if (known.length && !known.some((m) => m.modelId === modelId)) {
+        // 重放的是对话框里的旧值：这一行的清单已经不认它了。不是操作者的错，也不该变成一条红色
+        // 错误：什么都不做，让会话按自己的默认起来（缓存那份由下一次启动的握手刷掉）。
+        if (opts.fromReplay) return this.#coldInfo(id);
         throw new Error(`unknown model: ${modelId}`);
       }
       if (!this.#store.setPendingModel(id, modelId)) throw new Error(`no such session: ${id}`);
@@ -3103,6 +3110,14 @@ export class SessionManager {
     if (!conn || !s.info.acpSessionId) throw new Error("session not ready — resume it first");
     const known = s.info.models?.availableModels ?? [];
     if (known.length && !known.some((m) => m.modelId === modelId)) {
+      if (opts.fromReplay) {
+        // 同上，但活会话有更新的清单在手上：顺手把缓存里的陈旧 id 换掉，下一次对话框就显示真的默认。
+        this.#store.recordHandshakeModels(s.info.backend, {
+          currentModelId: s.info.models?.currentModelId ?? null,
+          available: known.map((m) => m.modelId).filter(Boolean),
+        });
+        return s.info;
+      }
       throw new Error(`unknown model: ${modelId}`);
     }
     const reply = await conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
@@ -3125,15 +3140,19 @@ export class SessionManager {
     }
     // #72：缓存握手是"上一次真启动"的快照，新建会话对话框只读它 —— 换了模型却不改它，对话框会一直
     // 显示（并且把）切换前的那个 id 当中文默认值。活会话手里有完整清单，顺手把两份都刷新。
+    // 以**活会话**为准：agent 可能在回复里规范化了 id（或表示"没变"），那时缓存的默认值必须跟它走，
+    // 否则对话框显示的、重放的，都是槽位没在跑的那个 id（MINOR 4）。
     this.#store.recordHandshakeModels(s.info.backend, {
-      currentModelId: modelId,
+      currentModelId: s.info.models?.currentModelId ?? modelId,
       available: (s.info.models?.availableModels ?? []).map((m) => m.modelId).filter(Boolean),
     });
     if (s.info.pendingModelId) s.info.pendingModelId = null;
     this.#store.setPendingModel(id, null);
     // #62-1: 只有 agent **接受**过的切换才计数 —— 被拒的条目永不加分，于是"广告了但实际不可用"
     // 的模型会自己沉到列表底部，不需要任何端点探活。
-    bumpModelUsage(`${s.info.backend}|${modelId}`);
+    // 重放（新建会话时把对话框里的选择下发）不是操作者的切换动作：既不该改写全局默认，也不该给
+    // 「常用模型」加分，否则排序量的是"起了多少会话"，不是"选了哪个模型"（#72 review MINOR 6）。
+    if (!opts.fromReplay) bumpModelUsage(`${s.info.backend}|${modelId}`);
     // #62-3：选定即成为 agent 的全局默认（设置里可关）。同样只在这一行之后 —— 被拒的模型不落盘。
     // **重放不算**：冷槽上留下的意图可能被一次无人值守的 completion 唤醒带上（resume <-
     // `this.resume(e.origin)`），那时代码里没有"操作者在选模型"这件事，不该改全局配置。

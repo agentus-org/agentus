@@ -389,5 +389,98 @@ providers:
     JSON.stringify(shape("Fast", null)) === JSON.stringify({ model: "Fast", provider: null }));
 }
 
+// ---- 20. 调参块不是端点：`providers.deepseek: {stale_timeout_seconds: 600}` 是给内置 provider
+// 调参的（hermes 的 resolve_user_provider 会跳过没有 base_url 的条目）。把它当端点写成
+// `provider: custom:deepseek`，hermes 解析不出来，块里唯一能路由的 base_url 还会被删掉。
+{
+  const body = `model:
+  default: deepseek-v4-flash
+  provider: deepseek
+  base_url: https://my-gateway.example/v1
+providers:
+  deepseek:
+    context_length: 64000
+    stale_timeout_seconds: 600
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "deepseek:deepseek-flash", { provider: "DeepSeek" });
+  const after = readFileSync(file, "utf8");
+  check("a tuning-only providers block is not an endpoint (and keeps its base_url)",
+    r.ok && /provider: deepseek$/m.test(after) && /base_url: https:\/\/my-gateway\.example\/v1/.test(after)
+      && !/custom:deepseek/.test(after), `${r.reason ?? ""} :: ${JSON.stringify(modelBlock(after))}`);
+}
+
+// ---- 21. 别名永不覆盖键：A 的 name 与 B 的键同名时，custom:B:Fast 必须还是 B
+{
+  const body = `model:
+  default: Old
+  provider: old
+providers:
+  local:
+    name: Lab
+    base_url: http://127.0.0.1:9001/v1
+  lab:
+    name: Local
+    base_url: http://127.0.0.1:9002/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:local:Fast", { provider: "local" });
+  const after = readFileSync(file, "utf8");
+  check("a display-name alias never steals another entry's key",
+    r.ok && /provider: custom:local$/m.test(after), r.reason ?? "");
+}
+
+// ---- 22. 别名也不许把内置 provider 的 pick 拖到本地条目上（云 → 本地代理是 #72-B 的翻版）
+{
+  const body = `model:
+  default: Old
+  provider: old
+providers:
+  or-proxy:
+    name: OpenRouter
+    base_url: http://127.0.0.1:9100/v1
+    models:
+      - anthropic/claude
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "openrouter:anthropic/claude-3.5-sonnet", { provider: "OpenRouter" });
+  const after = readFileSync(file, "utf8");
+  check("a canonical pick is not captured by a same-named local entry",
+    r.ok && /provider: openrouter$/m.test(after) && !/custom:or-proxy/.test(after), r.reason ?? "");
+}
+
+// ---- 23. 旧形状 `custom:<带冒号的模型>`：条目自己声明了这个模型 ⇒ 按旧读法写下去
+{
+  const body = `model:
+  default: Old
+  provider: old
+providers:
+  lab:
+    base_url: http://127.0.0.1:9000/v1
+    models:
+      - qwen3:32b
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:qwen3:32b", { provider: "lab" });
+  const after = readFileSync(file, "utf8");
+  check("a legacy custom:<model:tag> id its entry declares is written whole",
+    r.ok && /default: qwen3:32b$/m.test(after) && /provider: custom:lab$/m.test(after), r.reason ?? "");
+}
+
+// ---- 24. 端点字段要真的被读到（上一版的断言只看 provider/残留，删掉修复也过 = 假绿）
+{
+  for (const key of ["base_url", "url", "api"]) {
+    const named = namedEndpoints(parseYaml(`providers:\n  lab:\n    ${key}: http://127.0.0.1:9000/v1\n    api_mode: chat_completions\n`));
+    const info = named.byKey.get("custom:lab");
+    check(`namedEndpoints reads the endpoint from \`${key}:\``,
+      info?.apiUrl === "http://127.0.0.1:9000/v1" && info?.apiMode === "chat_completions",
+      JSON.stringify(info ?? null));
+  }
+  const tuning = namedEndpoints(parseYaml("providers:\n  deepseek:\n    context_length: 64000\n"));
+  check("…and registers no entry for a block that declares no endpoint",
+    tuning.byKey.size === 0 && tuning.byAlias.size === 0, JSON.stringify([...tuning.byKey.keys()]));
+}
+
 console.log(`\n${pass} passed / ${fail} failed`);
+
 process.exit(fail ? 1 : 0);

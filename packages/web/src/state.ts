@@ -1139,7 +1139,7 @@ class Cockpit {
     if (!picks?.length) return;
     this.#setup.delete(sessionId);
     for (const p of picks) {
-      if (p.kind === "model") this.send({ t: "set-model", sessionId, modelId: p.value });
+      if (p.kind === "model") this.send({ t: "set-model", sessionId, modelId: p.value, fromReplay: true });
       else if (p.kind === "mode") this.send({ t: "set-mode", sessionId, modeId: p.value });
       else this.send({ t: "set-config", sessionId, configId: p.id, value: p.value });
     }
