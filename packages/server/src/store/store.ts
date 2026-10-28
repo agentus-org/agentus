@@ -1787,6 +1787,35 @@ export class Store {
   }
 
   /**
+   * Refresh the MODEL half of a row's cached handshake.
+   *
+   * The handshake is a snapshot of the last real start, and it is the only thing a start dialog can
+   * read for a backend that is not running: a `currentModelId` captured before the operator switched
+   * models is stale forever (nothing else rewrites it), and the dialog would present — and replay —
+   * the model the agent no longer uses (#72). ``available`` is optional: only the live session knows
+   * the full list, so pass it when the caller has one.
+   */
+  recordHandshakeModels(
+    id: string,
+    models: { currentModelId?: string | null; available?: string[] },
+  ): void {
+    const row = this.#db.prepare("select handshake from backends where id = ?").get(id) as
+      | { handshake?: string | null }
+      | undefined;
+    if (!row?.handshake) return; // a row that never ran has no snapshot to correct
+    let hs: BackendHandshake;
+    try {
+      hs = JSON.parse(row.handshake) as BackendHandshake;
+    } catch {
+      return;
+    }
+    if (!hs?.models) return;
+    const available = models.available?.length ? models.available : hs.models.available;
+    hs.models = { ...hs.models, currentModelId: models.currentModelId ?? null, available };
+    this.#db.prepare("update backends set handshake = ? where id = ?").run(JSON.stringify(hs), id);
+  }
+
+  /**
    * Write back a health snapshot (and optionally a handshake) for one row. Deliberately a
    * column-scoped UPDATE rather than upsertBackend: a check must never resurrect a stale copy of
    * the row (the operator may be editing cmd/home in the UI while the probe runs), and it must

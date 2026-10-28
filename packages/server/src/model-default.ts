@@ -8,7 +8,14 @@
 //   · 只在 server 的 setModel **成功之后**、且是操作者动作时调用（重放不算，见 session-manager）。
 //   · 写完必须能读回来：写盘前用真 YAML 解析器验一遍 `model.default` 是不是那个值，验不过就**拒写**。
 //     这是别人的全局配置文件，写坏了下次 spawn 直接起不来 —— 宁可不动，也不能"改成功但改坏"。
-//   · 原子写（临时文件 + rename）并保持原权限；只动 `model.default` / `model.provider` 两行。
+//   · 原子写（临时文件 + rename）并保持原权限。
+//   · 写进去的必须是 hermes 的**配置形状**，不是 ACP 的线格式：`default: <裸模型名>` +
+//     `provider: custom:<条目名>`。把选择器的三段 id（`custom:<条目>:<模型>`）直接塞进
+//     `model.default`，新建会话会把它整体当模型名发出去（`404 model_not_found`），或者被按第一个
+//     冒号切成 `provider=custom` + 剩下的整串 —— 静默跑到别的端点上（#72）。
+//   · 端点跟着条目走：命名条目自己声明 api_url/api_mode，块里残留的是**上一个** provider 的口子
+//     （`base_url` 指向旧云端点、`api_mode: codex_responses`），换 provider 时必须清掉，
+//     否则它会盖掉条目的声明。
 import { chmodSync, copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -18,6 +25,8 @@ export interface WriteBackResult {
   changed: boolean;
   /** 写进去的 provider；null = 没写（推不出或不安全） */
   provider: string | null;
+  /** 写进 `model.default` 的裸模型名（从 ACP choice id 拆出来的那个） */
+  model?: string;
   reason?: string;
 }
 
@@ -109,6 +118,124 @@ function setKey(lines: string[], key: string, value: string, indent: string): st
   return copy;
 }
 
+
+/** 命名端点（`providers:` 的键 / `custom_providers:` 的 name）在配置里声明的端点与协议。
+ *
+ *  写回时这两样是**端点归属**的唯一来源：provider 认条目，端口跟着条目走。块级的
+ *  `base_url` / `api_mode` 是上一个 provider 留下的，换 provider 时要清掉（#72）。 */
+interface EndpointInfo {
+  apiUrl: string | null;
+  apiMode: string | null;
+}
+
+/** hermes 的 `custom_provider_slug`：小写、空格换连字符、补 `custom:` 前缀。 */
+const customSlug = (display: string): string => {
+  const normalized = display.trim().toLowerCase().replace(/ /g, "-");
+  return normalized.startsWith("custom:") ? normalized : `custom:${normalized}`;
+};
+
+const bareName = (id: string): string => id.trim().toLowerCase().replace(/^custom:/, "");
+
+/** 配置里的命名端点，键是持久身份（`custom:<条目名>`）。 */
+export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
+  const out = new Map<string, EndpointInfo>();
+  const info = (entry: Record<string, unknown>): EndpointInfo => ({
+    apiUrl: typeof entry.api_url === "string" ? entry.api_url
+      : typeof entry.base_url === "string" ? entry.base_url : null,
+    apiMode: typeof entry.api_mode === "string" ? entry.api_mode : null,
+  });
+  const d = (doc ?? {}) as { providers?: unknown; custom_providers?: unknown };
+  const providers = d.providers;
+  if (providers && typeof providers === "object" && !Array.isArray(providers)) {
+    for (const [key, entry] of Object.entries(providers as Record<string, unknown>)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const raw = entry as Record<string, unknown>;
+      // 键是身份（显示名可以改），和 hermes 的 custom_provider_slug(display, key) 同一个取向。
+      out.set(customSlug(key), info(raw));
+    }
+  }
+  const legacy = d.custom_providers;
+  if (Array.isArray(legacy)) {
+    for (const entry of legacy) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const raw = entry as Record<string, unknown>;
+      const name = typeof raw.name === "string" ? raw.name.trim() : "";
+      if (!name) continue;
+      out.set(customSlug(name), info(raw));
+    }
+  }
+  return out;
+}
+
+export interface ChoiceSplit {
+  /** hermes `model.default` 该写的值：裸模型名 */
+  model: string;
+  /** hermes `model.provider` 该写的值；null = 推不出来，保持原样 */
+  provider: string | null;
+}
+
+/** 把选择器的 choice id 拆回 `(裸模型名, 持久 provider 身份)`。
+ *
+ *  规则就是 hermes 自己的那条：provider 只在左半段是**已知 provider/条目**时才算分隔符，
+ *  否则整串都是模型名（`anthropic/claude-3.5-sonnet:beta` 不能被切）。条目名到身份的映射由
+ *  `namedEndpoints` 提供，所以这里不需要再猜"哪些名字是 provider"。 */
+export function splitChoiceId(
+  modelId: string,
+  providerHint: string | null,
+  endpoints: Map<string, EndpointInfo>,
+): ChoiceSplit {
+  const raw = (modelId ?? "").trim();
+  if (!raw) return { model: raw, provider: null };
+  const hint = providerHint ? (providerHint.includes(":") ? providerHint : customSlug(providerHint)) : null;
+  const hintKnown = hint && endpoints.has(hint) ? hint : null;
+  const hintBare = hint ? bareName(hint) : "";
+  const lowered = raw.toLowerCase();
+
+  // 1) 描述里声明的条目自己认领前缀：`custom:<条目>:<模型>` / `<条目>:<模型>`。
+  if (hintKnown && hintBare) {
+    const customPrefix = `custom:${hintBare}:`;
+    if (lowered.startsWith(customPrefix)) return { model: raw.slice(customPrefix.length).trim(), provider: hintKnown };
+    const plainPrefix = `${hintBare}:`;
+    if (!lowered.startsWith("custom:") && lowered.startsWith(plainPrefix)) {
+      return { model: raw.slice(plainPrefix.length).trim(), provider: hintBare };
+    }
+  }
+
+  // 2) `custom:` 开头的三段 id：第二段是已配置条目才切，否则不动（猜错就是跑到别的端点）。
+  if (lowered.startsWith("custom:")) {
+    const rest = raw.slice("custom:".length);
+    const cut = rest.indexOf(":");
+    if (cut > 0) {
+      const named = customSlug(rest.slice(0, cut));
+      if (endpoints.has(named)) return { model: rest.slice(cut + 1).trim(), provider: named };
+      return { model: raw, provider: hintKnown };
+    }
+    // `custom:<模型>`（旧形状）：模型名是确定的那半，provider 只能靠描述推。
+    return { model: rest.trim(), provider: hintKnown ?? (hintBare && hintBare !== "custom" ? hintBare : null) };
+  }
+
+  // 3) `<provider>:<模型>`，左半段是已配置条目、或就是描述里声明的那个 provider。
+  const colon = raw.indexOf(":");
+  if (colon > 0) {
+    const left = raw.slice(0, colon).trim().toLowerCase();
+    const named = customSlug(left);
+    if (endpoints.has(named)) return { model: raw.slice(colon + 1).trim(), provider: named };
+    if (hintBare && left === hintBare) return { model: raw.slice(colon + 1).trim(), provider: left };
+  }
+
+  // 4) 裸模型名 + 描述里的 provider：描述只用来定 provider，绝不改模型名。
+  const hinted = hintBare && hintBare !== "custom" ? (endpoints.has(`custom:${hintBare}`) ? `custom:${hintBare}` : hintBare) : null;
+  return { model: raw, provider: hinted };
+}
+
+function deleteKey(lines: string[], key: string): string[] {
+  const at = findInModelBlock(lines, key);
+  if (at < 0) return lines;
+  const copy = [...lines];
+  copy.splice(at, 1);
+  return copy;
+}
+
 /** 把 modelId（以及可安全推断时的 provider）写进 agent 的配置文件。 */
 export function writeModelDefault(
   backend: string,
@@ -139,28 +266,57 @@ export function writeModelDefault(
     return { ok: false, changed: false, provider: null, reason: `model: is not a plain block (${header.trim().slice(0, 40)})` };
   }
 
-  const provider = options.provider ? String(options.provider).trim() : null;
+  // 配置里有哪些命名端点，决定了 choice id 怎么拆、以及块内残留的端点要不要清。
+  let before: unknown = null;
+  try { before = parseYaml(text); } catch { before = null; }
+  const endpoints = namedEndpoints(before);
+  const split = splitChoiceId(modelId, options.provider ?? null, endpoints);
+  const provider = split.provider;
+  const desiredModel = split.model;
+  const previousProvider = (before as { model?: { provider?: unknown } } | null)?.model?.provider;
+  const previous = typeof previousProvider === "string" ? previousProvider.trim() : null;
+  const providerChanged = provider != null && provider !== previous;
+  // 端点归属：新 provider 是命名条目、或旧 provider 是命名条目 —— 两种情况块里的 base_url/api_mode
+  // 都是在描述**另一个** provider，留着就会盖掉条目的声明（#72 B 段的错路由就是这么来的）。
+  const endpointOwned = Boolean((provider && endpoints.get(provider)?.apiUrl) || (previous && endpoints.has(previous)));
+
   const indent = blockIndent(lines);
   let work = lines;
   if (provider) work = setKey(work, "provider", provider, indent);
-  work = setKey(work, "default", modelId, indent);
+  work = setKey(work, "default", desiredModel, indent);
+  if (providerChanged && endpointOwned) {
+    work = deleteKey(work, "base_url");
+    work = deleteKey(work, "api_mode");
+  }
 
   const next = work.join("\n");
-  if (next === text) return { ok: true, changed: false, provider };
+  if (next === text) return { ok: true, changed: false, provider, model: desiredModel };
 
-  // 写盘前的最后一道闸：真解析一遍，两个值都得读回来。任何一个不成立就一个字都不写。
+  // 写盘前的最后一道闸：真解析一遍。不只看"两行读得回"，要看**这个块自洽**——
+  // provider 指向的条目和块里的端点必须是同一个端点，否则整次拒写（旧闸门会稳定放过矛盾状态）。
   let doc: unknown;
   try {
     doc = parseYaml(next);
   } catch (e) {
-    return { ok: false, changed: false, provider, reason: `refusing to write: result would not parse (${(e as Error).message.split("\n")[0]})` };
+    return { ok: false, changed: false, provider, model: desiredModel, reason: `refusing to write: result would not parse (${(e as Error).message.split("\n")[0]})` };
   }
-  const model = (doc as { model?: { default?: unknown; provider?: unknown } } | null)?.model;
-  if (!model || model.default !== modelId) {
-    return { ok: false, changed: false, provider, reason: "refusing to write: model.default would not read back" };
+  const model = (doc as { model?: { default?: unknown; provider?: unknown; base_url?: unknown; api_mode?: unknown } } | null)?.model;
+  if (!model || model.default !== desiredModel) {
+    return { ok: false, changed: false, provider, model: desiredModel, reason: "refusing to write: model.default would not read back" };
   }
   if (provider && model.provider !== provider) {
-    return { ok: false, changed: false, provider, reason: "refusing to write: model.provider would not read back" };
+    return { ok: false, changed: false, provider, model: desiredModel, reason: "refusing to write: model.provider would not read back" };
+  }
+  const entry = provider ? endpoints.get(provider) : undefined;
+  if (entry?.apiUrl) {
+    const norm = (v: unknown) => String(v ?? "").trim().replace(/\/+$/, "").toLowerCase();
+    const blockUrl = norm(model.base_url);
+    if (blockUrl && blockUrl !== norm(entry.apiUrl)) {
+      return { ok: false, changed: false, provider, model: desiredModel, reason: `refusing to write: model.base_url (${String(model.base_url)}) is not where ${provider} lives (${entry.apiUrl})` };
+    }
+    if (model.api_mode && entry.apiMode && String(model.api_mode) !== entry.apiMode) {
+      return { ok: false, changed: false, provider, model: desiredModel, reason: `refusing to write: model.api_mode (${String(model.api_mode)}) contradicts ${provider} (${entry.apiMode})` };
+    }
   }
 
   // 配置里可能有 api_key：比 0600 宽的一律收紧。
@@ -173,7 +329,7 @@ export function writeModelDefault(
     renameSync(tmp, file);
   } catch (e) {
     try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    return { ok: false, changed: false, provider, reason: `write failed: ${(e as Error).message}` };
+    return { ok: false, changed: false, provider, model: desiredModel, reason: `write failed: ${(e as Error).message}` };
   }
-  return { ok: true, changed: true, provider };
+  return { ok: true, changed: true, provider, model: desiredModel };
 }

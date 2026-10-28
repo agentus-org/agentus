@@ -10,7 +10,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BACKENDS, buildSpawnEnv } from "../../packages/server/src/acp/backends.js";
-import { providerFromDescription, writeModelDefault } from "../../packages/server/src/model-default.js";
+import {
+  namedEndpoints, providerFromDescription, splitChoiceId, writeModelDefault,
+} from "../../packages/server/src/model-default.js";
+import { parse as parseYaml } from "yaml";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = "") => {
@@ -149,6 +152,131 @@ toolsets:
   const { home } = mkHome(BASE);
   const r = writeModelDefault("qoder", home, "qwen3.8-flash");
   check("an unknown backend is refused, not guessed", !r.ok, r.reason ?? "");
+}
+
+
+// ---- 11. #72：ACP 三段 id 必须拆成 hermes 的配置形状（裸模型 + custom:<条目>）
+const NAMED = `model:
+  default: old-model
+  provider: old-provider
+  base_url: https://old.example/v1
+  api_mode: codex_responses
+providers:
+  local-sidecar:
+    name: Local Sidecar
+    api_url: http://127.0.0.1:9000/v1
+    api_mode: chat_completions
+    models:
+      - DeepSeek-Flash
+      - Fast
+agent:
+  idleKillMin: 5
+`;
+{
+  const { home, file } = mkHome(NAMED);
+  const r = writeModelDefault("hermes", home, "custom:local-sidecar:DeepSeek-Flash", { provider: "local-sidecar" });
+  const after = readFileSync(file, "utf8");
+  check("a three-part ACP id writes the bare model name",
+    r.ok && /^ {2}default: DeepSeek-Flash$/m.test(after), r.reason ?? "");
+  check("…and the durable entry identity as provider",
+    r.ok && /^ {2}provider: custom:local-sidecar$/m.test(after), after.match(/^ {2}provider: .*$/m)?.[0] ?? "");
+  check("…and drops the previous provider's endpoint keys",
+    r.ok && !/^ {2}base_url:/m.test(after) && !/^ {2}api_mode:/m.test(after),
+    (after.match(/^ {2}(base_url|api_mode): .*$/gm) ?? []).join(" · "));
+  check("…leaving the entries themselves untouched",
+    /local-sidecar:\n {4}name: Local Sidecar/.test(after));
+
+  const again = writeModelDefault("hermes", home, "custom:local-sidecar:DeepSeek-Flash", { provider: "local-sidecar" });
+  check("the same pick twice produces no diff", again.ok && !again.changed, again.reason ?? "");
+}
+
+// ---- 12. 已经自洽的块不会被改写（同一 provider 再选另一个模型）
+{
+  const body = `model:
+  default: DeepSeek-Flash
+  provider: custom:local-sidecar
+providers:
+  local-sidecar:
+    api_url: http://127.0.0.1:9000/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
+  const after = readFileSync(file, "utf8");
+  check("a self-consistent block only follows the model",
+    r.ok && /default: Fast/.test(after) && /provider: custom:local-sidecar/.test(after), r.reason ?? "");
+}
+
+// ---- 13. 闸门：块与条目矛盾时整次拒写（旧闸门只校验两行读得回）
+{
+  const body = `model:
+  default: DeepSeek-Flash
+  provider: custom:local-sidecar
+  base_url: https://wrong.example/v1
+providers:
+  local-sidecar:
+    api_url: http://127.0.0.1:9000/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
+  check("a contradictory base_url is refused, not written",
+    !r.ok && /base_url/.test(r.reason ?? "") && readFileSync(file, "utf8") === body, r.reason ?? "");
+
+  const bad = `model:
+  default: DeepSeek-Flash
+  provider: custom:local-sidecar
+  api_mode: codex_responses
+providers:
+  local-sidecar:
+    api_url: http://127.0.0.1:9000/v1
+    api_mode: chat_completions
+`;
+  const second = mkHome(bad);
+  const r2 = writeModelDefault("hermes", second.home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
+  check("a contradictory api_mode is refused, not written",
+    !r2.ok && /api_mode/.test(r2.reason ?? "") && readFileSync(second.file, "utf8") === bad, r2.reason ?? "");
+}
+
+// ---- 14. #63 不退化：裸 custom + 旧 base_url（= lab 那条）也能收敛到条目
+{
+  const body = `model:
+  default: DeepSeek-Flash
+  provider: custom
+  base_url: http://127.0.0.1:9000/v1
+providers:
+  local-sidecar:
+    api_url: http://127.0.0.1:9000/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
+  const after = readFileSync(file, "utf8");
+  check("a legacy bare `custom` heals to the entry that owns the endpoint",
+    r.ok && /provider: custom:local-sidecar/.test(after) && !/base_url:/.test(after), r.reason ?? "");
+}
+
+// ---- 15. choice id 拆分本身：不认识的左半段就是模型名的一部分
+{
+  const endpoints = namedEndpoints(parseYaml(`providers:
+  local-sidecar:
+    api_url: http://127.0.0.1:9000/v1
+`));
+  const shape = (id: string, hint: string | null) => splitChoiceId(id, hint, endpoints);
+  check("custom:<entry>:<model> splits into model + durable provider",
+    JSON.stringify(shape("custom:local-sidecar:DeepSeek-Flash", null)) ===
+      JSON.stringify({ model: "DeepSeek-Flash", provider: "custom:local-sidecar" }));
+  check("a model whose own name carries a colon is left whole",
+    JSON.stringify(shape("anthropic/claude-3.5-sonnet:beta", null)) ===
+      JSON.stringify({ model: "anthropic/claude-3.5-sonnet:beta", provider: null }));
+  check("a canonical provider prefix is split by the description hint",
+    JSON.stringify(shape("deepseek:deepseek-flash", "DeepSeek")) ===
+      JSON.stringify({ model: "deepseek-flash", provider: "deepseek" }));
+  check("custom:<model> keeps the model and takes the provider from the hint",
+    JSON.stringify(shape("custom:DeepSeek-Flash", "local-sidecar")) ===
+      JSON.stringify({ model: "DeepSeek-Flash", provider: "custom:local-sidecar" }));
+  check("a bare model with a named hint writes the durable identity",
+    JSON.stringify(shape("Fast", "local-sidecar")) ===
+      JSON.stringify({ model: "Fast", provider: "custom:local-sidecar" }));
+  check("a bare model with no hint stays bare and provider-less",
+    JSON.stringify(shape("Fast", null)) === JSON.stringify({ model: "Fast", provider: null }));
 }
 
 console.log(`\n${pass} passed / ${fail} failed`);

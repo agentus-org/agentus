@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 import { useDismiss, useEscape, usePopoverFit } from "./useDismiss";
 import { ModelList } from "./ModelList";
-import { modelProvider, shortModelName } from "./modelNames";
+import { modelProvider, shortModelName, startModelValue } from "./modelNames";
 import { noteModelUse, useModelUsage } from "./modelUsage";
 import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick, type StatusNote } from "./state";
 import { Markdown } from "./Markdown";
@@ -5307,7 +5307,9 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   // `availableModels` (names + descriptions) only exists on a live session. Ids are enough to pick
   // by, and `shortModelName` already knows how to trim one for a button.
   const modelIds = hs?.models?.available ?? [];
-  const modelValue = pickModel ?? hs?.models?.currentModelId ?? "";
+  // #72：缓存的 current 是上一次真启动的快照（换模型不刷新它），旧版本还可能存着一条幻影 id；
+  // 所以只在清单里挑，挑不到就显示「默认模型」，理由与判据见 `startModelValue`。
+  const modelValue = startModelValue(pickModel, hs?.models?.currentModelId, modelIds);
   const modelLabel = modelValue ? shortModelName(modelValue) : "默认模型";
 
   /** The picks ride WITH the session: at `ready` the store replays them as the very frames the chat
@@ -5315,7 +5317,11 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
    *  message — one path for "apply what I chose" instead of a second one that exists only here. */
   const pickedSetup = (): SetupPick[] => {
     const out: SetupPick[] = [];
-    if (pickModel) out.push({ kind: "model", value: pickModel });
+    // 只有清单里真有的 id 才配被重放：不然一条陈旧/幻影 id 会被当成"操作者的显式选择"下发成
+    // set-model，把错误路由再固化一遍（#72）。
+    // 只有清单里真有的 id 才配被重放：不然一条陈旧/幻影 id 会被当成"操作者的显式选择"下发成
+    // set-model，把错误路由再固化一遍（#72）。
+    if (pickModel && modelIds.includes(pickModel)) out.push({ kind: "model", value: pickModel });
     if (pickEffort && effortCfg) out.push({ kind: "config", id: String(effortCfg.id), value: pickEffort });
     if (pickMode) out.push({ kind: "mode", value: pickMode });
     return out;

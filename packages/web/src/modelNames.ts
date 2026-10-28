@@ -16,6 +16,22 @@ export function shortModelName(name: string, modelId?: string): string {
   return afterColon || afterDot || source;
 }
 
+/** 新建会话对话框把哪个 id 当作"当前模型"。
+ *
+ *  两个来源都不可全信：`pick` 是操作者刚点的（可能点的是一份陈旧清单里的一行），`cached` 是后端
+ *  **上一次真启动**时缓存的握手 current —— 换模型不会刷新它，老版本还可能存着一条幻影 id
+ *  （`custom:<模型>`，它的 provider 是个类别名）。清单在手时只认清单里的 id；返回 "" 表示"按后端
+ *  默认来"，这比显示、并且重放一个清单里没有的 id 诚实得多（#72）。
+ *  清单为空也不猜：那说明该后端没跑过、或者没广告模型，同样返回 ""。 */
+export function startModelValue(
+  pick: string | null | undefined,
+  cached: string | null | undefined,
+  ids: readonly string[],
+): string {
+  const known = (id: string | null | undefined): id is string => Boolean(id) && ids.includes(id as string);
+  return known(pick) ? pick : known(cached) ? cached : "";
+}
+
 /** Which provider a model came from: the id prefix ("openrouter:anthropic/…", "openai/gpt-6") or
  *  the description agents attach ("Provider: OpenRouter"). Used to group the list.
  *  The slash rule is what the new-session dialog needs: there the ids come straight from the

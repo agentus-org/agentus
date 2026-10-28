@@ -1404,7 +1404,7 @@ export class SessionManager {
       });
       if (!r.ok) console.log(`[agentus] model default not written (${info.backend}): ${r.reason}`);
       else if (r.changed) {
-        console.log(`[agentus] model default → ${modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend}`);
+        console.log(`[agentus] model default → ${r.model ?? modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend} (picked ${modelId})`);
       }
     } catch (e) {
       console.log(`[agentus] model default write-back failed: ${errMessage(e)}`);
@@ -3107,6 +3107,12 @@ export class SessionManager {
     }
     await conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
     if (s.info.models) s.info.models = { ...s.info.models, currentModelId: modelId };
+    // #72：缓存握手是"上一次真启动"的快照，新建会话对话框只读它 —— 换了模型却不改它，对话框会一直
+    // 显示（并且把）切换前的那个 id 当中文默认值。活会话手里有完整清单，顺手把两份都刷新。
+    this.#store.recordHandshakeModels(s.info.backend, {
+      currentModelId: modelId,
+      available: (s.info.models?.availableModels ?? []).map((m) => m.modelId).filter(Boolean),
+    });
     if (s.info.pendingModelId) s.info.pendingModelId = null;
     this.#store.setPendingModel(id, null);
     // #62-1: 只有 agent **接受**过的切换才计数 —— 被拒的条目永不加分，于是"广告了但实际不可用"
