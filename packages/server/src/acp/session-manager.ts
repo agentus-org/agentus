@@ -3105,8 +3105,24 @@ export class SessionManager {
     if (known.length && !known.some((m) => m.modelId === modelId)) {
       throw new Error(`unknown model: ${modelId}`);
     }
-    await conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
-    if (s.info.models) s.info.models = { ...s.info.models, currentModelId: modelId };
+    const reply = await conn.request("session/set_model", { sessionId: s.info.acpSessionId, modelId });
+    // The agent answers with its model state; a few of them (hermes does) re-render the list and mark
+    // the new current there. Ignoring it leaves the slot and the cached handshake on the list from
+    // *before* the switch, which the next start dialog then reads (#72 review). Ids we already know
+    // keep their names/descriptions — the richer shape only exists on the live session.
+    const replied = (reply ?? {}) as {
+      models?: { currentModelId?: string; availableModels?: { modelId?: string }[] } | null;
+    };
+    const returnedIds = (replied.models?.availableModels ?? [])
+      .map((m) => String(m.modelId ?? "")).filter(Boolean);
+    if (s.info.models) {
+      const known = s.info.models.availableModels ?? [];
+      const merged = [...known];
+      for (const id of returnedIds) {
+        if (!merged.some((m) => m.modelId === id)) merged.push({ modelId: id, name: id, description: null });
+      }
+      s.info.models = { ...s.info.models, currentModelId: replied.models?.currentModelId ?? modelId, availableModels: merged };
+    }
     // #72：缓存握手是"上一次真启动"的快照，新建会话对话框只读它 —— 换了模型却不改它，对话框会一直
     // 显示（并且把）切换前的那个 id 当中文默认值。活会话手里有完整清单，顺手把两份都刷新。
     this.#store.recordHandshakeModels(s.info.backend, {

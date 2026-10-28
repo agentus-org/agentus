@@ -1810,8 +1810,13 @@ export class Store {
       return;
     }
     if (!hs?.models) return;
-    const available = models.available?.length ? models.available : hs.models.available;
-    hs.models = { ...hs.models, currentModelId: models.currentModelId ?? null, available };
+    const current = models.currentModelId ?? null;
+    const supplied = models.available?.length ? models.available : hs.models.available;
+    // `current` must stay inside `available`: the dialog only shows an id that is in the list
+    // (`startModelValue`), so caching a current the list cannot contain would silently downgrade the
+    // next new-session default to "agent default" right after the operator switched (#72 review).
+    const available = current && !supplied.includes(current) ? [current, ...supplied] : supplied;
+    hs.models = { ...hs.models, currentModelId: current, available };
     this.#db.prepare("update backends set handshake = ? where id = ?").run(JSON.stringify(hs), id);
   }
 

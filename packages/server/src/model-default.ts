@@ -123,7 +123,9 @@ function setKey(lines: string[], key: string, value: string, indent: string): st
  *
  *  写回时这两样是**端点归属**的唯一来源：provider 认条目，端口跟着条目走。块级的
  *  `base_url` / `api_mode` 是上一个 provider 留下的，换 provider 时要清掉（#72）。 */
-interface EndpointInfo {
+export interface EndpointInfo {
+  /** 持久身份：`custom:<config 键>`（legacy 条目用规范化后的 name） */
+  id: string;
   apiUrl: string | null;
   apiMode: string | null;
 }
@@ -136,22 +138,47 @@ const customSlug = (display: string): string => {
 
 const bareName = (id: string): string => id.trim().toLowerCase().replace(/^custom:/, "");
 
-/** 配置里的命名端点，键是持久身份（`custom:<条目名>`）。 */
+/** hermes 的 `is_provider_enabled`：`enabled:` 的假值一律视为停用。 */
+const isDisabled = (entry: Record<string, unknown>): boolean => {
+  const raw = entry.enabled;
+  if (raw === undefined || raw === null) return false;
+  if (typeof raw === "boolean") return !raw;
+  return ["false", "no", "off", "0", "disabled"].includes(String(raw).trim().toLowerCase());
+};
+
+/** 配置里的命名端点，**键是持久身份** `custom:<条目>`；显示名另作别名指向同一条目。
+ *
+ *  为什么别名也进这张表：choice id 是身份的权威来源（`custom:<键>:<模型>`），但旧形状
+ *  （`custom:<模型>`）与裸模型名只剩描述里的**显示名**可用。用显示名当 `model.provider` 写下去，
+ *  一旦操作者改了 `name:`，那份配置就再也解析不回来 —— 所以别名必须翻译成 `custom:<键>`，
+ *  而不是跟着名字走。
+ *
+ *  端点字段的顺序照 hermes 的 `_pick_provider_base_url`：`base_url` → `url` → `api`。
+ *  `api_url` 是 inventory 行（运行时）的字段，不是 config 键；它只作为最后的容错。 */
 export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
   const out = new Map<string, EndpointInfo>();
-  const info = (entry: Record<string, unknown>): EndpointInfo => ({
-    apiUrl: typeof entry.api_url === "string" ? entry.api_url
-      : typeof entry.base_url === "string" ? entry.base_url : null,
-    apiMode: typeof entry.api_mode === "string" ? entry.api_mode : null,
-  });
+  const endpointOf = (entry: Record<string, unknown>): string | null => {
+    for (const key of ["base_url", "url", "api", "api_url"]) {
+      const value = entry[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return null;
+  };
+  const add = (id: string, entry: Record<string, unknown>): void => {
+    const info: EndpointInfo = { id, apiUrl: endpointOf(entry), apiMode: typeof entry.api_mode === "string" ? entry.api_mode : null };
+    out.set(id, info);
+    const display = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (display) out.set(customSlug(display), info);
+  };
   const d = (doc ?? {}) as { providers?: unknown; custom_providers?: unknown };
   const providers = d.providers;
   if (providers && typeof providers === "object" && !Array.isArray(providers)) {
     for (const [key, entry] of Object.entries(providers as Record<string, unknown>)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
       const raw = entry as Record<string, unknown>;
+      if (isDisabled(raw)) continue; // hermes 不认停用条目：写进 provider 等于让下一次 spawn 起不来
       // 键是身份（显示名可以改），和 hermes 的 custom_provider_slug(display, key) 同一个取向。
-      out.set(customSlug(key), info(raw));
+      add(customSlug(key), raw);
     }
   }
   const legacy = d.custom_providers;
@@ -159,9 +186,10 @@ export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
     for (const entry of legacy) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
       const raw = entry as Record<string, unknown>;
+      if (isDisabled(raw)) continue;
       const name = typeof raw.name === "string" ? raw.name.trim() : "";
       if (!name) continue;
-      out.set(customSlug(name), info(raw));
+      add(customSlug(name), raw);
     }
   }
   return out;
@@ -172,6 +200,8 @@ export interface ChoiceSplit {
   model: string;
   /** hermes `model.provider` 该写的值；null = 推不出来，保持原样 */
   provider: string | null;
+  /** true = 这个 id 描述了一个本配置里不存在的条目：**不许写**，也算不出可信的模型名 */
+  unresolved?: boolean;
 }
 
 /** 把选择器的 choice id 拆回 `(裸模型名, 持久 provider 身份)`。
@@ -186,46 +216,58 @@ export function splitChoiceId(
 ): ChoiceSplit {
   const raw = (modelId ?? "").trim();
   if (!raw) return { model: raw, provider: null };
-  const hint = providerHint ? (providerHint.includes(":") ? providerHint : customSlug(providerHint)) : null;
-  const hintKnown = hint && endpoints.has(hint) ? hint : null;
-  const hintBare = hint ? bareName(hint) : "";
   const lowered = raw.toLowerCase();
 
+  // 描述里的名字是**显示名**：先翻成持久身份（改名也不会断），翻不到才当 canonical slug 用。
+  const hintSlug = providerHint ? (providerHint.includes(":") ? providerHint.trim().toLowerCase() : customSlug(providerHint)) : null;
+  const hintInfo = hintSlug ? endpoints.get(hintSlug) : undefined;
+  const hintId = hintInfo?.id ?? null;
+  const hintBares = new Set<string>();
+  if (hintSlug) hintBares.add(bareName(hintSlug));
+  if (hintId) hintBares.add(bareName(hintId));
+  hintBares.delete("custom");
+  hintBares.delete("");
+
   // 1) 描述里声明的条目自己认领前缀：`custom:<条目>:<模型>` / `<条目>:<模型>`。
-  if (hintKnown && hintBare) {
-    const customPrefix = `custom:${hintBare}:`;
-    if (lowered.startsWith(customPrefix)) return { model: raw.slice(customPrefix.length).trim(), provider: hintKnown };
-    const plainPrefix = `${hintBare}:`;
-    if (!lowered.startsWith("custom:") && lowered.startsWith(plainPrefix)) {
-      return { model: raw.slice(plainPrefix.length).trim(), provider: hintBare };
+  for (const bare of hintBares) {
+    const customPrefix = `custom:${bare}:`;
+    if (lowered.startsWith(customPrefix)) {
+      // 只有这个条目真的在配置里，才允许把它的名字当成身份写下去。
+      const entry = endpoints.get(`custom:${bare}`);
+      return { model: raw.slice(customPrefix.length).trim(), provider: entry?.id ?? hintId ?? null,
+        unresolved: entry ? undefined : true };
+    }
+    if (!lowered.startsWith("custom:") && lowered.startsWith(`${bare}:`)) {
+      return { model: raw.slice(bare.length + 1).trim(), provider: hintId ?? bare };
     }
   }
 
-  // 2) `custom:` 开头的三段 id：第二段是已配置条目才切，否则不动（猜错就是跑到别的端点）。
+  // 2) `custom:` 开头的三段 id：第二段是已配置条目才切。
   if (lowered.startsWith("custom:")) {
     const rest = raw.slice("custom:".length);
     const cut = rest.indexOf(":");
     if (cut > 0) {
-      const named = customSlug(rest.slice(0, cut));
-      if (endpoints.has(named)) return { model: rest.slice(cut + 1).trim(), provider: named };
-      return { model: raw, provider: hintKnown };
+      const named = endpoints.get(customSlug(rest.slice(0, cut)));
+      if (named) return { model: rest.slice(cut + 1).trim(), provider: named.id };
+      // 这个条目本配置里没有（被改名/删掉，而对话框拿的是旧快照）。把整串写进 model.default
+      // 正是 #72 的病灶：模型名变成 `条目:模型`，或者被按第一个冒号切成 provider=custom。
+      return { model: raw, provider: hintId, unresolved: true };
     }
     // `custom:<模型>`（旧形状）：模型名是确定的那半，provider 只能靠描述推。
-    return { model: rest.trim(), provider: hintKnown ?? (hintBare && hintBare !== "custom" ? hintBare : null) };
+    return { model: rest.trim(), provider: hintId };
   }
 
-  // 3) `<provider>:<模型>`，左半段是已配置条目、或就是描述里声明的那个 provider。
+  // 3) `<provider>:<模型>`：左半段是已配置条目（含显示名）、或就是描述里声明的那个名字。
   const colon = raw.indexOf(":");
   if (colon > 0) {
     const left = raw.slice(0, colon).trim().toLowerCase();
-    const named = customSlug(left);
-    if (endpoints.has(named)) return { model: raw.slice(colon + 1).trim(), provider: named };
-    if (hintBare && left === hintBare) return { model: raw.slice(colon + 1).trim(), provider: left };
+    const named = endpoints.get(customSlug(left));
+    if (named) return { model: raw.slice(colon + 1).trim(), provider: named.id };
+    if (hintBares.has(left)) return { model: raw.slice(colon + 1).trim(), provider: hintId ?? left };
   }
 
-  // 4) 裸模型名 + 描述里的 provider：描述只用来定 provider，绝不改模型名。
-  const hinted = hintBare && hintBare !== "custom" ? (endpoints.has(`custom:${hintBare}`) ? `custom:${hintBare}` : hintBare) : null;
-  return { model: raw, provider: hinted };
+  // 4) 裸模型名 + 描述里的条目：描述只用来定 provider，绝不改模型名。
+  return { model: raw, provider: hintId ?? (hintSlug && hintBares.size ? [...hintBares][0] : null) };
 }
 
 function deleteKey(lines: string[], key: string): string[] {
@@ -273,18 +315,31 @@ export function writeModelDefault(
   const split = splitChoiceId(modelId, options.provider ?? null, endpoints);
   const provider = split.provider;
   const desiredModel = split.model;
+  if (split.unresolved) {
+    // 对话框拿的是旧快照时会出现：条目已被改名/删除，pick 却还带着 `custom:<旧名>:<模型>`。
+    // 把它当 model.default 写下去，等于把 #72 的病灶重新种进配置（模型名带条目前缀、或按第一个冒号
+    // 切成 provider=custom），所以整次拒写，让调用方看到原因。
+    return {
+      ok: false, changed: false, provider, model: desiredModel,
+      reason: `refusing to write: ${modelId} names an endpoint this config does not declare`,
+    };
+  }
   const previousProvider = (before as { model?: { provider?: unknown } } | null)?.model?.provider;
   const previous = typeof previousProvider === "string" ? previousProvider.trim() : null;
   const providerChanged = provider != null && provider !== previous;
-  // 端点归属：新 provider 是命名条目、或旧 provider 是命名条目 —— 两种情况块里的 base_url/api_mode
-  // 都是在描述**另一个** provider，留着就会盖掉条目的声明（#72 B 段的错路由就是这么来的）。
-  const endpointOwned = Boolean((provider && endpoints.get(provider)?.apiUrl) || (previous && endpoints.has(previous)));
+  const entry = provider ? endpoints.get(provider) : undefined;
+  // 块级的 base_url/api_mode 是**上一个 provider 的口子**，两种情况下都必然过期或多余：
+  //   · 换了 provider —— 它描述的是被换掉的那一个；
+  //   · 新 provider 是命名条目 —— 端点归条目所有（条目改了端口/协议，块里那份就成了矛盾状态）。
+  // 只按「换 provider 且端点归某个条目」判断，会漏掉 `custom → openrouter`（新 provider 不声明端点），
+  // 于是写出「provider 是云厂商、base_url 还指着本地边车」的块，那正是 #72 B 段的错路由。
+  const dropEndpointKeys = providerChanged || Boolean(entry);
 
   const indent = blockIndent(lines);
   let work = lines;
   if (provider) work = setKey(work, "provider", provider, indent);
   work = setKey(work, "default", desiredModel, indent);
-  if (providerChanged && endpointOwned) {
+  if (dropEndpointKeys) {
     work = deleteKey(work, "base_url");
     work = deleteKey(work, "api_mode");
   }
@@ -307,7 +362,6 @@ export function writeModelDefault(
   if (provider && model.provider !== provider) {
     return { ok: false, changed: false, provider, model: desiredModel, reason: "refusing to write: model.provider would not read back" };
   }
-  const entry = provider ? endpoints.get(provider) : undefined;
   if (entry?.apiUrl) {
     const norm = (v: unknown) => String(v ?? "").trim().replace(/\/+$/, "").toLowerCase();
     const blockUrl = norm(model.base_url);

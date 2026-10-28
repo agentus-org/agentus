@@ -5317,11 +5317,11 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
    *  message — one path for "apply what I chose" instead of a second one that exists only here. */
   const pickedSetup = (): SetupPick[] => {
     const out: SetupPick[] = [];
-    // 只有清单里真有的 id 才配被重放：不然一条陈旧/幻影 id 会被当成"操作者的显式选择"下发成
-    // set-model，把错误路由再固化一遍（#72）。
-    // 只有清单里真有的 id 才配被重放：不然一条陈旧/幻影 id 会被当成"操作者的显式选择"下发成
-    // set-model，把错误路由再固化一遍（#72）。
-    if (pickModel && modelIds.includes(pickModel)) out.push({ kind: "model", value: pickModel });
+    // 重放的是**按钮上显示的那个值**，不是"手点过没有"：`modelValue` 只会是清单里的 id 或空串，
+    // 而对话框既然把它显示成当前模型，新会话不照它走就是半句话（旧实现只重放 pickModel，于是
+    // 「显示 Fast、跑的是 agent 默认」在写回被拒或关掉写回时就会出现）。空串 = 什么都不发，让
+    // agent 用自己的默认（#72）。
+    if (modelValue) out.push({ kind: "model", value: modelValue });
     if (pickEffort && effortCfg) out.push({ kind: "config", id: String(effortCfg.id), value: pickEffort });
     if (pickMode) out.push({ kind: "mode", value: pickMode });
     return out;

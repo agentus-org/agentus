@@ -15,6 +15,14 @@ import {
 } from "../../packages/server/src/model-default.js";
 import { parse as parseYaml } from "yaml";
 
+/** 只读 `model:` 块本身：条目自己声明的 base_url/api_mode 不算残留。 */
+const modelBlock = (text: string): Record<string, unknown> =>
+  ((parseYaml(text) as { model?: Record<string, unknown> } | null)?.model ?? {});
+const noEndpoint = (text: string): boolean => {
+  const m = modelBlock(text);
+  return m.base_url === undefined && m.api_mode === undefined;
+};
+
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = "") => {
   ok ? pass++ : fail++;
@@ -206,7 +214,10 @@ providers:
     r.ok && /default: Fast/.test(after) && /provider: custom:local-sidecar/.test(after), r.reason ?? "");
 }
 
-// ---- 13. 闸门：块与条目矛盾时整次拒写（旧闸门只校验两行读得回）
+// ---- 13. 块里与条目矛盾的那两行是「多余的」，不是「要拒写的」：删掉并写入
+//
+// 上一版把这种块整个拒写，于是条目一旦改过端口/协议，这个端点上的选模型就永久失败、且只有一行
+// console.log —— 操作者看到的是「我选了模型，下次新会话还是旧的」。端点归条目所有（review F3）。
 {
   const body = `model:
   default: DeepSeek-Flash
@@ -218,8 +229,9 @@ providers:
 `;
   const { home, file } = mkHome(body);
   const r = writeModelDefault("hermes", home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
-  check("a contradictory base_url is refused, not written",
-    !r.ok && /base_url/.test(r.reason ?? "") && readFileSync(file, "utf8") === body, r.reason ?? "");
+  const after = readFileSync(file, "utf8");
+  check("a block that contradicts its own entry heals instead of wedging",
+    r.ok && /default: Fast/.test(after) && !/base_url:/.test(after), r.reason ?? "");
 
   const bad = `model:
   default: DeepSeek-Flash
@@ -232,8 +244,106 @@ providers:
 `;
   const second = mkHome(bad);
   const r2 = writeModelDefault("hermes", second.home, "custom:local-sidecar:Fast", { provider: "local-sidecar" });
-  check("a contradictory api_mode is refused, not written",
-    !r2.ok && /api_mode/.test(r2.reason ?? "") && readFileSync(second.file, "utf8") === bad, r2.reason ?? "");
+  const after2 = readFileSync(second.file, "utf8");
+  check("…including a contradictory api_mode", r2.ok && noEndpoint(after2), r2.reason ?? "");
+}
+
+// ---- 14. 端点字段：hermes 读 base_url / url / api，不读 api_url（那是 inventory 行字段）
+{
+  for (const key of ["base_url", "url", "api"]) {
+    const body = `model:
+  default: Old
+  provider: some-cloud
+  base_url: https://old.example/v1
+  api_mode: codex_responses
+providers:
+  lab:
+    ${key}: http://127.0.0.1:9000/v1
+`;
+    const { home, file } = mkHome(body);
+    const r = writeModelDefault("hermes", home, "custom:lab:Fast", { provider: "lab" });
+    const after = readFileSync(file, "utf8");
+    check(`an entry declared with \`${key}:\` owns its endpoint`,
+      r.ok && /provider: custom:lab/.test(after) && noEndpoint(after),
+      `${r.reason ?? ""} ${JSON.stringify(modelBlock(after))}`);
+  }
+}
+
+// ---- 15. custom → 内置 provider：上一个 provider 的 base_url/api_mode 也必须清掉（review F1）
+{
+  const body = `model:
+  default: Fast
+  provider: custom
+  base_url: https://old.example/v1
+  api_mode: codex_responses
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "openrouter:anthropic/claude", { provider: "OpenRouter" });
+  const after = readFileSync(file, "utf8");
+  check("leaving a custom endpoint for a built-in drops the stale endpoint",
+    r.ok && /provider: openrouter/.test(after) && /default: anthropic\/claude/.test(after)
+      && noEndpoint(after), `${r.reason ?? ""} ${JSON.stringify(modelBlock(after))}`);
+}
+
+// ---- 16. 名字里带冒号的模型不会被切（同一个模型在 openrouter 上是合法的）
+{
+  const { home, file } = mkHome(`model:
+  default: Old
+  provider: openrouter
+`);
+  const r = writeModelDefault("hermes", home, "openrouter:anthropic/claude-3.5-sonnet:beta", { provider: "OpenRouter" });
+  const after = readFileSync(file, "utf8");
+  check("a model name that carries a colon stays whole",
+    r.ok && /default: anthropic\/claude-3.5-sonnet:beta/.test(after), r.reason ?? "");
+}
+
+// ---- 17. 指向本配置里不存在的条目 = 拒写（对话框拿旧快照时会走到）
+{
+  const body = `model:
+  default: Old
+  provider: lab
+providers:
+  lab:
+    api_url: http://127.0.0.1:9000/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:gone:Fast", { provider: "lab" });
+  check("a pick naming an unconfigured entry is refused, not stamped into the config",
+    !r.ok && /does not declare/.test(r.reason ?? "") && readFileSync(file, "utf8") === body, r.reason ?? "");
+}
+
+// ---- 18. 显示名不是身份：描述里给的是 name，写下去必须是 custom:<键>
+{
+  const body = `model:
+  default: Old
+  provider: old
+providers:
+  sidecar:
+    name: My Lab Box
+    api_url: http://127.0.0.1:9000/v1
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:Fast", { provider: "My Lab Box" });
+  const after = readFileSync(file, "utf8");
+  check("a display name resolves to the durable entry key",
+    r.ok && /provider: custom:sidecar/.test(after) && /default: Fast/.test(after), r.reason ?? "");
+}
+
+// ---- 19. 停用条目不算端点归属（也不会被写成 provider）
+{
+  const body = `model:
+  default: Old
+  provider: old
+providers:
+  off:
+    name: Off
+    api_url: http://127.0.0.1:9000/v1
+    enabled: false
+`;
+  const { home, file } = mkHome(body);
+  const r = writeModelDefault("hermes", home, "custom:off:Fast", { provider: "Off" });
+  check("a disabled entry cannot be resurrected as the default provider",
+    !r.ok && readFileSync(file, "utf8") === body, r.reason ?? "");
 }
 
 // ---- 14. #63 不退化：裸 custom + 旧 base_url（= lab 那条）也能收敛到条目

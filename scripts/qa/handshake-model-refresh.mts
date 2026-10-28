@@ -65,6 +65,16 @@ const handshake = (current: string, available: string[]) => ({
   check("…and the current id survives", models?.currentModelId === "custom:lab:Fast");
 }
 
+// ---- 2b. current 必须在清单里（对话框只显示清单内的 id，缓存一个清单外的 current 等于把它丢掉）
+{
+  store.recordHandshakeModels(id, { currentModelId: "custom:lab:Brand-New" });
+  const models = store.getBackend(id)?.handshake?.models;
+  const list = models?.available ?? [];
+  check("a current the cached list lacks is added, not silently dropped",
+    list.includes("custom:lab:Brand-New") && list[0] === "custom:lab:Brand-New", JSON.stringify(list));
+  check("…and no older id is lost doing it", list.length === 3, JSON.stringify(list));
+}
+
 // ---- 3. 没跑过的行（没有握手）不会被凭空造出快照
 {
   const fresh = new Store(path.join(dir, "empty.sqlite"));
