@@ -1815,7 +1815,13 @@ export class Store {
     // `current` must stay inside `available`: the dialog only shows an id that is in the list
     // (`startModelValue`), so caching a current the list cannot contain would silently downgrade the
     // next new-session default to "agent default" right after the operator switched (#72 review).
-    const available = current && !supplied.includes(current) ? [current, ...supplied] : supplied;
+    // …but it must not GROW the cache either: `available` is the new-session dialog's model list, so a
+    // prepend per switch would accrete ids of endpoints/models that no longer exist, each one a
+    // selectable row that answers "unknown model". Keep the list's length and let the oldest entry
+    // fall off — the next real agent start refreshes the whole snapshot anyway (#72 review).
+    const available = current && !supplied.includes(current)
+      ? [current, ...supplied.filter((m) => m !== current)].slice(0, Math.max(supplied.length, 1))
+      : supplied;
     hs.models = { ...hs.models, currentModelId: current, available };
     this.#db.prepare("update backends set handshake = ? where id = ?").run(JSON.stringify(hs), id);
   }

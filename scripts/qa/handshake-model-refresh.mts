@@ -72,7 +72,17 @@ const handshake = (current: string, available: string[]) => ({
   const list = models?.available ?? [];
   check("a current the cached list lacks is added, not silently dropped",
     list.includes("custom:lab:Brand-New") && list[0] === "custom:lab:Brand-New", JSON.stringify(list));
-  check("…and no older id is lost doing it", list.length === 3, JSON.stringify(list));
+  check("…without growing the cache (the oldest id makes room)",
+    list.length === 2, JSON.stringify(list));
+}
+
+// ---- 2c. 连续切换不会把清单越堆越长（`available` 就是对话框的模型列表）
+{
+  for (let i = 0; i < 30; i += 1) store.recordHandshakeModels(id, { currentModelId: `custom:lab:m${i}` });
+  const list = store.getBackend(id)?.handshake?.models?.available ?? [];
+  check("thirty switches do not turn the model list into a graveyard", list.length <= 2, JSON.stringify(list));
+  check("…and the newest switch is still the one shown",
+    store.getBackend(id)?.handshake?.models?.currentModelId === "custom:lab:m29", JSON.stringify(list));
 }
 
 // ---- 3. 没跑过的行（没有握手）不会被凭空造出快照

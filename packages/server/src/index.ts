@@ -2159,7 +2159,7 @@ wss.on("connection", (ws) => {
           await mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value);
           break;
         case "set-model":
-          await mgr.setModel(cmd.sessionId, cmd.modelId);
+          await mgr.setModel(cmd.sessionId, cmd.modelId, { fromReplay: cmd.fromReplay === true });
           break;
         case "respond-permission": {
           const applied = mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {

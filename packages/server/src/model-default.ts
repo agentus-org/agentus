@@ -126,8 +126,17 @@ function setKey(lines: string[], key: string, value: string, indent: string): st
 export interface EndpointInfo {
   /** 持久身份：`custom:<config 键>`（legacy 条目用规范化后的 name） */
   id: string;
+  /** 条目自己声明的端点；`null` = 这个块没有端点（见 `namedEndpoints` 为什么跳过它） */
   apiUrl: string | null;
   apiMode: string | null;
+  /** 条目声明的模型 id；`models:` 没写就是空数组（靠发现拿模型的那种条目） */
+  models: string[];
+}
+
+/** 一张表两个命名空间：**键**是身份，**显示名**只是弱别名。 */
+export interface NamedEndpoints {
+  byKey: Map<string, EndpointInfo>;
+  byAlias: Map<string, EndpointInfo>;
 }
 
 /** hermes 的 `custom_provider_slug`：小写、空格换连字符、补 `custom:` 前缀。 */
@@ -138,25 +147,49 @@ const customSlug = (display: string): string => {
 
 const bareName = (id: string): string => id.trim().toLowerCase().replace(/^custom:/, "");
 
-/** hermes 的 `is_provider_enabled`：`enabled:` 的假值一律视为停用。 */
+/** hermes 的 `is_provider_enabled`：假值一律视为停用（非字符串非布尔的容器值按 truthiness）。 */
 const isDisabled = (entry: Record<string, unknown>): boolean => {
   const raw = entry.enabled;
   if (raw === undefined || raw === null) return false;
   if (typeof raw === "boolean") return !raw;
-  return ["false", "no", "off", "0", "disabled"].includes(String(raw).trim().toLowerCase());
+  if (typeof raw === "string") {
+    return ["false", "no", "off", "0", "disabled"].includes(raw.trim().toLowerCase());
+  }
+  return !raw;
 };
 
-/** 配置里的命名端点，**键是持久身份** `custom:<条目>`；显示名另作别名指向同一条目。
+/** 条目声明的模型 id（`models:` 里元素可以是字符串或 `{id|model|name}`）。 */
+const declaredModels = (entry: Record<string, unknown>): string[] => {
+  const raw = entry.models;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    const value = typeof item === "string" ? item
+      : item && typeof item === "object" ? ((item as Record<string, unknown>).id
+        ?? (item as Record<string, unknown>).model ?? (item as Record<string, unknown>).name) : null;
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text) out.push(text);
+  }
+  return out;
+};
+
+/** 配置里**真的能路由**的命名端点：键是持久身份 `custom:<条目>`，显示名另作弱别名。
  *
- *  为什么别名也进这张表：choice id 是身份的权威来源（`custom:<键>:<模型>`），但旧形状
- *  （`custom:<模型>`）与裸模型名只剩描述里的**显示名**可用。用显示名当 `model.provider` 写下去，
- *  一旦操作者改了 `name:`，那份配置就再也解析不回来 —— 所以别名必须翻译成 `custom:<键>`，
- *  而不是跟着名字走。
+ *  三条判据都是 hermes 自己的：
  *
- *  端点字段的顺序照 hermes 的 `_pick_provider_base_url`：`base_url` → `url` → `api`。
- *  `api_url` 是 inventory 行（运行时）的字段，不是 config 键；它只作为最后的容错。 */
-export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
-  const out = new Map<string, EndpointInfo>();
+ *  1. **没有端点的块不是命名端点。** `providers.bedrock: {stale_timeout_seconds: 600}` 是给内置
+ *     provider 调参的，`_pick_provider_base_url` 为空的条目会被 `get_compatible_custom_providers`
+ *     丢掉、`resolve_user_provider` 也不认 —— 把它当端点写下去，`custom:bedrock` 是个谁都不认识的
+ *     身份，还会顺手删掉块里唯一能路由的 `base_url`。所以这种块整条跳过。
+ *  2. **停用条目不存在**（`enabled: false`）：写进 `model.provider` 等于让下一次 spawn 起不来。
+ *  3. **别名永不覆盖键。** 条目 A 的 `name:` 可能与条目 B 的键同名；键是身份、别名只是「描述里印的
+ *     是哪个名字」，所以别名只在键查不到时用，且先到先得（hermes 的解析也是取第一个匹配）。
+ *
+ *  端点字段顺序照 hermes 的 `_pick_provider_base_url`：`base_url` → `url` → `api`。
+ *  `api_url` 是 inventory 行（运行时）的字段，不是 config 键；只作最后容错。 */
+export function namedEndpoints(doc: unknown): NamedEndpoints {
+  const byKey = new Map<string, EndpointInfo>();
+  const byAlias = new Map<string, EndpointInfo>();
   const endpointOf = (entry: Record<string, unknown>): string | null => {
     for (const key of ["base_url", "url", "api", "api_url"]) {
       const value = entry[key];
@@ -165,10 +198,20 @@ export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
     return null;
   };
   const add = (id: string, entry: Record<string, unknown>): void => {
-    const info: EndpointInfo = { id, apiUrl: endpointOf(entry), apiMode: typeof entry.api_mode === "string" ? entry.api_mode : null };
-    out.set(id, info);
+    const apiUrl = endpointOf(entry);
+    if (!apiUrl) return; // 见上：调参块不是端点
+    const info: EndpointInfo = {
+      id, apiUrl,
+      apiMode: typeof entry.api_mode === "string" ? entry.api_mode : null,
+      models: declaredModels(entry),
+    };
+    // 同一个键写两遍时后者覆盖（YAML 本身也不允许），但别名绝不覆盖任何已存在的**键**。
+    byKey.set(id, info);
     const display = typeof entry.name === "string" ? entry.name.trim() : "";
-    if (display) out.set(customSlug(display), info);
+    if (display) {
+      const alias = customSlug(display);
+      if (!byKey.has(alias) && !byAlias.has(alias)) byAlias.set(alias, info);
+    }
   };
   const d = (doc ?? {}) as { providers?: unknown; custom_providers?: unknown };
   const providers = d.providers;
@@ -176,7 +219,7 @@ export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
     for (const [key, entry] of Object.entries(providers as Record<string, unknown>)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
       const raw = entry as Record<string, unknown>;
-      if (isDisabled(raw)) continue; // hermes 不认停用条目：写进 provider 等于让下一次 spawn 起不来
+      if (isDisabled(raw)) continue;
       // 键是身份（显示名可以改），和 hermes 的 custom_provider_slug(display, key) 同一个取向。
       add(customSlug(key), raw);
     }
@@ -192,82 +235,99 @@ export function namedEndpoints(doc: unknown): Map<string, EndpointInfo> {
       add(customSlug(name), raw);
     }
   }
-  return out;
+  return { byKey, byAlias };
 }
 
 export interface ChoiceSplit {
   /** hermes `model.default` 该写的值：裸模型名 */
   model: string;
-  /** hermes `model.provider` 该写的值；null = 推不出来，保持原样 */
+  /** hermes `model.provider` 该写的值；null = 推不出来，**保持原样**（不猜） */
   provider: string | null;
-  /** true = 这个 id 描述了一个本配置里不存在的条目：**不许写**，也算不出可信的模型名 */
+  /** true = 这个 id 描述了一个本配置里没有的条目，且连 provider 都定不下来：不许写 */
   unresolved?: boolean;
 }
 
 /** 把选择器的 choice id 拆回 `(裸模型名, 持久 provider 身份)`。
  *
  *  规则就是 hermes 自己的那条：provider 只在左半段是**已知 provider/条目**时才算分隔符，
- *  否则整串都是模型名（`anthropic/claude-3.5-sonnet:beta` 不能被切）。条目名到身份的映射由
- *  `namedEndpoints` 提供，所以这里不需要再猜"哪些名字是 provider"。 */
+ *  否则整串都是模型名（`anthropic/claude-3.5-sonnet:beta` 不能被切）。
+ *
+ *  描述（`Provider: <名字>`）只当**弱**信号用，这是这里最容易错的地方：
+ *  - 它印的是条目的**显示名**，可能与另一个条目/内置 provider 重名，所以只有「条目自己声明了这个
+ *    模型」时它才算证据（否则 `OpenRouter` 这个显示名会把内置 openrouter 的 pick 拽到本地代理上）；
+ *  - 带前缀的 id（`<左段>:<模型>`）里左段不是键时一律按 canonical/provider 读，不看描述 —— 行自己
+ *    带来的前缀比描述更权威；
+ *  - 什么都推不出来时返回 `provider: null`（调用方保持 `model.provider` 原样），不写一个不存在的
+ *    slug —— 那会让下一次 spawn 拿到一个解析不了的 provider。 */
 export function splitChoiceId(
   modelId: string,
   providerHint: string | null,
-  endpoints: Map<string, EndpointInfo>,
+  named: NamedEndpoints,
 ): ChoiceSplit {
   const raw = (modelId ?? "").trim();
   if (!raw) return { model: raw, provider: null };
   const lowered = raw.toLowerCase();
+  const hintSlug = providerHint
+    ? (providerHint.includes(":") ? providerHint.trim().toLowerCase() : customSlug(providerHint))
+    : null;
+  const keyInfo = hintSlug ? named.byKey.get(hintSlug) : undefined;
+  const aliasInfo = hintSlug && !keyInfo ? named.byAlias.get(hintSlug) : undefined;
+  /** 描述指向的条目身份（键优先，别名次之）。只在 `custom:` 前缀已经把「这是条目」说清的地方用。 */
+  const hintEntryId = keyInfo?.id ?? aliasInfo?.id ?? null;
+  /** 描述本身长得像一个 provider slug（而不是一句显示名）：`Alibaba` / `kimi-coding`。 */
+  const hintIsSlug = Boolean(hintSlug && /^[a-z0-9][a-z0-9._-]*$/.test(hintSlug.replace(/^custom:/, "")));
+  const declares = (info: EndpointInfo | undefined, model: string): boolean =>
+    Boolean(info && model && info.models.some((m) => m.toLowerCase() === model.toLowerCase()));
 
-  // 描述里的名字是**显示名**：先翻成持久身份（改名也不会断），翻不到才当 canonical slug 用。
-  const hintSlug = providerHint ? (providerHint.includes(":") ? providerHint.trim().toLowerCase() : customSlug(providerHint)) : null;
-  const hintInfo = hintSlug ? endpoints.get(hintSlug) : undefined;
-  const hintId = hintInfo?.id ?? null;
-  const hintBares = new Set<string>();
-  if (hintSlug) hintBares.add(bareName(hintSlug));
-  if (hintId) hintBares.add(bareName(hintId));
-  hintBares.delete("custom");
-  hintBares.delete("");
-
-  // 1) 描述里声明的条目自己认领前缀：`custom:<条目>:<模型>` / `<条目>:<模型>`。
-  for (const bare of hintBares) {
-    const customPrefix = `custom:${bare}:`;
-    if (lowered.startsWith(customPrefix)) {
-      // 只有这个条目真的在配置里，才允许把它的名字当成身份写下去。
-      const entry = endpoints.get(`custom:${bare}`);
-      return { model: raw.slice(customPrefix.length).trim(), provider: entry?.id ?? hintId ?? null,
-        unresolved: entry ? undefined : true };
-    }
-    if (!lowered.startsWith("custom:") && lowered.startsWith(`${bare}:`)) {
-      return { model: raw.slice(bare.length + 1).trim(), provider: hintId ?? bare };
-    }
-  }
-
-  // 2) `custom:` 开头的三段 id：第二段是已配置条目才切。
+  // 1) `custom:<…>` —— 前缀自己说明「这是个 custom 条目」，所以这里别名也算数（F5：显示名 → 键）。
   if (lowered.startsWith("custom:")) {
     const rest = raw.slice("custom:".length);
     const cut = rest.indexOf(":");
     if (cut > 0) {
-      const named = endpoints.get(customSlug(rest.slice(0, cut)));
-      if (named) return { model: rest.slice(cut + 1).trim(), provider: named.id };
-      // 这个条目本配置里没有（被改名/删掉，而对话框拿的是旧快照）。把整串写进 model.default
-      // 正是 #72 的病灶：模型名变成 `条目:模型`，或者被按第一个冒号切成 provider=custom。
-      return { model: raw, provider: hintId, unresolved: true };
+      const head = customSlug(rest.slice(0, cut));
+      const entry = named.byKey.get(head) ?? named.byAlias.get(head);
+      if (entry) return { model: rest.slice(cut + 1).trim(), provider: entry.id };
+      // 第二段不是条目，两种读法都说得通，只能让条目自己的声明白话：
+      //  · 条目**声明了** `qwen3:32b` 这种带冒号的模型 → 旧形状（模型名是整段）
+      //  · 条目声明了后半段 → 条目前缀是陈旧的（条目被改名/删掉过，对话框还是旧快照）
+      // 两种都对上（或都没声明）才是真歧义：那时不写，让调用方看到原因。
+      if (keyInfo && declares(keyInfo, rest)) return { model: rest.trim(), provider: keyInfo.id };
+      if (keyInfo && declares(keyInfo, rest.slice(cut + 1).trim())) {
+        return { model: rest.slice(cut + 1).trim(), provider: keyInfo.id };
+      }
+      // 真歧义：条目既没声明整段、也没声明后半段。写哪个都得赌一次，所以不写（reason 会带上）。
+      return { model: raw, provider: null, unresolved: true };
     }
-    // `custom:<模型>`（旧形状）：模型名是确定的那半，provider 只能靠描述推。
-    return { model: rest.trim(), provider: hintId };
+    // `custom:<模型>`：模型名是确定的那半，provider 只能靠描述推。
+    return { model: rest.trim(), provider: hintEntryId };
   }
 
-  // 3) `<provider>:<模型>`：左半段是已配置条目（含显示名）、或就是描述里声明的那个名字。
-  const colon = raw.indexOf(":");
-  if (colon > 0) {
-    const left = raw.slice(0, colon).trim().toLowerCase();
-    const named = endpoints.get(customSlug(left));
-    if (named) return { model: raw.slice(colon + 1).trim(), provider: named.id };
-    if (hintBares.has(left)) return { model: raw.slice(colon + 1).trim(), provider: hintId ?? left };
+  // 2) `<左段>:<模型>`：左段是配置键 → 身份权威；否则整段就是模型名的一部分被行前缀带着，
+  //    按 provider/canonical slug 原样写（`openrouter:claude` 绝不能因为显示名重名改成 custom:x）。
+  const cut = raw.indexOf(":");
+  if (cut > 0) {
+    const left = raw.slice(0, cut).trim().toLowerCase();
+    const tail = raw.slice(cut + 1).trim();
+    const entry = named.byKey.get(customSlug(left));
+    if (entry) return { model: tail, provider: entry.id };
+    // 左段与描述指的是同一个名字，且那个名字是个 provider slug ⇒ 左段就是 provider（`alibaba:x`）。
+    if (hintIsSlug && bareName(customSlug(left)) === bareName(hintSlug ?? "")) {
+      // 只有**键**能当身份：别名说「描述里印的是这个名字」，而 cloud 与本地代理重名时
+      // 正是靠这一条才不会把云 provider 的 pick 写成本地条目（MAJOR 3）。
+      return { model: tail, provider: keyInfo?.id ?? left };
+    }
+    // 其余情况：左段不是已知条目/描述里的名字，那它可能只是模型名的一部分
+    // （`anthropic/claude-3.5-sonnet:beta` 的冒号在斜杠后面）。整串留着，不猜。
+    return { model: raw, provider: null };
   }
 
-  // 4) 裸模型名 + 描述里的条目：描述只用来定 provider，绝不改模型名。
-  return { model: raw, provider: hintId ?? (hintSlug && hintBares.size ? [...hintBares][0] : null) };
+  // 3) 裸模型名：键就是证据；显示名要再对上「条目声明了这个模型」才算（重名时不敢认）。
+  if (keyInfo) return { model: raw, provider: keyInfo.id };
+  if (aliasInfo && declares(aliasInfo, raw)) return { model: raw, provider: aliasInfo.id };
+  // 描述是个 slug 形状（`Alibaba`/`kimi-coding`）⇒ canonical provider，写下去 hermes 认得。
+  // 一句显示名（`My Lab Box`）推不出任何身份，保持 `model.provider` 原样。
+  if (hintIsSlug && hintSlug) return { model: raw, provider: bareName(hintSlug) };
+  return { model: raw, provider: null };
 }
 
 function deleteKey(lines: string[], key: string): string[] {
@@ -311,8 +371,8 @@ export function writeModelDefault(
   // 配置里有哪些命名端点，决定了 choice id 怎么拆、以及块内残留的端点要不要清。
   let before: unknown = null;
   try { before = parseYaml(text); } catch { before = null; }
-  const endpoints = namedEndpoints(before);
-  const split = splitChoiceId(modelId, options.provider ?? null, endpoints);
+  const named = namedEndpoints(before);
+  const split = splitChoiceId(modelId, options.provider ?? null, named);
   const provider = split.provider;
   const desiredModel = split.model;
   if (split.unresolved) {
@@ -327,13 +387,15 @@ export function writeModelDefault(
   const previousProvider = (before as { model?: { provider?: unknown } } | null)?.model?.provider;
   const previous = typeof previousProvider === "string" ? previousProvider.trim() : null;
   const providerChanged = provider != null && provider !== previous;
-  const entry = provider ? endpoints.get(provider) : undefined;
+  // 端点归属问的是「这个条目**声明了**端点吗」，不是「有这个条目吗」：没有端点的块是给内置
+  // provider 调参用的（见 namedEndpoints），它既不拥有块里的 base_url，也当不了 model.provider。
+  const entry = provider ? named.byKey.get(provider) : undefined;
   // 块级的 base_url/api_mode 是**上一个 provider 的口子**，两种情况下都必然过期或多余：
   //   · 换了 provider —— 它描述的是被换掉的那一个；
   //   · 新 provider 是命名条目 —— 端点归条目所有（条目改了端口/协议，块里那份就成了矛盾状态）。
   // 只按「换 provider 且端点归某个条目」判断，会漏掉 `custom → openrouter`（新 provider 不声明端点），
   // 于是写出「provider 是云厂商、base_url 还指着本地边车」的块，那正是 #72 B 段的错路由。
-  const dropEndpointKeys = providerChanged || Boolean(entry);
+  const dropEndpointKeys = providerChanged || Boolean(entry?.apiUrl);
 
   const indent = blockIndent(lines);
   let work = lines;
@@ -349,6 +411,9 @@ export function writeModelDefault(
 
   // 写盘前的最后一道闸：真解析一遍。不只看"两行读得回"，要看**这个块自洽**——
   // provider 指向的条目和块里的端点必须是同一个端点，否则整次拒写（旧闸门会稳定放过矛盾状态）。
+  // 常规路径上端点键已经在上面被删掉了，所以这里主要拦 `deleteKey` 正则认不出的写法
+  // （`base_url :` 中间带空格之类）—— 门槛低但便宜，且它是唯一一处验证「磁盘上的块」而不是
+  // 「我打算写的块」的地方。
   let doc: unknown;
   try {
     doc = parseYaml(next);

@@ -502,7 +502,9 @@ export type ClientCommand =
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }
-  | { t: "set-model"; sessionId: string; modelId: string }
+  /** `fromReplay` = 这条帧是在重放对话框里的选择（新会话建立时那一轮），不是操作者刚点的切换：
+   *  写回全局默认与用量计数都只认后者（见 session-manager 的 `#writeBackModelDefault`/`bumpModelUsage`）。 */
+  | { t: "set-model"; sessionId: string; modelId: string; fromReplay?: boolean }
   | {
       t: "respond-permission";
       sessionId: string;
