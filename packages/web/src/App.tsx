@@ -5310,7 +5310,10 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   // #72：缓存的 current 是上一次真启动的快照（换模型不刷新它），旧版本还可能存着一条幻影 id；
   // 所以只在清单里挑，挑不到就显示「默认模型」，理由与判据见 `startModelValue`。
   const modelValue = startModelValue(pickModel, hs?.models?.currentModelId, modelIds);
-  const modelLabel = modelValue ? shortModelName(modelValue) : "默认模型";
+  // The label is the name the AGENT uses when the snapshot carries it (`names`), and a trimmed id
+  // when it does not — otherwise this button says `ALIBABA-CN` while the chat page says
+  // 「ALIBABA CLOUD DASHSCOPE (CHINA)」 for the same model (#75).
+  const modelLabel = modelValue ? shortModelName(hs?.models?.names?.[modelValue] ?? "", modelValue) : "默认模型";
 
   /** The picks ride WITH the session: at `ready` the store replays them as the very frames the chat
    *  composer sends (set-model / set-config / set-mode) and only then releases the queued first
@@ -5526,7 +5529,11 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                         is meant to be a smaller session page, not a plainer one; with Hermes's 439
                         models the old flat id list was a wall you could not read. */}
                     <ModelList
-                      models={modelIds.map((id) => ({ modelId: id }))}
+                      models={modelIds.map((id) => ({
+                        modelId: id,
+                        name: hs?.models?.names?.[id] ?? null,
+                        description: hs?.models?.descriptions?.[id] ?? null,
+                      }))}
                       current={modelValue}
                       usage={startModelHeat}
                       onPick={(id) => { setPickModel(id); setPop(null); }}

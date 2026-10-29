@@ -3115,6 +3115,7 @@ export class SessionManager {
         this.#store.recordHandshakeModels(s.info.backend, {
           currentModelId: s.info.models?.currentModelId ?? null,
           available: known.map((m) => m.modelId).filter(Boolean),
+          ...modelNameMaps(known),
         });
         return s.info;
       }
@@ -3134,7 +3135,11 @@ export class SessionManager {
       const known = s.info.models.availableModels ?? [];
       const merged = [...known];
       for (const id of returnedIds) {
-        if (!merged.some((m) => m.modelId === id)) merged.push({ modelId: id, name: id, description: null });
+        // An id the live list did not have carries no name: `name: id` would be a fabrication that
+        // then OVERWRITES a real name the cache already learned for that id (the merge in
+        // `recordHandshakeModels` is last-write-wins). Null means "unknown", and the UI falls back
+        // to the id on its own (#74 review).
+        if (!merged.some((m) => m.modelId === id)) merged.push({ modelId: id, name: null, description: null });
       }
       s.info.models = { ...s.info.models, currentModelId: replied.models?.currentModelId ?? modelId, availableModels: merged };
     }
@@ -3145,6 +3150,7 @@ export class SessionManager {
     this.#store.recordHandshakeModels(s.info.backend, {
       currentModelId: s.info.models?.currentModelId ?? modelId,
       available: (s.info.models?.availableModels ?? []).map((m) => m.modelId).filter(Boolean),
+      ...modelNameMaps(s.info.models?.availableModels),
     });
     if (s.info.pendingModelId) s.info.pendingModelId = null;
     this.#store.setPendingModel(id, null);
@@ -3374,6 +3380,28 @@ function completionTextOf(u: Record<string, unknown>): string | null {
 
 /** The agent's running-process snapshot (#22). Dropped (not defaulted) when `tasks` is not an array:
  *  a malformed frame must never blank a row the operator is reading. */
+/** id → display name/description for the handshake cache (issue #75).
+ *
+ *  The cached snapshot is the ONLY model list a row that is not running can offer — the new-session
+ *  dialog draws its picker from it. Keeping ids alone there meant the dialog labelled a model by
+ *  parsing its id (`ALIBABA-CN`) while the chat page, reading the live list, said
+ *  「ALIBABA CLOUD DASHSCOPE (CHINA)」: same id, same route, two different names. */
+function modelNameMaps(
+  models: readonly { modelId?: string; name?: string | null; description?: string | null }[] | null | undefined,
+): { names: Record<string, string>; descriptions: Record<string, string> } {
+  const names: Record<string, string> = {};
+  const descriptions: Record<string, string> = {};
+  for (const m of models ?? []) {
+    const id = String(m.modelId ?? "");
+    if (!id) continue;
+    // A name identical to the id says nothing the id does not — and it would overwrite a real
+    // display name the cache already holds, because the merge is last-write-wins (#74 review).
+    if (m.name && m.name !== id) names[id] = m.name;
+    if (m.description) descriptions[id] = m.description;
+  }
+  return { names, descriptions };
+}
+
 export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] | null {
   if (hermesKindOf(u) !== "background") return null;
   const raw = hermesPayload(u).tasks;

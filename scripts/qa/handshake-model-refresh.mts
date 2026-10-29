@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Store } from "../../packages/server/src/store/store.ts";
-import { emptyHealth, seedRows } from "../../packages/server/src/acp/registry.ts";
+import { emptyHealth, handshakeFrom, seedRows } from "../../packages/server/src/acp/registry.ts";
 
 let pass = 0;
 let fail = 0;
@@ -110,6 +110,70 @@ const handshake = (current: string, available: string[]) => ({
     threw = String((e as Error).message ?? e);
   }
   check("an unparseable snapshot is left alone instead of throwing", threw === "", threw);
+}
+
+// ---- 5. #75：快照也要带展示名/描述，否则新建会话的对话框只能从 id 里猜 provider
+{
+  store.recordBackendCheck(id, emptyHealth(), {
+    ...handshake("custom:lab:Fast", ["custom:lab:Fast", "custom:lab:Deep"]),
+    models: {
+      currentModelId: "custom:lab:Fast",
+      available: ["custom:lab:Fast", "custom:lab:Deep"],
+      names: { "custom:lab:Fast": "Fast", "custom:lab:Deep": "DeepSeek-Flash" },
+      descriptions: { "custom:lab:Fast": "Provider: Lab" },
+    },
+  });
+  const models = store.getBackend(id)?.handshake?.models;
+  check("a snapshot can carry model names", models?.names?.["custom:lab:Deep"] === "DeepSeek-Flash",
+    JSON.stringify(models?.names));
+  check("…and descriptions", models?.descriptions?.["custom:lab:Fast"] === "Provider: Lab",
+    JSON.stringify(models?.descriptions));
+
+  // 冷的调用方只知道 id（旧代码的调用形状）：不能把已经学到的名字抹掉
+  store.recordHandshakeModels(id, { currentModelId: "custom:lab:Deep" });
+  const kept = store.getBackend(id)?.handshake?.models;
+  check("an ids-only refresh does not wipe the names already learned",
+    kept?.names?.["custom:lab:Fast"] === "Fast", JSON.stringify(kept?.names));
+
+  store.recordHandshakeModels(id, {
+    currentModelId: "custom:lab:Deep",
+    available: ["custom:lab:Deep"],
+    names: { "custom:lab:Deep": "DeepSeek-Flash" },
+    descriptions: { "custom:lab:Deep": "Provider: Lab · current" },
+  });
+  const merged = store.getBackend(id)?.handshake?.models;
+  check("a richer refresh merges into the name map", merged?.names?.["custom:lab:Fast"] === "Fast"
+    && merged?.names?.["custom:lab:Deep"] === "DeepSeek-Flash", JSON.stringify(merged?.names));
+  check("…and descriptions merge the same way", merged?.descriptions?.["custom:lab:Deep"] === "Provider: Lab · current",
+    JSON.stringify(merged?.descriptions));
+}
+
+// ---- 6. #75：抓握手的那一刻就要把 name/description 留住（不是等活会话另说一次）
+{
+  const hs = handshakeFrom(
+    { protocolVersion: 1, agentCapabilities: {} },
+    {
+      models: {
+        currentModelId: "alibaba-cn:qwen3.8-flash",
+        availableModels: [
+          { modelId: "alibaba-cn:qwen3.8-flash", name: "qwen3.8-flash", description: "Provider: ALIBABA CLOUD DASHSCOPE (CHINA)" },
+          { modelId: "alibaba-cn:qwen3.8-max" },
+        ],
+      },
+    },
+  );
+  check("capturing a handshake keeps the model names", hs.models?.names?.["alibaba-cn:qwen3.8-flash"] === "qwen3.8-flash",
+    JSON.stringify(hs.models?.names));
+  check("…and the descriptions the picker groups by",
+    hs.models?.descriptions?.["alibaba-cn:qwen3.8-flash"] === "Provider: ALIBABA CLOUD DASHSCOPE (CHINA)",
+    JSON.stringify(hs.models?.descriptions));
+  check("a model the agent did not name still has the id as its name",
+    hs.models?.names?.["alibaba-cn:qwen3.8-max"] === "alibaba-cn:qwen3.8-max", JSON.stringify(hs.models?.names));
+  check("…and no invented description", hs.models?.descriptions?.["alibaba-cn:qwen3.8-max"] === undefined,
+    JSON.stringify(hs.models?.descriptions));
+  check("the id list is unchanged by the richer shape",
+    (hs.models?.available ?? []).join(",") === "alibaba-cn:qwen3.8-flash,alibaba-cn:qwen3.8-max",
+    JSON.stringify(hs.models?.available));
 }
 
 console.log(`\n${pass} passed / ${fail} failed`);

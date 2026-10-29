@@ -215,7 +215,16 @@ export interface BackendHandshake {
     category?: string | null;
     options?: { value: string; name: string | null; description?: string | null }[] | null;
   }[];
-  models: { currentModelId: string | null; available: string[] } | null;
+  /** `available` is the ids the picker may send back; `names`/`descriptions` are what the agent
+   *  CALLS them and are kept for the same reason as `modes.names`: a row that is not running has no
+   *  other place to learn them, and the new-session dialog would otherwise print the raw id (or the
+   *  slug out of it) where the chat page prints 「ALIBABA CLOUD DASHSCOPE (CHINA)」 (issue #75). */
+  models: {
+    currentModelId: string | null;
+    available: string[];
+    names?: Record<string, string>;
+    descriptions?: Record<string, string>;
+  } | null;
   /** slash commands the agent announced (session/update or newSession) */
   commands: string[];
 }
@@ -604,7 +613,10 @@ export function handshakeFrom(
   const s = (session ?? {}) as {
     modes?: { currentModeId?: string; availableModes?: { id: string }[] } | null;
     configOptions?: { id: string; name?: string; currentValue?: unknown }[] | null;
-    models?: { currentModelId?: string; availableModels?: { modelId?: string; id?: string }[] } | null;
+    models?: {
+      currentModelId?: string;
+      availableModels?: { modelId?: string; id?: string; name?: string; description?: string }[] | null;
+    } | null;
     availableCommands?: { name: string }[] | null;
   };
   const modes = s.modes
@@ -621,10 +633,17 @@ export function handshakeFrom(
         ),
       }
     : null;
+  const modelRows = (s.models?.availableModels ?? [])
+    .map((m) => ({ id: m.modelId ?? m.id ?? "", name: m.name ?? null, description: m.description ?? null }))
+    .filter((m) => m.id);
   const models = s.models
     ? {
         currentModelId: s.models.currentModelId ?? null,
-        available: (s.models.availableModels ?? []).map((m) => m.modelId ?? m.id ?? "").filter(Boolean),
+        available: modelRows.map((m) => m.id),
+        names: Object.fromEntries(modelRows.map((m) => [m.id, m.name || m.id])),
+        descriptions: Object.fromEntries(
+          modelRows.filter((m) => m.description).map((m) => [m.id, m.description as string]),
+        ),
       }
     : null;
   return {

@@ -1797,7 +1797,14 @@ export class Store {
    */
   recordHandshakeModels(
     id: string,
-    models: { currentModelId?: string | null; available?: string[] },
+    models: {
+      currentModelId?: string | null;
+      available?: string[];
+      /** Display names/descriptions, keyed by id. Optional: a caller that only knows the ids
+       *  (the cold path) must not wipe what a live session taught the cache (issue #75). */
+      names?: Record<string, string>;
+      descriptions?: Record<string, string>;
+    },
   ): void {
     const row = this.#db.prepare("select handshake from backends where id = ?").get(id) as
       | { handshake?: string | null }
@@ -1822,7 +1829,17 @@ export class Store {
     const available = current && !supplied.includes(current)
       ? [current, ...supplied.filter((m) => m !== current)].slice(0, Math.max(supplied.length, 1))
       : supplied;
-    hs.models = { ...hs.models, currentModelId: current, available };
+    // Names/descriptions merge instead of replacing the map: `available` may be the richer live
+    // list while the map still holds names an earlier real start taught us.
+    hs.models = {
+      ...hs.models,
+      currentModelId: current,
+      available,
+      ...(models.names ? { names: { ...(hs.models.names ?? {}), ...models.names } } : {}),
+      ...(models.descriptions
+        ? { descriptions: { ...(hs.models.descriptions ?? {}), ...models.descriptions } }
+        : {}),
+    };
     this.#db.prepare("update backends set handshake = ? where id = ?").run(JSON.stringify(hs), id);
   }
 
