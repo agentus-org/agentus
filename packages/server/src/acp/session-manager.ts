@@ -3135,7 +3135,11 @@ export class SessionManager {
       const known = s.info.models.availableModels ?? [];
       const merged = [...known];
       for (const id of returnedIds) {
-        if (!merged.some((m) => m.modelId === id)) merged.push({ modelId: id, name: id, description: null });
+        // An id the live list did not have carries no name: `name: id` would be a fabrication that
+        // then OVERWRITES a real name the cache already learned for that id (the merge in
+        // `recordHandshakeModels` is last-write-wins). Null means "unknown", and the UI falls back
+        // to the id on its own (#74 review).
+        if (!merged.some((m) => m.modelId === id)) merged.push({ modelId: id, name: null, description: null });
       }
       s.info.models = { ...s.info.models, currentModelId: replied.models?.currentModelId ?? modelId, availableModels: merged };
     }
@@ -3390,7 +3394,9 @@ function modelNameMaps(
   for (const m of models ?? []) {
     const id = String(m.modelId ?? "");
     if (!id) continue;
-    if (m.name) names[id] = m.name;
+    // A name identical to the id says nothing the id does not — and it would overwrite a real
+    // display name the cache already holds, because the merge is last-write-wins (#74 review).
+    if (m.name && m.name !== id) names[id] = m.name;
     if (m.description) descriptions[id] = m.description;
   }
   return { names, descriptions };

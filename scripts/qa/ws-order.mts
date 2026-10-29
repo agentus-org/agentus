@@ -6,8 +6,9 @@
 // "Session is busy" 被丢掉 —— 会话用默认模型跑完，页面只多一行红字。反过来的顺序同样坏：
 // prompt 撞上 agent 的命令锁被"排队"，客户端只能把它读成一个当场就结束的回合。
 //
-// 这条闸门只管一件事：**一帧 prompt 要等它之前已经到达的控制帧落定**。prompt 之间不串行
-// （回合顺序归 agent 的队列管），prompt 之后的控制帧也不等 prompt。
+// 这条闸门只管一件事：**一帧 prompt 要等它之前、同一会话**已经到达的控制帧落定。
+// prompt 之间不串行（回合顺序归 agent 的队列管），prompt 之后的控制帧也不等 prompt；
+// 按会话分键，所以 A 槽位慢吞吞的模型探测不会拖住 B 槽位的消息。
 //
 //   npx tsx scripts/qa/ws-order.mts
 import { createFrameGate } from "../../packages/server/src/ws-order.ts";
@@ -21,6 +22,8 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log: string[] = [];
+const A = "sess-a";
+const B = "sess-b";
 
 // ---- 1. prompt 等它前面的控制帧（这就是 #74 的坏顺序）
 {
@@ -29,14 +32,15 @@ const log: string[] = [];
   let release: () => void = () => {};
   const slow = new Promise<void>((r) => { release = r; });
 
-  const ctrl = gate.control(async () => {
+  const ctrl = gate.control(A, async () => {
     await slow;
     log.push("set-model done");
   });
-  gate.afterControl(() => log.push("prompt starts"));
+  const held = gate.afterControl(A, () => log.push("prompt starts"));
   await sleep(20);
 
   check("a prompt does not start while a control frame is in flight", log.length === 0, log.join(" → "));
+  check("…and the deferral is REPORTED (the page must stop its ack countdown)", held === true, String(held));
   release();
   await ctrl;
   await sleep(10);
@@ -47,9 +51,9 @@ const log: string[] = [];
 {
   log.length = 0;
   const gate = createFrameGate();
-  const bad = gate.control(async () => { await sleep(5); throw new Error("unknown model"); });
+  const bad = gate.control(A, async () => { await sleep(5); throw new Error("unknown model"); });
   void bad.catch(() => {});
-  gate.afterControl(() => log.push("prompt starts"));
+  gate.afterControl(A, () => log.push("prompt starts"));
   await sleep(30);
   check("a rejected control frame still releases the prompt (allSettled, not all)",
     log.join(" → ") === "prompt starts", log.join(" → "));
@@ -61,9 +65,9 @@ const log: string[] = [];
   const gate = createFrameGate();
   let release: () => void = () => {};
   const longControl = new Promise<void>((r) => { release = r; });
-  void gate.control(() => longControl);
-  gate.afterControl(() => log.push("first"));
-  gate.afterControl(() => log.push("second"));
+  void gate.control(A, () => longControl);
+  gate.afterControl(A, () => log.push("first"));
+  gate.afterControl(A, () => log.push("second"));
   await sleep(10);
   check("both prompts wait for the same control frame, not for each other", log.length === 0, log.join(" → "));
   release();
@@ -71,33 +75,46 @@ const log: string[] = [];
   check("…and both are released once it settles", log.join(",") === "first,second", log.join(" → "));
 }
 
-// ---- 4. 顺序：prompt 之后到达的控制帧不等 prompt（否则 stop 会被一整个回合堵住）
+// ---- 4. 按会话分键：别的槽位的慢切换不许拖住这一条
 {
   log.length = 0;
   const gate = createFrameGate();
-  gate.afterControl(() => log.push("prompt"));
-  void gate.control(async () => { log.push("cancel"); });
+  const slowB = new Promise<void>(() => {}); // never settles
+  void gate.control(B, () => slowB);
+  const held = gate.afterControl(A, () => log.push("A prompt"));
   await sleep(10);
-  check("a control frame that arrives after a prompt is not gated by it", log.join(" → ") === "cancel → prompt"
-    || log.join(" → ") === "prompt → cancel", log.join(" → "));
+  check("a control frame on ANOTHER session does not gate this prompt", log.join("") === "A prompt", log.join(""));
+  check("…and nothing was reported as held", held === false, String(held));
 }
 
-// ---- 5. 空集：没有在途控制帧时 prompt 立刻发（不能为了排队而排队）
+// ---- 5. 顺序：prompt 之后到达的控制帧不等 prompt（否则 stop 会被一整个回合堵住）
+{
+  log.length = 0;
+  const gate = createFrameGate();
+  gate.afterControl(A, () => log.push("prompt"));
+  void gate.control(A, async () => { log.push("cancel"); });
+  await sleep(10);
+  check("a control frame that arrives after a prompt is not gated by it", log.join(" → ") === "prompt → cancel",
+    log.join(" → "));
+}
+
+// ---- 6. 空集：没有在途控制帧时 prompt 立刻发（不能为了排队而排队）
 {
   const gate = createFrameGate();
   const order: string[] = [];
-  gate.afterControl(() => order.push("ran"));
-  check("with nothing in flight the prompt runs synchronously", order.join("") === "ran", order.join(""));
+  const held = gate.afterControl(A, () => order.push("ran"));
+  check("with nothing in flight the prompt runs synchronously", order.join("") === "ran" && held === false,
+    `${order.join("")} held=${held}`);
 }
 
-// ---- 6. 落定的控制帧不再拖住后面的 prompt（集合要收干净）
+// ---- 7. 落定的控制帧不再拖住后面的 prompt（集合要收干净）
 {
   log.length = 0;
   const gate = createFrameGate();
-  await gate.control(async () => { await sleep(5); });
+  await gate.control(A, async () => { await sleep(5); });
   await sleep(10);
   const t0 = Date.now();
-  gate.afterControl(() => log.push("prompt"));
+  gate.afterControl(A, () => log.push("prompt"));
   check("a settled control frame does not gate a later prompt", log.length === 1 && Date.now() - t0 < 20,
     `${Date.now() - t0}ms`);
 }

@@ -54,25 +54,28 @@ async function pickerModel() {
 }
 
 async function oneRound(n, pick) {
-  const created = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "hermes", cwd: CWD }) });
-  if (created.status !== 201) {
-    check(`round ${n}: session created`, false, `${created.status} ${JSON.stringify(created.body).slice(0, 120)}`);
-    return;
-  }
-  const id = created.body.id;
   const text = `第 ${n} 轮：只回答 OK 两个字母，不要用工具。`;
   const frames = [];
-  const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws?token=${encodeURIComponent(token)}`);
   const pid = `qa-first-turn-${n}-${Date.now()}`;
 
+  // LISTEN FIRST: a cold spawn can reach `ready` before the POST returns, and a probe that only
+  // starts listening afterwards waits forever for a transition that already happened.
+  const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws?token=${encodeURIComponent(token)}`);
   await new Promise((resolve, reject) => {
     ws.on("error", reject);
     ws.on("open", resolve);
   });
-
   ws.on("message", (raw) => {
     try { frames.push(JSON.parse(String(raw))); } catch { /* not a frame we care about */ }
   });
+
+  const created = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "hermes", cwd: CWD }) });
+  if (created.status !== 201) {
+    check(`round ${n}: session created`, false, `${created.status} ${JSON.stringify(created.body).slice(0, 120)}`);
+    ws.close();
+    return;
+  }
+  const id = created.body.id;
 
   // The page waits for its own `ready` row, then replays the picks and releases the queue — two
   // frames in one tick, which is exactly the interleaving ACP does not preserve on its own.
@@ -108,6 +111,10 @@ async function oneRound(n, pick) {
   const texts = rows.map((m) => JSON.stringify(m.payload ?? {})).join("\n");
 
   const queuedBubble = /Queued for the next turn/i.test(texts);
+  // The prompt is tagged with a pid; the turn that answers it must echo it (that is what proves the
+  // operator's frame landed) — and if the server held it behind the model switch, it said so.
+  const heldFrames = frames.filter((f) => f.t === "prompt-held" && f.sessionId === id).length;
+  const pidEchoed = frames.some((f) => f.t === "turn-start" && f.sessionId === id && f.pid === pid);
   const usage = rows.filter((m) => m.kind === "turn-usage").pop();
   const turnStarts = frames.filter((f) => f.t === "turn-start" && f.sessionId === id).length;
   const userRows = rows.filter((m) => m.kind === "user");
@@ -123,6 +130,8 @@ async function oneRound(n, pick) {
     JSON.stringify(usage?.payload ?? null));
   check(`round ${n}: the operator's sentence is in the transcript exactly once`, userRows.length === 1,
     String(userRows.length));
+  check(`round ${n}: the turn proves it belongs to this prompt (pid echoed)`, pidEchoed);
+  if (heldFrames) console.log(`  · round ${n}: the server held the prompt behind the pick (${heldFrames} frame(s))`);
   if (pick && row) {
     check(`round ${n}: the picked model is the one in force`, row.models?.currentModelId === pick,
       `${row.models?.currentModelId} vs ${pick}`);

@@ -1991,6 +1991,11 @@ class Cockpit {
         // drain: not busy, head not inflight, nobody taking the floor by hand.
         for (const s of this.sessions) {
           if (s.status !== "ready") continue;
+          // The picks travel with the SLOT, not with the page: a reload (or a phone that reconnects)
+          // between "create" and "ready" lands here instead of on the single-row frame below, and
+          // draining without replaying them is how a reconnected first message ran under the agent
+          // default with nothing on screen to say so (#74 review).
+          this.#applySetup(s.id);
           if (this.#queues.get(s.id)?.length) this.drainQueue(s.id);
         }
         break;
@@ -2215,6 +2220,13 @@ class Cockpit {
         // store hands it straight to the renderer. Whether this device shows it — and whether it makes
         // a sound — is the page's own per-device business (webNotify.ts).
         webNotify.handle(e.notice);
+        break;
+      }
+      case "prompt-held": {
+        // The server received the prompt and is holding it behind a control frame for the same
+        // session. Nothing is at risk any more: retire the ack budget (its 8s would expire during a
+        // cold model probe and put the words back in line — the operator would send them twice).
+        this.#forgetSent(e.pid);
         break;
       }
       case "error": {

@@ -53,7 +53,10 @@ export type SessionStatus =
  *  published surface, so we model the field ourselves. */
 export interface SessionModelState {
   currentModelId: string | null;
-  availableModels: { modelId: string; name: string; description?: string | null }[];
+  /** `name` is optional because an id can arrive with NO name at all: the set_model reply may
+   *  return ids the live list did not carry, and inventing a name there (`name: id`) would overwrite
+   *  a real display name in the cached handshake (#74 review). Rendering falls back to the id. */
+  availableModels: { modelId: string; name?: string | null; description?: string | null }[];
 }
 
 export interface SessionInfo {
@@ -251,6 +254,12 @@ export type ServerEvent =
    *  agent gave up first). Said out loud instead of dropped: a click that does nothing is the
    *  worst failure shape there is — the operator cannot tell it from a broken button. */
   | { t: "permission-expired"; requestId: string; sessionId: string }
+  /** A prompt the server HAS, but has not handed to the agent yet: it arrived on the same socket
+   *  right behind a control frame for that session (a new session's replayed picks), and it goes out
+   *  as soon as that frame settles. Sent so the page stops counting down its "did it land" budget
+   *  (issue #74 review): the message is in the server's hands, and reporting it as lost invites a
+   *  retry that sends it twice. */
+  | { t: "prompt-held"; sessionId: string; pid: string }
   /** A config pick (thinking depth / context budget) the agent did NOT take: the picker showed the
    *  new value while the wire dropped it — the exact shape an operator reads as "这个设置没用".
    *  `actual` is what the session really runs with, so the cockpit can put the control back and say

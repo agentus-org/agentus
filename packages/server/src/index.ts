@@ -2149,24 +2149,29 @@ wss.on("connection", (ws) => {
           sendEvt(sessionsEvent());
           break;
         }
-        case "prompt":
-          // Deferred behind the control frames already in flight on this socket, and NOT
-          // serialized behind other prompts: the agent owns turn order (issue #74).
-          gate.afterControl(() => {
+        case "prompt": {
+          // Deferred behind the control frames already in flight on this socket FOR THIS SESSION,
+          // and not serialized behind other prompts: the agent owns turn order (issue #74).
+          const held = gate.afterControl(cmd.sessionId, () => {
             void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid);
           });
+          // Held, not lost: the page's ack budget (8s) would otherwise expire while a cold
+          // `set_model` is still probing, and it would report a message that IS about to run as
+          // "not delivered" — inviting a retry that sends it twice.
+          if (held && cmd.pid) sendEvt({ t: "prompt-held", sessionId: cmd.sessionId, pid: cmd.pid });
           break;
+        }
         case "cancel":
           await mgr.cancel(cmd.sessionId);
           break;
         case "set-mode":
-          await gate.control(() => mgr.setMode(cmd.sessionId, cmd.modeId));
+          await gate.control(cmd.sessionId, () => mgr.setMode(cmd.sessionId, cmd.modeId));
           break;
         case "set-config":
-          await gate.control(() => mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value));
+          await gate.control(cmd.sessionId, () => mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value));
           break;
         case "set-model":
-          await gate.control(() => mgr.setModel(cmd.sessionId, cmd.modelId, { fromReplay: cmd.fromReplay === true }));
+          await gate.control(cmd.sessionId, () => mgr.setModel(cmd.sessionId, cmd.modelId, { fromReplay: cmd.fromReplay === true }));
           break;
         case "respond-permission": {
           const applied = mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {
