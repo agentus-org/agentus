@@ -416,6 +416,14 @@ export const PERM_ACK_MS = 8000;
  *  milliseconds when it is there at all — this is not a latency budget, it is a liveness verdict. */
 export const SEND_ACK_MS = 8000;
 
+/** The clock a prompt waits on once the server said it is HOLDING it (`prompt-held`).
+ *
+ *  Longer than `SEND_ACK_MS` because the wait is known and legitimate — the frame is in the
+ *  server's hands, waiting for a control frame for the same session to settle (a cold model probe
+ *  is ~10 s, a `/compress` is longer) — but still a clock: "held" is not "delivered", and a held
+ *  prompt can still be lost if the session goes away. */
+export const HELD_ACK_MS = 90_000;
+
 function readStoredUnread(): string[] {
   try {
     const raw = localStorage.getItem(UNREAD_KEY);
@@ -434,7 +442,7 @@ function persistUnread(ids: Iterable<string>): void {
   } catch { /* see readStoredUnread */ }
 }
 
-class Cockpit {
+export class Cockpit {
   sessions: SessionInfo[] = [];
   /** On disk, no process, NOT archived: 工作空间 material, wearing `cold`. */
   cold: SessionInfo[] = [];
@@ -1004,6 +1012,15 @@ class Cockpit {
     if (rows.some((r) => r.pid === hit.pid)) this.#setQueue(sessionId, rows.filter((r) => r.pid !== hit.pid));
   }
 
+  /** `prompt-held`: still waiting on the server, but for a KNOWN reason with a known clock. */
+  #armHeldWatch(pid: string): void {
+    const hit = this.#pendingSends.get(pid);
+    if (!hit) return;
+    clearTimeout(hit.timer);
+    const timer = setTimeout(() => this.#requeueUnconfirmed(pid), HELD_ACK_MS);
+    this.#pendingSends.set(pid, { ...hit, timer });
+  }
+
   /** A refusal names the prompt it refused, so the ack budget does not expire into a second copy of
    *  the same sentence while the refusal path is already filing it (`rejectedPrompt`). */
   #forgetSent(pid: string): void {
@@ -1113,6 +1130,10 @@ class Cockpit {
         if (!key?.startsWith("agentus.queue.")) continue;
         const sid = key.slice("agentus.queue.".length);
         this.#loadQueue(sid);
+        // The picks are persisted with the slot, not with the page: a reload between "create" and
+        // `ready` drains this queue from HERE, and draining without them runs the operator's first
+        // message under the agent's default model with nothing on screen to say so (#74 review).
+        this.#applySetup(sid);
         this.drainQueue(sid);
       }
     } catch { /* storage off: nothing persisted to drain */ }
@@ -1131,21 +1152,40 @@ class Cockpit {
     this.bump();
   }
 
+  #setupKey(id: string): string { return `agentus.setup.${id}`; }
+
+  /** The picks a RELOAD has to remember. The queue is persisted (a message filed while a slot was
+   *  spawning survives a refresh), and the picks ride with the same slot: without them a reload
+   *  between "create" and "ready" drains the first message under the agent's default model, which is
+   *  the second half of #74 with nothing on screen to say so (#74 review). */
+  #readStoredSetup(id: string): SetupPick[] {
+    try {
+      const raw = localStorage.getItem(this.#setupKey(id));
+      const rows = raw ? (JSON.parse(raw) as SetupPick[]) : [];
+      if (!Array.isArray(rows)) return [];
+      return rows.filter((p) => p && typeof p.kind === "string" && typeof (p as { value?: unknown }).value === "string");
+    } catch { return []; }
+  }
+
   /** File the start page's picks against a session that does not exist yet. They are replayed at
    *  `ready` as the very frames the chat composer sends for the same controls — see `#applySetup`.
    *  Empty picks are not stored: "the agent's default" is the ABSENCE of a frame, not a frame that
    *  says so, and a frame with the value already in force would be a harmless but noisy round-trip. */
   queueSetup(sessionId: string, picks: SetupPick[]): void {
-    if (picks.length) this.#setup.set(sessionId, picks);
+    if (!picks.length) return;
+    this.#setup.set(sessionId, picks);
+    try { localStorage.setItem(this.#setupKey(sessionId), JSON.stringify(picks)); }
+    catch { /* private mode — the picks still work for this page load */ }
   }
 
   /** Replay those picks onto a session that has just come up, ahead of its queued first message.
    *  One burst is enough: the socket's commands are processed in order, so a prompt sent right after
    *  them cannot overtake them. */
   #applySetup(sessionId: string): void {
-    const picks = this.#setup.get(sessionId);
+    const picks = this.#setup.get(sessionId) ?? this.#readStoredSetup(sessionId);
     if (!picks?.length) return;
     this.#setup.delete(sessionId);
+    try { localStorage.removeItem(this.#setupKey(sessionId)); } catch { /* nothing persisted */ }
     for (const p of picks) {
       if (p.kind === "model") this.send({ t: "set-model", sessionId, modelId: p.value, fromReplay: true });
       else if (p.kind === "mode") this.send({ t: "set-mode", sessionId, modeId: p.value });
@@ -1991,10 +2031,11 @@ class Cockpit {
         // drain: not busy, head not inflight, nobody taking the floor by hand.
         for (const s of this.sessions) {
           if (s.status !== "ready") continue;
-          // The picks travel with the SLOT, not with the page: a reload (or a phone that reconnects)
-          // between "create" and "ready" lands here instead of on the single-row frame below, and
-          // draining without replaying them is how a reconnected first message ran under the agent
-          // default with nothing on screen to say so (#74 review).
+          // The picks travel with the SLOT, not with the page. A page that stayed loaded but dropped
+          // its socket lands here instead of on the single-row frame below; a page that RELOADED gets
+          // them from storage in `drainPersistedQueues`. Either way, draining without replaying them
+          // is how the operator's first message ran under the agent default with nothing on screen
+          // to say so (#74 review).
           this.#applySetup(s.id);
           if (this.#queues.get(s.id)?.length) this.drainQueue(s.id);
         }
@@ -2223,10 +2264,12 @@ class Cockpit {
         break;
       }
       case "prompt-held": {
-        // The server received the prompt and is holding it behind a control frame for the same
-        // session. Nothing is at risk any more: retire the ack budget (its 8s would expire during a
-        // cold model probe and put the words back in line — the operator would send them twice).
-        this.#forgetSent(e.pid);
+        // The server HAS the frame and is holding it behind a control frame for the same session —
+        // a cold model probe takes ~10 s, so the 8 s budget would expire and put the words back in
+        // line (the operator would send them twice). Re-arm it on the longer clock instead of
+        // dropping it: if the held prompt never runs (the session closed, the socket died), there
+        // must still be something that notices (#74 review).
+        this.#armHeldWatch(e.pid);
         break;
       }
       case "error": {
