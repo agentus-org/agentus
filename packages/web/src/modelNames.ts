@@ -48,9 +48,16 @@ export function modelProvider(m: { modelId: string; name?: string | null; descri
     const name = clean(fromDesc[1]);
     if (name) return name;
   }
-  const prefix = m.modelId.includes(":") ? m.modelId.split(":")[0]
-    : m.modelId.includes("/") ? m.modelId.split("/")[0]
-      : "";
+  // ``custom:<entry>:<model>`` — the model list from a task lists every named endpoint this way,
+  // and the entry IS the provider. Splitting at the first colon alone labelled all of them
+  // "custom" (the billing class), so a box with `lab` and `qoder` entries showed one group called
+  // "custom" holding both. Two-part ``custom:<model>`` keeps "custom": there the class really is
+  // all the id says.
+  const parts = m.modelId.split(":");
+  const prefix = parts.length > 2 && parts[0].toLowerCase() === "custom" ? parts[1]
+    : parts.length > 1 ? parts[0]
+      : m.modelId.includes("/") ? m.modelId.split("/")[0]
+        : "";
   return clean(prefix) || "other";
 }
 

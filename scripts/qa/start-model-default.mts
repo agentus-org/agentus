@@ -7,7 +7,7 @@
 // 一个字都不许用**。
 //
 //   npx tsx scripts/qa/start-model-default.mts
-import { startModelValue } from "../../packages/web/src/modelNames.ts";
+import { modelProvider, rowModelName, startModelValue } from "../../packages/web/src/modelNames.ts";
 
 let pass = 0;
 let fail = 0;
@@ -46,6 +46,26 @@ check("a row that never ran yields the default", startModelValue(null, null, [])
     return out === "" || ids.includes(out);
   });
   check("the dialog never carries an id that is not in the list", ok);
+}
+
+// ---- 4. 分组标题：`custom:<条目>:<模型>` 的 provider 是**条目**，不是计费类 `custom`
+//      （否则 lab / qoder 这些命名端点全被归进一个叫 "custom" 的组里）
+{
+  const p = (id: string, description: string | null = null): string => modelProvider({ modelId: id, description });
+  check("a named endpoint groups under its entry name",
+    p("custom:qoder:qwen3.8-flash") === "qoder", p("custom:qoder:qwen3.8-flash"));
+  check("…not under the billing class",
+    p("custom:qoder:qwen3.8-flash") !== "custom");
+  check("two entries are two groups",
+    new Set(["custom:qoder:a", "custom:lab:b"].map((id) => p(id))).size === 2);
+  check("a legacy two-part custom id stays with the class (that is all it says)",
+    p("custom:Fast") === "custom", p("custom:Fast"));
+  check("canonical ids are unchanged", p("openrouter:anthropic/claude") === "openrouter");
+  check("slash ids are unchanged", p("openai/gpt-6") === "openai");
+  check("a description still wins over the id", p("custom:qoder:a", "Provider: Qoder Gateway") === "Qoder Gateway");
+  check("the row label drops the provider, not the model",
+    rowModelName({ modelId: "custom:qoder:qwen3.8-flash" }, "qoder") === "qwen3.8-flash",
+    rowModelName({ modelId: "custom:qoder:qwen3.8-flash" }, "qoder"));
 }
 
 console.log(`\n${pass} passed / ${fail} failed`);
