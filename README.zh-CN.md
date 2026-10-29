@@ -51,7 +51,7 @@ web bundle、配套 APK —— 然后直接退出，不启动任何东西）。
 以及 **DeepSeek 的 web 后端**（搜索 + 正文抓取，共用模型 key）—— 来自 fork 的集成构建（tag）。
 装法就五行：
 [§ 该跑哪份 Hermes](docs/installation.zh-CN.md#该跑哪份-hermes) —— 当前是 tag
-`agentus/v0.22.0/merge-20261028-2028`，基座 Hermes `v0.22.0`。
+`agentus/v0.22.0/merge-20261029-2005`，基座 Hermes `v0.22.0`。
 
 你启动的第一个 slot 会使用**你自己的 agent 已经在用的**那个 Hermes home（`~/.hermes`），除非后端那一行
 指定了另一个 —— 见下面的「HERMES_HOME」。
