@@ -18,6 +18,7 @@ import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { acquireInstanceLock, humanAge } from "./instance-lock.js";
+import { createFrameGate } from "./ws-order.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
@@ -2118,6 +2119,8 @@ wss.on("connection", (ws) => {
   sendEvt({ t: "hello", clientId, resumed: false });
   sendEvt(sessionsEvent());
 
+  // One gate per connection: frames on a socket are FIFO, their dispatch is not (issue #74).
+  const gate = createFrameGate();
   ws.on("message", async (data) => {
     let cmd: ClientCommand;
     try {
@@ -2147,19 +2150,23 @@ wss.on("connection", (ws) => {
           break;
         }
         case "prompt":
-          void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid);
+          // Deferred behind the control frames already in flight on this socket, and NOT
+          // serialized behind other prompts: the agent owns turn order (issue #74).
+          gate.afterControl(() => {
+            void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid);
+          });
           break;
         case "cancel":
           await mgr.cancel(cmd.sessionId);
           break;
         case "set-mode":
-          await mgr.setMode(cmd.sessionId, cmd.modeId);
+          await gate.control(() => mgr.setMode(cmd.sessionId, cmd.modeId));
           break;
         case "set-config":
-          await mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value);
+          await gate.control(() => mgr.setConfig(cmd.sessionId, cmd.configId, cmd.value));
           break;
         case "set-model":
-          await mgr.setModel(cmd.sessionId, cmd.modelId, { fromReplay: cmd.fromReplay === true });
+          await gate.control(() => mgr.setModel(cmd.sessionId, cmd.modelId, { fromReplay: cmd.fromReplay === true }));
           break;
         case "respond-permission": {
           const applied = mgr.respondPermission(cmd.sessionId, cmd.requestId, cmd.decision, {

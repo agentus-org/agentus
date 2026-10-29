@@ -182,7 +182,15 @@ export interface BackendHandshakeView {
     category?: string | null;
     options?: { value: string; name: string | null; description?: string | null }[] | null;
   }[];
-  models: { currentModelId: string | null; available: string[] } | null;
+  /** `names`/`descriptions` travel with the ids so the start page can label a model the way the
+   *  chat page does. A snapshot written before they existed simply lacks them — the picker then
+   *  falls back to parsing the id, which is what it used to do for every row (issue #75). */
+  models: {
+    currentModelId: string | null;
+    available: string[];
+    names?: Record<string, string>;
+    descriptions?: Record<string, string>;
+  } | null;
   commands: string[];
 }
 

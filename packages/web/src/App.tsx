@@ -5526,7 +5526,11 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                         is meant to be a smaller session page, not a plainer one; with Hermes's 439
                         models the old flat id list was a wall you could not read. */}
                     <ModelList
-                      models={modelIds.map((id) => ({ modelId: id }))}
+                      models={modelIds.map((id) => ({
+                        modelId: id,
+                        name: hs?.models?.names?.[id] ?? null,
+                        description: hs?.models?.descriptions?.[id] ?? null,
+                      }))}
                       current={modelValue}
                       usage={startModelHeat}
                       onPick={(id) => { setPickModel(id); setPop(null); }}
