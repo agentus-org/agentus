@@ -1149,8 +1149,10 @@ export class Cockpit {
         // "session not ready" for `set-mode`/`set-config` (session-manager) and has no agent to take
         // a prompt, so both the picks and the message would be burnt before it comes up. Load it into
         // memory here and let the `ready` transition (`apply`, `session`) replay it (#74 review).
-        const row = this.sessions.find((x) => x.id === sid) ?? this.cold.find((x) => x.id === sid);
-        if (!row || (row.status !== "ready" && row.status !== "cold")) continue;
+        const live = this.sessions.find((x) => x.id === sid);
+        if (!live && !this.cold.some((x) => x.id === sid)) continue;
+        // A cold slot is fine — a prompt is exactly how it wakes. A live one has to be ready.
+        if (live && live.status !== "ready") continue;
         // The picks are persisted with the slot, not with the page: a reload between "create" and
         // `ready` drains this queue from HERE, and draining without them runs the operator's first
         // message under the agent's default model with nothing on screen to say so.
