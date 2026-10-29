@@ -68,5 +68,25 @@ check("a row that never ran yields the default", startModelValue(null, null, [])
     rowModelName({ modelId: "custom:qoder:qwen3.8-flash" }, "qoder"));
 }
 
+// ---- 7. #75：对话框现在能拿到展示名/描述，两处的 provider 标签必须一致
+//
+// 同一个 id，活会话（chat 页）画出「ALIBABA CLOUD DASHSCOPE (CHINA)」，起始页却画「ALIBABA-CN」——
+// 因为起始页只有 id，只能从 id 里猜。快照带上 name/description 之后，两处读的是同一份事实。
+{
+  const id = "alibaba-cn:qwen3.8-flash";
+  const desc = "Provider: ALIBABA CLOUD DASHSCOPE (CHINA)";
+  const live = { modelId: id, name: "qwen3.8-flash", description: desc };
+  const dialog = { modelId: id, name: "qwen3.8-flash", description: desc }; // 起始页从快照拼出来的那一行
+  check("the dialog labels a model from its description, exactly like the chat page",
+    modelProvider(dialog) === modelProvider(live) && modelProvider(dialog) === "ALIBABA CLOUD DASHSCOPE (CHINA)",
+    modelProvider(dialog));
+  check("with no description the id still labels it — the snapshot may predate the field",
+    modelProvider({ modelId: id, name: null, description: null }) === "alibaba-cn",
+    modelProvider({ modelId: id, name: null, description: null }));
+  check("a named endpoint is still grouped under the entry, name or not",
+    modelProvider({ modelId: "custom:lab:qwen38-27b", name: "qwen", description: null }) === "lab",
+    modelProvider({ modelId: "custom:lab:qwen38-27b", name: "qwen", description: null }));
+}
+
 console.log(`\n${pass} passed / ${fail} failed`);
 process.exit(fail ? 1 : 0);
