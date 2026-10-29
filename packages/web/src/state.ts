@@ -994,7 +994,16 @@ export class Cockpit {
       // unconfirmed send is that send — treating it as confirmed is the honest reading, and the
       // alternative (requeueing a message that is already in the transcript) is the worse error.
       : [...this.#pendingSends.values()].find((p) => p.sessionId === sessionId);
-    if (!hit) return;
+    if (!hit) {
+      // The watchdog already gave up on this pid and re-filed the words as "not confirmed", and the
+      // turn started anyway. Retire that row: the operator must not be asked to resend a message
+      // that is already in the transcript.
+      if (pid) {
+        const rows = this.#queues.get(sessionId) ?? [];
+        if (rows.some((r) => r.pid === pid)) this.#setQueue(sessionId, rows.filter((r) => r.pid !== pid));
+      }
+      return;
+    }
     // A turn started on this session, so nothing else is still on its way to it: only one prompt can
     // begin a turn at a time. Retiring the rest here is what stops a stale timer from filing a copy of
     // a sentence that already landed under another pid (measured: a retry's own 8s budget expired after
@@ -1125,14 +1134,26 @@ export class Cockpit {
    *  its turn is not running — those wait for the turn-end that is still coming. */
   drainPersistedQueues(): void {
     try {
+      // Snapshot the keys FIRST: draining a queue rewrites storage, so an index walk over a live
+      // `localStorage` skips whatever slid into the slot it just left — with two slots queued, one
+      // of them was silently never drained (measured: A's message sat there while B's went out).
+      const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (!key?.startsWith("agentus.queue.")) continue;
+        const k = localStorage.key(i);
+        if (k?.startsWith("agentus.queue.")) keys.push(k);
+      }
+      for (const key of keys) {
         const sid = key.slice("agentus.queue.".length);
         this.#loadQueue(sid);
+        // Only a slot that can actually ACCEPT these frames. A slot still `spawning` throws
+        // "session not ready" for `set-mode`/`set-config` (session-manager) and has no agent to take
+        // a prompt, so both the picks and the message would be burnt before it comes up. Load it into
+        // memory here and let the `ready` transition (`apply`, `session`) replay it (#74 review).
+        const row = this.sessions.find((x) => x.id === sid) ?? this.cold.find((x) => x.id === sid);
+        if (!row || (row.status !== "ready" && row.status !== "cold")) continue;
         // The picks are persisted with the slot, not with the page: a reload between "create" and
         // `ready` drains this queue from HERE, and draining without them runs the operator's first
-        // message under the agent's default model with nothing on screen to say so (#74 review).
+        // message under the agent's default model with nothing on screen to say so.
         this.#applySetup(sid);
         this.drainQueue(sid);
       }
