@@ -38,8 +38,8 @@ import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
 import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
 import {
-  COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, capabilities, listSessions, parseSince,
-  sendAllowed, sessionRow, tailMessages, type ListQuery,
+  COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, MESSAGE_ROLES, capabilities, isMessageRole,
+  listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
 } from "./cockpit/api.js";
 
 const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
@@ -306,7 +306,21 @@ hub = new ObserverHub({
         return;
       }
       const wanted = options.find((m) => /read[-_ ]?only|readonly|plan/i.test(m.id) || /只读|规划/.test(m.name));
-      if (wanted) void mgr.setMode(id, wanted.id).catch(() => {});
+      if (wanted) {
+        void mgr.setMode(id, wanted.id).catch((e: unknown) =>
+          console.warn(`[agentus] observer ${id}: could not switch to the read-only mode "${wanted.id}": ${String((e as Error)?.message ?? e)}`),
+        );
+        return;
+      }
+      // Say it out loud when the fallback does not exist (#76 E). A silent promise is worse than no
+      // promise: the observer then runs in whatever mode the runtime defaults to — on an ACP backend
+      // that is `accept_edits` with the full tool set — and 「只读兜底」 reads as done in the code
+      // while being a no-op in production.
+      console.warn(
+        `[agentus] observer ${id}: this runtime offers no read-only/plan mode ` +
+        `(${options.map((m) => m.id).join(", ") || "none advertised"}); the observer keeps its default mode. ` +
+        "Its only containment is the scratch directory it runs in.",
+      );
     };
     pick();
   },
@@ -804,7 +818,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const id = url.searchParams.get("id") ?? "";
         if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.noSuchSession });
         const tail = Number(url.searchParams.get("tail") ?? MESSAGES_TAIL_DEFAULT);
-        const out = tailMessages(mgr.messages(id, -1, 2000), tail);
+        // `role`/`user` (issue #76): the reader asks for a KIND, not the last N rows of anything.
+        const rawRole = url.searchParams.get("role") ?? (url.searchParams.get("user") === "1" ? "user" : "");
+        if (rawRole && !isMessageRole(rawRole)) {
+          return send(res, 400, { error: COCKPIT_ERRORS.badRequest, message: `unknown role "${rawRole}" (one of ${MESSAGE_ROLES.join(", ")})` });
+        }
+        const out = tailMessages(mgr.messages(id, -1, 2000), tail, rawRole && isMessageRole(rawRole) ? rawRole : undefined);
         return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, messages: out.rows, meta: out.meta });
       }
       if (url.pathname === "/api/cockpit/plan" && req.method === "GET") {

@@ -273,6 +273,25 @@ try {
   check("…and `--tail 999` is CLAMPED to the maximum, saying so",
     big?.meta?.returned <= 40 && big?.meta?.capped === true, JSON.stringify(big?.meta));
 
+  // ---- #76: `--role` / `--user` filter BEFORE the tail ----
+  const byUser = cli(env, ["session", "messages", SID, "--user", "--tail", "3"]).doc;
+  check("messages --user returns user rows only",
+    (byUser?.data?.messages ?? []).length > 0 && (byUser?.data?.messages ?? []).every((m) => m.kind === "user"),
+    JSON.stringify((byUser?.data?.messages ?? []).map((m) => m.kind)));
+  check("…and meta says how big the pool was, not just how many came back",
+    typeof byUser?.meta?.filtered === "number" && byUser.meta.role === "user" &&
+    byUser.meta.available >= byUser.meta.filtered,
+    JSON.stringify(byUser?.meta));
+  const noPlan = cli(env, ["session", "messages", SID, "--role", "plan", "--tail", "3"]).doc;
+  check("a role with no rows is an empty answer, not an error",
+    noPlan?.success === true && (noPlan?.data?.messages ?? []).length === 0, JSON.stringify(noPlan?.error ?? noPlan?.meta));
+  const badRole = cli(env, ["session", "messages", SID, "--role", "nope"]).doc;
+  check("an unknown role is bad_request with the list",
+    badRole?.success !== true && String(badRole?.error?.message ?? badRole?.error ?? "").includes("user"),
+    JSON.stringify(badRole?.error));
+  const both = cli(env, ["session", "messages", SID, "--user", "--role", "tool"]).doc;
+  check("--user plus a contradicting --role is refused", both?.success !== true, JSON.stringify(both?.error));
+
   // ---- plan + session detail ----
   const plan = cli(env, ["session", "plan", SID]).doc;
   check("plan answers the plan object (null when there is none)", plan?.success === true && "plan" in (plan.data ?? {}),

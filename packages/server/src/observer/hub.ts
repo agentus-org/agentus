@@ -127,6 +127,11 @@ interface Watch {
   startedAt: number;
   /** Model-backed briefs spent on the CURRENT turn (the MAX_BRIEFS_PER_TURN counter). */
   briefsThisTurn: number;
+  /** The last line actually SPOKEN for this watch, normalised (#76 C). `MAX_BRIEFS_PER_TURN` and
+   *  `throttleSec` are time/quantity gates; neither stops 「同一件事换个说法」 — and after a switch
+   *  away and back the observer is rebuilt with `history = 0`, so it cannot remember its own last
+   *  sentence. Remembering it HERE is the only place that survives a re-spawn. */
+  lastSpoken: string;
   /** Why the last beat skipped this watch (issue #69 §6): the beat used to be silent in every sense —
    *  no sound, no log line, no field on the diagnostic endpoint, so 「它到底有没有在跑」 could only be
    *  guessed at. Kept per watch and cheap (one small object). */
@@ -142,9 +147,29 @@ export type SkipReason =
   | "not-inflight"    // no turn running → nothing to report
   | "not-current"     // not the session the operator is on
   | "no-beat-yet"     // the interval has not elapsed
-  | "per-turn-cap";   // MAX_BRIEFS_PER_TURN reached
+  | "per-turn-cap"    // MAX_BRIEFS_PER_TURN reached
+  | "duplicate";      // said the same thing as the previous line (#76)
 
 const NOTHING = "（没有可播报的进展）";
+
+/** Normalise for the duplicate check: what a LISTENER would call the same sentence.
+ *
+ *  Punctuation, spacing and the speaker's own furniture (「还在跑」「暂时没有新输出」) carry no
+ *  information when the line is read aloud, and a model asked to repeat a template reproduces it
+ *  with different commas each time. Two lines that differ only in those are the same line. */
+function sameLine(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const norm = (s: string): string => s.replace(/[\s，。、,.!！?？:：;；"'“”‘’（）()【】\[\]…—-]+/g, "");
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // Same sentence with one clause added or dropped ("X 还在跑" vs "X 还在跑，暂时没有新输出"): a
+  // containment check catches it without pretending to be fuzzy matching. Anything looser starts
+  // swallowing real news ("跑到第 3 步" vs "跑到第 4 步" must NOT be a duplicate).
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  return short.length >= 6 && long.includes(short) && short.length / long.length >= 0.6;
+}
 
 /** Cut a model's answer down to one spoken line: first non-empty line, no Markdown furniture, no
  *  quotes, hard cap. A brief is read aloud, so anything resembling formatting is noise. */
@@ -457,7 +482,8 @@ export class ObserverHub {
     const why =
       kind === "heartbeat"
         ? `这个会话已经跑了 ${minutesLabel(this.#now() - (w.startedAt || w.lastActivityAt))}还没结束。` +
-          "用一句话说清它现在在干什么、卡在哪；不要回「（没有可播报的进展）」。"
+          "对照你上一句播的内容：有新进展就播那一条新进展；没有新输出、新报错、新等待，" +
+          "就只说「<在做的事>还在跑，暂时没有新输出」。"
         : error
           ? "这一轮报了错。看一眼进展，按你的契约给一句播报。"
           : "这一轮结束了。看一眼进展，按你的契约给一句播报。";
@@ -479,8 +505,16 @@ export class ObserverHub {
     w.answer = "";
     w.busy = false;
     if (text && text !== NOTHING) {
-      this.#speak(w.observedId, text, "brief", 1);
-      w.briefsThisTurn++;                       // spent by a line the operator actually heard
+      if (sameLine(text, w.lastSpoken)) {
+        // The time gate and the per-turn cap cannot see this: both briefs are legitimate, they just
+        // say the same thing. Dropping it here is what actually stops 「重复播报」, and it does not
+        // spend the per-turn quota — nothing was spoken (#76 C).
+        w.lastSkip = { reason: "duplicate", at: this.#now() };
+      } else {
+        w.lastSpoken = text;
+        this.#speak(w.observedId, text, "brief", 1);
+        w.briefsThisTurn++;                     // spent by a line the operator actually heard
+      }
     }
     if (w.queued) {
       const kind = w.queuedKind;
@@ -509,7 +543,11 @@ export class ObserverHub {
     // The prompt is the operator's, plus the one fact the observer cannot read for itself: which
     // session it is watching. Everything else it looks up.
     const wording = settings.systemPrompt.trim() || OBSERVER_PROMPT_DEFAULT;
-    const system = `${wording}\n\n你负责的会话 id 是 ${observedId}（名字：${title}）。`;
+    // The name is usually the auto-generated summary of the session's FIRST sentence, so it goes
+    // stale the moment the work moves on — and it is OUR prompt text for an observer spawned before
+    // #76 (10 of 11 observers on the machine that filed it). Presented as a fact it is a trap; the
+    // contract already tells the model to trust the user's own words over it.
+    const system = `${wording}\n\n你负责的会话 id 是 ${observedId}（名字，可能是自动摘要，仅供参考：${title}）。`;
     // ACP has no "system prompt" call: the persona rides as the observer's first turn, and its own
     // transcript keeps it. Everything after that is a one-line trigger.
     await this.#deps.prompt(id, `${system}\n\n现在先看一眼这个会话的现状，给一句播报。`);
@@ -541,7 +579,7 @@ export class ObserverHub {
       w = {
         observedId: sessionId, observerId: null, spawning: false, lastBriefAt: 0, queued: false,
         queuedKind: "turn-end", answer: "", busy: false, announcedSteps: new Set(),
-        inflight: false, lastActivityAt: now, startedAt: now, briefsThisTurn: 0, lastSkip: null,
+        inflight: false, lastActivityAt: now, startedAt: now, briefsThisTurn: 0, lastSpoken: "", lastSkip: null,
       };
       this.#watch.set(sessionId, w);
     }

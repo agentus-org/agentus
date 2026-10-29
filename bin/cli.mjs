@@ -51,8 +51,12 @@ another one
         --table           print a HUMAN table instead of JSON (for people, not for pipes)
   agentus session rename <id> <title…> | --auto    name it (attributed to you)
   agentus session show <id>           one session in detail, with any approval it is waiting on
-  agentus session messages <id> [--tail N]
-                                      the last N messages, each cut to the documented size
+  agentus session messages <id> [--tail N] [--role K] [--user]
+                                      the last N messages, each cut to the documented size.
+                                      --role keeps one kind (user|agent|tool|thought|plan) and
+                                      filters BEFORE taking the tail, so --user --tail 3 answers
+                                      three user messages even after forty tool rows; --user is
+                                      --role user. meta carries filtered = the pool it read from.
   agentus session plan <id>           the plan object the operator's card renders
   agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done]
                                        deliver a message into another session (stdin if no text);
@@ -132,7 +136,10 @@ async function call(pathname) {
     fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
   }
   const body = await res.json().catch(() => null);
-  if (!res.ok) fail(String(body?.error ?? `http_${res.status}`), String(body?.error ?? `the cockpit answered HTTP ${res.status}`));
+  // `error` is the stable code a model branches on; `message` is the explanation a human reads. Doing
+  // both from `error` printed 「bad_request: bad_request」 and threw away which argument was wrong.
+  if (!res.ok) fail(String(body?.error ?? `http_${res.status}`),
+    String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
   return body;
 }
 
@@ -272,7 +279,10 @@ if (cmd === "capabilities") {
       fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
     }
     const body = await res.json().catch(() => null);
-    if (!res.ok) fail(String(body?.error ?? `http_${res.status}`), String(body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    // `message` is the human half (a route that refuses a bad argument explains WHICH one); `error`
+    // is the stable code. Reading only `error` for both threw the explanation away.
+    if (!res.ok) fail(String(body?.error ?? `http_${res.status}`),
+      String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
     out({ success: true, data: body, meta: meta(body) });
   } else if (verb === "show") {
     if (!id) fail("bad_request", "usage: agentus session show <id>");
@@ -283,13 +293,28 @@ if (cmd === "capabilities") {
     const data = await call(`/api/cockpit/session?id=${q(id)}`);
     out({ success: true, data, meta: meta(data) });
   } else if (verb === "messages") {
-    if (!id) fail("bad_request", "usage: agentus session messages <id> [--tail N]");
+    const USAGE = "usage: agentus session messages <id> [--tail N] [--role user|agent|tool|thought|plan] [--user]";
+    if (!id) fail("bad_request", USAGE);
     const at = args.indexOf("--tail");
     const tail = at >= 0 ? args[at + 1] : undefined;
     if (at >= 0 && tail === undefined) fail("bad_request", "--tail needs a number");
-    const leftovers = args.filter((_, i) => i > 0 && i !== at && i !== at + 1);
-    if (leftovers.length) fail("bad_request", `unexpected argument "${leftovers[0]}" (usage: agentus session messages <id> [--tail N])`);
-    const data = await call(`/api/cockpit/messages?id=${q(id)}${tail ? `&tail=${q(tail)}` : ""}`);
+    const roleAt = args.indexOf("--role");
+    const role = roleAt >= 0 ? args[roleAt + 1] : undefined;
+    if (roleAt >= 0 && role === undefined) fail("bad_request", "--role needs a value (one of user, agent, tool, thought, plan)");
+    // `--user` is nothing but a shorter `--role user` — the observer's contract writes it, so it is
+    // worth the three lines. Both at once is a caller who is guessing: say so instead of picking one.
+    const wantUser = args.includes("--user");
+    if (wantUser && role !== undefined && role !== "user") {
+      fail("bad_request", `--user and --role ${role} contradict each other`);
+    }
+    const consumed = new Set([0, at, at + 1, roleAt, roleAt + 1].filter((i) => i >= 0));
+    for (let i = 0; i < args.length; i += 1) if (args[i] === "--user") consumed.add(i);
+    const leftovers = args.filter((_, i) => !consumed.has(i));
+    if (leftovers.length) fail("bad_request", `unexpected argument "${leftovers[0]}" (${USAGE})`);
+    const roleQ = role ?? (wantUser ? "user" : undefined);
+    const data = await call(
+      `/api/cockpit/messages?id=${q(id)}${tail ? `&tail=${q(tail)}` : ""}${roleQ ? `&role=${q(roleQ)}` : ""}`,
+    );
     out({ success: true, data, meta: meta(data) });
   } else if (verb === "plan") {
     if (!id) fail("bad_request", "usage: agentus session plan <id>");
