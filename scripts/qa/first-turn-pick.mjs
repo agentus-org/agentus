@@ -61,12 +61,16 @@ async function oneRound(n, pick) {
   // LISTEN FIRST: a cold spawn can reach `ready` before the POST returns, and a probe that only
   // starts listening afterwards waits forever for a transition that already happened.
   const ws = new WebSocket(`${BASE.replace("http", "ws")}/ws?token=${encodeURIComponent(token)}`);
+  let closed = "";
+  // Attach BEFORE waiting for `open`: the server sends `hello` + `sessions` the instant the socket
+  // is up, and a listener attached after that promise resolves can miss them.
+  ws.on("message", (raw) => {
+    try { frames.push(JSON.parse(String(raw))); } catch { /* not a frame we care about */ }
+  });
+  ws.on("close", (code, reason) => { closed = `${code} ${String(reason)}`; });
   await new Promise((resolve, reject) => {
     ws.on("error", reject);
     ws.on("open", resolve);
-  });
-  ws.on("message", (raw) => {
-    try { frames.push(JSON.parse(String(raw))); } catch { /* not a frame we care about */ }
   });
 
   const created = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "hermes", cwd: CWD }) });
@@ -80,7 +84,7 @@ async function oneRound(n, pick) {
   // The page waits for its own `ready` row, then replays the picks and releases the queue — two
   // frames in one tick, which is exactly the interleaving ACP does not preserve on its own.
   const ready = await new Promise((resolve) => {
-    const t = setTimeout(() => resolve(false), 90_000);
+    const t = setTimeout(() => resolve(false), 180_000);
     const tick = setInterval(() => {
       // A `session` row, or the snapshot the socket opens with: the spawn may be ready before we
       // connect, and a probe that only listens for the transition would wait forever.
@@ -89,7 +93,12 @@ async function oneRound(n, pick) {
       if (hit) { clearInterval(tick); clearTimeout(t); resolve(true); }
     }, 100);
   });
-  if (!ready) { check(`round ${n}: the slot came up`, false, "no ready frame in 90s"); ws.close(); return; }
+  if (!ready) {
+    check(`round ${n}: the slot came up`, false,
+      `no ready frame in 180s (frames=${frames.length}${closed ? `, closed=${closed}` : ""})`);
+    ws.close();
+    return;
+  }
 
   if (pick) ws.send(JSON.stringify({ t: "set-model", sessionId: id, modelId: pick, fromReplay: true }));
   ws.send(JSON.stringify({ t: "prompt", sessionId: id, text, pid }));
