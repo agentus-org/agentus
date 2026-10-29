@@ -827,6 +827,12 @@ export class SessionManager {
     // travels in the child's own environment
     const cockpitToken = randomUUID();
     plan.env = this.#cockpitEnv(plan.env, id, cockpitToken);
+    // A `system` session (the 工作播报 observer) tells a capable runtime what it is (#76 D): a
+    // bystander that must not recall or write long-term memory and must not run a background
+    // self-review on the operator's tab. It rides in the child's environment — one process per
+    // session, so it cannot leak into a normal one — and a runtime that ignores the variable simply
+    // behaves as before.
+    if (opts.system) plan.env = { ...plan.env, AGENTUS_SESSION_ROLE: "observer" };
     // measured once per spawn: how long the row took to reach `ready` (or to die trying)
     const spawnStarted = Date.now();
 
@@ -1027,6 +1033,8 @@ export class SessionManager {
     // child's token died with the old child.
     const cockpitToken = randomUUID();
     plan.env = this.#cockpitEnv(plan.env, id, cockpitToken);
+    // Same identity as at create time: a reaped observer that comes back is still a bystander.
+    if (row.system) plan.env = { ...plan.env, AGENTUS_SESSION_ROLE: "observer" };
     // ── Can this slot come back AT ALL? ──────────────────────────────────────────────────────
     // A session's agent-side state lives in the home it was CREATED under; a resume hands the
     // agent whatever home the row names TODAY. If those differ, the agent is being asked about a

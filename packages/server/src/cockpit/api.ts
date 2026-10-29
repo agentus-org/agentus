@@ -30,6 +30,23 @@ export const COCKPIT_SCHEMA_VERSION = 1;
 export const MESSAGES_TAIL_MAX = 40;
 export const MESSAGES_TAIL_DEFAULT = 10;
 
+/** `messages --role` / `--user` (issue #76).
+ *
+ *  Why this exists at all: `--tail` used to be "the last N rows, whatever kind they are", and on a
+ *  real transcript that is almost never what a reader wants. Measured on one machine: 27,008 tool
+ *  rows and 22,286 thought rows against 1,974 user rows — 3% of the table. A `--tail 10` therefore
+ *  returns ten tool/thought rows and ZERO of the thing that says what the operator actually asked
+ *  for, so an observer ends up pulling `--tail 40` and sifting.
+ *
+ *  The filter is applied BEFORE the tail slice (see `tailMessages`): filtering after the slice would
+ *  make `--user --tail 3` answer "0 rows" on any session whose last ten rows are tool output, which
+ *  reads to a model as "the user never said anything". */
+export const MESSAGE_ROLES = ["user", "agent", "tool", "thought", "plan"] as const;
+export type MessageRole = (typeof MESSAGE_ROLES)[number];
+export function isMessageRole(v: string): v is MessageRole {
+  return (MESSAGE_ROLES as readonly string[]).includes(v);
+}
+
 /** How many characters of ONE message are returned. Long replies (a full file dump, a 2000-line
  *  stack trace) are exactly what a reader wants a glimpse of, not a copy of. */
 export const MESSAGE_CHARS = 600;
@@ -99,7 +116,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       },
       { name: "session rename", args: ["<id>", "<title…>", "--auto"], returns: "name a session (--auto clears back to the generated name)" },
       { name: "session show", args: ["<id>"], returns: "one session in detail, including any approval it is waiting on" },
-      { name: "session messages", args: ["<id>", "--tail N"], returns: `the last N messages (default ${MESSAGES_TAIL_DEFAULT}, max ${MESSAGES_TAIL_MAX}), each cut to ${MESSAGE_CHARS} chars` },
+      { name: "session messages", args: ["<id>", "--tail N", "--role <k>", "--user"], returns: `the last N messages (default ${MESSAGES_TAIL_DEFAULT}, max ${MESSAGES_TAIL_MAX}), each cut to ${MESSAGE_CHARS} chars. --role keeps one kind (${MESSAGE_ROLES.join("|")}) and filters BEFORE the tail, so --user --tail 3 on a session whose last forty rows are tool output still answers three user messages; --user is --role user. meta reports asked/returned/available/filtered/role — filtered is the pool the tail came from, so an empty answer can be told apart from an empty session` },
       { name: "session plan", args: ["<id>"], returns: "the plan object the operator's card renders (title/items/explanation/terminal)" },
       { name: "session send", args: ["<id>", "<text…>", "--wake", "--interrupt", "--reply-on-done"], returns: "deliver a message into another session (text after the id, or on stdin). A COLD target answers cold_target unless you pass --wake. A BUSY target answers target_busy unless you pass --interrupt, which cancels the running turn, waits for it to really stop and then starts yours — the answer then carries interrupted:true. Interrupting is never implicit: it takes a turn away from whoever started it. --reply-on-done answers AT ONCE (reply_on_done:true) instead of waiting for the target's turn to finish, and when that turn ends naturally the cockpit drops a 【完成回推】 notice into YOUR session and wakes you — so you can hand out work and stop polling session messages; the notice carries the duration and the target id, NOT the answer body, which you still read with session messages <id>. An interrupted or failed target turn reports that too. Combine with --interrupt to take the floor AND get told when it is done" },
       { name: "session wake", args: ["<id>"], returns: "start a cold session's agent process — the same thing the operator's rail does when they open it; the session then accepts send. Gated by the same 驾驶舱互发消息 switch as send" },
@@ -396,13 +413,30 @@ function textOf(m: StoredMessage): string {
 /** The tail of a transcript. `tail` is clamped rather than refused: a caller asking for 500 gets the
  *  documented maximum, and `meta.truncated` says so — a silent short answer reads as "there was
  *  less". */
-export function tailMessages(rows: readonly StoredMessage[], tail: number): { rows: CockpitMessageRow[]; meta: Record<string, unknown> } {
+export function tailMessages(
+  rows: readonly StoredMessage[],
+  tail: number,
+  role?: MessageRole,
+): { rows: CockpitMessageRow[]; meta: Record<string, unknown> } {
   const want = Number.isFinite(tail) ? Math.max(1, Math.floor(tail)) : MESSAGES_TAIL_DEFAULT;
   const capped = Math.min(MESSAGES_TAIL_MAX, want);
-  const slice = rows.slice(-capped);
+  // Filter FIRST, then take the tail. The other order answers "there is nothing" whenever the end
+  // of the transcript happens to be tool rows — and an empty answer is indistinguishable from an
+  // empty session.
+  const pool = role ? rows.filter((m) => m.kind === role) : rows;
+  const slice = pool.slice(-capped);
   return {
     rows: slice.map(messageRow),
-    meta: { asked: want, returned: slice.length, available: rows.length, capped: want > capped },
+    meta: {
+      asked: want,
+      returned: slice.length,
+      available: rows.length,
+      // `filtered` is the pool the tail was taken from. 「只剩 2 条」 must be readable as 「这个池子里
+      // 只有 2 条」, never as 「整段只有 2 条」 — the same discipline as `capped`.
+      filtered: pool.length,
+      role: role ?? null,
+      capped: want > capped,
+    },
   };
 }
 
