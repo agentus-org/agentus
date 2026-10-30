@@ -45,7 +45,7 @@ import {
   IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
-import { PANES, useIdeStatus, useWide, type PaneId, type ViewTab } from "./panes";
+import { PANES, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
@@ -1270,7 +1270,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   /* WHICH PANE the panel shows, owned here rather than inside the panel (#80 §1): the head grows a
    * button per wide-screen pane (terminal, IDE), and "open the panel on THAT pane" is a fact the
    * head has to be able to set. It is also why the panel no longer answers this question itself. */
-  const [panelTab, setPanelTab] = useState<ViewTab>("files");
+  /* Seeded from the stored pair: a cockpit reload lands back on the pane that was on top (#78's
+   * "the mode is a preference"), and a click on the head's 📁 still wins, because it is a later,
+   * explicit choice rather than something a restore effect can overrule. */
+  const [panelTab, setPanelTab] = useState<ViewTab>(() => readPair()?.[0] ?? "files");
   /* One IDE status for both consumers — the head decides whether its ide button exists, the panel
    * decides whether the ide row is available. Asked once per session/workspace (panes.ts). */
   const wide = useWide();

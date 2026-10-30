@@ -22,7 +22,7 @@ import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import { usePaneHeight, usePaneWidth } from "./paneWidth";
-import { PANES, useWide, type IdeStatus, type PaneId, type PaneSpec, type ViewTab } from "./panes";
+import { PANES, RATIO_KEY, readPair, useWide, writePair, type IdeStatus, type PaneId, type PaneSpec, type ViewTab } from "./panes";
 import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
@@ -63,54 +63,9 @@ const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
 /* Desktop split (2026-10-30): the IDE above, the terminal below, both alive at once. Two remembered
  * facts, both layout preferences like the widths and folds beside them: whether the split is on, and
  * which of the two panes is the top one. */
-const PAIR_KEY = "agentus.panel-pair";
 // 0.15.10 stored the split as two booleans (splitOn + ideOnTop) and one global ratio. #78's pair
-// model replaces all three; `readPair`/`readRatio` migrate the old values once so an operator who
-// had IDE-on-top keeps IDE-on-top after the upgrade.
-const SPLIT_KEY = "agentus.panel-split";
-const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
-const RATIO_KEY = "agentus.panel-split-ratio";
-
-/** Which pane sits where: [top, bottom] or null = no split. One JSON value, one write path —
- *  the two booleans of 0.15.10 could disagree with each other (`splitOn` true while `tab` was
- *  "files"), this shape cannot. */
-function writePair(pair: PaneId[] | null): void {
-  try {
-    if (pair === null) localStorage.removeItem(PAIR_KEY);
-    else localStorage.setItem(PAIR_KEY, JSON.stringify(pair));
-  } catch { /* private mode: the layout still applies for this session */ }
-}
-
-function readPair(): PaneId[] | null {
-  try {
-    const raw = localStorage.getItem(PAIR_KEY);
-    if (raw !== null) {
-      const p = JSON.parse(raw);
-      return Array.isArray(p) && p.length === 2 && p[0] !== p[1] ? p : null;
-    }
-    // migration: splitOn + ideOnTop → a pair over the only two panes that ever split. The migrated
-    // value is WRITTEN back, not just returned: a read that keeps deriving would move the ratio's
-    // key under the hook the first time availability flips (livePair null → key = the global one →
-    // hook re-reads → the migrated height evaporates; measured in QA).
-    if (localStorage.getItem(SPLIT_KEY) !== null) {
-      const on = localStorage.getItem(SPLIT_KEY) === "1";
-      const migrated: PaneId[] | null = on
-        ? (localStorage.getItem(SPLIT_IDE_TOP_KEY) === "0" ? ["terminal", "ide"] : ["ide", "terminal"])
-        : null;
-      if (migrated) writePair(migrated);
-      // …and the global ratio into the pair's key, same one-time move
-      const oldRatio = localStorage.getItem(RATIO_KEY);
-      if (migrated && oldRatio !== null) {
-        const key = `${RATIO_KEY}:${[...migrated].sort().join("+")}`;
-        if (localStorage.getItem(key) === null) localStorage.setItem(key, oldRatio);
-      }
-      localStorage.removeItem(SPLIT_KEY);
-      localStorage.removeItem(SPLIT_IDE_TOP_KEY);
-      return migrated;
-    }
-  } catch { /* private mode / a hand-edited value — defaults are correct */ }
-  return null;
-}
+// model replaces all three; `readPair`/`readRatio` (panes.ts) migrate the old values once so an
+// operator who had IDE-on-top keeps IDE-on-top after the upgrade.
 
 /** The top row's height, PER PAIR (#78 §2: 从「IDE+终端」切到「桌面+IDE」不能沿用上一个组合的高度).
  *  Keyed by the SORTED pair, so swapping which pane is on top keeps the ratio — the heights belong
@@ -206,15 +161,16 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   /* In split mode both panes are on screen, so the tab buttons mean "which one is on top"; `files`
    * leaves the split (it is a column layout, not a row). A phone never splits. */
   const splitActive = wide && Boolean(livePair) && tab !== "files";
-  /* Reopening the panel lands on the operator's mode, not on `files`: the pair is a layout
-   * preference that outlives the tab. Runs ONCE per panel mount, after the IDE status arrives (that
-   * status is what makes a stored `ide` pane available at all). */
-  const [pairRestored, setPairRestored] = useState(false);
+  /* Reopening the cockpit still lands on the operator's mode — but that decision now happens in the
+   * HEAD, when the page loads and the panel's first tab is seeded from the stored pair (#80). Doing
+   * it here instead is what made the head's 📁 button useless in a session with a stored split: the
+   * button said "files", the panel's own restore effect pulled it back to the pair a moment later.
+   * What is left for the panel is the mirror case: a tab that stopped being AVAILABLE (an `ide`
+   * whose upstream went away) falls back to the file browser instead of showing a dead pane. */
   useEffect(() => {
-    if (pairRestored || ide0 === null) return;
-    setPairRestored(true);
-    if (livePair && tab === "files") setTab(livePair[0]);
-  }, [ide0, livePair, tab, pairRestored]);
+    if (ide0 === null) return;   // wait for the status: until then no pane's availability is known
+    if (tab !== "files" && !avail(tab)) setTab("files");
+  }, [ide0, tab]);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const ratioStorage = livePair
     ? `${RATIO_KEY}:${[...livePair].sort().join("+")}`

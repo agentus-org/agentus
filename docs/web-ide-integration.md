@@ -146,6 +146,21 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
   so switching combinations never inherits the previous pair's height. Orders are integers
   (top = 1, divider = 2, bottom = 3) — CSS `order` does not accept `1.5`, and a discarded declaration
   silently paints the divider at the top of the panel while it keeps dragging.
+- **Entry points follow the viewport (#80)**: on a wide window (≥721px) `terminal` and `ide` each get
+  a button in the head — one click opens the panel on that pane (or switches to it if the panel is
+  already open); on a phone the head keeps a single folder button and both panes retreat into the
+  panel's tab bar (a phone never splits, so nothing is lost). Whether a pane earns a head entry is
+  the registry's `headEntry` field.
+- **The workspace switcher lives at the root of the file tree (#80)**: the head used to carry 📁
+  (point this session at another directory) and ◫ (open the panel), two icons in the same visual
+  language with overlapping jobs. There is one folder button now (open the panel, on files), and
+  switching directories moved to the top of the tree. The tree, the preview, the terminal's cwd and
+  the IDE's `?folder=` all re-root from it — they were always rooted at the session workspace.
+- **In split mode only the pair may show (#79)**: the hiding rule is
+  `splitActive ? pair.includes(id) : tab === id`, never `splitActive || tab === id`. The latter is
+  right while the registry holds exactly the two panes a pair can hold, and wrong the moment a third
+  pane exists — that pane takes no row from the split but is still released by `tab === id`, and
+  hangs below the pair as a third row.
 - **The frame is mounted once and then hidden, never unmounted.** Switching tabs must not recreate
   the iframe: a fresh iframe is a fresh page load, so code-server restarts its whole front end —
   unsaved buffers, terminal scrollback, extension host. This is the one client-side rule that has to

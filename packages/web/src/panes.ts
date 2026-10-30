@@ -79,3 +79,53 @@ export function useIdeStatus(sessionId: string, root: string): IdeStatus | null 
   }, [sessionId, root]);
   return ide;
 }
+
+/** --- the split's stored shape ----------------------------------------------------------------
+ * One JSON value, one write path: `[top, bottom]` or null. (The two booleans of 0.15.10 could
+ * disagree with each other — `splitOn` true while the tab was `files` — this shape cannot.)
+ *
+ * It moves into this file rather than staying in ToolPanel because the HEAD seeds the panel's first
+ * tab from it (#80): reopening the cockpit lands on the pane that was on top, and a head button that
+ * says "files" must not be overruled by a restore effect that fires a moment later. */
+export const PAIR_KEY = "agentus.panel-pair";
+export const RATIO_KEY = "agentus.panel-split-ratio";
+const SPLIT_KEY = "agentus.panel-split";
+const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
+
+export function writePair(pair: PaneId[] | null): void {
+  try {
+    if (pair === null) localStorage.removeItem(PAIR_KEY);
+    else localStorage.setItem(PAIR_KEY, JSON.stringify(pair));
+  } catch { /* private mode: the layout still applies for this session */ }
+}
+
+export function readPair(): PaneId[] | null {
+  try {
+    const raw = localStorage.getItem(PAIR_KEY);
+    if (raw !== null) {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) && p.length === 2 && p[0] !== p[1] ? p : null;
+    }
+    // migration: splitOn + ideOnTop → a pair over the only two panes that ever split. The migrated
+    // value is WRITTEN back, not just returned: a read that keeps deriving would move the ratio's
+    // key under the hook the first time availability flips (livePair null → key = the global one →
+    // hook re-reads → the migrated height evaporates; measured in QA).
+    if (localStorage.getItem(SPLIT_KEY) !== null) {
+      const on = localStorage.getItem(SPLIT_KEY) === "1";
+      const migrated: PaneId[] | null = on
+        ? (localStorage.getItem(SPLIT_IDE_TOP_KEY) === "0" ? ["terminal", "ide"] : ["ide", "terminal"])
+        : null;
+      if (migrated) writePair(migrated);
+      // …and the global ratio into the pair's key, same one-time move
+      const oldRatio = localStorage.getItem(RATIO_KEY);
+      if (migrated && oldRatio !== null) {
+        const key = `${RATIO_KEY}:${[...migrated].sort().join("+")}`;
+        if (localStorage.getItem(key) === null) localStorage.setItem(key, oldRatio);
+      }
+      localStorage.removeItem(SPLIT_KEY);
+      localStorage.removeItem(SPLIT_IDE_TOP_KEY);
+      return migrated;
+    }
+  } catch { /* private mode / a hand-edited value — defaults are correct */ }
+  return null;
+}

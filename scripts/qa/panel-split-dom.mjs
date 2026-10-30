@@ -76,7 +76,11 @@ const splitBtn = `[aria-label="toggle the vertical split"]`;
  * fixed position in the tree and the pair order is CSS `order`, so `[0]` in the DOM is whichever
  * pane the component renders first — not the top of the screen. (The same trap bit twice during
  * this issue; the assertion shape is the fix for it.) */
-const panes = `JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane')].map(p => ({
+/* Only VISIBLE rows: a pane that has been mounted once stays in the DOM hidden (that is the #77
+ *  no-remount rule), so "what the operator sees" is `.stack-pane:not([hidden])`. Written this way the
+ *  suite keeps working when the registry grows past two panes — counting every row is what made the
+ *  first three-pane run fail for the wrong reason. */
+const panes = `JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({
   pane: p.dataset.pane, cls: p.className, hidden: p.hidden, top: Math.round(p.getBoundingClientRect().top),
   h: Math.round(p.getBoundingClientRect().height), iframe: Boolean(p.querySelector('iframe')),
   xterm: Boolean(p.querySelector('.xterm')) })).sort((a, b) => a.top - b.top))`;
@@ -182,12 +186,21 @@ await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.
 await sleep(1200);
 check("…and going back to a pane restores it", (await ev(`document.querySelectorAll('.panel-stack .stack-pane:not([hidden])').length`)) === 2, "");
 
-// Reopen: the mode comes back without re-choosing it.
+/* Reopen: the mode comes back without re-choosing it. The door used here is the head's TERMINAL
+   button, not 📁 — since #80 the folder button means "show me files", and the stored split is what
+   the panel lands on when the operator opens one of its panes (App seeds its first tab from the
+   pair; letting a restore effect pull `files` back to the pair is what made that button useless). */
 await goto(BASE);
+await sleep(1500);
 await openSessionAndPanel();
 await sleep(2500);
+const landedOnFiles = await ev(`Boolean(document.querySelector('.explorer-col'))`);
+check("#80 …and the head's 📁 opens the FILE BROWSER even when a split is stored (no restore overruling it)",
+  landedOnFiles === true, String(landedOnFiles));
+await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
+await sleep(2500);
 const reopened = JSON.parse(await ev(panes));
-check("reopening the panel lands back in the split, in the remembered order",
+check("opening a pane after a reload lands back in the split, in the remembered order",
   reopened.filter((p) => !p.hidden).length === 2 && reopened[0]?.xterm === true,
   JSON.stringify(reopened.map((p) => ({ cls: p.cls, hidden: p.hidden, top: p.top }))));
 
@@ -197,8 +210,15 @@ await ev(`(() => { for (const k of Object.keys(localStorage)) if (/panel-split|p
   localStorage.setItem('agentus.panel-split','1'); localStorage.setItem('agentus.panel-split-ide-top','0');
   localStorage.setItem('agentus.panel-split-ratio','300'); return true; })()`);
 await goto(BASE);
+await sleep(1500);
+/* the migrated pair is now the head's SEED for the panel's first tab, so the panel opens straight
+   into it — no need to click through a pane button here. */
 await openSessionAndPanel();
-await sleep(3000);
+await sleep(2000);
+/* the shared opener clicks 📁 (files); the migrated pair is what the panel lands on when a PANE is
+   opened, so click through the head's terminal button. */
+await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
+await sleep(1500);
 const migrated = JSON.parse(await ev(`JSON.stringify({pair: localStorage.getItem('agentus.panel-pair'),
   rows: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({cls: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top), h: Math.round(p.getBoundingClientRect().height)})).sort((a,b)=>a.top-b.top),
   perPair: localStorage.getItem('agentus.panel-split-ratio:ide+terminal')})`));
