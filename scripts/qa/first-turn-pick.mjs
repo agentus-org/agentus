@@ -67,8 +67,16 @@ async function pickerModel() {
   // the rest; inside each band, the cheap family first.
   const provider = (id) => (id.startsWith("custom:") ? id.split(":").slice(0, 2).join(":") : id.split(":")[0]);
   const here = provider(hs?.currentModelId ?? "");
-  const band = (id) => (provider(id) === here ? 0 : LOCAL.some((p) => id.startsWith(p)) ? 2 : 4);
-  const rank = (id) => band(id) + (CHEAP.test(id) ? 0 : 1);
+  /* A QA run is NOT worth a pro-tier call, so the cheap family is a HARD filter, not a preference:
+   * only flash/mini/turbo-class ids are candidates at all. Inside them: same provider first (the
+   * routing the page would exercise), then subscription/local providers. If nothing qualifies the
+   * script REFUSES to run — 「改成 flash」 means it must never fall back to pro. */
+  const pool = others.filter((id) => CHEAP.test(id));
+  if (!pool.length) {
+    throw new Error("first-turn-pick: no cheap non-default model in the handshake — set AGENTUS_QA_MODEL");
+  }
+  const band = (id) => (provider(id) === here ? 0 : LOCAL.some((p) => id.startsWith(p)) ? 1 : 2);
+  const rank = (id) => band(id);
   return [...others].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] ?? list[0] ?? "";
 }
 
