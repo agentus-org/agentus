@@ -72,6 +72,46 @@ const openSessionAndPanel = async () => {
 check("a session's panel opens", await openSessionAndPanel(), "");
 
 const splitBtn = `[aria-label="toggle the vertical split"]`;
+const panesOf = () => ev(`JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
+  .map(p => ({ pane: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top),
+    h: Math.round(p.getBoundingClientRect().height), xterm: Boolean(p.querySelector('.xterm')),
+    explorer: Boolean(p.querySelector('.explorer-col')) })).sort((a, b) => a.top - b.top))`);
+
+/* ── The no-IDE machine (AGENTUS_NO_IDE=1) ────────────────────────────────────────────────────────
+ * 优化 2 was the operator's own report: 「现在没有ide时不能支持上下分屏吗」. A box with no
+ * AGENTUS_IDE_UPSTREAM has exactly two panes — files and terminal — and the split has to work on that
+ * pair. This branch runs the same kind of claims against such an instance and stops; the main body
+ * below is the IDE machine's suite. */
+if (process.env.AGENTUS_NO_IDE === "1") {
+  check("no IDE is offered here (the ide button is absent from the head)",
+    await ev(`document.querySelectorAll('.chat-head [aria-label="ide"]').length === 0`),
+    await ev(`[...document.querySelectorAll('.chat-head button')].map(b => b.getAttribute('aria-label') ?? b.title).join(',')`));
+  check("the head still offers the file browser and the terminal",
+    await ev(`Boolean(document.querySelector('.chat-head [aria-label="file browser"]')
+      && document.querySelector('.chat-head [aria-label="terminal"]'))`), "");
+  await ev(`document.querySelector('${splitBtn}').click(); true`);
+  await sleep(5000);
+  const noIde = JSON.parse(await panesOf());
+  check("the split runs on [files, terminal] — the one pair this machine has",
+    noIde.length === 2 && noIde.map((p) => p.pane).join("+") === "files+terminal", JSON.stringify(noIde));
+  check("…files on top with its tree, terminal under it with a real pty",
+    noIde[0]?.explorer === true && noIde[1]?.xterm === true, JSON.stringify(noIde));
+  check("…and they share the height", Math.abs((noIde[0]?.h ?? 0) - (noIde[1]?.h ?? 0)) <= 8,
+    `${noIde[0]?.h} vs ${noIde[1]?.h}`);
+  check("the pair is stored, files first",
+    (await ev(`localStorage.getItem('agentus.panel-pair')`)) === JSON.stringify(["files", "terminal"]),
+    await ev(`localStorage.getItem('agentus.panel-pair')`));
+  const noIdePair = JSON.parse(await ev(`(() => { const vis = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane);
+    return JSON.stringify({ count: vis.length, vis }); })()`));
+  check("#79 still holds: exactly the pair is visible, never three rows", noIdePair.count === 2, JSON.stringify(noIdePair));
+  await ev(`document.querySelector('${splitBtn}').click(); true`);
+  await sleep(2000);
+  check("the split switch closes it back to one pane",
+    JSON.parse(await panesOf()).length <= 1, await panesOf());
+  ws.close();
+  console.log(`\n${pass} passed / ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
 /* Rows come back VISUALLY ordered (by `top`), never in DOM order: since #78 the panes live at a
  * fixed position in the tree and the pair order is CSS `order`, so `[0]` in the DOM is whichever
  * pane the component renders first — not the top of the screen. (The same trap bit twice during
@@ -177,14 +217,28 @@ await sleep(700);
 check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`) === null,
   String(await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`)));
 
-// The files tab leaves the split, and coming back returns to it.
-await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/files/.test(t.textContent)).click(); true`);
+/* `files` is a PANE since 2026-10-30 (「现在没有ide时不能支持上下分屏吗」): the tab bar now means the
+   same thing for every entry — click = put me on top — and the way out of the split is the ⇅ toggle,
+   one control with one meaning. Previously the files tab silently left the split, which was the price
+   of it being a special case outside the registry. */
+await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/^files/.test(t.textContent.trim())).click(); true`);
 await sleep(1200);
-check("the files tab leaves the split (one pane at a time)",
-  await ev(`document.querySelector('${splitBtn}').getAttribute('aria-pressed') === 'false'`), "");
-await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.textContent)).click(); true`);
+const afterFiles = JSON.parse(await ev(`(() => { const vis=[...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
+  .map(p => ({ pane: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top) })).sort((a,b)=>a.top-b.top);
+  return JSON.stringify({ vis, explorer: Boolean(document.querySelector('.explorer-col')),
+    split: document.querySelector('${splitBtn}')?.getAttribute('aria-pressed'),
+    pair: localStorage.getItem('agentus.panel-pair') }); })()`));
+check("clicking the files tab shows the BROWSER full height and keeps the pair stored",
+  afterFiles.split === "false" && afterFiles.explorer === true
+  && afterFiles.vis.length === 1 && afterFiles.vis[0].pane === "files"
+  && afterFiles.pair === JSON.stringify(["terminal","ide"]), JSON.stringify(afterFiles));
+await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/^terminal/.test(t.textContent.trim())).click(); true`);
 await sleep(1200);
-check("…and going back to a pane restores it", (await ev(`document.querySelectorAll('.panel-stack .stack-pane:not([hidden])').length`)) === 2, "");
+const afterTerm = JSON.parse(await ev(`(() => { const vis=[...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
+  .map(p => ({ pane: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top) })).sort((a,b)=>a.top-b.top);
+  return JSON.stringify({ vis }); })()`));
+check("…and going back to a pane brings the stored split back, untouched",
+  afterTerm.vis.length === 2 && afterTerm.vis[0].pane === "terminal", JSON.stringify(afterTerm));
 
 /* Reopen: the mode comes back without re-choosing it. The door used here is the head's TERMINAL
    button, not 📁 — since #80 the folder button means "show me files", and the stored split is what
@@ -241,7 +295,10 @@ check("#80 …plus a terminal and an IDE button of their own",
 check("#80 …and no second folderish workspace button up there (the switcher moved into the tree)",
   headWide.swap === 0, JSON.stringify(headWide));
 
-/* The head's button opens the panel ON that pane — one click, not panel-then-tab. */
+/* The head's button opens the panel ON that pane — one click, not panel-then-tab. Close it first:
+   since the toggle landed, a click on the pane the panel is ALREADY on closes it (checked below). */
+await ev(`(() => { const c = document.querySelector('.tool-panel [aria-label="close panel"]'); if (c) c.click(); return Boolean(c); })()`);
+await sleep(1000);
 await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
 await sleep(1200);
 const fromHead = JSON.parse(await ev(`JSON.stringify({ open: Boolean(document.querySelector('.tool-panel')),
@@ -249,6 +306,23 @@ const fromHead = JSON.parse(await ev(`JSON.stringify({ open: Boolean(document.qu
   visible: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane) })`));
 check("#80 the head's terminal button lands on the terminal (panel opened, that pane selected)",
   fromHead.open && fromHead.onTerm && fromHead.visible.includes("terminal"), JSON.stringify(fromHead));
+
+/* The operator, 2026-10-30: 「按钮二次点击时应该关闭啊」. A head button that only ever opens leaves the
+   panel's own × as the only way back, and the × is at the other end of the panel from where the
+   operator's attention is. */
+await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
+await sleep(1000);
+check("#80 clicking the same head button again CLOSES the panel (a toggle, not an opener)",
+  await ev(`!document.querySelector('.tool-panel')`), "");
+const afterReopen = JSON.parse(await ev(`(() => { const b = document.querySelector('.chat-head [aria-label="file browser"]');
+  const before = { panel: Boolean(document.querySelector('.tool-panel')), pressed: b?.getAttribute('aria-expanded') };
+  b?.click();
+  return JSON.stringify(before); })()`));
+await sleep(1500);
+check("#80 …and the next click opens it again, on that button's pane",
+  (await ev(`Boolean(document.querySelector('.explorer-col'))`)),
+  JSON.stringify({ before: afterReopen, panel: await ev(`Boolean(document.querySelector('.tool-panel'))`),
+    tabs: await ev(`[...document.querySelectorAll('.tool-tab')].map(t=>t.textContent.trim())`) }));
 
 /* The switcher lives in the FILE browser, so look at the files tab (the head just put us on the
    terminal — that is the point of the previous check). */

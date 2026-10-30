@@ -22,7 +22,7 @@ import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import { usePaneHeight, usePaneWidth } from "./paneWidth";
-import { PANES, RATIO_KEY, readPair, useWide, writePair, type IdeStatus, type PaneId, type PaneSpec, type ViewTab } from "./panes";
+import { PANES, RATIO_KEY, readPair, splitSeed, useWide, writePair, type IdeStatus, type PaneId, type PaneSpec, type ViewTab } from "./panes";
 import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
@@ -158,9 +158,15 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * no phantom halves. */
   const avail = (id: string): boolean => PANES.find((x) => x.id === id)?.available(ide0) ?? false;
   const livePair: PaneId[] | null = pair && pair.every(avail) ? pair : null;
-  /* In split mode both panes are on screen, so the tab buttons mean "which one is on top"; `files`
-   * leaves the split (it is a column layout, not a row). A phone never splits. */
-  const splitActive = wide && Boolean(livePair) && tab !== "files";
+  /* In split mode both panes are on screen, so the tab buttons mean "which one is on top". `files`
+   * takes part like every other pane (2026-10-30: without an IDE it is the only partner a terminal
+   * has), so there is no exception to carve out here any more. A phone never splits. */
+  /* The split is on the screen only while the selected tab is one of its panes. That is what makes
+   * `files` usable beside a remembered [terminal, ide]: clicking 📁 shows the browser full height and
+   * LEAVES THE PAIR ALONE (it is still there when you click a pane tab again). Rewriting the pair on
+   * every head click instead — the first thing I tried — silently ate it: 📁 turned [terminal, ide]
+   * into [files, terminal] and the IDE pair was gone. */
+  const splitActive = wide && Boolean(livePair?.includes(tab));
   /* Reopening the cockpit still lands on the operator's mode — but that decision now happens in the
    * HEAD, when the page loads and the panel's first tab is seeded from the stored pair (#80). Doing
    * it here instead is what made the head's 📁 button useless in a session with a stored split: the
@@ -169,7 +175,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * whose upstream went away) falls back to the file browser instead of showing a dead pane. */
   useEffect(() => {
     if (ide0 === null) return;   // wait for the status: until then no pane's availability is known
-    if (tab !== "files" && !avail(tab)) setTab("files");
+    if (!avail(tab)) setTab("files");
   }, [ide0, tab]);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const ratioStorage = livePair
@@ -229,11 +235,16 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * swap. Not in the pair: I take the top slot and the old top becomes the bottom. Turning the
    * split ON with no stored pair seeds [this, the first other available pane]. */
   const chooseTool = (id: PaneId): void => {
+    if (id === "files") { setTab("files"); return; }   // the browser is a view, not a row to swap into
     setTab(id);
-    const others = PANES.filter((x) => x.id !== id && x.available(ide0)).map((x) => x.id);
+    const seed = splitSeed(ide0);
+    // The companion is the one the split would have seeded with, NOT "the next tab in the bar":
+    // after `files` joined the registry that would pair a terminal with the file browser on a machine
+    // that HAS an IDE, quietly changing what ⇅ and a tab click do.
+    const partner = seed?.find((x) => x !== id) ?? null;
     if (!splitActive) {
       // turning the split ON from a pane's tab puts THAT pane on top — the click said what it meant
-      if (wide && others.length) { const next: PaneId[] = [id, others[0] as PaneId]; setPair(next); writePair(next); }
+      if (wide && partner) { const next: PaneId[] = [id, partner]; setPair(next); writePair(next); }
       return;
     }
     const live = livePair as PaneId[];
@@ -259,17 +270,14 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       setTab(top);
       return;
     }
-    // The seed is DETERMINISTIC, not "whatever tab you happened to be on": IDE on top, terminal
-    // below — the shape 0.15.10 documented, and the one a first-time operator can predict from the
-    // docs. With only one pane available there is no pair to seed.
-    const ids = PANES.filter((x) => x.available(ide0)).map((x) => x.id);
-    if (!wide || ids.length < 2) return;   // nothing to split with — no phantom toggle
-    const first: PaneId = ids.includes("ide") ? "ide" : ids[0];
-    const second = (first === "ide" ? "terminal" : "ide") as PaneId;
-    const next: PaneId[] = [first, second];
-    setPair(next);
-    writePair(next);
-    setTab(first);
+    // The seed is DETERMINISTIC, not "whatever tab you happened to be on" (panes.ts::splitSeed):
+    // IDE over terminal when there is an IDE, FILES over terminal when there is not — otherwise a
+    // machine without code-server had no split at all, which is the point of this change.
+    const seed = splitSeed(ide0);
+    if (!wide || !seed) return;   // nothing to split with — no phantom toggle
+    setPair(seed);
+    writePair(seed);
+    setTab(seed[0]);
   };
   const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
   const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
@@ -311,7 +319,10 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * gone, `cd` gone) — #77's rule, generalised: it now covers every pane the split can hold. */
   const [mounted, setMounted] = useState<Record<string, boolean>>({});
   useEffect(() => {
-    const needed: string[] = [...(livePair ?? []), ...(tab !== "files" ? [tab] : [])].filter((id) => !mounted[id]);
+    // `tab` is ALWAYS a pane id now (files included), so nothing to exclude: whatever is on screen or
+    // in the pair has been mounted at least once. (The old `tab !== "files"` guard is why the browser
+    // came up empty for one build after files joined the registry.)
+    const needed: string[] = [...(livePair ?? []), tab].filter((id) => !mounted[id]);
     if (needed.length) setMounted((m) => ({ ...m, ...Object.fromEntries(needed.map((id) => [id, true])) }));
   }, [livePair, tab, mounted]);
 
@@ -363,91 +374,12 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 
   const crumbsText = crumbs.map((c) => c.label).join(" / ");
 
-  return (
-    <aside
-      className="tool-panel"
-      aria-label="workspace panel"
-      style={{ "--panel-w": `${panelWidth}px` } as CSSProperties}
-    >
-      {panelHandle}
-      <div className="tool-tabs">
-        <button
-          className={`tool-tab ${tab === "files" ? "active" : ""}`}
-          onClick={() => setTab("files")}
-        >
-          <IconFile size={14} /> files
-        </button>
-        {/* The tab bar is built from the registry (#78 §1): one entry per pane, click = chooseTool
-            (put me on top / start the split with me on top). No AGENTUS_IDE_UPSTREAM ⇒ no ide tab at
-            all: a control that cannot do anything is worse than no control. */}
-        {PANES.map((pane) => {
-          if (!pane.available(ide0)) return null;
-          const isTop = splitActive && livePair?.[0] === pane.id;
-          const inPair = splitActive && Boolean(livePair?.includes(pane.id));
-          const title = splitActive
-            ? (isTop ? `${pane.label} 已经在上半屏` : inPair ? `把 ${pane.label} 放到上面` : `用 ${pane.label} 替换上半屏`)
-            : pane.id === "ide" && ide0
-              ? (ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable")
-              : undefined;
-          return (
-            <button
-              key={pane.id}
-              className={`tool-tab ${tab === pane.id || inPair ? "active" : ""}`}
-              title={title}
-              onClick={() => chooseTool(pane.id)}
-            >
-              {pane.id === "ide" ? <IconCode size={14} /> : <IconTerminal size={14} />} {pane.label}
-              {pane.id === "ide" && ide0 && !ide0.reachable ? <span className="tab-dot" aria-label="not reachable" /> : null}
-            </button>
-          );
-        })}
-        {wide && PANES.filter((x) => x.available(ide0)).length >= 2 ? (
-          <button
-            className={`icon-btn ${splitActive ? "on" : ""}`}
-            title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：两块 pane 同时看"}
-            aria-label="toggle the vertical split"
-            aria-pressed={splitActive}
-            onClick={toggleSplit}
-          >
-            <IconSplitRows size={15} />
-          </button>
-        ) : null}
-        <span className="head-spacer" />
-        {tab === "files" ? (
-          <>
-            <button
-              className={`icon-btn ${target && !previewFolded ? "on" : ""}`}
-              disabled={!target}
-              title={previewFolded || !target ? "展开预览列" : "收起预览列"}
-              aria-label="toggle the preview column"
-              aria-pressed={Boolean(target) && !previewFolded}
-              onClick={() => foldPreview()}
-            >
-              <IconPanelLeft size={15} />
-            </button>
-            <button
-              className={`icon-btn ${treeFolded ? "" : "on"}`}
-              title={treeFolded ? "展开文件树" : "收起文件树"}
-              aria-label="toggle the file tree column"
-              aria-pressed={!treeFolded}
-              onClick={() => foldTree()}
-            >
-              <IconPanelRight size={15} />
-            </button>
-          </>
-        ) : null}
-        <button className="icon-btn" title="close panel" aria-label="close panel" onClick={onClose}>
-          <IconClose size={15} />
-        </button>
-      </div>
-
-      {/* THREE PANES IN ONE DOM ORDER, chosen for a reason (split + #77, 2026-10-30): the IDE frame
-          and the terminal are mounted once and afterwards only hidden. An iframe re-mount reloads
-          code-server's whole front end (unsaved buffers, extension host) and a terminal re-mount
-          opens a NEW pty, so the panes may not move around in the tree. Which one is on top is CSS
-          `order`, not DOM position — a swap is then a repaint, not a reload. */}
-      <div className={`panel-stack ${splitActive ? "is-split" : ""}`} ref={stackRef}>
-      {tab === "files" ? (
+  /* A pane's BODY — the entire extension point (#78 §1): a new pane is one registry entry plus one
+   * branch here. The row's shell, its hiding rule and its order all come from `paneRow`, so a pane
+   * cannot invent a second visibility rule (that is exactly the #79 bug). */
+  const paneBody = (id: PaneId): JSX.Element => {
+    if (id === "files") {
+      return (
         /* The ROW is split, not the column. The operator: 「现在文件预览是直接放在文件浏览器下面的，
            只有一半的空间，太小了吧…你看下aionui，是单独加个侧栏到中间的吧」 — and the reference does
            exactly that: `ProjectPanelHost.tsx` partitions the layout as chat | preview | explorer. So
@@ -521,19 +453,10 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             </div>
           </div>
         </div>
-      ) : null}
-
-      {/* Rows are rendered from the registry, in ONE fixed DOM order — the pair's order is pure CSS
-          `order`. A pane is mounted on first use and only ever hidden after that (the #77 rule:
-          re-mounting an iframe reloads code-server, re-mounting the terminal opens a new pty).
-
-          The body is the only thing a new pane has to write (one branch below); the section, its
-          hiding rule and its order come from `paneRow`, which is why a third pane cannot repeat the
-          #79 bug: there is nowhere left to write a second, wrong `hidden` expression. */}
-      {PANES.map((pane) => {
-        if (!mounted[pane.id]) return null;
-        if (pane.id === "terminal") return paneRow(pane, <TerminalTab v={v} root={root} />);
-        return paneRow(pane, (
+      );
+    }
+    if (id === "terminal") return <TerminalTab v={v} root={root} />;
+    return (
           <div className="ide-frame">
             {ide0?.reachable ? (
               /* `folder` comes from the slot, never from an input: the panel is rooted at the session
@@ -559,8 +482,97 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
               </div>
             )}
           </div>
-        ));
-      })}
+    );
+  };
+
+  return (
+    <aside
+      className="tool-panel"
+      aria-label="workspace panel"
+      style={{ "--panel-w": `${panelWidth}px` } as CSSProperties}
+    >
+      {panelHandle}
+      <div className="tool-tabs">
+        {/* The tab bar is built from the registry (#78 §1): one entry per pane — `files` included,
+            since 2026-10-30 — click = chooseTool (put me on top / start the split with me on top).
+            No AGENTUS_IDE_UPSTREAM ⇒ no ide tab at all: a control that cannot do anything is worse
+            than no control. */}
+        {PANES.map((pane) => {
+          if (!pane.available(ide0)) return null;
+          const isTop = splitActive && livePair?.[0] === pane.id;
+          const inPair = splitActive && Boolean(livePair?.includes(pane.id));
+          const title = splitActive
+            ? (isTop ? `${pane.label} 已经在上半屏` : inPair ? `把 ${pane.label} 放到上面` : `用 ${pane.label} 替换上半屏`)
+            : pane.id === "ide" && ide0
+              ? (ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable")
+              : undefined;
+          return (
+            <button
+              key={pane.id}
+              className={`tool-tab ${tab === pane.id || inPair ? "active" : ""}`}
+              title={title}
+              onClick={() => chooseTool(pane.id)}
+            >
+              {pane.id === "ide" ? <IconCode size={14} /> : pane.id === "files" ? <IconFile size={14} /> : <IconTerminal size={14} />} {pane.label}
+              {pane.id === "ide" && ide0 && !ide0.reachable ? <span className="tab-dot" aria-label="not reachable" /> : null}
+            </button>
+          );
+        })}
+        {wide && splitSeed(ide0) ? (
+          <button
+            className={`icon-btn ${splitActive ? "on" : ""}`}
+            title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：两块 pane 同时看"}
+            aria-label="toggle the vertical split"
+            aria-pressed={splitActive}
+            onClick={toggleSplit}
+          >
+            <IconSplitRows size={15} />
+          </button>
+        ) : null}
+        <span className="head-spacer" />
+        {tab === "files" ? (
+          <>
+            <button
+              className={`icon-btn ${target && !previewFolded ? "on" : ""}`}
+              disabled={!target}
+              title={previewFolded || !target ? "展开预览列" : "收起预览列"}
+              aria-label="toggle the preview column"
+              aria-pressed={Boolean(target) && !previewFolded}
+              onClick={() => foldPreview()}
+            >
+              <IconPanelLeft size={15} />
+            </button>
+            <button
+              className={`icon-btn ${treeFolded ? "" : "on"}`}
+              title={treeFolded ? "展开文件树" : "收起文件树"}
+              aria-label="toggle the file tree column"
+              aria-pressed={!treeFolded}
+              onClick={() => foldTree()}
+            >
+              <IconPanelRight size={15} />
+            </button>
+          </>
+        ) : null}
+        <button className="icon-btn" title="close panel" aria-label="close panel" onClick={onClose}>
+          <IconClose size={15} />
+        </button>
+      </div>
+
+      {/* THREE PANES IN ONE DOM ORDER, chosen for a reason (split + #77, 2026-10-30): the IDE frame
+          and the terminal are mounted once and afterwards only hidden. An iframe re-mount reloads
+          code-server's whole front end (unsaved buffers, extension host) and a terminal re-mount
+          opens a NEW pty, so the panes may not move around in the tree. Which one is on top is CSS
+          `order`, not DOM position — a swap is then a repaint, not a reload. */}
+      <div className={`panel-stack ${splitActive ? "is-split" : ""}`} ref={stackRef}>
+
+      {/* Rows are rendered from the registry, in ONE fixed DOM order — the pair's order is pure CSS
+          `order`. A pane is mounted on first use and only ever hidden after that (the #77 rule:
+          re-mounting an iframe reloads code-server, re-mounting the terminal opens a new pty).
+
+          The body is the only thing a new pane has to write (one branch below); the section, its
+          hiding rule and its order come from `paneRow`, which is why a third pane cannot repeat the
+          #79 bug: there is nowhere left to write a second, wrong `hidden` expression. */}
+      {PANES.map((pane) => (mounted[pane.id] ? paneRow(pane, paneBody(pane.id)) : null))}
 
       {/* ONE divider between the two rows — and its order is the integer 2, NOT the 1.5 this shipped
           with: CSS `order` is <integer>, 1.5 was a discarded declaration, the divider fell back to

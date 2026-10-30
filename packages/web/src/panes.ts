@@ -21,8 +21,12 @@ export interface IdeStatus {
   start: string;
 }
 
-export type PaneId = "terminal" | "ide";
-export type ViewTab = "files" | PaneId;
+/* `files` IS a pane now (2026-10-30, the operator: 「现在没有ide时不能支持上下分屏吗」). #78 kept it out
+ * on the argument that the browser is a column layout (tree | preview), not a row — true, and beside
+ * the point: it is also the only second pane a machine without code-server has, so excluding it meant
+ * "no IDE ⇒ no split at all". A row that holds tree|preview is still a row. */
+export type PaneId = "files" | "terminal" | "ide";
+export type ViewTab = PaneId;
 
 export interface PaneSpec {
   id: PaneId;
@@ -39,9 +43,20 @@ export interface PaneSpec {
 }
 
 export const PANES: PaneSpec[] = [
+  { id: "files", label: "files", available: () => true, headEntry: false },
   { id: "terminal", label: "terminal", available: () => true, headEntry: true },
   { id: "ide", label: "ide", available: (ide) => Boolean(ide?.configured), headEntry: true },
 ];
+
+/** Which two panes a fresh split starts with. Deterministic, and the same shape the docs describe:
+ *  IDE above, terminal below when there is an IDE — and FILES above, terminal below when there is
+ *  not, because otherwise a machine without code-server could not split at all. */
+export function splitSeed(ide: IdeStatus | null): [PaneId, PaneId] | null {
+  const has = (id: PaneId): boolean => PANES.find((p) => p.id === id)?.available(ide) ?? false;
+  if (has("ide") && has("terminal")) return ["ide", "terminal"];
+  if (has("files") && has("terminal")) return ["files", "terminal"];
+  return null;
+}
 
 /** Desktop or phone? The split and the head entry points are WIDE-window affordances and nothing
  *  else: a phone sheet shows one pane at a time (≤720px rules), so the media query IS the rule —

@@ -1282,9 +1282,14 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   const ide = useIdeStatus(active?.info.id ?? "", active?.info.workspace || active?.info.cwd || "");
   const headPanes = PANES.filter((x) => x.headEntry && x.available(ide));
   /* One door for the head's pane buttons: a pane is a tool window the operator opens all day, so a
-   * click on its head button opens the panel straight onto it — and if the panel is already open,
-   * it just switches (setPanelTab is a no-op when it is already that pane). */
-  const openPane = (t: ViewTab): void => { setPanelTab(t); setPanelOpen(true); };
+   * click on its head button opens the panel straight onto it; if the panel is already open on that
+   * pane, the same click CLOSES it (the operator, 2026-10-30: 「按钮二次点击时应该关闭啊」 — a toggle
+   * that only ever opens makes the head's own × the only way back). */
+  const openPane = (t: ViewTab): void => {
+    if (panelOpen && panelTab === t) { setPanelOpen(false); return; }
+    setPanelTab(t);
+    setPanelOpen(true);
+  };
   // A file pushed into the panel from outside it — a file link or an image in a reply
   // (fileBus.ts). A fresh object each time, so clicking the same link twice reopens it.
   const [panelFocus, setPanelFocus] = useState<PanelTarget | null>(null);
