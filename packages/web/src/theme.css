@@ -1691,11 +1691,28 @@ body.pane-dragging * { cursor: col-resize !important; }
    Only one pane is visible outside split mode; the others are `hidden` but stay mounted. */
 .panel-stack { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 .stack-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; flex: 1 1 0; }
+/* In split mode the height is the operator's (inline, from the divider); outside it the panes still
+   share the space. `overflow: hidden` keeps a tall pane from scrolling the panel itself. */
+.panel-stack.is-split { overflow: hidden; }
+.panel-stack.is-split > .stack-pane { min-height: 0; overflow: hidden; }
 .stack-pane[hidden] { display: none; }
-/* 50/50 and a hairline: the operator asked for "IDE on top, terminal below", not for another handle
-   to drag — and the chat column next to it already carries one. */
-.pane-ide + .pane-term { border-top: 1px solid var(--line); }
-.pane-term + .pane-ide { border-top: 1px solid var(--line); }
+/* The divider between the two rows is the rail's handle turned 90° (「上下的分界线要和别的比如左边会话栏
+   一样，上下范围可以调节」): same 12px hit strip, same 2px line that lights up on hover, same cursor. It is
+   rendered as its own flex item (`order` keeps it between whichever rows are showing) rather than as a
+   border, because a border cannot be dragged or show a hover target. */
+.row-divider { position: relative; flex: 0 0 auto; height: 12px; display: flex; align-items: center; }
+.row-divider .pane-handle-row {
+  position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: row-resize; touch-action: none; z-index: 12;
+}
+.pane-handle-row-line { height: 2px; width: 100%; background: var(--line); transition: background 0.15s ease; }
+.pane-handle-row:hover .pane-handle-row-line,
+.pane-handle-row:active .pane-handle-row-line { background: var(--accent-dim); }
+/* While a row drag is live the whole page is a resize cursor, exactly like the column drag — otherwise
+   the cursor flickers back to text the moment the pointer leaves the 12px strip. */
+body.pane-dragging-row { cursor: row-resize; user-select: none; }
+body.pane-dragging-row * { cursor: row-resize !important; }
 .split-head {
   display: flex; align-items: center; gap: 5px; padding: 2px 6px;
   font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--line);

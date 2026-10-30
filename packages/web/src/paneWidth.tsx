@@ -18,6 +18,13 @@
 //
 // The width goes out as a CSS custom property (`--rail-w` …) rather than an inline `width`, so the
 // phone layout's own `width: auto` sheet rules (they live in later media queries) still win.
+//
+// `usePaneHeight` below is the same gesture turned 90° (2026-10-30: 「上下的分界线要和别的比如左边
+// 会话栏一样，上下范围可以调节」). It is a second hook rather than a flag on the first because the two
+// differ in more than the axis — a row split has no `rightEdge`/`MIN_CHAT` reserve, its ceiling comes
+// from the CONTAINER (the panel's height) instead of the viewport's width, and its "reset" means
+// half the container, not a fixed number. Sharing the drag loop while keeping the semantics separate
+// is what keeps one of them from quietly reading the other's assumptions.
 import { useCallback, useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from "react";
 
 /** The chat column never goes below this — every pane's clamp is carved out against this reserve.
@@ -62,6 +69,146 @@ function writeStored(storage: string, value: number): void {
   } catch {
     /* nothing to do — the drag still applies for this session */
   }
+}
+
+export interface PaneHeightOptions {
+  /** localStorage key for the TOP pane's height, in px. */
+  storage: string;
+  /** The drag handle's aria-label / title. */
+  label: string;
+  /** Live height of the container the two rows share (the panel's content box). */
+  containerPx: () => number;
+  /** Neither row may go below this. A 60px row is not a pane, it is a divider with a title. */
+  min: number;
+}
+
+export interface PaneHeight {
+  /** The top row's height in px, already clamped. */
+  height: number;
+  handle: JSX.Element;
+}
+
+/**
+ * Drag a HORIZONTAL divider to size the two rows it sits between.
+ *
+ * Same gesture contract as `usePaneWidth` — pointer capture, `buttons === 0` ends a drag whose
+ * pointerup landed outside the window, rAF-throttled, `blur` ends it, double-click resets — because a
+ * divider that behaves differently from the rail's would be a second thing to learn. What differs is
+ * only where the numbers come from: the ceiling is `container - min` (both rows must stay visible),
+ * and the reset is HALF the container rather than a fixed px value, since "half and half" is the
+ * meaning of a split pane.
+ */
+export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
+  const { storage, label, containerPx, min } = options;
+  const [want, setWant] = useState<number | null>(() => {
+    try {
+      const raw = window.localStorage.getItem(storage);
+      const n = raw === null ? Number.NaN : Number.parseFloat(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  });
+  const [, setTick] = useState(0);
+
+  // The ceiling is a function of the panel's height, which changes with the window and with the
+  // panel's own width (the file tree wraps). Re-read it on resize, like the width hook does.
+  useEffect(() => {
+    const onResize = (): void => setTick((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const total = containerPx();
+  const half = Math.max(min, Math.round((total - 6) / 2));
+  const cap = Math.max(min, total - min - 6);
+  const height = clamp(want ?? half, min, Math.max(min, cap));
+  const heightRef = useRef(height);
+  heightRef.current = height;
+
+  // A stored height that no longer fits is clamped AND written back, so a shrunken window does not
+  // poison the next load. Only when it was actually stored — otherwise the follow-the-half default
+  // would freeze at whatever the panel happened to be on the first frame.
+  useEffect(() => {
+    if (want != null && want > cap) {
+      setWant(Math.max(min, cap));
+      writeStored(storage, Math.max(min, cap));
+    }
+  }, [want, cap, storage, min]);
+
+  const onPointerDown = useCallback(
+    (ev: ReactPointerEvent<HTMLDivElement>) => {
+      if (ev.pointerType !== "touch" && ev.button !== 0) return;
+      ev.preventDefault();
+      const handle = ev.currentTarget;
+      const startY = ev.clientY;
+      const startH = heightRef.current;
+      const limit = Math.max(min, containerPx() - min - 6);
+      let latest = startH;
+      let raf = 0;
+      let done = false;
+      const body = document.body;
+      body.classList.add("pane-dragging-row");
+
+      const finish = (clientY?: number): void => {
+        if (done) return;
+        done = true;
+        if (raf) window.cancelAnimationFrame(raf);
+        if (typeof clientY === "number") latest = clamp(startH + (clientY - startY), min, limit);
+        setWant(latest);
+        writeStored(storage, latest);
+        body.classList.remove("pane-dragging-row");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("blur", onBlur);
+        handle.removeEventListener("lostpointercapture", onLost);
+        try {
+          if (handle.hasPointerCapture?.(ev.pointerId)) handle.releasePointerCapture(ev.pointerId);
+        } catch {
+          /* capture already gone */
+        }
+      };
+      const onMove = (e: PointerEvent): void => {
+        if (done) return;
+        // Dragging DOWN grows the TOP row (the divider is under it) — the opposite sign to the rail.
+        if (e.buttons === 0) { finish(e.clientY); return; }
+        latest = clamp(startH + (e.clientY - startY), min, limit);
+        if (raf) return;
+        raf = window.requestAnimationFrame(() => { raf = 0; setWant(latest); });
+      };
+      const onUp = (e: PointerEvent): void => finish(e.clientY);
+      const onBlur = (): void => finish();
+      const onLost = (): void => finish();
+
+      try { handle.setPointerCapture(ev.pointerId); } catch { /* the window listeners still carry it */ }
+      handle.addEventListener("lostpointercapture", onLost);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+      window.addEventListener("blur", onBlur);
+    },
+    [min, containerPx, storage],
+  );
+
+  const handle = (
+    <div
+      className="pane-handle-row"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label={label}
+      title={`${label} — drag to resize, double-click for half and half`}
+      onPointerDown={onPointerDown}
+      onDoubleClick={() => {
+        try { window.localStorage.removeItem(storage); } catch { /* private mode */ }
+        setWant(null);
+      }}
+    >
+      <span className="pane-handle-row-line" />
+    </div>
+  );
+
+  return { height, handle };
 }
 
 export function usePaneWidth(options: PaneWidthOptions): PaneWidth {
