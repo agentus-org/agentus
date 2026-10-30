@@ -73,6 +73,8 @@ case "${1:-}" in
         // which is everything dev.sh sets — and drop every other identity-shaped key.
         const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
           "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_ACP_V2_PLAN",
+          // the Web IDE bridge (#77): a dev instance proves the proxy against a real code-server
+          "AGENTUS_IDE_UPSTREAM",
           "DEV_TREE", "DEV_LOG_PATH"]);
         // knobs belonging to this script: consumed here, never forwarded to the server, not worth a line.
         const quiet = new Set(["DEV_PORT", "DEV_DATA", "DEV_USER", "DEV_PASS", "DEV_LOG",

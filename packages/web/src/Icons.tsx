@@ -141,6 +141,10 @@ export const IconPanelRight = (p: IconProps = {}): JSX.Element =>
 export const IconTerminal = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>, p);
 
+/** an editor window: angle brackets in a frame, to sit next to the terminal's prompt */
+export const IconCode = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m9.5 10-2 2 2 2M14.5 10l2 2-2 2" /></>, p);
+
 export const IconFile = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M6 2h8l4 4v16H6z" /><path d="M14 2v4h4" /></>, p);
 

@@ -216,6 +216,7 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 | `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for server transcription; unset = browser recognition only |
 | `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) credentials; read from the process env **and** `~/.hermes/.env` |
+| `AGENTUS_IDE_UPSTREAM` | unset | a code-server to embed as the panel's IDE tab (`http://127.0.0.1:8133`); unset = no IDE tab at all — see [Web IDE](./web-ide-integration.md) |
 
 Auth variables:
 
@@ -264,6 +265,19 @@ would be deleted by the next `npm i -g agentus`, taking the transcript and the l
 
 TLS is terminated **in front of** this process (a reverse proxy, or a tunnel that does its own
 `public_tls`) — see [TLS](#tls).
+
+### Web IDE (code-server)
+
+The workspace panel ships a file tree, a preview/editor and a terminal, but no IDE. Point
+`AGENTUS_IDE_UPSTREAM` at a code-server of your own and an `ide` tab appears beside them:
+
+```bash
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+```
+
+Agentus does not start it, and it must bind **loopback only** with `--auth none` — the cockpit's
+cookie is the single door. Setup, the three proxy rules and the six ways it goes wrong:
+[Web IDE integration](./web-ide-integration.md).
 
 ### Login
 

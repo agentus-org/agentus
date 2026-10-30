@@ -19,6 +19,7 @@ import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRo
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { acquireInstanceLock, humanAge } from "./instance-lock.js";
 import { createFrameGate } from "./ws-order.js";
+import * as ide from "./ide/proxy.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
@@ -1226,6 +1227,11 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal = who;
     }
 
+    // Web IDE bridge (issue #77). Placed AFTER the gate on purpose — that is what makes the proxy
+    // inherit the operator's cookie instead of needing an auth path of its own. When
+    // AGENTUS_IDE_UPSTREAM is unset it costs one string compare and answers only /api/ide/status.
+    if (await ide.handleHttp(req, res, url)) return;
+
     if (url.pathname === "/api/auth/me" && req.method === "GET") {
       const who = auth.authenticate(req.headers, url);
       const st = auth.status(); // live: the operator can change these while the app is up
@@ -2099,7 +2105,9 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     notify.handleUpgrade(req, socket, head);
     return;
   }
-  if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr") {
+  // The IDE's own sockets ride the same whitelist step (issue #77 rule 2): HTTP forwarded but upgrade
+  // refused is an IDE whose editor never finishes loading, with nothing in the UI to say why.
+  if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr" && !ide.ownsPath(url.pathname)) {
     socket.destroy();
     return;
   }
@@ -2115,6 +2123,9 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.destroy();
     return;
   }
+  // Web IDE sockets (issue #77), after the same cookie check the cockpit's own sockets pass — an
+  // unauthenticated upgrade gets the 401 above, never a pipe to the IDE.
+  if (ide.handleUpgrade(req, socket, head, url)) return;
   if (url.pathname === "/ws/term") {
     termWss.handleUpgrade(req, socket, head, (ws) => termWss.emit("connection", ws, req, url));
     return;

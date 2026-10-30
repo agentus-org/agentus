@@ -200,6 +200,7 @@ Node 版本 —— 然后退出，什么都不启动。它是「我的数据去�
 | `AGENTUS_STT_BASE_URL` | 未设置 | 服务端语音识别的 OpenAI 兼容 base；不设 = 只用浏览器识别 |
 | `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | 同上 |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼（DashScope）凭据；从进程环境**和** `~/.hermes/.env` 读取 |
+| `AGENTUS_IDE_UPSTREAM` | 未设置 | 要嵌进侧栏 IDE tab 的 code-server（`http://127.0.0.1:8133`）；不设＝完全没有 IDE tab —— 见 [Web IDE](./web-ide-integration.zh-CN.md) |
 
 认证相关：
 
@@ -245,6 +246,18 @@ Node 版本 —— 然后退出，什么都不启动。它是「我的数据去�
 | 5173 | Vite 开发服务器 | 前端热更新，仅在 `npm run dev` 期间 |
 
 两个监听的 handler、路由、鉴权完全相同，只有 socket 不同。
+
+### Web IDE（code-server）
+
+工作区侧栏里有文件树、预览/编辑器和终端，但没有 IDE。把一个自己的 code-server 指给
+`AGENTUS_IDE_UPSTREAM`，侧栏就会多出一个 `ide` tab：
+
+```bash
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+```
+
+Agentus 不负责起它，而且它必须**只绑回环** + `--auth none` —— 驾驶舱的 cookie 是唯一的门。
+启动形态、三条代理规则、六个会踩的坑：[Web IDE 集成](./web-ide-integration.zh-CN.md)。
 
 ### 登录
 

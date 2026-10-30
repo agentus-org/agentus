@@ -26,7 +26,7 @@ import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
-  IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSwap, IconTerminal,
+  IconCode, IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSwap, IconTerminal,
 } from "./Icons";
 
 interface Entry {
@@ -50,6 +50,17 @@ interface Listing {
 export interface PanelTarget {
   path: string;
   line?: number;
+}
+
+/** What /api/ide/status answers (server: packages/server/src/ide/proxy.ts). `start` is the command
+ *  the tab prints when the upstream is configured but not up — the failure mode this whole feature
+ *  is most likely to hit, and one that shows up as an empty iframe unless it is said out loud. */
+interface IdeStatus {
+  configured: boolean;
+  reachable: boolean;
+  base: string | null;
+  prefix: string;
+  start: string;
 }
 
 /** The preview column's floor: the tree may not eat below this, or the file being read becomes a
@@ -92,7 +103,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 }): JSX.Element {
   // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
   useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
-  const [tab, setTab] = useState<"files" | "terminal">("files");
+  const [tab, setTab] = useState<"files" | "terminal" | "ide">("files");
   const root = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(root);
   // The tree keeps its own column next to the preview instead of splitting the panel vertically:
@@ -119,6 +130,11 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * folding is a LAYOUT preference (one choice, the same in every session), not a per-file one.
    * They cannot BOTH be down — the panel would be an empty box with nothing on screen offering a
    * way back — so folding one unfolds the other. */
+  /* Web IDE (issue #77). The status is asked ONCE per panel open, not per tab switch: the answer
+   *  changes only when the operator starts or stops code-server, and polling it would be a request
+   *  every few seconds for a fact that is almost always the same. `configured` decides whether the
+   *  tab exists at all; `reachable` decides whether it opens an editor or explains itself. */
+  const [ide0, setIde0] = useState<IdeStatus | null>(null);
   const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
   const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
 
@@ -152,6 +168,23 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     const dir = focus.path.replace(/\/[^/]*$/, "") || "/";
     setPath(dir);
   }, [focus]);
+
+  // One status call per panel open. A failed call is "no IDE" rather than an error banner: the
+  // panel's other two tabs are unaffected, and the operator asked to see files, not a health probe.
+  useEffect(() => {
+    let alive = true;
+    cockpit.ideStatus()
+      .then((s) => { if (alive) setIde0(s); })
+      .catch(() => { if (alive) setIde0(null); });
+    return () => { alive = false; };
+  }, []);
+
+  /* The frame is mounted on FIRST use and afterwards only hidden (display:none below). Re-mounting
+   * it restarts code-server's entire front end — unsaved buffers, terminal scrollback, extension
+   * host — because the iframe is a fresh page load, not a tab switch. This is the one client-side
+   * rule in the integration that has to hold (issue #77 §3). */
+  const [ideMounted, setIdeMounted] = useState(false);
+  useEffect(() => { if (tab === "ide") setIdeMounted(true); }, [tab]);
 
   const load = useCallback(async (target0: string) => {
     setLoading(true);
@@ -221,6 +254,19 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         >
           <IconTerminal size={14} /> terminal
         </button>
+        {/* No AGENTUS_IDE_UPSTREAM ⇒ no tab at all: a control that cannot do anything is worse
+            than no control. Configured but down ⇒ the tab opens on the start command, not a blank
+            frame (the frame itself stays dark, which reads as "agentus is broken"). */}
+        {ide0?.configured ? (
+          <button
+            className={`tool-tab ${tab === "ide" ? "active" : ""}`}
+            title={ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable"}
+            onClick={() => setTab("ide")}
+          >
+            <IconCode size={14} /> ide
+            {ide0.reachable ? null : <span className="tab-dot" aria-label="not reachable" />}
+          </button>
+        ) : null}
         <span className="head-spacer" />
         {tab === "files" ? (
           <>
@@ -258,7 +304,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         </button>
       </div>
 
-      {tab === "files" ? (
+      {tab === "ide" ? null : tab === "files" ? (
         /* The ROW is split, not the column. The operator: 「现在文件预览是直接放在文件浏览器下面的，
            只有一半的空间，太小了吧…你看下aionui，是单独加个侧栏到中间的吧」 — and the reference does
            exactly that: `ProjectPanelHost.tsx` partitions the layout as chat | preview | explorer. So
@@ -324,6 +370,35 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       ) : (
         <TerminalTab v={v} root={root} />
       )}
+      {/* Mounted once, then hidden — see the `ideMounted` comment above. It sits OUTSIDE the tab
+          ternary for exactly that reason: a ternary unmounts on every switch. */}
+      {ideMounted ? (
+        <div className="ide-frame" style={{ display: tab === "ide" ? "flex" : "none" }}>
+          {ide0?.reachable ? (
+            /* `folder` comes from the slot, never from an input: the panel is rooted at the session
+               workspace, so "open the IDE" means "open the place this agent is working in". */
+            <iframe
+              className="ide-iframe"
+              title={`Web IDE — ${root}`}
+              src={`${ide0.prefix}/?folder=${encodeURIComponent(root)}`}
+            />
+          ) : (
+            <div className="ide-help">
+              <div className="ide-help-title">code-server 不可达</div>
+              <p>
+                {ide0?.configured
+                  ? `已配置 ${ide0.base ?? ""}，但连不上。先把 code-server 起起来：`
+                  : "没有配置 IDE 上游。"}
+              </p>
+              <pre className="ide-cmd">{ide0?.start ?? ""}</pre>
+              <p className="ide-help-note">
+                然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 agentus。
+                只监听回环是刻意的：<code>--auth none</code> 只有在回环上才安全，鉴权由驾驶舱的 cookie 这一跳承担。
+              </p>
+            </div>
+          )}
+        </div>
+      ) : null}
     </aside>
   );
 }
