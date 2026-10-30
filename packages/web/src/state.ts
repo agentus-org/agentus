@@ -1538,6 +1538,14 @@ export class Cockpit {
     return await this.#req(`/api/fs/dirs?files=1&path=${encodeURIComponent(path)}`);
   }
 
+  /** Is a Web IDE (code-server) reachable behind the proxy? The panel asks before it offers the
+   *  tab: `configured && reachable` is the only state where an iframe shows an editor instead of a
+   *  dead frame (issue #77 §4). Unconfigured is a normal answer, not an error — hence the shape
+   *  rather than a throw. */
+  async ideStatus(): Promise<{ configured: boolean; reachable: boolean; base: string | null; prefix: string; start: string }> {
+    return await this.#req("/api/ide/status");
+  }
+
   /** Read a file for the panel: text plus what the panel needs to render and edit it
    *  (`kind`, `hash`, `editable` — see the server's fs.ts, one table decides both sides). */
   async readFile(path: string): Promise<{
