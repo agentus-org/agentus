@@ -73,8 +73,87 @@ const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
 /* Desktop split (2026-10-30): the IDE above, the terminal below, both alive at once. Two remembered
  * facts, both layout preferences like the widths and folds beside them: whether the split is on, and
  * which of the two panes is the top one. */
+const PAIR_KEY = "agentus.panel-pair";
+// 0.15.10 stored the split as two booleans (splitOn + ideOnTop) and one global ratio. #78's pair
+// model replaces all three; `readPair`/`readRatio` migrate the old values once so an operator who
+// had IDE-on-top keeps IDE-on-top after the upgrade.
 const SPLIT_KEY = "agentus.panel-split";
 const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
+const RATIO_KEY = "agentus.panel-split-ratio";
+
+/** The pane registry (issue #78). The tab bar and the split are BOTH built from this array, so
+ *  adding a pane — a box desktop, a preview — is one entry here plus one branch in the row
+ *  renderer, and the split core never changes again. `files` stays out on purpose: it is a column
+ *  layout (tree | preview), not a row — a 50%-tall file browser is not a pane, it is a shrunk one. */
+interface PaneSpec {
+  id: PaneId;
+  label: string;
+  /** Is this pane something the operator can use on THIS machine right now? A pane that is not
+   *  available gets no tab, cannot enter a pair, and is pruned out of a stored pair (#78 §4:
+   *  别留死框). */
+  available: (ide: IdeStatus | null) => boolean;
+}
+type PaneId = "terminal" | "ide";
+type ViewTab = "files" | PaneId;
+
+const PANES: PaneSpec[] = [
+  { id: "terminal", label: "terminal", available: () => true },
+  { id: "ide", label: "ide", available: (ide) => Boolean(ide?.configured) },
+];
+
+/** Which pane sits where: [top, bottom] or null = no split. One JSON value, one write path —
+ *  the two booleans of 0.15.10 could disagree with each other (`splitOn` true while `tab` was
+ *  "files"), this shape cannot. */
+function writePair(pair: PaneId[] | null): void {
+  try {
+    if (pair === null) localStorage.removeItem(PAIR_KEY);
+    else localStorage.setItem(PAIR_KEY, JSON.stringify(pair));
+  } catch { /* private mode: the layout still applies for this session */ }
+}
+
+function readPair(): PaneId[] | null {
+  try {
+    const raw = localStorage.getItem(PAIR_KEY);
+    if (raw !== null) {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) && p.length === 2 && p[0] !== p[1] ? p : null;
+    }
+    // migration: splitOn + ideOnTop → a pair over the only two panes that ever split. The migrated
+    // value is WRITTEN back, not just returned: a read that keeps deriving would move the ratio's
+    // key under the hook the first time availability flips (livePair null → key = the global one →
+    // hook re-reads → the migrated height evaporates; measured in QA).
+    if (localStorage.getItem(SPLIT_KEY) !== null) {
+      const on = localStorage.getItem(SPLIT_KEY) === "1";
+      const migrated: PaneId[] | null = on
+        ? (localStorage.getItem(SPLIT_IDE_TOP_KEY) === "0" ? ["terminal", "ide"] : ["ide", "terminal"])
+        : null;
+      if (migrated) writePair(migrated);
+      // …and the global ratio into the pair's key, same one-time move
+      const oldRatio = localStorage.getItem(RATIO_KEY);
+      if (migrated && oldRatio !== null) {
+        const key = `${RATIO_KEY}:${[...migrated].sort().join("+")}`;
+        if (localStorage.getItem(key) === null) localStorage.setItem(key, oldRatio);
+      }
+      localStorage.removeItem(SPLIT_KEY);
+      localStorage.removeItem(SPLIT_IDE_TOP_KEY);
+      return migrated;
+    }
+  } catch { /* private mode / a hand-edited value — defaults are correct */ }
+  return null;
+}
+
+/** The top row's height, PER PAIR (#78 §2: 从「IDE+终端」切到「桌面+IDE」不能沿用上一个组合的高度).
+ *  Keyed by the SORTED pair, so swapping which pane is on top keeps the ratio — the heights belong
+ *  to the combination, the order is a separate preference. */
+function readRatio(pair: string[] | null): number | null {
+  if (!pair) return null;
+  try {
+    const key = `${RATIO_KEY}:${[...pair].sort().join("+")}`;
+    const raw = localStorage.getItem(key);
+    const n = raw === null ? Number.NaN : Number.parseFloat(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch { return null; }
+}
 
 /** A remembered on/off layout flag. Private mode has no localStorage, so folding then simply does
  *  not stick — same `try` shape as `usePaneWidth` beside it. */
@@ -123,7 +202,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 }): JSX.Element {
   // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
   useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
-  const [tab, setTab] = useState<"files" | "terminal" | "ide">("files");
+  const [tab, setTab] = useState<ViewTab>("files");
   const root = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(root);
   // The tree keeps its own column next to the preview instead of splitting the panel vertically:
@@ -158,39 +237,96 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   /* The split is a preference, the same in every session (like the widths), and it is only OFFERED
    * when there is something to split with — a phantom toggle is worse than none. */
   const wide = useWide();
-  const [splitOn, setSplitOn] = useState<boolean>(() => readFlag(SPLIT_KEY, false));
-  const [ideOnTop, setIdeOnTop] = useState<boolean>(() => readFlag(SPLIT_IDE_TOP_KEY, true));
-  const canSplit = wide && Boolean(ide0?.configured);
-  /* In split mode the two panes are BOTH on screen, so there is no current tab between them: the tab
-   * buttons become "which one is on top", and `files` leaves the split. A phone never splits — the
-   * sheet shows one pane, so the tab behaves exactly as before. */
-  const splitActive = canSplit && splitOn && tab !== "files";
-  /* Reopening the panel lands on the operator's mode, not on `files`: the split is a layout (a
-   * preference that outlives the tab), so someone who chose it should not have to re-choose it every
-   * time the panel is closed and opened. Runs ONCE per panel mount, after the status arrives — the
-   * status is what makes `canSplit` true, and it is fetched asynchronously. */
-  const [splitRestored, setSplitRestored] = useState(false);
-  /* The divider between the two rows is the same gesture as the rail's (drag, double-click for half
-   * and half, remembered) — the operator asked for exactly that parity. `containerPx` is read off the
-   * stack, not the viewport: the panel is what the two rows divide. */
+  const [pair, setPair] = useState<PaneId[] | null>(() => readPair());
+  /* #78 §4: a pane that stops being available (IDE upstream unset later, or a status that never
+   * arrives) is PRUNED from the pair — and a one-pane pair is no split at all. No dead frames,
+   * no phantom halves. */
+  const avail = (id: string): boolean => PANES.find((x) => x.id === id)?.available(ide0) ?? false;
+  const livePair: PaneId[] | null = pair && pair.every(avail) ? pair : null;
+  /* In split mode both panes are on screen, so the tab buttons mean "which one is on top"; `files`
+   * leaves the split (it is a column layout, not a row). A phone never splits. */
+  const splitActive = wide && Boolean(livePair) && tab !== "files";
+  /* Reopening the panel lands on the operator's mode, not on `files`: the pair is a layout
+   * preference that outlives the tab. Runs ONCE per panel mount, after the IDE status arrives (that
+   * status is what makes a stored `ide` pane available at all). */
+  const [pairRestored, setPairRestored] = useState(false);
+  useEffect(() => {
+    if (pairRestored || ide0 === null) return;
+    setPairRestored(true);
+    if (livePair && tab === "files") setTab(livePair[0]);
+  }, [ide0, livePair, tab, pairRestored]);
   const stackRef = useRef<HTMLDivElement | null>(null);
-  /* ONE rule for both rows, stated once: the TOP row carries the divider's height, the BOTTOM row takes
-   * whatever is left. Writing it per-pane is how a swap ends up with two fixed rows and an overflow
-   * (measured: 363px + 363px in a 600px panel, the lower pane clipped). */
-  const rowStyle = (isTop: boolean) => (isTop
-    ? { order: 1, flex: "0 0 auto", height: `${rows.height}px` }
-    : { order: 2, flex: "1 1 0", height: "auto" });
+  const ratioStorage = livePair
+    ? `${RATIO_KEY}:${[...livePair].sort().join("+")}`
+    : RATIO_KEY;
+  /* readRatio takes the pair; the hook's own `storage` key already carries it. The fallback covers
+   * the one-time migration from the 0.15.10 global key. */
   const rows = usePaneHeight({
-    storage: "agentus.panel-split-ratio",
-    label: "resize the ide and terminal panes",
+    storage: ratioStorage,
+    fallbackPx: readRatio(livePair),
+    label: "resize the stacked panes",
     min: 96,
     containerPx: () => stackRef.current?.getBoundingClientRect().height ?? 0,
   });
-  useEffect(() => {
-    if (splitRestored || !canSplit) return;
-    setSplitRestored(true);
-    if (splitOn && tab === "files") setTab(ideOnTop ? "ide" : "terminal");
-  }, [canSplit, splitOn, ideOnTop, tab, splitRestored]);
+  /* ONE rule for both rows, stated once: the TOP row carries the divider's height, the BOTTOM row takes
+   * whatever is left. Writing it per-pane is how a swap ends up with two fixed rows and an overflow
+   * (measured: 363px + 363px in a 600px panel, the lower pane clipped).
+   *
+   * ORDERS ARE INTEGERS, and that is load-bearing (#78): CSS `order` parses as <integer>, so the
+   * 1.5 we shipped for the divider in 0.15.10 was a DISCARDED declaration — the divider fell back to
+   * order:0 and painted at the TOP of the panel, above both panes. It still dragged, which is why no
+   * test that only checks "is the divider present" caught it. 1 / 2 / 3 it is; a test asserts the
+   * divider sits BETWEEN the panes geometrically, not by class name. */
+  const rowStyle = (isTop: boolean) => (isTop
+    ? { order: 1, flex: "0 0 auto", height: `${rows.height}px` }
+    : { order: 3, flex: "1 1 0", height: "auto" });
+  const dividerStyle = { order: 2 } as CSSProperties;
+
+  /* Tab click (issue #78 §3): put me on top. Already on top: nothing moves. In the pair below:
+   * swap. Not in the pair: I take the top slot and the old top becomes the bottom. Turning the
+   * split ON with no stored pair seeds [this, the first other available pane]. */
+  const chooseTool = (id: PaneId): void => {
+    setTab(id);
+    const others = PANES.filter((x) => x.id !== id && x.available(ide0)).map((x) => x.id);
+    if (!splitActive) {
+      // turning the split ON from a pane's tab puts THAT pane on top — the click said what it meant
+      if (wide && others.length) { const next: PaneId[] = [id, others[0] as PaneId]; setPair(next); writePair(next); }
+      return;
+    }
+    const live = livePair as PaneId[];
+    if (live[0] === id) return;   // already the top row — a no-op, not a shake
+    // #78 §3: in the bottom row it swaps; not in the pair at all it takes the top slot and the old
+    // top slides down. Same result either way — which is why there is no branch here.
+    const next: PaneId[] = [id, live[0]];
+    setPair(next);
+    writePair(next);
+  };
+  const swapPanes = (): void => {
+    if (!livePair) return;
+    const next = [livePair[1], livePair[0]];
+    setPair(next);
+    writePair(next);
+  };
+  const toggleSplit = (): void => {
+    if (livePair) {
+      setPair(null);
+      writePair(null);
+      // closing the split shows the pane that WAS on top, not whatever the tab says
+      setTab((t) => (t === "files" ? "terminal" : t));
+      return;
+    }
+    // The seed is DETERMINISTIC, not "whatever tab you happened to be on": IDE on top, terminal
+    // below — the shape 0.15.10 documented, and the one a first-time operator can predict from the
+    // docs. With only one pane available there is no pair to seed.
+    const ids = PANES.filter((x) => x.available(ide0)).map((x) => x.id);
+    if (!wide || ids.length < 2) return;   // nothing to split with — no phantom toggle
+    const first: PaneId = ids.includes("ide") ? "ide" : ids[0];
+    const second = (first === "ide" ? "terminal" : "ide") as PaneId;
+    const next: PaneId[] = [first, second];
+    setPair(next);
+    writePair(next);
+    setTab(first);
+  };
   const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
   const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
 
@@ -235,17 +371,15 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     return () => { alive = false; };
   }, []);
 
-  /* The frame is mounted on FIRST use and afterwards only hidden (display:none below). Re-mounting
-   * it restarts code-server's entire front end — unsaved buffers, terminal scrollback, extension
-   * host — because the iframe is a fresh page load, not a tab switch. This is the one client-side
-   * rule in the integration that has to hold (issue #77 §3). */
-  const [ideMounted, setIdeMounted] = useState(false);
-  useEffect(() => { if (tab === "ide" || splitActive) setIdeMounted(true); }, [tab, splitActive]);
-  /* Same latch for the terminal, and for a sharper reason: every mount opens a real pty. The split
-   * needs it alive anyway (that is the point of watching it while you edit), and hiding it must not
-   * throw the shell away — the scrollback and the `cd` you did are the terminal. */
-  const [termMounted, setTermMounted] = useState(false);
-  useEffect(() => { if (tab === "terminal" || splitActive) setTermMounted(true); }, [tab, splitActive]);
+  /* A mount latch PER PANE, driven by the pair: a pane that is in the pair (either row) or is the
+   * shown tab has been mounted at least once, and afterwards it is only ever HIDDEN. Re-mounting the
+   * iframe reloads code-server's whole front end; re-mounting the terminal opens a NEW pty (scrollback
+   * gone, `cd` gone) — #77's rule, generalised: it now covers every pane the split can hold. */
+  const [mounted, setMounted] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const needed: string[] = [...(livePair ?? []), ...(tab !== "files" ? [tab] : [])].filter((id) => !mounted[id]);
+    if (needed.length) setMounted((m) => ({ ...m, ...Object.fromEntries(needed.map((id) => [id, true])) }));
+  }, [livePair, tab, mounted]);
 
   const load = useCallback(async (target0: string) => {
     setLoading(true);
@@ -309,49 +443,37 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         >
           <IconFile size={14} /> files
         </button>
-        {/* In split mode both panes are on screen, so a tab click means "put me on top" (the operator
-            asked for exactly that: 支持点击放上面还是下面). Outside it, a tab click switches panes. */}
-        <button
-          className={`tool-tab ${tab === "terminal" || splitActive ? "active" : ""}`}
-          title={splitActive ? (ideOnTop ? "把终端放到上面" : "终端已经在上半屏") : undefined}
-          onClick={() => {
-            setTab("terminal");
-            if (splitActive && ideOnTop) { setIdeOnTop(false); writeFlag(SPLIT_IDE_TOP_KEY, false); }
-          }}
-        >
-          <IconTerminal size={14} /> terminal
-        </button>
-        {/* No AGENTUS_IDE_UPSTREAM ⇒ no tab at all: a control that cannot do anything is worse
-            than no control. Configured but down ⇒ the tab opens on the start command, not a blank
-            frame (the frame itself stays dark, which reads as "agentus is broken"). */}
-        {ide0?.configured ? (
-          <button
-            className={`tool-tab ${tab === "ide" || splitActive ? "active" : ""}`}
-            title={splitActive
-              ? (ideOnTop ? "IDE 已经在上半屏" : "把 IDE 放到上面")
-              : ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable"}
-            onClick={() => {
-              setTab("ide");
-              if (splitActive && !ideOnTop) { setIdeOnTop(true); writeFlag(SPLIT_IDE_TOP_KEY, true); }
-            }}
-          >
-            <IconCode size={14} /> ide
-            {ide0.reachable ? null : <span className="tab-dot" aria-label="not reachable" />}
-          </button>
-        ) : null}
-        {canSplit ? (
+        {/* The tab bar is built from the registry (#78 §1): one entry per pane, click = chooseTool
+            (put me on top / start the split with me on top). No AGENTUS_IDE_UPSTREAM ⇒ no ide tab at
+            all: a control that cannot do anything is worse than no control. */}
+        {PANES.map((pane) => {
+          if (!pane.available(ide0)) return null;
+          const isTop = splitActive && livePair?.[0] === pane.id;
+          const inPair = splitActive && Boolean(livePair?.includes(pane.id));
+          const title = splitActive
+            ? (isTop ? `${pane.label} 已经在上半屏` : inPair ? `把 ${pane.label} 放到上面` : `用 ${pane.label} 替换上半屏`)
+            : pane.id === "ide" && ide0
+              ? (ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable")
+              : undefined;
+          return (
+            <button
+              key={pane.id}
+              className={`tool-tab ${tab === pane.id || inPair ? "active" : ""}`}
+              title={title}
+              onClick={() => chooseTool(pane.id)}
+            >
+              {pane.id === "ide" ? <IconCode size={14} /> : <IconTerminal size={14} />} {pane.label}
+              {pane.id === "ide" && ide0 && !ide0.reachable ? <span className="tab-dot" aria-label="not reachable" /> : null}
+            </button>
+          );
+        })}
+        {wide && PANES.filter((x) => x.available(ide0)).length >= 2 ? (
           <button
             className={`icon-btn ${splitActive ? "on" : ""}`}
-            title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：IDE 在上、终端在下"}
+            title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：两块 pane 同时看"}
             aria-label="toggle the vertical split"
             aria-pressed={splitActive}
-            onClick={() => {
-              const next = !splitOn;
-              setSplitOn(next);
-              writeFlag(SPLIT_KEY, next);
-              // Leaving the files tab is what makes the split visible at all.
-              if (next && tab === "files") setTab("terminal");
-            }}
+            onClick={toggleSplit}
           >
             <IconSplitRows size={15} />
           </button>
@@ -464,27 +586,29 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         </div>
       ) : null}
 
-      {ideMounted ? (
+      {/* Rows are rendered from the registry, in ONE fixed DOM order — the pair's order is pure CSS
+          `order`. A pane is mounted on first use and only ever hidden after that (the #77 rule:
+          re-mounting an iframe reloads code-server, re-mounting the terminal opens a new pty). */}
+      {mounted.terminal && (
+        <section
+          className="stack-pane pane-term"
+          hidden={!(splitActive || tab === "terminal")}
+          style={splitActive ? rowStyle(livePair?.[0] === "terminal") : { order: 0 }}
+          aria-label="terminal"
+        >
+          {splitActive ? <PaneHead id="terminal" label="terminal" top={livePair?.[0] === "terminal"} onSwap={swapPanes} /> : null}
+          <TerminalTab v={v} root={root} />
+        </section>
+      )}
+
+      {mounted.ide && (
         <section
           className="stack-pane pane-ide"
           hidden={!(splitActive || tab === "ide")}
-          style={splitActive ? rowStyle(ideOnTop) : { order: 0 }}
+          style={splitActive ? rowStyle(livePair?.[0] === "ide") : { order: 0 }}
           aria-label="web ide"
         >
-          {splitActive ? (
-            <div className="split-head">
-              <IconCode size={13} /> <span>ide</span>
-              <span className="head-spacer" />
-              <button
-                className="icon-btn"
-                title={ideOnTop ? "把 IDE 移到下面" : "把 IDE 移到上面"}
-                aria-label="move the ide pane"
-                onClick={() => { const next = !ideOnTop; setIdeOnTop(next); writeFlag(SPLIT_IDE_TOP_KEY, next); }}
-              >
-                <IconSwap size={14} />
-              </button>
-            </div>
-          ) : null}
+          {splitActive ? <PaneHead id="ide" label="ide" top={livePair?.[0] === "ide"} onSwap={swapPanes} /> : null}
         <div className="ide-frame">
           {ide0?.reachable ? (
             /* `folder` comes from the slot, never from an input: the panel is rooted at the session
@@ -511,39 +635,35 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
           )}
         </div>
         </section>
-      ) : null}
+      )}
 
-      {/* ONE divider, placed by `order`: both rows are order 1 and 2 whatever their identity, so 1.5
-          always lands between them. A flex item of its own (not a border on a pane) so it stays
-          draggable and cannot be hidden along with a pane. */}
-      {splitActive ? <div className="row-divider" style={{ order: 1.5 }}>{rows.handle}</div> : null}
-
-      {termMounted ? (
-        <section
-          className="stack-pane pane-term"
-          hidden={!(splitActive || tab === "terminal")}
-          style={splitActive ? rowStyle(!ideOnTop) : { order: 0 }}
-          aria-label="terminal"
-        >
-          {splitActive ? (
-            <div className="split-head">
-              <IconTerminal size={13} /> <span>terminal</span>
-              <span className="head-spacer" />
-              <button
-                className="icon-btn"
-                title={ideOnTop ? "把终端移到上面" : "把终端移到下面"}
-                aria-label="move the terminal pane"
-                onClick={() => { const next = !ideOnTop; setIdeOnTop(next); writeFlag(SPLIT_IDE_TOP_KEY, next); }}
-              >
-                <IconSwap size={14} />
-              </button>
-            </div>
-          ) : null}
-          <TerminalTab v={v} root={root} />
-        </section>
-      ) : null}
+      {/* ONE divider between the two rows — and its order is the integer 2, NOT the 1.5 this shipped
+          with: CSS `order` is <integer>, 1.5 was a discarded declaration, the divider fell back to
+          order 0 and painted ABOVE both panes (issue #78; it still dragged, which is the nasty part).
+          Top row = 1, divider = 2, bottom row = 3: whole integers, always between. */}
+      {splitActive ? <div className="row-divider" style={dividerStyle}>{rows.handle}</div> : null}
       </div>
     </aside>
+  );
+}
+
+/** One row's title bar in split mode: the pane's name, and a ⇅ that swaps the two rows. It exists
+ *  because a bare divider reads as a border — a label that says what the rows are is the minimum
+ *  affordance for "this line between you and the other pane is draggable" (issue #78 §1). */
+function PaneHead({ id, label, top, onSwap }: { id: PaneId; label: string; top: boolean; onSwap: () => void }): JSX.Element {
+  return (
+    <div className="split-head">
+      {id === "ide" ? <IconCode size={13} /> : <IconTerminal size={13} />} <span>{label}</span>
+      <span className="head-spacer" />
+      <button
+        className="icon-btn"
+        title={top ? `把 ${label} 移到下面` : `把 ${label} 移到上面`}
+        aria-label={`move the ${label} pane`}
+        onClick={onSwap}
+      >
+        <IconSwap size={14} />
+      </button>
+    </div>
   );
 }
 

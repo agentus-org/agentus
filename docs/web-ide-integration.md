@@ -141,6 +141,11 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
 
 - The frame is `GET /api/ide/?folder=<session workspace>` — the folder comes from the session, never
   from an input. "Open the IDE" means "open where this agent is working".
+- The split is generic (#78): panes come from one registry, the pair lives in `agentus.panel-pair`,
+  and the divider's row height is remembered **per pair** (`agentus.panel-split-ratio:ide+terminal`),
+  so switching combinations never inherits the previous pair's height. Orders are integers
+  (top = 1, divider = 2, bottom = 3) — CSS `order` does not accept `1.5`, and a discarded declaration
+  silently paints the divider at the top of the panel while it keeps dragging.
 - **The frame is mounted once and then hidden, never unmounted.** Switching tabs must not recreate
   the iframe: a fresh iframe is a fresh page load, so code-server restarts its whole front end —
   unsaved buffers, terminal scrollback, extension host. This is the one client-side rule that has to

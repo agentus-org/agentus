@@ -1706,9 +1706,24 @@ body.pane-dragging * { cursor: col-resize !important; }
   display: flex; align-items: center; justify-content: center;
   cursor: row-resize; touch-action: none; z-index: 12;
 }
-.pane-handle-row-line { height: 2px; width: 100%; background: var(--line); transition: background 0.15s ease; }
+.pane-handle-row-line {
+  height: 2px; width: 100%; background: var(--line); transition: background 0.15s ease;
+  display: flex; align-items: center; justify-content: center; position: relative;
+}
+/* the grip: 34x6 in the middle of the line, always faintly there (a hover-only affordance is
+   invisible until you already know — which is the bug #78 reported), brighter on hover/drag */
+.pane-handle-row-grip {
+  width: 34px; height: 6px; border-radius: 3px; background: var(--line-strong, var(--line));
+  transition: background 0.15s ease;
+}
 .pane-handle-row:hover .pane-handle-row-line,
 .pane-handle-row:active .pane-handle-row-line { background: var(--accent-dim); }
+.pane-handle-row:hover .pane-handle-row-grip,
+.pane-handle-row:active .pane-handle-row-grip { background: var(--accent); }
+@media (pointer: coarse) and (min-width: 721px) {
+  /* touch tablets get the taller grab strip the column handle already gives them */
+  .row-divider { height: 18px; }
+}
 /* While a row drag is live the whole page is a resize cursor, exactly like the column drag — otherwise
    the cursor flickers back to text the moment the pointer leaves the 12px strip. */
 body.pane-dragging-row { cursor: row-resize; user-select: none; }

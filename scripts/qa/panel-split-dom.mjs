@@ -48,7 +48,7 @@ await goto(BASE);
 const status = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
 check("logged in (the panel lives behind the login)", status === 200, `status ${status}`);
-await ev(`localStorage.removeItem('agentus.panel-split'); localStorage.removeItem('agentus.panel-split-ide-top'); true`);
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (/panel-split|panel-pair/.test(k)) localStorage.removeItem(k); return true; })()`);
 await goto(BASE);
 
 /* The panel's toggle only exists once a session is on screen. The cockpit remembers the last one, so
@@ -68,10 +68,14 @@ const openSessionAndPanel = async () => {
 check("a session's panel opens", await openSessionAndPanel(), "");
 
 const splitBtn = `[aria-label="toggle the vertical split"]`;
+/* Rows come back VISUALLY ordered (by `top`), never in DOM order: since #78 the panes live at a
+ * fixed position in the tree and the pair order is CSS `order`, so `[0]` in the DOM is whichever
+ * pane the component renders first — not the top of the screen. (The same trap bit twice during
+ * this issue; the assertion shape is the fix for it.) */
 const panes = `JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane')].map(p => ({
   cls: p.className, hidden: p.hidden, top: Math.round(p.getBoundingClientRect().top),
   h: Math.round(p.getBoundingClientRect().height), iframe: Boolean(p.querySelector('iframe')),
-  xterm: Boolean(p.querySelector('.xterm')) })))`;
+  xterm: Boolean(p.querySelector('.xterm')) })).sort((a, b) => a.top - b.top))`;
 
 check("the split switch is offered on a desktop window", await ev(`Boolean(document.querySelector('${splitBtn}'))`), "");
 await ev(`document.querySelector('${splitBtn}').click(); true`);
@@ -89,19 +93,36 @@ await ev(`(() => { document.querySelector('.pane-ide iframe').dataset.mark='keep
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.textContent)).click(); true`);
 await sleep(1500);
 const swapped = JSON.parse(await ev(panes));
-check("clicking the terminal tab puts the terminal on top", swapped[1]?.top < swapped[0]?.top,
+check("clicking the terminal tab puts the terminal on top", swapped[0]?.xterm === true && swapped[0]?.top < swapped[1]?.top,
   JSON.stringify(swapped.map((p) => ({ cls: p.cls, top: p.top }))));
 const kept = await ev(`(() => ({ iframe: document.querySelector('.pane-ide iframe').dataset.mark === 'keep',
   xterm: document.querySelector('.pane-term .xterm').dataset.mark === 'keep' }))()`);
 check("swapping does NOT reload the IDE frame (a re-mount would restart code-server)", kept.iframe === true, JSON.stringify(kept));
 check("swapping does NOT open a new pty (the terminal element survives)", kept.xterm === true, JSON.stringify(kept));
-check("the choice is remembered", await ev(`localStorage.getItem('agentus.panel-split-ide-top')`) === "0", await ev(`localStorage.getItem('agentus.panel-split-ide-top')`));
+check("the choice is remembered as a pair, terminal first", await ev(`localStorage.getItem('agentus.panel-pair')`) === JSON.stringify(["terminal","ide"]), await ev(`localStorage.getItem('agentus.panel-pair')`));
+
+/* #78, the geometry assertion that the old suite lacked: the divider must sit BETWEEN the two rows.
+   CSS `order` is an <integer> — the 1.5 shipped in 0.15.10 was a discarded declaration, the divider
+   fell back to order 0 and painted above both panes. It still DRAGGED, so every "does resize work"
+   test passed while the line was visibly in the wrong place. Presence-by-class-name is not position. */
+const between = JSON.parse(await ev(`(() => {
+  const d = document.querySelector('.row-divider').getBoundingClientRect();
+  const rows = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+  return JSON.stringify({ dTop: Math.round(d.top), dBottom: Math.round(d.bottom),
+    topBottom: Math.round(rows[0].bottom), bottomTop: Math.round(rows[1].top),
+    stackTop: Math.round(document.querySelector('.panel-stack').getBoundingClientRect().top) }); })()`));
+check("the divider sits BETWEEN the two rows, not at the top of the panel (order must be an integer)",
+  between.dTop >= between.topBottom - 1 && between.dBottom <= between.bottomTop + 1 && between.dTop > between.stackTop,
+  JSON.stringify(between));
 
 // The divider is the rail's gesture turned 90°: drag it and the TOP row grows, and the split is
 // remembered as a height. Double-click puts it back to half and half.
 const dividerBox = JSON.parse(await ev(`(() => { const r=document.querySelector('.row-divider .pane-handle-row').getBoundingClientRect();
   return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), cursor: getComputedStyle(document.querySelector('.row-divider .pane-handle-row')).cursor }); })()`));
 check("the row divider is a real handle (row-resize, like the rail's col-resize)", dividerBox.cursor === "row-resize", dividerBox.cursor);
+/* #78 §1: a bare 2px line reads as a border. The divider carries a visible grip — a knob in its
+   middle that is there BEFORE you hover — so "this is draggable" is something you can see. */
+check("the divider shows a grip (not just a hairline)", await ev(`Boolean(document.querySelector('.row-divider .pane-handle-row-grip'))`), "");
 /* The VISUALLY topmost pane, not the first in DOM order: the panes sit in a fixed tree order and are
  *  placed by CSS `order`, so after a swap the first child is the bottom row. Measuring DOM order here
  *  is what made an earlier version of this test report a resize that went the wrong way. */
@@ -121,8 +142,9 @@ const drag = async (dy) => {
 await drag(90);
 const heightAfter = await topH();
 check("dragging the divider resizes the top row", heightAfter > heightBefore + 40, `${heightBefore} → ${heightAfter}`);
-check("…and the height is remembered", Number(await ev(`localStorage.getItem('agentus.panel-split-ratio')`)) > heightBefore + 40,
-  await ev(`localStorage.getItem('agentus.panel-split-ratio')`));
+check("…and the height is remembered under THIS PAIR's key (#78 §2)",
+  Number(await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`)) > heightBefore + 40,
+  await ev(`JSON.stringify(Object.keys(localStorage).filter(k=>k.includes('split-ratio')))`) );
 const sum = JSON.parse(await ev(`(() => { const st = document.querySelector('.panel-stack').getBoundingClientRect();
   const kids = [...document.querySelectorAll('.panel-stack > *')].map(e => e.getBoundingClientRect().height);
   return JSON.stringify({ stack: Math.round(st.height), sum: Math.round(kids.reduce((a, b) => a + b, 0)) }); })()`));
@@ -130,8 +152,8 @@ check("the rows never overflow the panel (a fixed top row + a fixed bottom row w
 await ev(`(() => { const h = document.querySelector('.row-divider .pane-handle-row');
   h.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
 await sleep(700);
-check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('agentus.panel-split-ratio')`) === null,
-  String(await ev(`localStorage.getItem('agentus.panel-split-ratio')`)));
+check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`) === null,
+  String(await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`)));
 
 // The files tab leaves the split, and coming back returns to it.
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/files/.test(t.textContent)).click(); true`);
@@ -148,8 +170,24 @@ await openSessionAndPanel();
 await sleep(2500);
 const reopened = JSON.parse(await ev(panes));
 check("reopening the panel lands back in the split, in the remembered order",
-  reopened.filter((p) => !p.hidden).length === 2 && reopened[1]?.top < reopened[0]?.top,
+  reopened.filter((p) => !p.hidden).length === 2 && reopened[0]?.xterm === true,
   JSON.stringify(reopened.map((p) => ({ cls: p.cls, hidden: p.hidden, top: p.top }))));
+
+/* #78: the 0.15.10 preferences (two booleans + a global ratio) migrate into the pair model, so an
+   operator who had the terminal on top and a dragged height keeps both after the upgrade. */
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (/panel-split|panel-pair/.test(k)) localStorage.removeItem(k);
+  localStorage.setItem('agentus.panel-split','1'); localStorage.setItem('agentus.panel-split-ide-top','0');
+  localStorage.setItem('agentus.panel-split-ratio','300'); return true; })()`);
+await goto(BASE);
+await openSessionAndPanel();
+await sleep(3000);
+const migrated = JSON.parse(await ev(`JSON.stringify({pair: localStorage.getItem('agentus.panel-pair'),
+  rows: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({cls: p.className.replace('stack-pane ',''), top: Math.round(p.getBoundingClientRect().top), h: Math.round(p.getBoundingClientRect().height)})).sort((a,b)=>a.top-b.top),
+  perPair: localStorage.getItem('agentus.panel-split-ratio:ide+terminal')})`));
+check("the stored booleans migrate into a pair with the terminal on top",
+  migrated.pair === JSON.stringify(["terminal","ide"]) && migrated.rows[0]?.cls === "pane-term", JSON.stringify(migrated));
+check("the global ratio migrates into the pair's key", Number(migrated.perPair) === 300 || Math.abs((migrated.rows[0]?.h ?? 0) - 300) <= 80,
+  JSON.stringify({perPair: migrated.perPair, topH: migrated.rows[0]?.h}));
 
 // A phone keeps the sheet: no switch, one pane.
 await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
