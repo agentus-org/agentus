@@ -80,6 +80,10 @@ export interface PaneHeightOptions {
   containerPx: () => number;
   /** Neither row may go below this. A 60px row is not a pane, it is a divider with a title. */
   min: number;
+  /** A remembered height for THIS storage key that the caller already resolved (issue #78: the
+   *  ratio is keyed by the pane PAIR, so the migration from the old global key lives in the caller,
+   *  not here). Used when `storage` has nothing for this exact key. */
+  fallbackPx?: number | null;
 }
 
 export interface PaneHeight {
@@ -99,16 +103,18 @@ export interface PaneHeight {
  * meaning of a split pane.
  */
 export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
-  const { storage, label, containerPx, min } = options;
-  const [want, setWant] = useState<number | null>(() => {
+  const { storage, label, containerPx, min, fallbackPx = null } = options;
+  const pick = (): number | null => {
     try {
       const raw = window.localStorage.getItem(storage);
       const n = raw === null ? Number.NaN : Number.parseFloat(raw);
-      return Number.isFinite(n) && n > 0 ? n : null;
+      if (Number.isFinite(n) && n > 0) return n;
+      return typeof fallbackPx === "number" && fallbackPx > 0 ? fallbackPx : null;
     } catch {
       return null;
     }
-  });
+  };
+  const [want, setWant] = useState<number | null>(pick);
   const [, setTick] = useState(0);
 
   // The ceiling is a function of the panel's height, which changes with the window and with the
@@ -118,6 +124,17 @@ export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // The key can MOVE under this hook: the split remembers a ratio PER PANE PAIR (issue #78 —
+  // switching from IDE+terminal to desktop+IDE must not inherit the other pair's height). A plain
+  // useState initializer reads once; this reloads when the pair changes.
+  const keyRef = useRef(storage);
+  useEffect(() => {
+    if (keyRef.current === storage) return;
+    keyRef.current = storage;
+    setWant(pick());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pick` reads the NEW key by closure
+  }, [storage, fallbackPx]);
 
   const total = containerPx();
   const half = Math.max(min, Math.round((total - 6) / 2));
@@ -204,7 +221,9 @@ export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
         setWant(null);
       }}
     >
-      <span className="pane-handle-row-line" />
+      {/* a 2px line alone reads as a border, and nobody drags a border (#78 §1): the line carries a
+          grip in its middle that takes the accent colour on hover or drag. */}
+      <span className="pane-handle-row-line"><span className="pane-handle-row-grip" /></span>
     </div>
   );
 
