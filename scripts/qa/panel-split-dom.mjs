@@ -97,6 +97,42 @@ check("swapping does NOT reload the IDE frame (a re-mount would restart code-ser
 check("swapping does NOT open a new pty (the terminal element survives)", kept.xterm === true, JSON.stringify(kept));
 check("the choice is remembered", await ev(`localStorage.getItem('agentus.panel-split-ide-top')`) === "0", await ev(`localStorage.getItem('agentus.panel-split-ide-top')`));
 
+// The divider is the rail's gesture turned 90°: drag it and the TOP row grows, and the split is
+// remembered as a height. Double-click puts it back to half and half.
+const dividerBox = JSON.parse(await ev(`(() => { const r=document.querySelector('.row-divider .pane-handle-row').getBoundingClientRect();
+  return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), cursor: getComputedStyle(document.querySelector('.row-divider .pane-handle-row')).cursor }); })()`));
+check("the row divider is a real handle (row-resize, like the rail's col-resize)", dividerBox.cursor === "row-resize", dividerBox.cursor);
+/* The VISUALLY topmost pane, not the first in DOM order: the panes sit in a fixed tree order and are
+ *  placed by CSS `order`, so after a swap the first child is the bottom row. Measuring DOM order here
+ *  is what made an earlier version of this test report a resize that went the wrong way. */
+const topH = async () => ev(`(() => { const h=[...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
+  .map(p => p.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+  return Math.round(h[0].height); })()`);
+const heightBefore = await topH();
+const drag = async (dy) => {
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: dividerBox.x, y: dividerBox.y, button: "left", clickCount: 1 });
+  for (const step of [0.3, 0.6, 1]) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: dividerBox.x, y: dividerBox.y + Math.round(dy * step), button: "left", buttons: 1 });
+    await sleep(120);
+  }
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: dividerBox.x, y: dividerBox.y + dy, button: "left", clickCount: 1 });
+  await sleep(600);
+};
+await drag(90);
+const heightAfter = await topH();
+check("dragging the divider resizes the top row", heightAfter > heightBefore + 40, `${heightBefore} → ${heightAfter}`);
+check("…and the height is remembered", Number(await ev(`localStorage.getItem('agentus.panel-split-ratio')`)) > heightBefore + 40,
+  await ev(`localStorage.getItem('agentus.panel-split-ratio')`));
+const sum = JSON.parse(await ev(`(() => { const st = document.querySelector('.panel-stack').getBoundingClientRect();
+  const kids = [...document.querySelectorAll('.panel-stack > *')].map(e => e.getBoundingClientRect().height);
+  return JSON.stringify({ stack: Math.round(st.height), sum: Math.round(kids.reduce((a, b) => a + b, 0)) }); })()`));
+check("the rows never overflow the panel (a fixed top row + a fixed bottom row would)", sum.sum <= sum.stack + 1, JSON.stringify(sum));
+await ev(`(() => { const h = document.querySelector('.row-divider .pane-handle-row');
+  h.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
+await sleep(700);
+check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('agentus.panel-split-ratio')`) === null,
+  String(await ev(`localStorage.getItem('agentus.panel-split-ratio')`)));
+
 // The files tab leaves the split, and coming back returns to it.
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/files/.test(t.textContent)).click(); true`);
 await sleep(1200);

@@ -21,7 +21,7 @@ import type { SessionView } from "./state";
 import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
-import { usePaneWidth } from "./paneWidth";
+import { usePaneHeight, usePaneWidth } from "./paneWidth";
 import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
@@ -170,6 +170,22 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * time the panel is closed and opened. Runs ONCE per panel mount, after the status arrives — the
    * status is what makes `canSplit` true, and it is fetched asynchronously. */
   const [splitRestored, setSplitRestored] = useState(false);
+  /* The divider between the two rows is the same gesture as the rail's (drag, double-click for half
+   * and half, remembered) — the operator asked for exactly that parity. `containerPx` is read off the
+   * stack, not the viewport: the panel is what the two rows divide. */
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  /* ONE rule for both rows, stated once: the TOP row carries the divider's height, the BOTTOM row takes
+   * whatever is left. Writing it per-pane is how a swap ends up with two fixed rows and an overflow
+   * (measured: 363px + 363px in a 600px panel, the lower pane clipped). */
+  const rowStyle = (isTop: boolean) => (isTop
+    ? { order: 1, flex: "0 0 auto", height: `${rows.height}px` }
+    : { order: 2, flex: "1 1 0", height: "auto" });
+  const rows = usePaneHeight({
+    storage: "agentus.panel-split-ratio",
+    label: "resize the ide and terminal panes",
+    min: 96,
+    containerPx: () => stackRef.current?.getBoundingClientRect().height ?? 0,
+  });
   useEffect(() => {
     if (splitRestored || !canSplit) return;
     setSplitRestored(true);
@@ -382,7 +398,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
           code-server's whole front end (unsaved buffers, extension host) and a terminal re-mount
           opens a NEW pty, so the panes may not move around in the tree. Which one is on top is CSS
           `order`, not DOM position — a swap is then a repaint, not a reload. */}
-      <div className="panel-stack">
+      <div className={`panel-stack ${splitActive ? "is-split" : ""}`} ref={stackRef}>
       {tab === "files" ? (
         /* The ROW is split, not the column. The operator: 「现在文件预览是直接放在文件浏览器下面的，
            只有一半的空间，太小了吧…你看下aionui，是单独加个侧栏到中间的吧」 — and the reference does
@@ -452,7 +468,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         <section
           className="stack-pane pane-ide"
           hidden={!(splitActive || tab === "ide")}
-          style={{ order: splitActive ? (ideOnTop ? 1 : 2) : 0 }}
+          style={splitActive ? rowStyle(ideOnTop) : { order: 0 }}
           aria-label="web ide"
         >
           {splitActive ? (
@@ -497,11 +513,16 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         </section>
       ) : null}
 
+      {/* ONE divider, placed by `order`: both rows are order 1 and 2 whatever their identity, so 1.5
+          always lands between them. A flex item of its own (not a border on a pane) so it stays
+          draggable and cannot be hidden along with a pane. */}
+      {splitActive ? <div className="row-divider" style={{ order: 1.5 }}>{rows.handle}</div> : null}
+
       {termMounted ? (
         <section
           className="stack-pane pane-term"
           hidden={!(splitActive || tab === "terminal")}
-          style={{ order: splitActive ? (ideOnTop ? 2 : 1) : 0 }}
+          style={splitActive ? rowStyle(!ideOnTop) : { order: 0 }}
           aria-label="terminal"
         >
           {splitActive ? (

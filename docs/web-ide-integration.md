@@ -145,10 +145,14 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
   the iframe: a fresh iframe is a fresh page load, so code-server restarts its whole front end —
   unsaved buffers, terminal scrollback, extension host. This is the one client-side rule that has to
   hold.
-- **On a desktop window the panel splits**: the IDE on top, the terminal below, 50/50 — so you can
-  watch what the agent is running while you edit. The `▤` switch in the tab bar turns it on; clicking
-  `ide` / `terminal` decides which one is on top (the pane's own ⇅ button does the same), and the
-  choice is remembered. A phone never splits: the sheet shows one pane at a time, exactly as before.
+- **On a desktop window the panel splits**: the IDE on top, the terminal below — so you can watch
+  what the agent is running while you edit. The `▤` switch turns it on; clicking `ide` / `terminal`
+  decides which one is on top (a pane's own ⇅ does the same), and the choice is remembered.
+- **The divider is the rail's handle turned 90°**: same 12px hit strip, same 2px line that lights up on
+  hover, same `row-resize` cursor, drag to resize, double-click for half and half. The height is
+  remembered too. One rule keeps it sane: the TOP row carries the height, the BOTTOM row takes the
+  remainder — so swapping never leaves two fixed rows overflowing the panel.
+- A phone never splits: the sheet shows one pane at a time, exactly as before.
 - The frame **and** the pty are mounted once and only hidden; swapping is CSS `order`, never a DOM
   move. Moving them would reload code-server's front end and open a *new* pty — the editor would lose
   unsaved buffers and the terminal its scrollback, which is the whole point of having them side by side.
