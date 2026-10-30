@@ -336,6 +336,25 @@ check("#80 the workspace switcher sits in the file browser's own top, not in the
 check("#80 …and the panel's tab-bar no longer carries a second one",
   await ev(`!document.querySelector('.tool-tabs [aria-label="change workspace"]')`), "");
 
+/* The switcher row itself. Two things the operator could not read off it: the full path said nothing
+ * the bar underneath did not already say, and nothing looked pressable (「这个不够明显，看不出来，
+ * 我都不知道这是个按钮」). So: folder NAME at the left, a button that literally says 切换 at the right. */
+const wsRow = JSON.parse(await ev(`(() => { const row = document.querySelector('.explorer-col .ws-row');
+  const btn = row?.querySelector('button[aria-label="change workspace"]');
+  return JSON.stringify({ row: Boolean(row), name: row?.querySelector('.ws-root-name')?.textContent?.trim() ?? null,
+    btn: btn?.textContent?.trim() ?? null, pathShown: row?.textContent?.includes('/') ?? null }); })()`));
+check("#80 the workspace row shows the folder NAME only (the full path is the bar below)",
+  Boolean(wsRow.row) && Boolean(wsRow.name) && wsRow.name.includes("/") === false && wsRow.pathShown === false,
+  JSON.stringify(wsRow));
+check("…and offers a button that says 切换", wsRow.btn === "切换", JSON.stringify(wsRow));
+await ev(`document.querySelector('.explorer-col .ws-row button[aria-label="change workspace"]').click(); true`);
+await sleep(1200);
+const wsDialog = JSON.parse(await ev(`(() => { const h = [...document.querySelectorAll('.modal h3')].map(x => x.textContent.trim());
+  return JSON.stringify({ heads: h, picker: Boolean(document.querySelector('.modal .ws-modal, .modal .ws-picker, .modal input')) }); })()`));
+check("…and the dialog it opens is titled 切换工作空间", wsDialog.heads.includes("切换工作空间"), JSON.stringify(wsDialog));
+await ev(`(() => { const b = [...document.querySelectorAll('.modal button')].find(x => x.textContent.trim() === '取消'); b?.click(); return true; })()`);
+await sleep(600);
+
 // A phone keeps the sheet: no switch, one pane. Put the panel back on a PANE first — the files tab
 // (where the switcher checks left it) shows zero rows, which would make "one pane" vacuous.
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.textContent)).click(); true`);
@@ -347,6 +366,7 @@ const phone = await ev(`(() => { const h = document.querySelector('.chat-head');
   const n = (sel) => h.querySelectorAll(sel).length;
   return { btn: Boolean(document.querySelector('${splitBtn}')),
     folder: n('[aria-label="file browser"]'), term: n('[aria-label="terminal"]'), ide: n('[aria-label="ide"]'),
+    more: n('[aria-label="more panes"]'), moreExpanded: h.querySelector('[aria-label="more panes"]')?.getAttribute("aria-expanded"),
     tabs: [...document.querySelectorAll('.tool-tab')].map(t => t.textContent.trim()),
     visible: document.querySelectorAll('.panel-stack .stack-pane:not([hidden])').length,
     overflow: document.documentElement.scrollWidth - innerWidth }; })()`);
@@ -357,6 +377,27 @@ check("#80 a phone's head keeps the file browser and nothing else",
   phone.folder === 1 && phone.term === 0 && phone.ide === 0, JSON.stringify({ folder: phone.folder, term: phone.term, ide: phone.ide }));
 check("#80 …and terminal/IDE stay reachable from the panel's tab bar there",
   phone.tabs.some((t) => /terminal/.test(t)) && phone.tabs.some((t) => /ide/.test(t)), JSON.stringify(phone.tabs));
+/* …but "reachable once you already opened the panel" is not "discoverable", which is what the operator
+ * said when he looked at his phone: 「你折叠的按钮…是不是也要展示出来？…放个 3 个点，类似『更多选项』」.
+ * The folded doors live behind one ⋮, and it has to actually open them. */
+check("#80 a phone's head carries a ⋮ for the folded panes",
+  phone.more === 1 && phone.moreExpanded === "false", JSON.stringify({ more: phone.more, expanded: phone.moreExpanded }));
+await ev(`document.querySelector('.chat-head [aria-label="more panes"]').click(); true`);
+await sleep(700);                       // React needs a render; reading in the same evaluate sees the old DOM
+const moreList = JSON.parse(await ev(`JSON.stringify({ items: [...document.querySelectorAll('.head-more-menu .speak-menu-item')]
+  .map(x => x.textContent.trim()) })`));
+check("…and ⋮ lists the panes that did not fit on the head",
+  moreList.items.some((t) => /terminal/i.test(t)) && moreList.items.some((t) => /ide/i.test(t)), JSON.stringify(moreList));
+/* Pick a pane that is NOT the current one: picking the current tab is the toggle (a second click
+ * closes), which is the other behaviour, asserted a few checks above with the head's own buttons. */
+await ev(`(() => { const want = [...document.querySelectorAll('.head-more-menu .speak-menu-item')]
+  .find(x => /ide/i.test(x.textContent)); want.click(); return true; })()`);
+await sleep(2000);
+const moreOpened = JSON.parse(await ev(`JSON.stringify({ open: Boolean(document.querySelector('.tool-panel')),
+  onIde: Boolean(document.querySelector('.panel-stack .stack-pane[data-pane="ide"]:not([hidden])')),
+  menu: Boolean(document.querySelector('.head-more-menu')) })`));
+check("…and picking IDE opens the panel ON the IDE, menu dismissed",
+  moreOpened.open && moreOpened.onIde && moreOpened.menu === false, JSON.stringify(moreOpened));
 check("a phone still shows exactly one pane", phone.visible === 1, `visible=${phone.visible}`);
 check("…and nothing overflows horizontally", phone.overflow === 0, `overflow=${phone.overflow}`);
 

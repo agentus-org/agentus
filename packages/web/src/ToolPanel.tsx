@@ -99,6 +99,14 @@ function humanSize(bytes?: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
+/** The folder's own name, which is what a person calls a workspace. `/Users/liang/Workspace/agent-dev-workspace`
+ *  is nine words of boilerplate the bar underneath already prints in full; the switcher row only has to
+ *  answer "which place am I rooting the tree at". */
+function workspaceName(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
 export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle, tab, onTab, ide }: {
   v: SessionView;
   onClose: () => void;
@@ -353,27 +361,6 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     foldPreview(false);
   };
 
-  // Breadcrumbs are relative to the workspace root when we are inside it: absolute
-  // paths are long and the interesting part is the tail.
-  const crumbs = useMemo(() => {
-    if (!listing) return [] as { label: string; path: string }[];
-    const sep = listing.path.startsWith("/") ? "/" : "\\";
-    const insideRoot = listing.root && (listing.path === listing.root || listing.path.startsWith(`${listing.root}${sep}`));
-    if (!insideRoot || !listing.root) {
-      return [{ label: listing.path === listing.home ? "~" : listing.path, path: listing.path }];
-    }
-    const rel = listing.path.slice(listing.root.length).split(sep).filter(Boolean);
-    const out = [{ label: root.split(sep).filter(Boolean).pop() ?? root, path: listing.root }];
-    let acc = listing.root;
-    for (const part of rel) {
-      acc = `${acc}${sep}${part}`;
-      out.push({ label: part, path: acc });
-    }
-    return out;
-  }, [listing, root]);
-
-  const crumbsText = crumbs.map((c) => c.label).join(" / ");
-
   /* A pane's BODY — the entire extension point (#78 §1): a new pane is one registry entry plus one
    * branch here. The row's shell, its hiding rule and its order all come from `paneRow`, so a pane
    * cannot invent a second visibility rule (that is exactly the #79 bug). */
@@ -399,16 +386,23 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
                 应该在文件浏览器里切 —— 文件树的根就是当前工作空间，在树顶上换根是最自然的。」 It is
                 the same act as walking up the tree, said in one click; the tree, the preview, the
                 terminal's cwd and the IDE's ?folder= all re-root from `v.info.workspace`. */}
-            <button
-              className="ws-root"
-              title={`工作空间：${root}\n点这里换成别的目录 —— 文件树、预览、终端、IDE 都跟着换`}
-              aria-label="change workspace"
-              onClick={onPickWorkspace}
-            >
+            {/* The row says WHICH workspace and offers the act — separately. The whole row used to be
+                one button carrying the full path plus a bare swap glyph, and the operator's report was
+                that it read as text: 「这个不够明显，看不出来，我都不知道这是个按钮」. The path is not
+                this row's job either (the bar under it already prints it in full) — so: folder name at
+                the left, a button that actually says 切换 on the right. */}
+            <div className="ws-row" title={`工作空间：${root}`}>
               <IconFolder size={13} />
-              <span className="ws-root-name">{crumbsText || root}</span>
-              <IconSwap size={12} className="ws-root-swap" />
-            </button>
+              <span className="ws-root-name">{workspaceName(root)}</span>
+              <button
+                className="ws-swap-btn"
+                title="切换工作空间"
+                aria-label="change workspace"
+                onClick={onPickWorkspace}
+              >
+                切换
+              </button>
+            </div>
             <div className="file-bar">
               <button
                 className="icon-btn"

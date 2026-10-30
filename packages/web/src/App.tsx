@@ -1424,17 +1424,17 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
-        <h3>workspace</h3>
+        <h3>切换工作空间</h3>
         <div className="hint">
-          the file panel and terminal work here. A running agent keeps the directory it
-          was started in — the new one applies to this session from the next resume.
+          文件浏览器、预览和终端都在这个目录里工作。已在跑的 agent 仍留在它启动时的目录，
+          新目录从下一次 resume 起生效。
         </div>
         <WorkspacePicker value={path} onChange={setPath} />
         {err && <div className="err">{err}</div>}
         <div className="row">
-          <button className="cancel" onClick={onClose}>cancel</button>
+          <button className="cancel" onClick={onClose}>取消</button>
           <button className="go" disabled={busy || !path.trim()} onClick={() => void save()}>
-            {busy ? "saving…" : "use this folder"}
+            {busy ? "保存中…" : "用这个目录"}
           </button>
         </div>
       </div>
@@ -1525,6 +1525,11 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
   const mode: SpeakMode = speak.mode;
   const intervalSec = speak.intervalSec;
   const [speakMenu, setSpeakMenu] = useState(false);
+  /* The phone's head cannot hold a button per tool window (it is already phone + speaker + 📁 wide),
+   * but hiding them outright left them UNDISCOVERABLE: the operator saw three icons and no hint that
+   * a terminal exists. 「你折叠的按钮…是不是也要展示出来？…放个 3 个点，类似『更多选项』那种」 — so the
+   * folded doors live behind one ⋮ instead of vanishing. */
+  const [moreMenu, setMoreMenu] = useState(false);
   const speakRef = useRef<HTMLSpanElement | null>(null);
   // 「现在有没有在念」— 单击喇叭时据此决定这一下是「停」还是「开/关档位」。
   const spoken = useSpeaker();
@@ -1740,6 +1745,37 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
         >
           <IconFolder />
         </button>
+        {!wide && panes.length ? (
+          <span className="head-more">
+            <button
+              className={`icon-btn ${moreMenu ? "on" : ""}`}
+              title="更多：终端 / IDE（在面板里打开）"
+              aria-label="more panes"
+              aria-haspopup="menu"
+              aria-expanded={moreMenu}
+              onClick={() => setMoreMenu((x) => !x)}
+            >
+              <IconDotsV />
+            </button>
+            {moreMenu ? (
+              <div className="speak-menu head-more-menu" role="menu">
+                {panes.map((pane) => (
+                  <button
+                    key={pane.id}
+                    type="button"
+                    role="menuitem"
+                    className={`speak-menu-item ${panelOpen && panelTab === pane.id ? "on" : ""}`}
+                    onClick={() => { setMoreMenu(false); onOpenPane(pane.id); }}
+                  >
+                    {pane.id === "ide" ? <IconCode size={14} /> : <IconTerminal size={14} />}
+                    <span>{pane.label}</span>
+                    <span className="head-more-note">{panelOpen && panelTab === pane.id ? "已打开" : "打开"}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </span>
+        ) : null}
         {/* …and on a wide window the tool windows get their own doors (#80 §1): terminal and IDE are
             not "browsing the workspace", they are two windows the operator opens all day, and
             panel-then-tab made that two clicks. Phones keep the tab bar instead — the head there is

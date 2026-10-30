@@ -1756,20 +1756,26 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   width: 5px; height: 5px; border-radius: 50%; margin-left: 4px;
   background: var(--warn, #d08b2c); display: inline-block;
 }
-/* The workspace switcher (#80 §2): a BUTTON now, not a label — the root of the tree is where you
- * change the root. It keeps the pill's look, so it still reads as "this is where you are". */
-.ws-root {
-  display: flex; align-items: center; gap: 5px; padding: 6px 9px 0; width: 100%;
-  font-size: 11px; color: var(--text-dim); font-family: var(--mono);
-  background: none; border: 0; text-align: left; cursor: pointer;
+/* The workspace row (#80 §2, revised after 「这个不够明显，看不出来，我都不知道这是个按钮」): the NAME is
+ * not the button any more — a whole row that is secretly clickable is exactly what nobody clicks. The
+ * row states where the tree is rooted (folder name only; the bar below already prints the full path)
+ * and a real labelled 切换 button sits at its end. */
+.ws-row {
+  display: flex; align-items: center; gap: 5px; padding: 5px 6px 2px 9px; width: 100%;
+  font-size: 11.5px; color: var(--text-dim); font-family: var(--mono); min-width: 0;
 }
-.ws-root:hover { color: var(--text); }
-.ws-root:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-/* Visible without hover, brighter on it: a touch screen never hovers, and an affordance that only
- * exists under a mouse is not an affordance there. */
-.ws-root-swap { margin-left: auto; opacity: .45; transition: opacity .12s; }
-.ws-root:hover .ws-root-swap, .ws-root:focus-visible .ws-root-swap { opacity: .95; }
-.ws-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-row-name, .ws-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ws-swap-btn {
+  margin-left: auto; flex: 0 0 auto;
+  font: inherit; font-size: 11px; line-height: 1; padding: 4px 8px; cursor: pointer;
+  color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--line); border-radius: 6px;
+}
+.ws-swap-btn:hover { color: var(--text); border-color: var(--accent); }
+.ws-swap-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+/* The phone's 更多 menu (the folded terminal/IDE doors): anchored to its own button. */
+.head-more { position: relative; display: inline-flex; }
+.head-more-menu { min-width: 172px; }
+.head-more-note { margin-left: auto; font-size: 11px; opacity: .6; }
 .file-bar {
   display: flex; align-items: center; gap: 2px; padding: 3px 6px;
   border-bottom: 1px solid var(--line);
