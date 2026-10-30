@@ -145,6 +145,13 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
   the iframe: a fresh iframe is a fresh page load, so code-server restarts its whole front end —
   unsaved buffers, terminal scrollback, extension host. This is the one client-side rule that has to
   hold.
+- **On a desktop window the panel splits**: the IDE on top, the terminal below, 50/50 — so you can
+  watch what the agent is running while you edit. The `▤` switch in the tab bar turns it on; clicking
+  `ide` / `terminal` decides which one is on top (the pane's own ⇅ button does the same), and the
+  choice is remembered. A phone never splits: the sheet shows one pane at a time, exactly as before.
+- The frame **and** the pty are mounted once and only hidden; swapping is CSS `order`, never a DOM
+  move. Moving them would reload code-server's front end and open a *new* pty — the editor would lose
+  unsaved buffers and the terminal its scrollback, which is the whole point of having them side by side.
 - Visibility is `configured && reachable`. Configured-but-down opens on the start command from §1
   (copyable), because an empty frame reads as "Agentus is broken" and sends the operator looking in
   the wrong place.

@@ -1686,6 +1686,22 @@ body.pane-dragging * { cursor: col-resize !important; }
 .tool-tab:hover { background: var(--bg-raised); color: var(--text); }
 .tool-tab.active { background: var(--bg-raised); border-color: var(--line); color: var(--accent-text); }
 .tool-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* The panel's panes are a flex COLUMN, and which one is on top is `order` — never DOM order, because
+   moving an iframe or a terminal in the tree remounts it (a fresh code-server front end, a new pty).
+   Only one pane is visible outside split mode; the others are `hidden` but stay mounted. */
+.panel-stack { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.stack-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; flex: 1 1 0; }
+.stack-pane[hidden] { display: none; }
+/* 50/50 and a hairline: the operator asked for "IDE on top, terminal below", not for another handle
+   to drag — and the chat column next to it already carries one. */
+.pane-ide + .pane-term { border-top: 1px solid var(--line); }
+.pane-term + .pane-ide { border-top: 1px solid var(--line); }
+.split-head {
+  display: flex; align-items: center; gap: 5px; padding: 2px 6px;
+  font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--line);
+  background: var(--bg-raised); flex: 0 0 auto;
+}
+.split-head > svg { flex: 0 0 auto; opacity: 0.8; }
 /* Web IDE (issue #77). The frame fills the panel and is only ever DISPLAY:none'd, never unmounted —
    a fresh iframe restarts code-server's front end (unsaved buffers, terminal, extension host), so
    tab switching must not recreate it. The frame gets its own stacking context: code-server's own

@@ -26,7 +26,7 @@ import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
-  IconCode, IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSwap, IconTerminal,
+  IconCode, IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwap, IconTerminal,
 } from "./Icons";
 
 interface Entry {
@@ -70,6 +70,11 @@ const PREVIEW_MIN = 300;
 /* The two column-fold switches (see the state below). Their names say which key holds which. */
 const FOLD_TREE_KEY = "agentus.panel-tree-folded";
 const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
+/* Desktop split (2026-10-30): the IDE above, the terminal below, both alive at once. Two remembered
+ * facts, both layout preferences like the widths and folds beside them: whether the split is on, and
+ * which of the two panes is the top one. */
+const SPLIT_KEY = "agentus.panel-split";
+const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
 
 /** A remembered on/off layout flag. Private mode has no localStorage, so folding then simply does
  *  not stick — same `try` shape as `usePaneWidth` beside it. */
@@ -81,6 +86,21 @@ function readFlag(key: string, fallback: boolean): boolean {
 }
 function writeFlag(key: string, on: boolean): void {
   try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* private mode */ }
+}
+
+/** Desktop or phone? The split is a WIDE-window affordance and nothing else: a phone sheet shows one
+ *  pane at a time (≤720px rules), so the media query IS the rule — not a width we measure ourselves,
+ *  which would drift from the CSS the moment the breakpoint moved. */
+function useWide(): boolean {
+  const [wide, setWide] = useState<boolean>(() =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 721px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 721px)");
+    const on = (): void => setWide(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  return wide;
 }
 
 function humanSize(bytes?: number): string {
@@ -135,6 +155,26 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    *  every few seconds for a fact that is almost always the same. `configured` decides whether the
    *  tab exists at all; `reachable` decides whether it opens an editor or explains itself. */
   const [ide0, setIde0] = useState<IdeStatus | null>(null);
+  /* The split is a preference, the same in every session (like the widths), and it is only OFFERED
+   * when there is something to split with — a phantom toggle is worse than none. */
+  const wide = useWide();
+  const [splitOn, setSplitOn] = useState<boolean>(() => readFlag(SPLIT_KEY, false));
+  const [ideOnTop, setIdeOnTop] = useState<boolean>(() => readFlag(SPLIT_IDE_TOP_KEY, true));
+  const canSplit = wide && Boolean(ide0?.configured);
+  /* In split mode the two panes are BOTH on screen, so there is no current tab between them: the tab
+   * buttons become "which one is on top", and `files` leaves the split. A phone never splits — the
+   * sheet shows one pane, so the tab behaves exactly as before. */
+  const splitActive = canSplit && splitOn && tab !== "files";
+  /* Reopening the panel lands on the operator's mode, not on `files`: the split is a layout (a
+   * preference that outlives the tab), so someone who chose it should not have to re-choose it every
+   * time the panel is closed and opened. Runs ONCE per panel mount, after the status arrives — the
+   * status is what makes `canSplit` true, and it is fetched asynchronously. */
+  const [splitRestored, setSplitRestored] = useState(false);
+  useEffect(() => {
+    if (splitRestored || !canSplit) return;
+    setSplitRestored(true);
+    if (splitOn && tab === "files") setTab(ideOnTop ? "ide" : "terminal");
+  }, [canSplit, splitOn, ideOnTop, tab, splitRestored]);
   const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
   const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
 
@@ -184,7 +224,12 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * host — because the iframe is a fresh page load, not a tab switch. This is the one client-side
    * rule in the integration that has to hold (issue #77 §3). */
   const [ideMounted, setIdeMounted] = useState(false);
-  useEffect(() => { if (tab === "ide") setIdeMounted(true); }, [tab]);
+  useEffect(() => { if (tab === "ide" || splitActive) setIdeMounted(true); }, [tab, splitActive]);
+  /* Same latch for the terminal, and for a sharper reason: every mount opens a real pty. The split
+   * needs it alive anyway (that is the point of watching it while you edit), and hiding it must not
+   * throw the shell away — the scrollback and the `cd` you did are the terminal. */
+  const [termMounted, setTermMounted] = useState(false);
+  useEffect(() => { if (tab === "terminal" || splitActive) setTermMounted(true); }, [tab, splitActive]);
 
   const load = useCallback(async (target0: string) => {
     setLoading(true);
@@ -248,9 +293,15 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         >
           <IconFile size={14} /> files
         </button>
+        {/* In split mode both panes are on screen, so a tab click means "put me on top" (the operator
+            asked for exactly that: 支持点击放上面还是下面). Outside it, a tab click switches panes. */}
         <button
-          className={`tool-tab ${tab === "terminal" ? "active" : ""}`}
-          onClick={() => setTab("terminal")}
+          className={`tool-tab ${tab === "terminal" || splitActive ? "active" : ""}`}
+          title={splitActive ? (ideOnTop ? "把终端放到上面" : "终端已经在上半屏") : undefined}
+          onClick={() => {
+            setTab("terminal");
+            if (splitActive && ideOnTop) { setIdeOnTop(false); writeFlag(SPLIT_IDE_TOP_KEY, false); }
+          }}
         >
           <IconTerminal size={14} /> terminal
         </button>
@@ -259,12 +310,34 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             frame (the frame itself stays dark, which reads as "agentus is broken"). */}
         {ide0?.configured ? (
           <button
-            className={`tool-tab ${tab === "ide" ? "active" : ""}`}
-            title={ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable"}
-            onClick={() => setTab("ide")}
+            className={`tool-tab ${tab === "ide" || splitActive ? "active" : ""}`}
+            title={splitActive
+              ? (ideOnTop ? "IDE 已经在上半屏" : "把 IDE 放到上面")
+              : ide0.reachable ? `Web IDE · ${ide0.base}` : "code-server is not reachable"}
+            onClick={() => {
+              setTab("ide");
+              if (splitActive && !ideOnTop) { setIdeOnTop(true); writeFlag(SPLIT_IDE_TOP_KEY, true); }
+            }}
           >
             <IconCode size={14} /> ide
             {ide0.reachable ? null : <span className="tab-dot" aria-label="not reachable" />}
+          </button>
+        ) : null}
+        {canSplit ? (
+          <button
+            className={`icon-btn ${splitActive ? "on" : ""}`}
+            title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：IDE 在上、终端在下"}
+            aria-label="toggle the vertical split"
+            aria-pressed={splitActive}
+            onClick={() => {
+              const next = !splitOn;
+              setSplitOn(next);
+              writeFlag(SPLIT_KEY, next);
+              // Leaving the files tab is what makes the split visible at all.
+              if (next && tab === "files") setTab("terminal");
+            }}
+          >
+            <IconSplitRows size={15} />
           </button>
         ) : null}
         <span className="head-spacer" />
@@ -304,7 +377,13 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
         </button>
       </div>
 
-      {tab === "ide" ? null : tab === "files" ? (
+      {/* THREE PANES IN ONE DOM ORDER, chosen for a reason (split + #77, 2026-10-30): the IDE frame
+          and the terminal are mounted once and afterwards only hidden. An iframe re-mount reloads
+          code-server's whole front end (unsaved buffers, extension host) and a terminal re-mount
+          opens a NEW pty, so the panes may not move around in the tree. Which one is on top is CSS
+          `order`, not DOM position — a swap is then a repaint, not a reload. */}
+      <div className="panel-stack">
+      {tab === "files" ? (
         /* The ROW is split, not the column. The operator: 「现在文件预览是直接放在文件浏览器下面的，
            只有一半的空间，太小了吧…你看下aionui，是单独加个侧栏到中间的吧」 — and the reference does
            exactly that: `ProjectPanelHost.tsx` partitions the layout as chat | preview | explorer. So
@@ -367,13 +446,30 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             </div>
           </div>
         </div>
-      ) : (
-        <TerminalTab v={v} root={root} />
-      )}
-      {/* Mounted once, then hidden — see the `ideMounted` comment above. It sits OUTSIDE the tab
-          ternary for exactly that reason: a ternary unmounts on every switch. */}
+      ) : null}
+
       {ideMounted ? (
-        <div className="ide-frame" style={{ display: tab === "ide" ? "flex" : "none" }}>
+        <section
+          className="stack-pane pane-ide"
+          hidden={!(splitActive || tab === "ide")}
+          style={{ order: splitActive ? (ideOnTop ? 1 : 2) : 0 }}
+          aria-label="web ide"
+        >
+          {splitActive ? (
+            <div className="split-head">
+              <IconCode size={13} /> <span>ide</span>
+              <span className="head-spacer" />
+              <button
+                className="icon-btn"
+                title={ideOnTop ? "把 IDE 移到下面" : "把 IDE 移到上面"}
+                aria-label="move the ide pane"
+                onClick={() => { const next = !ideOnTop; setIdeOnTop(next); writeFlag(SPLIT_IDE_TOP_KEY, next); }}
+              >
+                <IconSwap size={14} />
+              </button>
+            </div>
+          ) : null}
+        <div className="ide-frame">
           {ide0?.reachable ? (
             /* `folder` comes from the slot, never from an input: the panel is rooted at the session
                workspace, so "open the IDE" means "open the place this agent is working in". */
@@ -398,7 +494,34 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             </div>
           )}
         </div>
+        </section>
       ) : null}
+
+      {termMounted ? (
+        <section
+          className="stack-pane pane-term"
+          hidden={!(splitActive || tab === "terminal")}
+          style={{ order: splitActive ? (ideOnTop ? 2 : 1) : 0 }}
+          aria-label="terminal"
+        >
+          {splitActive ? (
+            <div className="split-head">
+              <IconTerminal size={13} /> <span>terminal</span>
+              <span className="head-spacer" />
+              <button
+                className="icon-btn"
+                title={ideOnTop ? "把终端移到上面" : "把终端移到下面"}
+                aria-label="move the terminal pane"
+                onClick={() => { const next = !ideOnTop; setIdeOnTop(next); writeFlag(SPLIT_IDE_TOP_KEY, next); }}
+              >
+                <IconSwap size={14} />
+              </button>
+            </div>
+          ) : null}
+          <TerminalTab v={v} root={root} />
+        </section>
+      ) : null}
+      </div>
     </aside>
   );
 }

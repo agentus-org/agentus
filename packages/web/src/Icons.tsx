@@ -141,6 +141,10 @@ export const IconPanelRight = (p: IconProps = {}): JSX.Element =>
 export const IconTerminal = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>, p);
 
+/** two stacked panes: the split layout switch */
+export const IconSplitRows = (p: IconProps = {}): JSX.Element =>
+  svg(<><rect x="3" y="3" width="18" height="8" rx="2" /><rect x="3" y="13" width="18" height="8" rx="2" /></>, p);
+
 /** an editor window: angle brackets in a frame, to sit next to the terminal's prompt */
 export const IconCode = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m9.5 10-2 2 2 2M14.5 10l2 2-2 2" /></>, p);
