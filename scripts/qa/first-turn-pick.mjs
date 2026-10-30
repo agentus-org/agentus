@@ -49,8 +49,27 @@ async function pickerModel() {
   const hermes = rows.find((r) => r.id === "hermes");
   const hs = hermes?.handshake?.models;
   const list = hs?.available ?? [];
-  // Prefer a NON-default entry: the bug is "your pick was dropped", which a default pick hides.
-  return list.find((id) => id !== hs?.currentModelId) ?? list[0] ?? "";
+  /* Prefer a NON-default entry: the bug is "your pick was dropped", which a default pick hides.
+   *
+   * …but prefer a CHEAP one among them. This script runs REAL prompts against a ~97k-token system
+   * prompt, and "the first non-default" was `deepseek:deepseek-v4-pro`: 13 QA sessions on
+   * 2026-10-29/30, 121 calls, ~10.7M input tokens billed to the operator's DeepSeek account — found
+   * on his invoice, not in any log he reads. A picker only has to be non-default; it does not have
+   * to be the expensive one. Override with AGENTUS_QA_MODEL when a specific model is under test. */
+  const others = list.filter((id) => id !== hs?.currentModelId);
+  /* Rank, don't take the first: a QA run must exercise a NON-DEFAULT pick, and nothing else. Cheapest
+   * first — subscription/local providers (qoder, lab, the coding plan) before metered ones, `flash`/
+   * `mini`-class before everything else. */
+  const LOCAL = ["custom:qoder:", "custom:lab:", "alibaba-coding-plan:"];
+  // a WHOLE segment, so `MiniMax` is not read as "mini" (it was, and it won the cheap slot)
+  const CHEAP = /(?:^|[:_/.-])(flash|mini|turbo|lite)(?:$|[:_/.-])/i;
+  // same provider first (that is the routing the page would exercise), then subscription/local, then
+  // the rest; inside each band, the cheap family first.
+  const provider = (id) => (id.startsWith("custom:") ? id.split(":").slice(0, 2).join(":") : id.split(":")[0]);
+  const here = provider(hs?.currentModelId ?? "");
+  const band = (id) => (provider(id) === here ? 0 : LOCAL.some((p) => id.startsWith(p)) ? 2 : 4);
+  const rank = (id) => band(id) + (CHEAP.test(id) ? 0 : 1);
+  return [...others].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0] ?? list[0] ?? "";
 }
 
 async function oneRound(n, pick) {
