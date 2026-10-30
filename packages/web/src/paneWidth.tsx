@@ -137,8 +137,15 @@ export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
   }, [storage, fallbackPx]);
 
   const total = containerPx();
-  const half = Math.max(min, Math.round((total - 6) / 2));
-  const cap = Math.max(min, total - min - 6);
+  /* A container that has not been laid out yet reports 0, and clamping against 0 means "96px, the
+   * floor". That was harmless while a stored ratio only became readable AFTER the panel had measured
+   * itself (#78 moved the key when the pair did), but the head now owns the IDE status, so the pair
+   * key exists on the FIRST frame — and the write-back below then persisted the unmeasured clamp:
+   * a migrated 300px came back as 96 (measured in QA: 「the global ratio migrates into the pair's
+   * key」 → perPair 96). Unmeasured means "no opinion", not "too big". */
+  const measured = total > 0;
+  const half = measured ? Math.max(min, Math.round((total - 6) / 2)) : min;
+  const cap = measured ? Math.max(min, total - min - 6) : Number.POSITIVE_INFINITY;
   const height = clamp(want ?? half, min, Math.max(min, cap));
   const heightRef = useRef(height);
   heightRef.current = height;
@@ -147,11 +154,10 @@ export function usePaneHeight(options: PaneHeightOptions): PaneHeight {
   // poison the next load. Only when it was actually stored — otherwise the follow-the-half default
   // would freeze at whatever the panel happened to be on the first frame.
   useEffect(() => {
-    if (want != null && want > cap) {
-      setWant(Math.max(min, cap));
-      writeStored(storage, Math.max(min, cap));
-    }
-  }, [want, cap, storage, min]);
+    if (!measured || want == null || want <= cap) return;
+    setWant(Math.max(min, cap));
+    writeStored(storage, Math.max(min, cap));
+  }, [want, cap, storage, min, measured]);
 
   const onPointerDown = useCallback(
     (ev: ReactPointerEvent<HTMLDivElement>) => {

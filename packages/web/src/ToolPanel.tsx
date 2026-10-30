@@ -22,6 +22,7 @@ import { cockpit } from "./state";
 import { FilePreviewPane } from "./FilePreview";
 import { useEscape } from "./useDismiss";
 import { usePaneHeight, usePaneWidth } from "./paneWidth";
+import { PANES, useWide, type IdeStatus, type PaneId, type PaneSpec, type ViewTab } from "./panes";
 import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
@@ -52,17 +53,6 @@ export interface PanelTarget {
   line?: number;
 }
 
-/** What /api/ide/status answers (server: packages/server/src/ide/proxy.ts). `start` is the command
- *  the tab prints when the upstream is configured but not up — the failure mode this whole feature
- *  is most likely to hit, and one that shows up as an empty iframe unless it is said out loud. */
-interface IdeStatus {
-  configured: boolean;
-  reachable: boolean;
-  base: string | null;
-  prefix: string;
-  start: string;
-}
-
 /** The preview column's floor: the tree may not eat below this, or the file being read becomes a
  *  letterbox (the operator's original complaint about the preview's size). */
 const PREVIEW_MIN = 300;
@@ -80,26 +70,6 @@ const PAIR_KEY = "agentus.panel-pair";
 const SPLIT_KEY = "agentus.panel-split";
 const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
 const RATIO_KEY = "agentus.panel-split-ratio";
-
-/** The pane registry (issue #78). The tab bar and the split are BOTH built from this array, so
- *  adding a pane — a box desktop, a preview — is one entry here plus one branch in the row
- *  renderer, and the split core never changes again. `files` stays out on purpose: it is a column
- *  layout (tree | preview), not a row — a 50%-tall file browser is not a pane, it is a shrunk one. */
-interface PaneSpec {
-  id: PaneId;
-  label: string;
-  /** Is this pane something the operator can use on THIS machine right now? A pane that is not
-   *  available gets no tab, cannot enter a pair, and is pruned out of a stored pair (#78 §4:
-   *  别留死框). */
-  available: (ide: IdeStatus | null) => boolean;
-}
-type PaneId = "terminal" | "ide";
-type ViewTab = "files" | PaneId;
-
-const PANES: PaneSpec[] = [
-  { id: "terminal", label: "terminal", available: () => true },
-  { id: "ide", label: "ide", available: (ide) => Boolean(ide?.configured) },
-];
 
 /** Which pane sits where: [top, bottom] or null = no split. One JSON value, one write path —
  *  the two booleans of 0.15.10 could disagree with each other (`splitOn` true while `tab` was
@@ -167,21 +137,6 @@ function writeFlag(key: string, on: boolean): void {
   try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* private mode */ }
 }
 
-/** Desktop or phone? The split is a WIDE-window affordance and nothing else: a phone sheet shows one
- *  pane at a time (≤720px rules), so the media query IS the rule — not a width we measure ourselves,
- *  which would drift from the CSS the moment the breakpoint moved. */
-function useWide(): boolean {
-  const [wide, setWide] = useState<boolean>(() =>
-    typeof window !== "undefined" && window.matchMedia("(min-width: 721px)").matches);
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 721px)");
-    const on = (): void => setWide(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return wide;
-}
-
 function humanSize(bytes?: number): string {
   if (bytes == null) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -189,10 +144,16 @@ function humanSize(bytes?: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
-export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle }: {
+export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle, tab, onTab, ide }: {
   v: SessionView;
   onClose: () => void;
   onPickWorkspace: () => void;
+  /** Which pane is showing. OWNED BY THE HEAD (#80 §1): the head's terminal/ide buttons open the
+   *  panel on that pane, so the choice cannot live below the panel's mount. */
+  tab: ViewTab;
+  onTab: (t: ViewTab) => void;
+  /** The IDE status the head already asked for (panes.ts::useIdeStatus) — one request for one fact. */
+  ide: IdeStatus | null;
   /** a file pushed in from outside the panel (a link in a reply); the panel opens on it */
   focus?: PanelTarget | null;
   /** the panel's own (resizable, persisted) width, and its handle — rendered on the LEFT edge,
@@ -202,7 +163,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 }): JSX.Element {
   // on a phone this panel is a full-screen sheet, so Escape is the keyboard way out
   useEscape(typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches, onClose);
-  const [tab, setTab] = useState<ViewTab>("files");
+  const setTab = onTab;
   const root = v.info.workspace || v.info.cwd;
   const [path, setPath] = useState(root);
   // The tree keeps its own column next to the preview instead of splitting the panel vertically:
@@ -229,11 +190,10 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * folding is a LAYOUT preference (one choice, the same in every session), not a per-file one.
    * They cannot BOTH be down — the panel would be an empty box with nothing on screen offering a
    * way back — so folding one unfolds the other. */
-  /* Web IDE (issue #77). The status is asked ONCE per panel open, not per tab switch: the answer
-   *  changes only when the operator starts or stops code-server, and polling it would be a request
-   *  every few seconds for a fact that is almost always the same. `configured` decides whether the
-   *  tab exists at all; `reachable` decides whether it opens an editor or explains itself. */
-  const [ide0, setIde0] = useState<IdeStatus | null>(null);
+  /* Web IDE (issue #77). `ide` arrives as a prop from the head, which needs the same answer to know
+   *  whether its `ide` button exists at all (#80 §1) — `configured` decides whether the pane is
+   *  available, `reachable` whether it opens an editor or explains itself. */
+  const ide0 = ide;
   /* The split is a preference, the same in every session (like the widths), and it is only OFFERED
    * when there is something to split with — a phantom toggle is worse than none. */
   const wide = useWide();
@@ -282,6 +242,33 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     : { order: 3, flex: "1 1 0", height: "auto" });
   const dividerStyle = { order: 2 } as CSSProperties;
 
+  /* ONE hiding rule for the whole registry, stated once (issue #79). In split mode a pane is on
+   * screen only if it is IN the pair; otherwise only the selected tab is.
+   *
+   * The 0.15.11 code said `!(splitActive || tab === id)` — "in split mode, show me too". That is
+   * exactly right while the registry holds the two panes the pair can hold, and exactly wrong the
+   * moment a third pane exists: `tab` can be that third pane, which takes no row from the split
+   * (no `order`, no height) but was still released by `tab === id`, so it hung below the pair as a
+   * THIRD row. Measured on a three-pane beta: pair ["ide","terminal"], three visible rows. */
+  const paneShown = (id: PaneId): boolean =>
+    splitActive ? Boolean(livePair?.includes(id)) : tab === id;
+
+  /* The row shell every pane gets: the section, its hidden flag, its order, its head. A pane's own
+   * JSX is the argument — that is the whole extension point (#78 §1). */
+  const paneRow = (pane: PaneSpec, body: JSX.Element): JSX.Element => (
+    <section
+      key={pane.id}
+      className={`stack-pane pane-${pane.id}`}
+      data-pane={pane.id}
+      hidden={!paneShown(pane.id)}
+      style={splitActive ? rowStyle(livePair?.[0] === pane.id) : { order: 0 }}
+      aria-label={pane.label}
+    >
+      {splitActive ? <PaneHead id={pane.id} label={pane.label} top={livePair?.[0] === pane.id} onSwap={swapPanes} /> : null}
+      {body}
+    </section>
+  );
+
   /* Tab click (issue #78 §3): put me on top. Already on top: nothing moves. In the pair below:
    * swap. Not in the pair: I take the top slot and the old top becomes the bottom. Turning the
    * split ON with no stored pair seeds [this, the first other available pane]. */
@@ -309,10 +296,11 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   };
   const toggleSplit = (): void => {
     if (livePair) {
+      // closing the split shows the pane that WAS on top — the row the operator was reading.
+      const top = livePair[0];
       setPair(null);
       writePair(null);
-      // closing the split shows the pane that WAS on top, not whatever the tab says
-      setTab((t) => (t === "files" ? "terminal" : t));
+      setTab(top);
       return;
     }
     // The seed is DETERMINISTIC, not "whatever tab you happened to be on": IDE on top, terminal
@@ -360,16 +348,6 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     const dir = focus.path.replace(/\/[^/]*$/, "") || "/";
     setPath(dir);
   }, [focus]);
-
-  // One status call per panel open. A failed call is "no IDE" rather than an error banner: the
-  // panel's other two tabs are unaffected, and the operator asked to see files, not a health probe.
-  useEffect(() => {
-    let alive = true;
-    cockpit.ideStatus()
-      .then((s) => { if (alive) setIde0(s); })
-      .catch(() => { if (alive) setIde0(null); });
-    return () => { alive = false; };
-  }, []);
 
   /* A mount latch PER PANE, driven by the pair: a pane that is in the pair (either row) or is the
    * shown tab has been mounted at least once, and afterwards it is only ever HIDDEN. Re-mounting the
@@ -502,14 +480,6 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             </button>
           </>
         ) : null}
-        <button
-          className="icon-btn"
-          title={`workspace: ${root}\nclick to point this session at another directory`}
-          aria-label="change workspace"
-          onClick={onPickWorkspace}
-        >
-          <IconSwap size={15} />
-        </button>
         <button className="icon-btn" title="close panel" aria-label="close panel" onClick={onClose}>
           <IconClose size={15} />
         </button>
@@ -536,10 +506,21 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
           ) : null}
           <div className="explorer-col" style={{ "--explorer-w": `${explorer.width}px` } as CSSProperties}>
             {target ? explorer.handle : null}
-            <div className="ws-root" title={root}>
+            {/* #80 §2: the workspace switcher lives HERE, at the root of the tree, not as a second
+                folderish button in the panel's tab bar. 「打开文件浏览器之后，你要切工作空间，本来就
+                应该在文件浏览器里切 —— 文件树的根就是当前工作空间，在树顶上换根是最自然的。」 It is
+                the same act as walking up the tree, said in one click; the tree, the preview, the
+                terminal's cwd and the IDE's ?folder= all re-root from `v.info.workspace`. */}
+            <button
+              className="ws-root"
+              title={`工作空间：${root}\n点这里换成别的目录 —— 文件树、预览、终端、IDE 都跟着换`}
+              aria-label="change workspace"
+              onClick={onPickWorkspace}
+            >
               <IconFolder size={13} />
               <span className="ws-root-name">{crumbsText || root}</span>
-            </div>
+              <IconSwap size={12} className="ws-root-swap" />
+            </button>
             <div className="file-bar">
               <button
                 className="icon-btn"
@@ -588,54 +569,42 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 
       {/* Rows are rendered from the registry, in ONE fixed DOM order — the pair's order is pure CSS
           `order`. A pane is mounted on first use and only ever hidden after that (the #77 rule:
-          re-mounting an iframe reloads code-server, re-mounting the terminal opens a new pty). */}
-      {mounted.terminal && (
-        <section
-          className="stack-pane pane-term"
-          hidden={!(splitActive || tab === "terminal")}
-          style={splitActive ? rowStyle(livePair?.[0] === "terminal") : { order: 0 }}
-          aria-label="terminal"
-        >
-          {splitActive ? <PaneHead id="terminal" label="terminal" top={livePair?.[0] === "terminal"} onSwap={swapPanes} /> : null}
-          <TerminalTab v={v} root={root} />
-        </section>
-      )}
+          re-mounting an iframe reloads code-server, re-mounting the terminal opens a new pty).
 
-      {mounted.ide && (
-        <section
-          className="stack-pane pane-ide"
-          hidden={!(splitActive || tab === "ide")}
-          style={splitActive ? rowStyle(livePair?.[0] === "ide") : { order: 0 }}
-          aria-label="web ide"
-        >
-          {splitActive ? <PaneHead id="ide" label="ide" top={livePair?.[0] === "ide"} onSwap={swapPanes} /> : null}
-        <div className="ide-frame">
-          {ide0?.reachable ? (
-            /* `folder` comes from the slot, never from an input: the panel is rooted at the session
-               workspace, so "open the IDE" means "open the place this agent is working in". */
-            <iframe
-              className="ide-iframe"
-              title={`Web IDE — ${root}`}
-              src={`${ide0.prefix}/?folder=${encodeURIComponent(root)}`}
-            />
-          ) : (
-            <div className="ide-help">
-              <div className="ide-help-title">code-server 不可达</div>
-              <p>
-                {ide0?.configured
-                  ? `已配置 ${ide0.base ?? ""}，但连不上。先把 code-server 起起来：`
-                  : "没有配置 IDE 上游。"}
-              </p>
-              <pre className="ide-cmd">{ide0?.start ?? ""}</pre>
-              <p className="ide-help-note">
-                然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 agentus。
-                只监听回环是刻意的：<code>--auth none</code> 只有在回环上才安全，鉴权由驾驶舱的 cookie 这一跳承担。
-              </p>
-            </div>
-          )}
-        </div>
-        </section>
-      )}
+          The body is the only thing a new pane has to write (one branch below); the section, its
+          hiding rule and its order come from `paneRow`, which is why a third pane cannot repeat the
+          #79 bug: there is nowhere left to write a second, wrong `hidden` expression. */}
+      {PANES.map((pane) => {
+        if (!mounted[pane.id]) return null;
+        if (pane.id === "terminal") return paneRow(pane, <TerminalTab v={v} root={root} />);
+        return paneRow(pane, (
+          <div className="ide-frame">
+            {ide0?.reachable ? (
+              /* `folder` comes from the slot, never from an input: the panel is rooted at the session
+                 workspace, so "open the IDE" means "open the place this agent is working in". */
+              <iframe
+                className="ide-iframe"
+                title={`Web IDE — ${root}`}
+                src={`${ide0.prefix}/?folder=${encodeURIComponent(root)}`}
+              />
+            ) : (
+              <div className="ide-help">
+                <div className="ide-help-title">code-server 不可达</div>
+                <p>
+                  {ide0?.configured
+                    ? `已配置 ${ide0.base ?? ""}，但连不上。先把 code-server 起起来：`
+                    : "没有配置 IDE 上游。"}
+                </p>
+                <pre className="ide-cmd">{ide0?.start ?? ""}</pre>
+                <p className="ide-help-note">
+                  然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 agentus。
+                  只监听回环是刻意的：<code>--auth none</code> 只有在回环上才安全，鉴权由驾驶舱的 cookie 这一跳承担。
+                </p>
+              </div>
+            )}
+          </div>
+        ));
+      })}
 
       {/* ONE divider between the two rows — and its order is the integer 2, NOT the 1.5 this shipped
           with: CSS `order` is <integer>, 1.5 was a discarded declaration, the divider fell back to

@@ -55,7 +55,11 @@ await goto(BASE);
  *  most runs start there; if it does not, the first rail row is a session (its ⋯ menu is the marker —
  *  the rail's own buttons are not it). */
 const openSessionAndPanel = async () => {
-  const open = async () => ev(`(() => { const b=[...document.querySelectorAll('button')].find(x=>/workspace panel/i.test(x.getAttribute('title')||''));
+  /* #80 §2: the panel's door is now the head's ONE folder button (`aria-label="file browser"`); the
+   * old /workspace panel/ title went away with the merged icon. Both are tried so the script still
+   * runs against an older build. */
+  const open = async () => ev(`(() => { const b = document.querySelector('button[aria-label="file browser"]')
+      || [...document.querySelectorAll('button')].find(x=>/workspace panel/i.test(x.getAttribute('title')||''));
     if (!b) return false; b.click(); return true; })()`);
   if (await open()) { await sleep(3000); return true; }
   await ev(`(() => { const menu=document.querySelector('[title^="会话设置"], [aria-label^="会话设置"]');
@@ -73,7 +77,7 @@ const splitBtn = `[aria-label="toggle the vertical split"]`;
  * pane the component renders first — not the top of the screen. (The same trap bit twice during
  * this issue; the assertion shape is the fix for it.) */
 const panes = `JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane')].map(p => ({
-  cls: p.className, hidden: p.hidden, top: Math.round(p.getBoundingClientRect().top),
+  pane: p.dataset.pane, cls: p.className, hidden: p.hidden, top: Math.round(p.getBoundingClientRect().top),
   h: Math.round(p.getBoundingClientRect().height), iframe: Boolean(p.querySelector('iframe')),
   xterm: Boolean(p.querySelector('.xterm')) })).sort((a, b) => a.top - b.top))`;
 
@@ -87,16 +91,30 @@ check("the IDE is the top pane and the terminal the bottom one (default)",
   JSON.stringify(split.map((p) => ({ cls: p.cls, top: p.top }))));
 check("the two panes share the height", Math.abs((split[0]?.h ?? 0) - (split[1]?.h ?? 0)) <= 8, `${split[0]?.h} vs ${split[1]?.h}`);
 
+/* #79: the invariant the 0.15.11 code broke. In split mode the panel shows the PAIR and nothing else.
+ *  The old rule per row was `!(splitActive || tab === id)` — "in split mode, show me too" — which is
+ *  exactly right while the registry holds only the two panes a pair can hold, and exactly wrong once
+ *  a third pane exists: `tab` can be that third pane, and `tab === id` released it as a THIRD row
+ *  (measured on a three-pane beta: pair ["ide","terminal"], three visible rows).
+ *
+ *  Written as a COUNT plus a MEMBERSHIP test, not as "the two known panes are visible": it holds for
+ *  any registry size, so it is the assertion that keeps holding when the next pane is added. */
+const inPair = JSON.parse(await ev(`(() => { const pair = JSON.parse(localStorage.getItem('agentus.panel-pair') || 'null');
+  const vis = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane);
+  return JSON.stringify({ count: vis.length, vis, pair }); })()`));
+check("in split mode the panel shows exactly the pair — a third pane cannot sneak in (#79)",
+  inPair.count === 2 && inPair.vis.every((p) => inPair.pair?.includes(p)), JSON.stringify(inPair));
+
 // Tag both elements, then swap: the tags are the proof that nothing was re-created.
-await ev(`(() => { document.querySelector('.pane-ide iframe').dataset.mark='keep';
-  document.querySelector('.pane-term .xterm').dataset.mark='keep'; return true; })()`);
+await ev(`(() => { document.querySelector('[data-pane="ide"] iframe').dataset.mark='keep';
+  document.querySelector('[data-pane="terminal"] .xterm').dataset.mark='keep'; return true; })()`);
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.textContent)).click(); true`);
 await sleep(1500);
 const swapped = JSON.parse(await ev(panes));
 check("clicking the terminal tab puts the terminal on top", swapped[0]?.xterm === true && swapped[0]?.top < swapped[1]?.top,
   JSON.stringify(swapped.map((p) => ({ cls: p.cls, top: p.top }))));
-const kept = await ev(`(() => ({ iframe: document.querySelector('.pane-ide iframe').dataset.mark === 'keep',
-  xterm: document.querySelector('.pane-term .xterm').dataset.mark === 'keep' }))()`);
+const kept = await ev(`(() => ({ iframe: document.querySelector('[data-pane="ide"] iframe').dataset.mark === 'keep',
+  xterm: document.querySelector('[data-pane="terminal"] .xterm').dataset.mark === 'keep' }))()`);
 check("swapping does NOT reload the IDE frame (a re-mount would restart code-server)", kept.iframe === true, JSON.stringify(kept));
 check("swapping does NOT open a new pty (the terminal element survives)", kept.xterm === true, JSON.stringify(kept));
 check("the choice is remembered as a pair, terminal first", await ev(`localStorage.getItem('agentus.panel-pair')`) === JSON.stringify(["terminal","ide"]), await ev(`localStorage.getItem('agentus.panel-pair')`));
@@ -182,21 +200,69 @@ await goto(BASE);
 await openSessionAndPanel();
 await sleep(3000);
 const migrated = JSON.parse(await ev(`JSON.stringify({pair: localStorage.getItem('agentus.panel-pair'),
-  rows: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({cls: p.className.replace('stack-pane ',''), top: Math.round(p.getBoundingClientRect().top), h: Math.round(p.getBoundingClientRect().height)})).sort((a,b)=>a.top-b.top),
+  rows: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({cls: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top), h: Math.round(p.getBoundingClientRect().height)})).sort((a,b)=>a.top-b.top),
   perPair: localStorage.getItem('agentus.panel-split-ratio:ide+terminal')})`));
 check("the stored booleans migrate into a pair with the terminal on top",
-  migrated.pair === JSON.stringify(["terminal","ide"]) && migrated.rows[0]?.cls === "pane-term", JSON.stringify(migrated));
+  migrated.pair === JSON.stringify(["terminal","ide"]) && migrated.rows[0]?.cls === "terminal", JSON.stringify(migrated));
 check("the global ratio migrates into the pair's key", Number(migrated.perPair) === 300 || Math.abs((migrated.rows[0]?.h ?? 0) - 300) <= 80,
   JSON.stringify({perPair: migrated.perPair, topH: migrated.rows[0]?.h}));
 
-// A phone keeps the sheet: no switch, one pane.
+/* #80 §1: on a wide window the tool windows are reachable from the HEAD. The operator's complaint was
+   that a terminal costs 「先点 ▤，再点 terminal」 — two clicks for a window opened all day — and that the
+   panel is width-tuned for files, not for a shell. */
+const headWide = JSON.parse(await ev(`(() => { const h = document.querySelector('.chat-head');
+  const n = (sel) => h.querySelectorAll(sel).length;
+  return JSON.stringify({ folder: n('[aria-label="file browser"]'), term: n('[aria-label="terminal"]'),
+    ide: n('[aria-label="ide"]'), swap: n('[aria-label="workspace"], [aria-label="change workspace"]') }); })()`));
+check("#80 a wide head carries one file-browser button (the 📁/◫ pair collapsed into it)",
+  headWide.folder === 1, JSON.stringify(headWide));
+check("#80 …plus a terminal and an IDE button of their own",
+  headWide.term === 1 && headWide.ide === 1, JSON.stringify(headWide));
+check("#80 …and no second folderish workspace button up there (the switcher moved into the tree)",
+  headWide.swap === 0, JSON.stringify(headWide));
+
+/* The head's button opens the panel ON that pane — one click, not panel-then-tab. */
+await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
+await sleep(1200);
+const fromHead = JSON.parse(await ev(`JSON.stringify({ open: Boolean(document.querySelector('.tool-panel')),
+  onTerm: Boolean(document.querySelector('.tool-tab.active')?.textContent?.includes('terminal')),
+  visible: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane) })`));
+check("#80 the head's terminal button lands on the terminal (panel opened, that pane selected)",
+  fromHead.open && fromHead.onTerm && fromHead.visible.includes("terminal"), JSON.stringify(fromHead));
+
+/* The switcher lives in the FILE browser, so look at the files tab (the head just put us on the
+   terminal — that is the point of the previous check). */
+await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/files/.test(t.textContent)).click(); true`);
+await sleep(1500);
+
+/* #80 §2: the workspace switcher lives at the root of the tree — where "walk up to the parent" and
+   "point the session somewhere else" are the same kind of move. */
+check("#80 the workspace switcher sits in the file browser's own top, not in the tab bar",
+  await ev(`Boolean(document.querySelector('.explorer-col button[aria-label="change workspace"]'))`), "");
+check("#80 …and the panel's tab-bar no longer carries a second one",
+  await ev(`!document.querySelector('.tool-tabs [aria-label="change workspace"]')`), "");
+
+// A phone keeps the sheet: no switch, one pane. Put the panel back on a PANE first — the files tab
+// (where the switcher checks left it) shows zero rows, which would make "one pane" vacuous.
+await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/terminal/.test(t.textContent)).click(); true`);
+await sleep(1200);
 await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
 await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
 await sleep(1500);
-const phone = await ev(`(() => ({ btn: Boolean(document.querySelector('${splitBtn}')),
-  visible: document.querySelectorAll('.panel-stack .stack-pane:not([hidden])').length,
-  overflow: document.documentElement.scrollWidth - innerWidth }))()`);
+const phone = await ev(`(() => { const h = document.querySelector('.chat-head');
+  const n = (sel) => h.querySelectorAll(sel).length;
+  return { btn: Boolean(document.querySelector('${splitBtn}')),
+    folder: n('[aria-label="file browser"]'), term: n('[aria-label="terminal"]'), ide: n('[aria-label="ide"]'),
+    tabs: [...document.querySelectorAll('.tool-tab')].map(t => t.textContent.trim()),
+    visible: document.querySelectorAll('.panel-stack .stack-pane:not([hidden])').length,
+    overflow: document.documentElement.scrollWidth - innerWidth }; })()`);
 check("a phone offers no split switch", phone.btn === false, JSON.stringify(phone));
+/* #80 §1, the other half: a phone's head keeps ONE button. 「手机上 head 那排已经很挤了，再加两个就放不下了」
+   — terminal and IDE retreat into the panel's tab bar, where a phone already looks for panes. */
+check("#80 a phone's head keeps the file browser and nothing else",
+  phone.folder === 1 && phone.term === 0 && phone.ide === 0, JSON.stringify({ folder: phone.folder, term: phone.term, ide: phone.ide }));
+check("#80 …and terminal/IDE stay reachable from the panel's tab bar there",
+  phone.tabs.some((t) => /terminal/.test(t)) && phone.tabs.some((t) => /ide/.test(t)), JSON.stringify(phone.tabs));
 check("a phone still shows exactly one pane", phone.visible === 1, `visible=${phone.visible}`);
 check("…and nothing overflows horizontally", phone.overflow === 0, `overflow=${phone.overflow}`);
 

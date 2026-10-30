@@ -1756,10 +1756,19 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   width: 5px; height: 5px; border-radius: 50%; margin-left: 4px;
   background: var(--warn, #d08b2c); display: inline-block;
 }
+/* The workspace switcher (#80 §2): a BUTTON now, not a label — the root of the tree is where you
+ * change the root. It keeps the pill's look, so it still reads as "this is where you are". */
 .ws-root {
-  display: flex; align-items: center; gap: 5px; padding: 6px 9px 0;
+  display: flex; align-items: center; gap: 5px; padding: 6px 9px 0; width: 100%;
   font-size: 11px; color: var(--text-dim); font-family: var(--mono);
+  background: none; border: 0; text-align: left; cursor: pointer;
 }
+.ws-root:hover { color: var(--text); }
+.ws-root:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+/* Visible without hover, brighter on it: a touch screen never hovers, and an affordance that only
+ * exists under a mouse is not an affordance there. */
+.ws-root-swap { margin-left: auto; opacity: .45; transition: opacity .12s; }
+.ws-root:hover .ws-root-swap, .ws-root:focus-visible .ws-root-swap { opacity: .95; }
 .ws-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-bar {
   display: flex; align-items: center; gap: 2px; padding: 3px 6px;

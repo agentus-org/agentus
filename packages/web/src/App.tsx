@@ -40,10 +40,12 @@ import {
 import { settledReplies, type SpeakMode } from "./autoRead";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
-  IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPanel, IconPaperclip,
+  IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
+  IconCode, IconTerminal,
   IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
 } from "./Icons";
+import { PANES, useIdeStatus, useWide, type PaneId, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
@@ -1265,6 +1267,21 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
   // here so switching slots keeps the panel open on the new slot's workspace.
   const [panelOpen, setPanelOpen] = useState(false);
+  /* WHICH PANE the panel shows, owned here rather than inside the panel (#80 §1): the head grows a
+   * button per wide-screen pane (terminal, IDE), and "open the panel on THAT pane" is a fact the
+   * head has to be able to set. It is also why the panel no longer answers this question itself. */
+  const [panelTab, setPanelTab] = useState<ViewTab>("files");
+  /* One IDE status for both consumers — the head decides whether its ide button exists, the panel
+   * decides whether the ide row is available. Asked once per session/workspace (panes.ts). */
+  const wide = useWide();
+  // `active` can be undefined here (the empty-state return sits further down), so the hook takes the
+  // empty key rather than throwing on a cockpit with no session selected.
+  const ide = useIdeStatus(active?.info.id ?? "", active?.info.workspace || active?.info.cwd || "");
+  const headPanes = PANES.filter((x) => x.headEntry && x.available(ide));
+  /* One door for the head's pane buttons: a pane is a tool window the operator opens all day, so a
+   * click on its head button opens the panel straight onto it — and if the panel is already open,
+   * it just switches (setPanelTab is a no-op when it is already that pane). */
+  const openPane = (t: ViewTab): void => { setPanelTab(t); setPanelOpen(true); };
   // A file pushed into the panel from outside it — a file link or an image in a reply
   // (fileBus.ts). A fresh object each time, so clicking the same link twice reopens it.
   const [panelFocus, setPanelFocus] = useState<PanelTarget | null>(null);
@@ -1331,8 +1348,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         v={active}
         onMenu={onMenu}
         panelOpen={panelOpen}
-        onTogglePanel={() => setPanelOpen((o) => !o)}
-        onPickWorkspace={() => setPickWorkspace(true)}
+        panelTab={panelTab}
+        onOpenPane={openPane}
+        panes={headPanes}
+        wide={wide}
         call={call}
         onCall={(wantTus) => { dictation.stop(); setTus(wantTus); setCall(true); }}
         onPerm={onPermClick}
@@ -1348,6 +1367,9 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
             v={active}
             onClose={() => setPanelOpen(false)}
             onPickWorkspace={() => setPickWorkspace(true)}
+            tab={panelTab}
+            onTab={setPanelTab}
+            ide={ide}
             focus={panelFocus}
             panelWidth={panelWidth}
             panelHandle={panelHandle}
@@ -1416,12 +1438,19 @@ function WorkspaceModal({ v, onClose }: { v: SessionView; onClose: () => void })
  *  它有守卫（`scripts/qa/tus-mode-sweep.mjs`）：短按 300 ms 必须还是原来的电话。 */
 const TUS_LONG_PRESS_MS = 480;
 
-function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, onCall, onPerm, speak }: {
+function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, call, onCall, onPerm, speak }: {
   v: SessionView;
   onMenu: () => void;
   panelOpen: boolean;
-  onTogglePanel: () => void;
-  onPickWorkspace: () => void;
+  /** Which pane the panel is showing, so the head's buttons can light the one that is open. */
+  panelTab: ViewTab;
+  /** Open the panel ON a pane (`files` = the browser). The workspace switcher itself moved into the
+   *  file browser's top (#80 §2) — this is the only door the head offers. */
+  onOpenPane: (t: ViewTab) => void;
+  /** Panes that earn their own head button on a wide window (#80 §1): on a phone the head keeps one
+   *  folder button and terminal/IDE stay in the panel's tab bar, where there is room. */
+  panes: typeof PANES;
+  wide: boolean;
   call: boolean;
   /** `true` = 长按进入 Tus 模式，`false` = 普通通话。 */
   onCall: (tus: boolean) => void;
@@ -1689,23 +1718,36 @@ function ChatHead({ v, onMenu, panelOpen, onTogglePanel, onPickWorkspace, call, 
             </div>
           ) : null}
         </span>
+        {/* ONE folder button for the browser (#80 §2). The head used to carry BOTH 📁 (point this
+            session at another directory) and ◫ (open the panel), two icons in the same visual
+            language with overlapping jobs — 「每次都要想一下该点哪个」. The switcher now lives at the
+            top of the file tree, where the workspace IS the root you are browsing, so this button
+            only says: open the browser. */}
         <button
-          className="icon-btn"
-          title={`workspace: ${info.workspace || info.cwd}\nclick to point this session at another directory`}
-          aria-label="workspace"
-          onClick={onPickWorkspace}
+          className={`icon-btn ${panelOpen && panelTab === "files" ? "on" : ""}`}
+          title={`文件浏览器 — ${info.workspace || info.cwd}`}
+          aria-label="file browser"
+          aria-expanded={panelOpen && panelTab === "files"}
+          onClick={() => onOpenPane("files")}
         >
           <IconFolder />
         </button>
-        <button
-          className={`icon-btn ${panelOpen ? "on" : ""}`}
-          title="workspace panel — files and terminal"
-          aria-label="workspace panel"
-          aria-expanded={panelOpen}
-          onClick={onTogglePanel}
-        >
-          <IconPanel />
-        </button>
+        {/* …and on a wide window the tool windows get their own doors (#80 §1): terminal and IDE are
+            not "browsing the workspace", they are two windows the operator opens all day, and
+            panel-then-tab made that two clicks. Phones keep the tab bar instead — the head there is
+            already full and a phone does not split anyway. */}
+        {wide ? panes.map((pane) => (
+          <button
+            key={pane.id}
+            className={`icon-btn ${panelOpen && panelTab === pane.id ? "on" : ""}`}
+            title={`${pane.label} — 打开在面板里`}
+            aria-label={pane.label}
+            aria-expanded={panelOpen && panelTab === pane.id}
+            onClick={() => onOpenPane(pane.id)}
+          >
+            {pane.id === "ide" ? <IconCode /> : <IconTerminal />}
+          </button>
+        )) : null}
       </span>
     </div>
   );
