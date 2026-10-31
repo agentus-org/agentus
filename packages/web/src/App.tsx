@@ -4889,7 +4889,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         .map((w) => ({ key: `ws:${w.path}`, label: w.label, hint: w.path, current: w.current, path: w.path }));
     }
     const group = ws.find((w) => w.path === mention.workspace) ?? { path: mention.workspace, label: mention.workspace.split("/").filter(Boolean).pop() ?? mention.workspace, lastAt: 0, current: false, sessions: [] };
-    return mentionChoices(group, mention.query, 20).map((c) => ({ key: c.key, label: c.label, hint: c.hint, choice: c }));
+    return mentionChoices(group, mention.query, 20, v.info.id).map((c) => ({ key: c.key, label: c.label, hint: c.hint, choice: c }));
   })();
   const mentionOpen = mention !== null;
 

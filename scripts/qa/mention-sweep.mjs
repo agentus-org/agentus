@@ -7,7 +7,7 @@
 //
 // 自给自足：自己的 Agentus（mock 后端）、自己建的临时数据目录、操作员的 Edge（CDP :9222）。
 //   node scripts/qa/mention-sweep.mjs
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -402,6 +402,55 @@ try {
     /写一句话再回车/.test(emptyToast), emptyToast);
   const after = allSessions(await api("/api/sessions")).length;
   check("…and it does not quietly create a session", after === before, `${before} -> ${after}`);
+
+  // ------------------------------------------------- 服务端的两条契约（review 抓出来的）
+  // (a) 转交给自己：不是「没意义」而已 —— 它会 cancel 掉你正在跑的回合，还给自己的话贴一张
+  //     「来自别处」的标签。列表里已经不给选了，接口也必须拒。
+  const selfPost = await fetch(`${BASE}/api/bridge`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ from: srcA, to: { kind: "session", id: srcA }, text: "自己转给自己" }),
+  });
+  const selfBody = await selfPost.json().catch(() => ({}));
+  check("transferring to yourself is refused by the server, not just hidden in the UI",
+    selfPost.status === 400 && selfBody.code === "self_target", `${selfPost.status} ${JSON.stringify(selfBody).slice(0, 80)}`);
+
+  // (b) 投递失败必须报失败。上一版是 `void prompt().catch(console.error)`：目标进程刚好死掉时
+  //     信封没送出去，接口却回 200，页面显示「已转交」。这里把目标 agent 杀掉再造这一下。
+  // pid 不在 /api/sessions 的行里，所以靠进程表找这个会话新起的 mock agent（argv 里带 mock/agent.mjs）。
+  const mockPids = () => new Set(execSync("ps -Ao pid=,command=", { encoding: "utf8" })
+    .split("\n").filter((l) => /mock\/agent\.mjs/.test(l))
+    .map((l) => Number(l.trim().split(/\s+/)[0]))
+    .filter(Boolean));
+  const beforePids = mockPids();
+  const victim = await api("/api/sessions", { method: "POST", body: JSON.stringify({ backend: "mock", cwd: wsB, title: "将被杀掉的会话" }) });
+  for (let i = 0; i < 40; i++) {
+    const row = allSessions(await api("/api/sessions")).find((r) => r.id === victim.id);
+    if (row?.status === "ready") break;
+    await sleep(250);
+  }
+  const victimPid = [...mockPids()].find((p) => !beforePids.has(p));
+  if (victimPid) {
+    process.kill(victimPid, "SIGKILL");
+    await sleep(1200);
+  }
+  const deadPost = await fetch(`${BASE}/api/bridge`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ from: srcA, to: { kind: "session", id: victim.id }, text: "这句话必须被报成失败" }),
+  });
+  const deadBody = await deadPost.json().catch(() => ({}));
+  // 杀进程这一下有时会被 manager 自动拉起（那就该 200），有时拉不起来（那就该 4xx）。
+  // 所以这里断言的是一条不变量，而不是某一次的结果：
+  //   **接口回 200 ⟺ 信封真的进了目标的转录**。上一版正是这条不成立 —— 回 200 但什么都没到。
+  const victimMsgs = await api(`/api/sessions/${victim.id}/messages`);
+  const landed = JSON.stringify(victimMsgs ?? {}).includes("这句话必须被报成失败");
+  const saidOk = deadPost.status === 200;
+  check("「已转交」只说在话真的到了的时候：200 与转录里有信封必须一致",
+    saidOk === landed,
+    `pid=${victimPid ?? "?"} status=${deadPost.status} landed=${landed} ${JSON.stringify(deadBody).slice(0, 80)}`);
+  check("失败时给的是能看懂的原因，不是 error code",
+    saidOk || /deliver_failed|wake_failed|target_not_ready/.test(JSON.stringify(deadBody)) || typeof deadBody.error === "string");
 } catch (e) {
   fail++;
   console.log("FAIL  sweep threw —", String(e?.message ?? e));

@@ -135,6 +135,18 @@ const HERE = "/Users/liang/Workspace/agent-dev-workspace/";   // trailing slash 
   check("the operator's own words are still the last thing in it", env.trim().endsWith("修一下"));
 }
 
+// 11. 转交目标里不出现「你自己」—— 那会 cancel 掉正在跑的回合，还给自己的话贴上「来自别处」。
+{
+  const ws = mentionWorkspaces(ALL, HERE)[0];
+  const all = mentionChoices(ws, "", 20);
+  const withoutSelf = mentionChoices(ws, "", 20, "aaa11111");
+  check("you can still open a new session in your own workspace",
+    all.some((c) => c.kind === "new") && withoutSelf.some((c) => c.kind === "new"));
+  check("but the session you are standing in is not offered as a target",
+    all.some((c) => c.id === "aaa11111") && !withoutSelf.some((c) => c.id === "aaa11111"),
+    withoutSelf.map((c) => c.label).join(","));
+}
+
 console.log(`\nmention-units: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
 
