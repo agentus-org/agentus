@@ -4520,6 +4520,11 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const [bridgeNote, setBridgeNote] = useState<{ text: string; id: string } | null>(null);
   /** 转交失败的原因（目标忙、目录没了…）：说人话，不要只写进控制台。 */
   const [bridgeErr, setBridgeErr] = useState("");
+  /** 在途中的那次转交（值 = 目的地的可读名字）。非空即"已出发、还没回执"，界面必须一直在说这件事。 */
+  const [bridgeBusy, setBridgeBusy] = useState<string | null>(null);
+  /** 同一 tick 内的重复按键也要挡住 —— state 是下一帧才更新的，回车连按两次会穿过它。
+   *  这不是"防御性代码"：它防的是"一次点击建出两个会话"这个已被真实用户触发的缺陷。 */
+  const bridgeInflight = useRef(false);
   // clicking outside hides the palette without eating the "/..." the operator typed
   const [paletteHidden, setPaletteHidden] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -4668,26 +4673,40 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
    *
    * 三条必须守住的东西：
    *  · 正文是**去掉胶囊之后**的文字 —— 胶囊是地址，不是话；
-   *  · 发送后输入框清空、胶囊消失，否则下一次回车会把同一句话再转一遍；
-   *  · 回音里带那个会话的 id —— 转交是"我把它送走了"，人得能跟过去看它到底做了什么。
+   *  · **按下就清空、就出声**，不等服务端。新建会话要等 ACP 握手，几秒内界面一言不发，
+   *    操作员就会以为没发出去而再按一次 —— 那一次真的会再建一个会话（实测踩过）。
+   *  · 在途期间这次转交就算"已经发出去了"：再按回车/发送都只当重试的噪音，不再发第二条。
+   *  · 失败时把整句话（含胶囊与目标）还回输入框 —— 让人补一句或重按一次，而不是重打一遍。
    */
   const bridgeSend = async (choice: MentionChoice): Promise<void> => {
     const body = stripToken(text, token);
-    if (!body) return;
+    if (!body || bridgeInflight.current) return;
+    bridgeInflight.current = true;
+    const snapshot = { text, token, target: mTarget };
+    const where = `${choice.hint} › ${choice.label}`;
     hushSpeech();
     setBridgeErr("");
+    setBridgeNote(null);
+    setBridgeBusy(where);      // ← 这一行必须在 await 之前：它是"已出发"的唯一证据
+    setText("");               // 这句话已经离手，输入框立刻空出来
+    dropToken();
+    setDrafts([]);
+    setAttachErr("");
     try {
       const to = choice.kind === "new"
         ? { kind: "new" as const, workspace: choice.workspace }
         : { kind: "session" as const, id: choice.id ?? "" };
       const out = await cockpit.bridge(v.info.id, to, body);
-      setText("");
-      dropToken();
-      setDrafts([]);
-      setAttachErr("");
-      setBridgeNote({ text: `${choice.hint} › ${choice.label}`, id: out.id });
+      setBridgeNote({ text: where, id: out.id });
     } catch (e) {
-      setBridgeErr(String((e as Error)?.message ?? e));
+      // 原话还回去，错误说清楚：这条路失败时最怕的是"话没了、也没送到"。
+      setText(snapshot.text);
+      setToken(snapshot.token);
+      setMTarget(snapshot.target);
+      setBridgeErr(`${String((e as Error)?.message ?? e)} —— 这句话已退回输入框`);
+    } finally {
+      bridgeInflight.current = false;
+      setBridgeBusy(null);
     }
   };
 
@@ -4696,6 +4715,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
     // @ 转交：这句话的收件人是别的会话。走服务端那一条请求，别落进本会话的队列。
     // 选了目标却没写正文时**必须出声** —— 空正文连一条消息都不构成，静默返回会让人以为已经发过去了。
     if (tokenLive && mTarget) {
+      if (bridgeInflight.current) return;   // 在途：再按也只算重复，不能连出两个会话
       if (!stripToken(text, token)) {
         setBridgeErr("写一句话再回车 —— 现在只有目标，没有要转过去的内容");
         return;
@@ -5161,10 +5181,20 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         {/* 转交的回执要是**看得见**的东西：它曾经只是输入框上方一行小字，操作员按了几次回车
             都以为没生效（这个功能的失败模式是"沉默"，所以回执必须抢眼、可点、可跳过去）。
             失败也走同一个盒子 —— 否则"没反应"和"失败了"在他眼里是同一件事。 */}
-        {bridgeNote || bridgeErr ? (
-          <div className={`bridge-toast ${bridgeErr ? "err" : ""}`} role="status" aria-live="polite">
+        {bridgeBusy || bridgeNote || bridgeErr ? (
+          <div
+            className={`bridge-toast ${bridgeErr ? "err" : ""} ${bridgeBusy ? "busy" : ""}`}
+            role="status"
+            aria-live="polite"
+            aria-busy={bridgeBusy !== null}
+          >
             <div className="bridge-toast-body">
-              {bridgeErr ? (
+              {bridgeBusy ? (
+                <>
+                  <b>正在转交…</b>
+                  <span className="bridge-toast-where">{bridgeBusy}</span>
+                </>
+              ) : bridgeErr ? (
                 <span>{bridgeErr}</span>
               ) : (
                 <>
@@ -5174,7 +5204,8 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               )}
             </div>
             <div className="bridge-toast-acts">
-              {bridgeNote && !bridgeErr ? (
+              {/* 在途时不提供任何按钮：既跳不过去（还不知道目标 id），也不该让人以为能取消。 */}
+              {bridgeBusy ? null : bridgeNote && !bridgeErr ? (
                 <button
                   className="bridge-toast-go"
                   onClick={() => {
@@ -5186,13 +5217,15 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                   跳到目标会话
                 </button>
               ) : null}
-              <button
-                className="bridge-act"
-                aria-label="dismiss"
-                onClick={() => { setBridgeNote(null); setBridgeErr(""); }}
-              >
-                知道了
-              </button>
+              {bridgeBusy ? null : (
+                <button
+                  className="bridge-act"
+                  aria-label="dismiss"
+                  onClick={() => { setBridgeNote(null); setBridgeErr(""); }}
+                >
+                  知道了
+                </button>
+              )}
             </div>
           </div>
         ) : null}

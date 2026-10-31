@@ -3443,3 +3443,13 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .head-actions .icon-btn.call-entry.press-armed .press-fill { animation: call-press-fill 480ms linear forwards; }
 @keyframes call-press-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 .head-actions .icon-btn.call-entry.press-armed { color: var(--accent); }
+/* 在途态：没有按钮、带一个走动的光条 —— 让"已经出发了，在等对方起来"这件事一直可见。
+   （真实教训：新建会话要等 ACP 握手，几秒沉默之后操作员会再按一次，于是真的建出两个。） */
+.bridge-toast.busy { border-style: dashed; }
+.bridge-toast.busy::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-text), transparent);
+  background-size: 40% 100%; background-repeat: no-repeat;
+  animation: bridge-busy 1.1s linear infinite;
+}
+@keyframes bridge-busy { from { background-position: -40% 0; } to { background-position: 140% 0; } }

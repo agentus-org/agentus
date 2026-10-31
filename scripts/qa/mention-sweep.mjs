@@ -78,6 +78,7 @@ for (const id of [srcA, srcB]) {
   }
 }
 const nameOf = (p) => p.split("/").filter(Boolean).pop();
+let rowsCache = null;
 
 // ------------------------------------------------------------------ browser
 const tab = await (await fetch(`${CDP}/json/new?${encodeURIComponent(BASE)}`, { method: "PUT" })).json();
@@ -228,12 +229,45 @@ try {
   await sleep(500);
 
   await type("修复一下这个 bug");
-  const sent = await ev(`(() => {
+  const wsAcount = () => allSessions(rowsCache).filter((r) => (r.workspace || r.cwd) === wsA).length;
+  rowsCache = await api("/api/sessions");
+  const beforeCount = wsAcount();
+
+  // 按下发送键的**那一刻**就得有反应：不能等 ACP 握手（新建会话要几秒）。
+  // 更狠的一条也在这一段验：在途期间再按（真机上他先点了发送、又按了两次回车）不能再建一个会话。
+  await ev(`(() => {
     const ta = document.querySelector('.composer-box textarea');
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    return ta.value;
   })()`);
-  await sleep(2500);
+  await sleep(120);
+  const instant = await ev(`({
+    toast: document.querySelector('.bridge-toast')?.textContent ?? '',
+    busy: document.querySelector('.bridge-toast')?.classList.contains('busy') ?? false,
+    value: document.querySelector('.composer-box textarea')?.value ?? null,
+    sendDisabled: document.querySelector('.send-btn')?.disabled ?? null,
+  })`);
+  check("the receipt appears the moment you press send, not after the target is up",
+    /正在转交/.test(instant.toast) && instant.busy === true, JSON.stringify(instant.toast));
+  check("and the composer is already empty", instant.value === "", JSON.stringify(instant.value));
+  check("the send button is disabled while it is in flight", instant.sendDisabled === true);
+  if (process.env.SHOT) {
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    await import("node:fs").then((fs) => fs.writeFileSync("/tmp/mention-busy.png", Buffer.from(shot.data, "base64")));
+    console.log("   shot: /tmp/mention-busy.png");
+  }
+
+  // 真机上的重复动作：再点一次发送 + 连按两次回车
+  await ev(`document.querySelector('.send-btn')?.click()`);
+  await key("Enter", "Enter", 13);
+  await key("Enter", "Enter", 13);
+
+  for (let i = 0; i < 60; i++) {
+    if (/已转交/.test(await ev(`document.querySelector('.bridge-toast')?.textContent ?? ''`))) break;
+    await sleep(250);
+  }
+  rowsCache = await api("/api/sessions");
+  check("pressing it three times still opens exactly ONE session",
+    wsAcount() === beforeCount + 1, `${beforeCount} -> ${wsAcount()}`);
   const cleared = await ev(`({ value: document.querySelector('.composer-box textarea')?.value ?? '', chip: !!document.querySelector('.mention-chip'), note: document.querySelector('.bridge-toast')?.textContent ?? '' })`);
   check("the composer clears after the transfer", cleared.value === "", JSON.stringify(cleared.value));
   check("the token goes with it", cleared.chip === false);
