@@ -619,7 +619,18 @@ class PcmStreamPlayer {
     // (audio focus lost, tab frozen) never advances it. Without a deadline one stuck context
     // parks the speaker's queue for the rest of the call.
     const queuedMs = Math.max(1000, (this.#nextAt - this.#ctx.currentTime) * 1000) + 3000;
-    return Promise.race([heard, new Promise<void>((resolve) => { window.setTimeout(resolve, queuedMs); })]);
+    let timer = 0;
+    const deadline = new Promise<void>((resolve) => {
+      timer = window.setTimeout(() => {
+        // Give the audio up, do not merely stop waiting for it: a source still queued on a
+        // suspended context plays the moment it resumes — on top of whatever is speaking then —
+        // and its analyser keeps `playbackRms()` at 0, which the call's watchdog reads as
+        // "measured but silent" and cuts a fallback line after 15 s.
+        this.stop();
+        resolve();
+      }, queuedMs);
+    });
+    return Promise.race([heard, deadline]).finally(() => window.clearTimeout(timer));
   }
 
   /** Abandon playback immediately (operator pressed stop, or the call ended). */
@@ -867,10 +878,10 @@ export class TtsRelay {
   }
 
   close(): void {
-    window.clearTimeout(this.#idleTimer);
-    this.cancel();
     this.#dead = true;
     try { this.#ws.close(); } catch { /* already gone */ }
+    this.cancel();                                  // it re-arms the idle timer, so clear after it
+    window.clearTimeout(this.#idleTimer);
   }
 }
 

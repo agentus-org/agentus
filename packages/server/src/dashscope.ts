@@ -372,6 +372,10 @@ export class DashscopeTtsConnection {
       timer.unref?.();
       this.#draining = { taskId: task.taskId, timer };
     }
+    // `runTask` cleared the constructor's deadline, so without this an interrupted connection has
+    // none: `busy` is false, `#task` is null, and a page that dies before the browser's own 20 s
+    // idle close would leave an authenticated upstream socket behind for good.
+    this.#armReap();
     // The slot is released NOW, not when the upstream acknowledges: a cancel is sent precisely
     // when the next sentence is about to be asked for, and waiting for the ack would make the
     // operator's interruption cost a stall. Measured 2026-10-31: the same socket accepts a new
@@ -503,7 +507,7 @@ export class DashscopeTtsConnection {
       // Either a cancelled task's tail (drop it; a `task-finished` closes the book on the id) or
       // an id we never started (not ours to interpret). Both mean "ignore".
       if (event === "task-finished" || event === "task-failed") {
-        if (event === "task-finished") this.#stale.delete(id);
+        this.#stale.delete(id);
         if (this.#draining?.taskId === id) {
           clearTimeout(this.#draining.timer);
           this.#draining = null;
@@ -518,6 +522,9 @@ export class DashscopeTtsConnection {
         // A new task has started, so the cancelled one is behind us on this socket. Closing the
         // window here (instead of waiting out the timer) is what keeps the new sentence's opening
         // syllable from being dropped: its first frame arrives ~350 ms after the cancel.
+        // This RELIES on the upstream handling one socket's frames in order — the cancel frame is
+        // sent before the next `run-task`, so that task's `task-started` cannot overtake the old
+        // task's tail. The same ordering assumption backs the `#stale` id filter below.
         clearTimeout(this.#draining.timer);
         this.#draining = null;
       }

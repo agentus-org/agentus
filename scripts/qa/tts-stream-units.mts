@@ -189,6 +189,23 @@ const stubCtx = { state: "running", currentTime: 0, destination: {}, createBuffe
   check("a close with no audio at all rejects (so the fallback can run)", outcome === "rejected", outcome);
 }
 
+
+{
+  // NIT from round 3: the third settlement path — `tts-ready` then `tts-done` with no audio at
+  // all. It must reject like the other two, or the caller is told a silent sentence was spoken.
+  const sock = new FakeSocket();
+  const relay = new TtsRelay(stubCtx, 24000, () => sock as unknown as WebSocket);
+  const ac = new AbortController();
+  const pending = relay.speak("这一句上游说完却没有任何音频。", ac.signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  sock.deliver({ t: "tts-done", characters: 18 });
+  const outcome = await Promise.race([
+    pending.then(() => "resolved", () => "rejected"),
+    new Promise<string>((r) => setTimeout(() => r("still pending"), 300)),
+  ]);
+  check("a tts-done with no audio at all rejects too", outcome === "rejected", outcome);
+}
+
 {
   // The rate the operator chose must ride the start frame, not a hardcoded 1.0.
   const sock = new FakeSocket();
