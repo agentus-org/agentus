@@ -2467,20 +2467,27 @@ ttsWss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
     onAudio: audio,
     onSentence: (index: number, text: string) => reply({ t: "tts-sentence", index, text: text.slice(0, 80) }),
     onDone: (characters: number) => reply({ t: "tts-done", characters }),
-    onError: (error: string) => reply({ t: "tts-error", error }),
+    // Terminal, not advisory: `#fail` has already closed the upstream socket, and the page only
+    // settles a run on `tts-done` or a close. Reporting the error and leaving /ws/tts open left
+    // speak() waiting forever — lamp on, no audio, and the documented HTTP fallback never ran.
+    onError: (error: string) => {
+      reply({ t: "tts-error", error });
+      task = null;
+      try { live.close(); } catch { /* already gone */ }
+    },
   };
-  const start = (): void => {
+  const start = (rate?: number): void => {
     try {
-      task = live.runTask(handlers);
+      task = live.runTask(handlers, { rate });
     } catch (e) {
       reply({ t: "tts-error", error: String((e as Error)?.message ?? e) });
     }
   };
   ws.on("message", (data: Buffer, isBinary: boolean) => {
     if (isBinary) return;                        // the browser sends no audio here
-    let cmd: { t?: string; text?: string };
+    let cmd: { t?: string; text?: string; rate?: number };
     try { cmd = JSON.parse(String(data)) as typeof cmd; } catch { return; }
-    if (cmd.t === "tts-start") { start(); return; }
+    if (cmd.t === "tts-start") { start(typeof cmd.rate === "number" ? cmd.rate : undefined); return; }
     if (!task) return;
     if (cmd.t === "tts-say") task.say(String(cmd.text ?? ""));
     else if (cmd.t === "tts-end") task.end();

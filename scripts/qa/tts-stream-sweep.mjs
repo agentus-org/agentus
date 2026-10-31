@@ -56,7 +56,9 @@ function pcmFrame(offset = 0) {
   }
   return buf;
 }
-const seen = { httpTts: 0, run: 0, texts: [], cancels: 0, sockets: 0, finished: 0 };
+const seen = { httpTts: 0, run: 0, texts: [], cancels: 0, sockets: 0, finished: 0, failed: 0 };
+/** Fail the next task before it produces a single frame — the shape that must fall back to HTTP. */
+let failNextTask = false;
 
 function wav(seconds, freq = 320) {
   const rate = 8000, n = rate * seconds;
@@ -118,6 +120,12 @@ upstream.on("connection", (sock) => {
       const text = String(msg.payload?.input?.text ?? "");
       seen.texts.push(text);
       if (cancelled) return;
+      if (failNextTask) {
+        failNextTask = false;
+        seen.failed += 1;
+        send({ header: { task_id: taskId, event: "task-failed", error_message: "synthetic upstream failure", attributes: {} }, payload: {} });
+        return;
+      }
       send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
         payload: { output: { type: "sentence-begin", original_text: text, sentence: { index: 0, words: [] } } } });
       // One frame per sentence, spaced: this is what the page plays while the rest is generated.
@@ -352,6 +360,38 @@ try {
   check("speaking again produces new audio", nextFrames > framesBeforeStop, `${framesBeforeStop} → ${nextFrames}`);
   check("speaking again reuses the open socket (no re-dial)",
     seen.sockets === socketsBefore && seen.run > runBefore, `sockets +${seen.sockets - socketsBefore}, tasks +${seen.run - runBefore}`);
+
+  // ---- C2: a task that fails BEFORE any audio must fall back to the one-shot path, not hang.
+  // This is the review's blocker: the first cut reported tts-error and left the relay open, so
+  // speak() never settled — the lamp stayed on, nothing played, and the documented HTTP fallback
+  // never ran.
+  const httpBeforeFail = seen.httpTts;
+  const scheduledBeforeFail = ((await ev(`window.__tts.scheduled`)) ?? 0);
+  // The toggle reads as "stop" while a reply is playing, so wait for the lamp to clear first —
+  // section C only waits for the first frame, which is nowhere near the end of the sentence.
+  for (let i = 0; i < 120; i++) {
+    await sleep(100);
+    const on = await ev(`(() => { const b = document.querySelector('.bubble-btn.speak'); return !!b && b.className.includes('on'); })()`);
+    if (!on) break;
+  }
+  failNextTask = true;
+  const failAt = Date.now();
+  await trustedClick(".bubble-btn.speak");
+  let fellBack = false;
+  for (let i = 0; i < 80; i++) {
+    await sleep(50);
+    if (seen.httpTts > httpBeforeFail) { fellBack = true; break; }
+  }
+  const f = await ev(`(() => { const btn = document.querySelector('.bubble-btn.speak');
+    return { on: !!btn && btn.className.includes('on'), tts: JSON.parse(JSON.stringify(window.__tts)) }; })()`);
+  check("a task that fails before any audio falls back to the one-shot /api/tts",
+    fellBack, `${seen.httpTts - httpBeforeFail} fallback call(s) in ${Date.now() - failAt}ms, failed=${seen.failed}`);
+  // The regression guard is the SETTLEMENT, not the lamp: a run that never rejects never calls
+  // /api/tts at all. (The lamp afterwards belongs to whatever speaks the fallback — the
+  // stand-in's clip is not real audio, so this run ends on the browser voice, which holds the
+  // lamp in an automated browser. That is pre-existing behaviour, unrelated to the relay.)
+  check("…and it does so promptly, i.e. the failed run really settled",
+    fellBack && Date.now() - failAt < 5000, `${Date.now() - failAt}ms`);
 
   // ---- D: the setting turns it off and the old one-shot path takes over
   seen.httpTts = 0;

@@ -140,8 +140,16 @@ const providerPort = await new Promise((resolve) => {
 // result-generated + one binary PCM frame per text unit -> task-finished, and a cancel
 // directive answered with task-finished and no further audio. That is the whole contract the
 // relay depends on, so the suite can assert it without a provider key and without billing.
-const wsSeen = { run: 0, texts: [], cancels: 0, finished: 0, socketAuth: [], sockets: 0 };
-const fakeUpstream = new WebSocketServer({ server: provider, path: "/api-ws/v1/inference" });
+const wsSeen = { run: 0, texts: [], cancels: 0, finished: 0, socketAuth: [], sockets: 0, params: [], failed: 0 };
+/** Delay the upstream handshake, to test what happens when stop lands while the relay is still
+ *  dialling (the real dial costs 200-650 ms). */
+let wsDialDelayMs = 0;
+const fakeUpstream = new WebSocketServer({ noServer: true });
+provider.on("upgrade", (req, socket, head) => {
+  if (!String(req.url ?? "").startsWith("/api-ws/v1/inference")) { socket.destroy(); return; }
+  const go = () => fakeUpstream.handleUpgrade(req, socket, head, (ws) => fakeUpstream.emit("connection", ws, req));
+  if (wsDialDelayMs) setTimeout(go, wsDialDelayMs); else go();
+});
 fakeUpstream.on("connection", (sock, req) => {
   wsSeen.sockets += 1;
   wsSeen.socketAuth.push(String(req.headers.authorization ?? ""));
@@ -162,6 +170,7 @@ fakeUpstream.on("connection", (sock, req) => {
     if (action === "run-task") {
       wsSeen.run += 1;
       taskId = msg.header.task_id;
+      wsSeen.params.push(msg.payload?.parameters ?? {});
       send({ header: { task_id: taskId, event: "task-started", attributes: {} }, payload: {} });
       return;
     }
@@ -169,6 +178,13 @@ fakeUpstream.on("connection", (sock, req) => {
       const text = String(msg.payload?.input?.text ?? "");
       wsSeen.texts.push(text);
       if (cancelled) return;
+      if (/上游失败/.test(text)) {
+        // The shape a real provider failure takes mid-stream: some audio, then task-failed.
+        wsSeen.failed += 1;
+        try { sock.send(pcm()); } catch { /* gone */ }
+        send({ header: { task_id: taskId, event: "task-failed", error_message: "synthetic upstream failure", attributes: {} }, payload: {} });
+        return;
+      }
       send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
         payload: { output: { type: "sentence-begin", original_text: text, sentence: { index: 0, words: [] } } } });
       send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
@@ -180,6 +196,9 @@ fakeUpstream.on("connection", (sock, req) => {
       if (msg.payload?.input?.directive === "cancel") {
         cancelled = true;
         wsSeen.cancels += 1;
+        // A frame of the cancelled sentence, still in flight when the cancel arrives. It must
+        // NOT reach the page: it belongs to a task nobody will hear.
+        try { sock.send(pcm()); } catch { /* gone */ }
         send({ header: { task_id: taskId, event: "task-finished", attributes: {} }, payload: { output: {}, usage: {} } });
         return;
       }
@@ -531,6 +550,68 @@ try {
     const newSockets = wsSeen.sockets - socketsBefore;
     check("two replies are two tasks on ONE upstream socket (the dial is not paid per reply)",
       newTasks === 2 && newSockets === 1, `tasks=${newTasks} sockets=${newSockets}`);
+
+    // The operator's 语速 used to be hardcoded to 1.0 on the socket path: the setting silently
+    // stopped working the day synthesis moved off HTTP.
+    const rateSeen = wsSeen.params[wsSeen.params.length - 1]?.["rate"];
+    await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start", rate: 1.6 }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "语速一点六倍。" }));
+        ws.send(JSON.stringify({ t: "tts-end" }));
+      });
+      ws.on("message", (raw, isBinary) => { if (!isBinary && JSON.parse(String(raw)).t === "tts-done") { ws.close(); resolve(); } });
+      setTimeout(resolve, 8000);
+    });
+    const rateAfter = wsSeen.params[wsSeen.params.length - 1]?.["rate"];
+    check("the operator's speech rate reaches the provider", Number(rateAfter) === 1.6,
+      `rate=${JSON.stringify(rateAfter)} (was ${JSON.stringify(rateSeen)} before)`);
+
+    // A failing task must TERMINATE the run. The first cut reported tts-error and left the socket
+    // open, so the page waited for a tts-done that could never come: lamp on, no audio, and the
+    // documented HTTP fallback never ran.
+    const failRun = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      const state = { audio: 0, error: null, closed: false, done: 0 };
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) { state.audio += 1; return; }
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-error") state.error = m.error;
+        if (m.t === "tts-done") state.done += 1;
+      });
+      // Wait for the CLOSE, not just the error frame: the point of the fix is that the server
+      // tears the bridge down, so the page can fall back instead of waiting for a tts-done.
+      ws.on("close", () => { state.closed = true; resolve(state); });
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "这一句会让上游失败。" }));
+        ws.send(JSON.stringify({ t: "tts-end" }));
+      });
+      setTimeout(() => resolve(state), 8000);
+    });
+    check("a failed task closes the bridge (error + close, so the page can fall back)",
+      Boolean(failRun.error) && failRun.closed === true && failRun.done === 0, JSON.stringify(failRun));
+
+    // Stop landing INSIDE the dial window must not synthesise (and bill) the cancelled sentence.
+    // The upstream holds its handshake for 400 ms so the cancel is guaranteed to beat it.
+    const runsBeforeDial = wsSeen.run;
+    const textsBeforeDial = wsSeen.texts.length;
+    wsDialDelayMs = 400;
+    await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "拨号期间就被取消的一句。" }));
+        setTimeout(() => { ws.send(JSON.stringify({ t: "tts-cancel" })); ws.close(); }, 60);
+      });
+      ws.on("close", () => setTimeout(resolve, 700));
+      setTimeout(resolve, 2500);
+    });
+    wsDialDelayMs = 0;
+    check("a cancel inside the dial window withdraws the queued task (nothing is billed)",
+      wsSeen.run === runsBeforeDial && wsSeen.texts.length === textsBeforeDial,
+      `runs +${wsSeen.run - runsBeforeDial}, texts +${wsSeen.texts.length - textsBeforeDial}`);
   }
 
   const sttEnv = await fetch(`${base2}/api/stt`, { method: "POST", headers: { ...H2, "content-type": "audio/wav" }, body: Buffer.from("RIFFfake-input") });

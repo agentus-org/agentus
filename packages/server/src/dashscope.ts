@@ -139,10 +139,19 @@ export async function dashscopeAsr(audio: Buffer, mime: string, opts: { contextW
  *   - `finish-task` with `input.directive="cancel"` ends the task in ~75 ms with no further
  *     audio frames, and the very same socket accepts the next `run-task` immediately. */
 const TTS_START_TIMEOUT_MS = 12_000;
-/** How long the id of a cancelled task is remembered, so its late events are recognised as
+/** How long the id of a cancelled task is remembered, so its late JSON events are recognised as
  *  stale. Comfortably longer than the ~75 ms the ack takes; the id is per task, so the only
  *  cost of a long window is a set entry. */
 const TTS_CANCEL_FORGET_MS = 30_000;
+/** How long binary frames are dropped after a cancel. Binary frames carry no `task_id`, so this
+ *  window is the only way to keep the cancelled task's tail out of the reply that replaces it
+ *  (measured ack ~75 ms; 3 frames would be ~24 ms of audio at 24 kHz). */
+const TTS_CANCEL_GRACE_MS = 400;
+/** Reap an upstream connection that has carried no task for this long. The page closes its own
+ *  relay after 20 s of silence, but a tab that disappears without a FIN leaves the browser's
+ *  socket OPEN here (the same half-dead shape as the approval cards), so the server needs its
+ *  own deadline. Long enough to cover a long reply's pauses, short enough not to hoard. */
+const TTS_CONN_IDLE_MS = 10 * 60_000;
 /** Heard nothing at all for this long inside a live task: the socket is dead, say so. */
 const TTS_IDLE_TIMEOUT_MS = 20_000;
 
@@ -167,6 +176,11 @@ interface LiveTask {
   ended: boolean;
   cancelled: boolean;
   finished: boolean;
+  /** Did any frame of this task actually reach the wire? (Decides whether a cancel has anything
+   *  to cancel, and whether a failure has to poison the connection.) */
+  sentFrames: boolean;
+  /** Characters fed to this task so far (the provider bills per character and caps the total). */
+  characters: number;
   sentenceAt: number;
   startTimer: NodeJS.Timeout | null;
   idleTimer: NodeJS.Timeout | null;
@@ -199,11 +213,17 @@ export class DashscopeTtsConnection {
    *  the previous sentence. The protocol echoes `task_id` in every header, so they are dropped
    *  by name instead of by timing. */
   #stale = new Set<string>();
-  /** Frames written before the upstream handshake finished (see #send). */
-  #pending: string[] = [];
+  /** Frames written before the upstream handshake finished, tagged with the task they belong
+   *  to so a cancel can withdraw them (see #send / #cancelTask). */
+  #pending: Array<{ taskId: string; payload: string }> = [];
+  /** The task we just cancelled, while its acknowledgement is still in flight. Binary frames
+   *  carry no `task_id` on the wire, so this is the only thing that can keep the old task's
+   *  tail out of the reply that replaced it (measured ack: ~75 ms; the window is bounded). */
+  #draining: { taskId: string; timer: NodeJS.Timeout } | null = null;
   #closed = false;
   #onClosed: ((why: string) => void) | null;
   #idleSince = Date.now();
+  #reapTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: { onClose: (why: string) => void }) {
     const { key, ws } = creds();
@@ -230,18 +250,33 @@ export class DashscopeTtsConnection {
     return this.#task !== null && !this.#task.finished;
   }
 
+  /** Arm the "nobody is using this socket" deadline. */
+  #armReap(): void {
+    if (this.#reapTimer) clearTimeout(this.#reapTimer);
+    this.#reapTimer = setTimeout(() => {
+      if (this.busy) return;
+      this.close();
+    }, TTS_CONN_IDLE_MS);
+    this.#reapTimer.unref?.();
+  }
+
   /** Open a task and start feeding it. Throws when the connection is gone or already busy. */
-  runTask(handlers: TtsTaskHandlers): { say: (text: string) => void; end: () => void; cancel: () => void } {
+  runTask(
+    handlers: TtsTaskHandlers,
+    opts: { rate?: number } = {},
+  ): { say: (text: string) => void; end: () => void; cancel: () => void } {
     if (this.#closed) throw new DashscopeError("dashscope tts connection is closed", "upstream");
     if (this.busy) throw new DashscopeError("dashscope tts connection already has a task in flight", "upstream");
     const v = getSettings().voice;
     const task: LiveTask = {
       taskId: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`,
-      handlers, ready: false, ended: false, cancelled: false, finished: false, sentenceAt: 0,
+      handlers, ready: false, ended: false, cancelled: false, finished: false, sentFrames: false, characters: 0, sentenceAt: 0,
       startTimer: null, idleTimer: null,
     };
     this.#task = task;
-    const send = (obj: unknown): void => this.#send(obj);
+    this.#idleSince = Date.now();
+    if (this.#reapTimer) { clearTimeout(this.#reapTimer); this.#reapTimer = null; }
+    const send = (obj: { header: { task_id: string; [k: string]: unknown }; payload: unknown }): void => this.#send(obj);
     const armIdle = (): void => this.#armIdle(task);
     armIdle();
     // A socket that is still dialling queues the frame: ws buffers until open.
@@ -256,7 +291,9 @@ export class DashscopeTtsConnection {
           format: "pcm",
           sample_rate: this.sampleRate,
           volume: 50,
-          rate: 1.0,
+          // The operator's 语速. Hardcoding 1.0 here made the setting a silent no-op the moment
+          // synthesis moved to the socket — the HTTP path still forwards `speed`.
+          rate: Math.min(2, Math.max(0.5, Number(opts.rate ?? 1) || 1)),
           pitch: 1.0,
         },
         input: {},
@@ -265,6 +302,13 @@ export class DashscopeTtsConnection {
     return {
       say: (text: string): void => {
         if (task.finished || task.cancelled || !text.trim()) return;
+        // Protocol limits: 20000 chars per continue-task, 200000 per task. A runaway producer
+        // (a stream appending to itself) would otherwise be billed in full before the provider
+        // refused it — the failure has to be raised on our side of the wire.
+        if (text.length > 20_000 || task.characters + text.length > 200_000) {
+          this.#fail(task, "dashscope tts: task exceeded the text limit");
+          return;
+        }
         armIdle();
         send({ header: { action: "continue-task", task_id: task.taskId, streaming: "duplex" }, payload: { input: { text } } });
       },
@@ -296,10 +340,34 @@ export class DashscopeTtsConnection {
     task.cancelled = true;
     task.finished = true;
     this.#clearTaskTimers(task);
+    // Withdraw whatever of this task is still queued for a socket that is dialling. Without this
+    // the queued run-task + text would be flushed on `open` and synthesised (and billed) AFTER
+    // the operator pressed stop — measured shape: stop inside the 200-650 ms dial window.
+    const queued = this.#pending.filter((f) => f.taskId === task.taskId).length;
+    this.#pending = this.#pending.filter((f) => f.taskId !== task.taskId);
+    if (!task.sentFrames && queued) {
+      // Nothing of this task ever reached the provider: there is nothing to cancel either.
+      task.finished = true;
+      if (this.#task === task) this.#task = null;
+      this.#armReap();
+      this.#stale.add(task.taskId);
+      const forget0 = setTimeout(() => this.#stale.delete(task.taskId), TTS_CANCEL_FORGET_MS);
+      forget0.unref?.();
+      return;
+    }
     this.#send({
       header: { action: "finish-task", task_id: task.taskId, streaming: "duplex" },
       payload: { input: { directive: "cancel" } },
     });
+    // Binary frames carry no task id, so the only way to keep this task's tail out of the next
+    // one is a short window in which binary frames are dropped. The ack takes ~75 ms; the window
+    // is bounded by TTS_CANCEL_FORGET_MS so a lost ack cannot mute the connection.
+    if (task.sentFrames) {
+      if (this.#draining) clearTimeout(this.#draining.timer);
+      const timer = setTimeout(() => { this.#draining = null; }, TTS_CANCEL_GRACE_MS);
+      timer.unref?.();
+      this.#draining = { taskId: task.taskId, timer };
+    }
     // The slot is released NOW, not when the upstream acknowledges: a cancel is sent precisely
     // when the next sentence is about to be asked for, and waiting for the ack would make the
     // operator's interruption cost a stall. Measured 2026-10-31: the same socket accepts a new
@@ -318,21 +386,30 @@ export class DashscopeTtsConnection {
    *  Dropping the run-task there leaves a task that never starts — measured against the
    *  stand-in upstream in scripts/voice-smoke.mjs, where the FIRST reply of every new
    *  connection was silent and every later one worked, because by then the socket was open. */
-  #send(obj: unknown): void {
+  #send(obj: { header: { task_id: string; [k: string]: unknown }; payload: unknown }): void {
     const payload = JSON.stringify(obj);
+    const taskId = String(obj?.header?.task_id ?? "");
     if (this.#socket.readyState === this.#socket.OPEN) {
-      try { this.#socket.send(payload); } catch { /* the close handler reports it */ }
+      try {
+        this.#socket.send(payload);
+        const t = this.#task;
+        if (t && t.taskId === taskId) t.sentFrames = true;
+      } catch { /* the close handler reports it */ }
       return;
     }
-    if (this.#socket.readyState === this.#socket.CONNECTING) this.#pending.push(payload);
+    if (this.#socket.readyState === this.#socket.CONNECTING) this.#pending.push({ taskId, payload });
   }
 
   #flush(): void {
     if (!this.#pending.length) return;
     const queued = this.#pending;
     this.#pending = [];
-    for (const payload of queued) {
-      try { this.#socket.send(payload); } catch { /* the close handler reports it */ }
+    for (const { taskId, payload } of queued) {
+      try {
+        this.#socket.send(payload);
+        const t = this.#task;
+        if (t && t.taskId === taskId) t.sentFrames = true;
+      } catch { /* the close handler reports it */ }
     }
   }
 
@@ -350,12 +427,44 @@ export class DashscopeTtsConnection {
     task.idleTimer.unref?.();
   }
 
+  /** A task that failed must leave the connection UNUSABLE, not merely empty.
+   *
+   *  Why: the upstream task is still running on that socket (a local timeout cannot stop it), so
+   *  reusing the socket would mean two tasks on one wire whose audio cannot be told apart — the
+   *  abandoned reply's frames would be played as the next reply's first syllables, and its text
+   *  would be billed in full. Closing costs a 200-650 ms redial on a path that just failed, and
+   *  the relay's caller falls back to HTTP anyway. */
   #fail(task: LiveTask, message: string): void {
     if (task.finished) return;
     task.finished = true;
     this.#clearTaskTimers(task);
     if (this.#task === task) this.#task = null;
+    if (task.sentFrames) {
+      try {
+        this.#send({
+          header: { action: "finish-task", task_id: task.taskId, streaming: "duplex" },
+          payload: { input: { directive: "cancel" } },
+        });
+      } catch { /* the socket is already the problem */ }
+    }
+    this.#pending = this.#pending.filter((f) => f.taskId !== task.taskId);
     task.handlers.onError(message);
+    this.#closeBecause("failed");
+  }
+
+  /** Tear the socket down from the inside: the relay hears `onClose` and closes the browser's
+   *  socket too, so the page learns the run is over instead of waiting for a `tts-done` that
+   *  will never come. */
+  #closeBecause(why: string): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#pending = [];
+    if (this.#draining) { clearTimeout(this.#draining.timer); this.#draining = null; }
+    try {
+      if (this.#socket.readyState === this.#socket.OPEN) this.#socket.close();
+      else if (this.#socket.readyState === this.#socket.CONNECTING) this.#socket.terminate();
+    } catch { /* already gone */ }
+    this.#shut(why);
   }
 
   #shut(why: string): void {
@@ -368,7 +477,8 @@ export class DashscopeTtsConnection {
   #onMessage(raw: Buffer | string, isBinary: boolean): void {
     const task = this.#task;
     if (isBinary) {
-      if (!task || task.finished || task.cancelled) return;   // late frames from a cancelled task
+      if (this.#draining) return;      // a cancelled task's tail: no id on the wire to filter by
+      if (!task || task.finished || task.cancelled) return;
       this.#armIdle(task);
       task.handlers.onAudio(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as unknown as ArrayBufferLike));
       return;
@@ -386,11 +496,16 @@ export class DashscopeTtsConnection {
     // A cancelled task keeps talking for a moment. Its `task_id` is the only thing that tells
     // its tail apart from the reply that replaced it.
     if (id && id !== task?.taskId) {
-      if (id === undefined || this.#stale.has(id)) {
-        if (event === "task-finished") this.#stale.delete(id);
-        return;
+      // Either a cancelled task's tail (drop it; a `task-finished` closes the book on the id) or
+      // an id we never started (not ours to interpret). Both mean "ignore".
+      if (event === "task-finished") {
+        this.#stale.delete(id);
+        if (this.#draining?.taskId === id) {
+          clearTimeout(this.#draining.timer);
+          this.#draining = null;
+        }
       }
-      return;   // an id we do not know and did not start: not ours to interpret
+      return;
     }
     if (!task || task.finished) return;
     this.#armIdle(task);
@@ -413,11 +528,16 @@ export class DashscopeTtsConnection {
       return;
     }
     if (event === "task-finished") {
+      if (this.#draining && id === this.#draining.taskId) {
+        clearTimeout(this.#draining.timer);
+        this.#draining = null;
+      }
       task.finished = true;
       this.#clearTaskTimers(task);
       const chars = Number(msg?.payload?.usage?.characters ?? 0);
       if (this.#task === task) this.#task = null;
       this.#idleSince = Date.now();
+      this.#armReap();
       // A cancelled task still reports task-finished; the caller asked for it to stop, so it
       // must not look like a completed reply.
       if (!task.cancelled) task.handlers.onDone(chars);

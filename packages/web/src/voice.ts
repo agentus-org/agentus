@@ -599,7 +599,10 @@ class PcmStreamPlayer {
   #flushDrain(): void {
     const waiting = this.#drain;
     this.#drain = [];
-    for (const fn of waiting) fn();
+    // Never let one resolver throw past the others: the array is already emptied, so an
+    // exception here would drop every remaining waiter on the floor and leave those promises
+    // pending forever (and `finish()` is awaited by the speaker's queue).
+    for (const fn of waiting) { try { fn(); } catch { /* a waiter's own problem */ } }
   }
 
   /** No more audio is coming: resolve once what was queued has actually been heard. */
@@ -642,14 +645,20 @@ const RELAY_IDLE_MS = 20_000;
 interface RelayRun {
   player: PcmStreamPlayer | null;
   heard: boolean;
+  /** Has the server told us the output format for this task? Frames before that are unusable. */
+  ready: boolean;
   resolve: () => void;
   reject: (e: Error) => void;
+  /** Drop whatever this run attached to the socket (the `open` listener). */
+  cleanup: () => void;
 }
 
 class TtsRelay {
   #ws: WebSocket;
   #ctx: AudioContext;
   #sampleRate: number;
+  /** The rate actually being rendered: seeded from the capability, corrected by `tts-ready`. */
+  #rate: number;
   #run: RelayRun | null = null;
   #failure: Error | null = null;
   #dead = false;
@@ -658,6 +667,7 @@ class TtsRelay {
   constructor(ctx: AudioContext, sampleRate: number) {
     this.#ctx = ctx;
     this.#sampleRate = sampleRate;
+    this.#rate = sampleRate;
     this.#ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/tts`);
     this.#ws.binaryType = "arraybuffer";
     this.#ws.onmessage = (ev: MessageEvent) => this.#onMessage(ev);
@@ -665,24 +675,26 @@ class TtsRelay {
     this.#ws.onclose = () => {
       this.#dead = true;
       window.clearTimeout(this.#idleTimer);
-      const run = this.#run;
-      if (!run) return;
-      this.#run = null;
-      if (this.#failure) {
-        // Before the first sample the caller can still fall back; after it, restarting the
-        // sentence in another voice would be worse than stopping.
-        run.player?.stop();
-        if (run.heard) run.resolve();
-        else run.reject(this.#failure);
-        return;
-      }
-      // Closed cleanly mid-reply (server restart): let what was queued be heard.
-      this.#settle(run);
+      this.#settleOrFail();
     };
   }
 
   get usable(): boolean {
     return !this.#dead && !this.#failure;
+  }
+
+  /** Settle whatever run is in flight because the connection is gone. */
+  #settleOrFail(): void {
+    const run = this.#run;
+    if (!run) return;
+    this.#run = null;
+    if (this.#failure) {
+      run.player?.stop();
+      if (run.heard) run.resolve();
+      else run.reject(this.#failure);
+      return;
+    }
+    this.#settle(run);
   }
 
   #settle(run: RelayRun): void {
@@ -696,41 +708,79 @@ class TtsRelay {
 
   #armIdle(): void {
     window.clearTimeout(this.#idleTimer);
+    // A closed AudioContext cannot render anything: keeping the socket open would only burn a
+    // server slot, so drop the relay in the same tick rather than at the idle deadline.
+    if (this.#ctx.state === "closed") { this.close(); return; }
     this.#idleTimer = window.setTimeout(() => this.close(), RELAY_IDLE_MS);
   }
 
   #onMessage(ev: MessageEvent): void {
     const run = this.#run;
     if (typeof ev.data !== "string") {
-      if (!run) return;                    // late frames after a cancel: nothing is waiting for them
-      run.player = run.player ?? new PcmStreamPlayer(this.#ctx, this.#sampleRate);
+      if (!run || !run.ready) return;      // late frames after a cancel, or before `tts-ready`
+      run.player = run.player ?? new PcmStreamPlayer(this.#ctx, this.#rate);
       run.player.push(ev.data as ArrayBuffer);
       run.heard = true;
       return;
     }
-    let msg: { t?: string; error?: string };
+    let msg: { t?: string; error?: string; why?: string; sampleRate?: number };
     try { msg = JSON.parse(ev.data) as typeof msg; } catch { return; }
+    if (msg.t === "tts-ready") {
+      // The server is the authority on the rate the provider actually produced: rendering at a
+      // hardcoded 24 kHz is only right while the two agree.
+      const rate = Number(msg.sampleRate);
+      if (Number.isFinite(rate) && rate >= 8000 && rate <= 96000) this.#rate = rate;
+      if (run) run.ready = true;
+      return;
+    }
     if (msg.t === "tts-done") {
       if (!run) return;
       this.#settle(run);
       return;
     }
-    if (msg.t === "tts-error" || msg.t === "tts-closed") {
+    if (msg.t === "tts-error") {
+      // Settle the run HERE, not on the close: the server may report a failed task and leave the
+      // socket briefly open, and a run that never settles parks the caller forever — the lamp
+      // sticks, the call sits in `speaking` with no audio, and the HTTP fallback never runs
+      // (measured shape, found by review before release).
       this.#failure = new Error(msg.error ?? "streaming TTS failed");
+      const failed = this.#run;
+      if (failed) {
+        this.#run = null;
+        failed.player?.stop();
+        // Before the first sample the caller can still fall back; after it, restarting the
+        // sentence in another voice is worse than stopping.
+        if (failed.heard) failed.resolve();
+        else failed.reject(this.#failure);
+      }
+      this.close();
+      return;
+    }
+    if (msg.t === "tts-closed") {
+      // Belt and braces: the close event normally settles this, but a `tts-closed` that arrives
+      // without one must not be able to strand a run.
+      this.#failure = new Error(msg.why ?? msg.error ?? "streaming TTS closed");
+      this.#settleOrFail();
     }
   }
 
   /** Speak `text` on this connection. Resolves once it has been heard. */
-  speak(text: string, signal: AbortSignal): Promise<void> {
+  speak(text: string, signal: AbortSignal, rate = 1): Promise<void> {
     if (!this.usable) return Promise.reject(this.#failure ?? new Error("streaming TTS relay is closed"));
+    if (this.#ctx.state === "closed") {
+      this.close();
+      return Promise.reject(new Error("audio context closed"));
+    }
     if (this.#run) this.cancel();        // one utterance at a time, like the speaker itself
     window.clearTimeout(this.#idleTimer);
     const units = splitForStream(text);
     if (!units.length) return Promise.resolve();
 
     let onAbort = (): void => { /* replaced below */ };
+    const run: RelayRun = { player: null, heard: false, ready: false, resolve: () => {}, reject: () => {}, cleanup: () => {} };
     const heard = new Promise<void>((resolve, reject) => {
-      const run: RelayRun = { player: null, heard: false, resolve, reject };
+      run.resolve = resolve;
+      run.reject = reject;
       this.#run = run;
       onAbort = (): void => {
         this.cancel();                   // releases #run and stops the PCM immediately
@@ -739,14 +789,22 @@ class TtsRelay {
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener("abort", onAbort, { once: true });
       const start = (): void => {
-        this.#send({ t: "tts-start" });
+        // Only this run may speak: a stop pressed inside the 200-650 ms dial would otherwise
+        // flush the cancelled sentence on `open` — synthesised, billed, and dropped (or, worse,
+        // attributed to whatever reply was started in between).
+        if (this.#run !== run) return;
+        this.#send({ t: "tts-start", rate });
         for (const unit of units) this.#send({ t: "tts-say", text: unit });
         this.#send({ t: "tts-end" });
       };
       if (this.#ws.readyState === WebSocket.OPEN) start();
       else this.#ws.addEventListener("open", start, { once: true });
+      run.cleanup = () => this.#ws.removeEventListener("open", start);
     });
-    return heard.finally(() => signal.removeEventListener("abort", onAbort));
+    return heard.finally(() => {
+      signal.removeEventListener("abort", onAbort);
+      run.cleanup();
+    });
   }
 
   #send(m: unknown): void {
@@ -776,7 +834,14 @@ class TtsRelay {
 let relay: TtsRelay | null = null;
 
 function relayFor(ctx: AudioContext, sampleRate: number): TtsRelay {
-  if (!relay || !relay.usable) relay = new TtsRelay(ctx, sampleRate);
+  if (!relay || !relay.usable) {
+    // Replace, but do not abandon: the old instance may still hold an open socket and its own
+    // idle timer. Its `close()` is idempotent, and leaving it to GC would keep a /ws/tts
+    // connection alive on the server for as long as the page lives.
+    const stale = relay;
+    relay = new TtsRelay(ctx, sampleRate);
+    if (stale) { try { stale.close(); } catch { /* already gone */ } }
+  }
   return relay;
 }
 
@@ -792,7 +857,7 @@ async function speakStreaming(text: string, prefs: VoicePrefs, signal: AbortSign
   if (!Ctor) return false;
   audioCtx = audioCtx ?? new Ctor();
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  await relayFor(audioCtx, caps.sampleRate ?? 24000).speak(text, signal);
+  await relayFor(audioCtx, caps.sampleRate ?? 24000).speak(text, signal, prefs.rate);
   return true;
 }
 
@@ -902,20 +967,31 @@ class Speaker {
     // precisely because a cut mid-sentence used to be a whole round trip.
     const streaming = onServer && caps.streaming;
     const chunks = streaming ? [] : splitForSpeech(body, onServer ? SERVER_CHUNK : BROWSER_CHUNK);
+    // The fallback needs the whole reply re-cut: `chunks` is empty precisely BECAUSE streaming was
+    // chosen, so the catch below used to speak nothing and still claim it had switched voices.
+    const fallbackChunks = (): string[] => (streaming ? splitForSpeech(body, SERVER_CHUNK) : chunks);
     if (!streaming && !chunks.length) return;
     const ctrl = new AbortController();   // one controller for the whole utterance
     this.#abort = ctrl;
     this.#set({ error: "", note: "", speakingId: id, speaking: true });
     try {
-      if (streaming && await speakStreaming(body, prefs, ctrl.signal)) {
-        // played through the relay
-      } else if (onServer) {
-        // Either streaming is off, or the relay failed before the first sample — in which case
-        // the HTTP path still has the whole reply to work with, which is the documented
-        // fallback (and from there the browser voice, in the catch below).
-        await this.#speakServer(chunks, prefs, ctrl.signal);
-      } else {
-        await this.#speakBrowser(chunks, prefs, ctrl.signal);
+      let spoken = false;
+      if (streaming) {
+        try {
+          spoken = await speakStreaming(body, prefs, ctrl.signal);
+        } catch (e) {
+          // A STOP is not a failure: let it reach the catch below, which returns quietly.
+          if (this.#stopped || ctrl.signal.aborted || e instanceof SpeechStopped || (e as Error)?.name === "AbortError") throw e;
+          // Anything else means the socket path is down for this utterance. Fall through to the
+          // one-shot route: same provider, same voice, whole reply — which is what the setting
+          // promises. Jumping straight to the browser voice here would silently swap the voice
+          // the operator chose, which is a different product.
+          this.#set({ note: `流式合成这一句失败了（${String((e as Error)?.message ?? e)}），已改用整句合成` });
+        }
+      }
+      if (!spoken) {
+        if (onServer) await this.#speakServer(fallbackChunks(), prefs, ctrl.signal);
+        else await this.#speakBrowser(chunks, prefs, ctrl.signal);
       }
     } catch (e) {
       // A STOP is not a failure. Returning quietly here is the whole fix: the fallback
@@ -925,9 +1001,11 @@ class Speaker {
       }
       // Server voice failed: the browser can still read it. Say so once, then do it.
       if (prefs.serverTts && browserSpeechAvailable()) {
+        const rest = fallbackChunks();
+        if (!rest.length) { this.#set({ error: String((e as Error)?.message ?? e) }); return; }
         this.#set({ note: `服务端语音这一句失败了（${String((e as Error)?.message ?? e)}），已改用浏览器语音` });
         try {
-          await this.#speakBrowser(chunks, prefs, ctrl.signal);
+          await this.#speakBrowser(rest, prefs, ctrl.signal);
           return;
         } catch (e2) {
           if (this.#stopped || e2 instanceof SpeechStopped) return;
