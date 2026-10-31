@@ -317,6 +317,9 @@ try {
   check("the target's first message is the bridge envelope", env.includes("[跨工作空间转交]"), env.slice(0, 80));
   check("the envelope names the source session and how to read it",
     env.includes(srcA) && env.includes(`session messages ${srcA}`), env.split("\n").slice(1, 4).join(" | "));
+  check("its reading example is ONE message (the agent's last reply), not a window of history",
+    env.includes("--role agent --tail 1") && !/--tail\s+(?!1\b)\d+/.test(env),
+    (env.match(/--tail[^）\n]*/g) ?? []).join(" / "));
   check("the envelope carries the operator's own words, not the chat log",
     env.trim().endsWith("修复一下这个 bug"), JSON.stringify(env.trim().slice(-60)));
 

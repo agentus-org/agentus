@@ -40,6 +40,11 @@ const CLI = "agentus";
  * 形状是刻意朴素的：三行事实 + 一条命令 + 一句"别猜"，然后才是操作员的话。没有 JSON、
  * 没有 XML 标签 —— 目标 agent 读到的是一段人写的交接便条，而不是一份协议报文；何况
  * 不同后端的 prompt 渲染差别很大，纯文本最不容易被"美化"掉。
+ *
+ * **示例只读最后一条**（操作员原话：「最后一条大模型的输出就可以了，60 条也太多了，
+ * 上下文一下就撑爆」）。信封是"给你一个门把手"，不是"替你搬家"：默认给最小的一步，
+ * 后面明确写「要更多自己按需加 --tail」，让目标 agent 按它真正缺的信息去取，
+ * 而不是我们一次性替它灌几十条进去。
  */
 export function buildBridgeEnvelope(input: BridgeEnvelopeInput): string {
   const from = input.from;
@@ -49,9 +54,10 @@ export function buildBridgeEnvelope(input: BridgeEnvelopeInput): string {
     "[跨工作空间转交] 这条消息由操作员在另一个会话里用 @ 转过来的，不是你正在对话的那个人打的。",
     `来源工作空间：${input.fromCwd}`,
     `来源会话：${named}`,
-    `读取原会话：${CLI} session messages ${from} --tail 60`,
-    `（在会话内用： "$AGENTUS_COCKPIT_BIN" session messages ${from} --tail 60）`,
-    "说明：这里只给了会话编号，没有搬运聊天记录 —— 需要细节就按上面的命令去读原文，不要凭空推断。",
+    `读取原会话最后一条回复：${CLI} session messages ${from} --role agent --tail 1`,
+    `（在会话内用： "$AGENTUS_COCKPIT_BIN" session messages ${from} --role agent --tail 1）`,
+    `需要更多上下文时自己按需去查：把 --tail 调大，或用 --role user 只看操作员说过的话。`,
+    `说明：这里只给了会话编号，没有搬运聊天记录 —— 需要细节就按上面的命令去读原文，不要凭空推断。`,
     "",
     "---",
     input.userText,

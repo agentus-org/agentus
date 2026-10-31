@@ -4,7 +4,7 @@
 // 与像素无关。浏览器那边只该验证一件事 —— 这些东西被画出来并且真的发出去了（mention-sweep.mjs）。
 //
 // Run: npm run mention-units   (tsx; no browser, no server)
-import { bridgeTitle } from "../../packages/server/src/bridge.ts";
+import { bridgeTitle, buildBridgeEnvelope } from "../../packages/server/src/bridge.ts";
 import {
   backspaceToken, caretInsideToken, insertToken, lastOf, mentionChoices, mentionWorkspaces,
   stripToken, tokenIntact, tokenText,
@@ -120,6 +120,19 @@ const HERE = "/Users/liang/Workspace/agent-dev-workspace/";   // trailing slash 
   check("no title yet → fall back to the id, not to an empty arrow", bridgeTitle(null, "aaaaaaaa") === "← aaaaaaaa");
   check("a very long title is cut, so the rail row stays a row", bridgeTitle("x".repeat(80), "aaaaaaaa").length === 42,
     String(bridgeTitle("x".repeat(80), "aaaaaaaa").length));
+}
+
+// 10. 信封里的示例只读**最后一条 agent 回复**，并且把"要更多自己按需取"写清楚。
+//     60 条那版是错的：目标会话还没开口就先被塞进几十条原文，上下文一下就见底了。
+{
+  const env = buildBridgeEnvelope({ from: "abc12345", fromTitle: "排查问题", fromCwd: "/w/a", userText: "修一下" });
+  check("the example asks for the agent's LAST reply, not a window of history",
+    env.includes("--role agent --tail 1"), env.split("\n")[3]);
+  check("no bulk count anywhere in the envelope",
+    !/--tail\s+(?!1\b)\d+/.test(env), (env.match(/--tail\s*\d+/g) ?? []).join(","));
+  check("it says: fetch more only if you actually need it",
+    /按需/.test(env) && /调大/.test(env));
+  check("the operator's own words are still the last thing in it", env.trim().endsWith("修一下"));
 }
 
 console.log(`\nmention-units: ${pass} passed, ${fail} failed`);
