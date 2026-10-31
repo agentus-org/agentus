@@ -4685,7 +4685,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
       dropToken();
       setDrafts([]);
       setAttachErr("");
-      setBridgeNote({ text: `已转交 · ${choice.hint} › ${choice.label}`, id: out.id });
+      setBridgeNote({ text: `${choice.hint} › ${choice.label}`, id: out.id });
     } catch (e) {
       setBridgeErr(String((e as Error)?.message ?? e));
     }
@@ -4693,12 +4693,17 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
 
   const send = () => {
     const t = text.trim();
-    if (!t && !drafts.length) return;
     // @ 转交：这句话的收件人是别的会话。走服务端那一条请求，别落进本会话的队列。
+    // 选了目标却没写正文时**必须出声** —— 空正文连一条消息都不构成，静默返回会让人以为已经发过去了。
     if (tokenLive && mTarget) {
+      if (!stripToken(text, token)) {
+        setBridgeErr("写一句话再回车 —— 现在只有目标，没有要转过去的内容");
+        return;
+      }
       void bridgeSend(mTarget);
       return;
     }
+    if (!t && !drafts.length) return;
     // Sending is taking over: the reply being read aloud is stale the moment this turn starts, and
     // the new turn's own auto-read must not have to fight the old voice for the speaker (#66).
     hushSpeech();
@@ -5153,29 +5158,42 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             Surfacing it here is the honest half of that fallback. */}
         {spoken.note ? <div className="composer-note">{spoken.note}</div> : null}
         {spoken.error ? <div className="composer-note err">{spoken.error}</div> : null}
+        {/* 转交的回执要是**看得见**的东西：它曾经只是输入框上方一行小字，操作员按了几次回车
+            都以为没生效（这个功能的失败模式是"沉默"，所以回执必须抢眼、可点、可跳过去）。
+            失败也走同一个盒子 —— 否则"没反应"和"失败了"在他眼里是同一件事。 */}
         {bridgeNote || bridgeErr ? (
-          <div className={`composer-note ${bridgeErr ? "err" : ""}`}>
-            {bridgeErr ? (
-              <>
-                {bridgeErr}
-                <button className="bridge-act" onClick={() => setBridgeErr("")}>知道了</button>
-              </>
-            ) : (
-              <>
-                {bridgeNote?.text}
+          <div className={`bridge-toast ${bridgeErr ? "err" : ""}`} role="status" aria-live="polite">
+            <div className="bridge-toast-body">
+              {bridgeErr ? (
+                <span>{bridgeErr}</span>
+              ) : (
+                <>
+                  <b>已转交</b>
+                  <span className="bridge-toast-where">{bridgeNote?.text}</span>
+                </>
+              )}
+            </div>
+            <div className="bridge-toast-acts">
+              {bridgeNote && !bridgeErr ? (
                 <button
-                  className="bridge-act"
+                  className="bridge-toast-go"
                   onClick={() => {
                     if (!bridgeNote) return;
                     cockpit.setActive(bridgeNote.id);
                     setBridgeNote(null);
                   }}
                 >
-                  去看
+                  跳到目标会话
                 </button>
-                <button className="bridge-act" aria-label="dismiss" onClick={() => setBridgeNote(null)}>×</button>
-              </>
-            )}
+              ) : null}
+              <button
+                className="bridge-act"
+                aria-label="dismiss"
+                onClick={() => { setBridgeNote(null); setBridgeErr(""); }}
+              >
+                知道了
+              </button>
+            </div>
           </div>
         ) : null}
         {listening || dict.status === "transcribing" || dict.error ? (
@@ -5235,7 +5253,10 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               // `@` 打开的选定器：查询词就是 `@` 之后打的那段字；打着打着改主意就重排（不重开）。
               if (mention) {
                 const q = next.slice(mention.start + 1);
-                if (q.includes("\n")) setMention(null);
+                // 那个开头的 `@` 被删掉（手机上只有删除键，没有 Esc）→ 这次选目标就算取消，
+                // 列表必须跟着消失；否则弹层会挂在一个已经不存在的位置上。
+                if (next[mention.start] !== "@") { setMention(null); setMPick(0); }
+                else if (q.includes("\n")) setMention(null);
                 else if (q !== mention.query) { setMention({ ...mention, query: q }); setMPick(0); }
               } else if (next.length === text.length + 1) {
                 const pos = e.target.selectionStart ?? next.length;

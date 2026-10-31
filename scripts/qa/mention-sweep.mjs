@@ -234,10 +234,31 @@ try {
     return ta.value;
   })()`);
   await sleep(2500);
-  const cleared = await ev(`({ value: document.querySelector('.composer-box textarea')?.value ?? '', chip: !!document.querySelector('.mention-chip'), note: document.querySelector('.composer-note')?.textContent ?? '' })`);
+  const cleared = await ev(`({ value: document.querySelector('.composer-box textarea')?.value ?? '', chip: !!document.querySelector('.mention-chip'), note: document.querySelector('.bridge-toast')?.textContent ?? '' })`);
   check("the composer clears after the transfer", cleared.value === "", JSON.stringify(cleared.value));
   check("the token goes with it", cleared.chip === false);
-  check("a receipt is shown", /已转交/.test(cleared.note), cleared.note);
+  check("a receipt pops up and says where it went", /已转交/.test(cleared.note), cleared.note);
+  check("the receipt offers to jump to the target session", /跳到目标会话/.test(cleared.note), cleared.note);
+  // SHOT=1 时把回执那一刻的页面拍下来：这块浮层是这次新加的，位置对不对机器判不了，得人眼过一眼。
+  if (process.env.SHOT) {
+    const shot = await send("Page.captureScreenshot", { format: "png" });
+    await import("node:fs").then((fs) => fs.writeFileSync("/tmp/mention-toast.png", Buffer.from(shot.data, "base64")));
+    console.log("   shot: /tmp/mention-toast.png");
+  }
+  // 那个「跳到目标会话」要真的跳 —— 回执的最大价值是"我能跟过去看它干了什么"。
+  await ev(`[...document.querySelectorAll('.bridge-toast-go')][0]?.click()`);
+  await sleep(1800);
+  const jumped = await ev(`(document.querySelector('.session-item.active .title')?.textContent ?? '').trim()`);
+  check("clicking it actually opens the session it was handed to", jumped === "← 排查问题", jumped);
+  const gone = await ev(`!!document.querySelector('.bridge-toast')`);
+  check("the receipt closes once you took the jump", gone === false);
+  // 跳过去之后要回到会话 A 再跑下一腿 —— 否则「来源」变成了刚才那个转交目标，断言会对着错的对象。
+  check("…and we can walk back to A", await ev(`(() => {
+    const hit = [...document.querySelectorAll('.session-item')]
+      .find((r) => (r.querySelector('.title')?.textContent ?? "").trim() === "排查问题");
+    if (!hit) return false; hit.click(); return true;
+  })()`) === true);
+  await sleep(1500);
 
   // The real proof: a session in wsA now exists and its first message is the envelope + the sentence.
   const rows = await api("/api/sessions");
@@ -319,6 +340,31 @@ try {
   })()`);
   check("its bubble is labelled 来自「排查问题」, not passed off as the operator's own words",
     /来自「排查问题」/.test(bubble), bubble.slice(0, 80));
+
+  // ------------------------------------------------------- 两条来自真手机使用的问题
+  // (1) 手机上只有删除键，没有 Esc：把那个 `@` 删掉，列表必须跟着消失。
+  await ev(`document.querySelector('.composer-box textarea').focus()`);
+  await type("@");
+  check("palette open again for the cancel-by-deleting case",
+    await ev(`!!document.querySelector('.mention-palette')`) === true);
+  await key("Backspace", "Backspace", 8);
+  check("deleting the @ closes the list (no Esc on a phone)",
+    await ev(`!!document.querySelector('.mention-palette')`) === false
+      && await ev(`document.querySelector('.composer-box textarea').value`) === "");
+
+  // (2) 选了目标却没写正文就回车：不能一声不响，否则人以为已经发过去了。
+  const before = allSessions(await api("/api/sessions")).length;
+  await ev(`document.querySelector('.composer-box textarea').focus()`);
+  await type("@");
+  await key("Enter", "Enter", 13);   // 选工作空间
+  await key("Enter", "Enter", 13);   // 选「新会话」
+  await key("Enter", "Enter", 13);   // 空正文直接回车
+  await sleep(1200);
+  const emptyToast = await ev(`document.querySelector('.bridge-toast')?.textContent ?? ''`);
+  check("pressing Enter with only a target says what is missing",
+    /写一句话再回车/.test(emptyToast), emptyToast);
+  const after = allSessions(await api("/api/sessions")).length;
+  check("…and it does not quietly create a session", after === before, `${before} -> ${after}`);
 } catch (e) {
   fail++;
   console.log("FAIL  sweep threw —", String(e?.message ?? e));

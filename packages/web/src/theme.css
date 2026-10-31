@@ -923,6 +923,35 @@ code.inline {
   font-size: 11px; padding: 0 2px; text-decoration: underline; text-underline-offset: 2px;
 }
 .composer-note .bridge-act:hover { color: var(--text); }
+
+/* ---- 转交回执：浮在输入框上方的一块，不再埋进那行小字里 ----
+   成功/失败共用一个盒子（只换边框与按钮），因为"没有反应"和"失败了"必须长得不一样。 */
+.bridge-toast {
+  position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px);
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--bg-panel); border: 1px solid var(--accent-dim);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  font-size: 13px; color: var(--text); z-index: 40;
+  animation: bridge-toast-in .16s ease-out;
+}
+@keyframes bridge-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.bridge-toast.err { border-color: var(--err); }
+.bridge-toast-body { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.bridge-toast-body b { color: var(--accent-text); font-weight: 700; white-space: nowrap; }
+.bridge-toast-where { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bridge-toast-acts { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.bridge-toast .bridge-act {
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 12px; padding: 4px 6px; border-radius: 6px;
+}
+.bridge-toast .bridge-act:hover { color: var(--text); background: rgba(255, 255, 255, .06); }
+.bridge-toast-go {
+  border: 1px solid var(--accent-dim); background: rgba(var(--accent-rgb), .16);
+  color: var(--accent-text); cursor: pointer; font-size: 12px; font-weight: 600;
+  padding: 5px 10px; border-radius: 7px; white-space: nowrap;
+}
+.bridge-toast-go:hover { background: rgba(var(--accent-rgb), .28); }
 /* .composer-box 要当镜像层的定位基准 */
 .composer-box { position: relative; }
 .composer-box > textarea { position: relative; z-index: 1; }
