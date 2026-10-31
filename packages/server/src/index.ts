@@ -238,6 +238,9 @@ function emit(evt: ServerEvent): void {
   notify.observe(evt);
 }
 
+/** 同一目标的转交串行执行（按 targetId 排队）。见 /api/bridge 里的说明。 */
+const bridgeDeliveries = new Map<string, Promise<unknown>>();
+
 // The data dir and this run's instance id travel into the manager: they are what lets a reclaim tell
 // "an agent of THIS directory from a previous run" from "some pid the database still remembers".
 const mgr = new SessionManager(store, emit, {
@@ -1725,7 +1728,15 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         try {
           await mgr.awaitReady(targetId);
         } catch (e) {
-          return send(res, 409, { error: "target_not_ready", id: targetId, created: true, message: String((e as Error)?.message ?? e) });
+          // 建了一半的会话不能留在 rail 上：它会变成一行「← 来源标题」的空壳，而且没有任何线索
+          // 说明为什么 —— 收掉它，把真正的原因（`lastError`/stderr 尾）说人话交给页面。
+          const why = String((e as Error)?.message ?? e).slice(0, 300);
+          try { await mgr.closeSession(targetId); } catch { /* best effort: the row goes with the process */ }
+          emit(sessionsEvent());
+          return send(res, 409, {
+            error: `目标会话没能启动：${why === `no such session: ${targetId}` ? "agent 没完成握手（可能连不上或配置有误）" : why}`,
+            code: "target_not_ready", id: targetId, created: true,
+          });
         }
       } else if (to.kind === "session") {
         targetId = String(to.id ?? "");
@@ -1737,12 +1748,20 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         if (target.cold) {
           try {
             await mgr.resume(targetId);
+            // `resume` 对一个已经在 map 里的槽位会直接返回 —— 那个槽位可能还没有 conn。
+            // 真正的判据是握手完成，和 kind=new 走同一条等待。
+            await mgr.awaitReady(targetId);
           } catch (e) {
-            return send(res, 409, { error: "wake_failed", message: String((e as Error)?.message ?? e) });
+            const why = String((e as Error)?.message ?? e).slice(0, 300);
+            return send(res, 409, { error: `没能唤醒目标会话：${why}`, code: "wake_failed", id: targetId });
           }
         }
       } else {
         return send(res, 400, { error: 'to.kind must be "new" or "session"' });
+      }
+      // 转交给自己没有意义：那会 cancel 掉你正在跑的回合，还给自己的话贴上一张「来自别处」的标签。
+      if (targetId === fromId) {
+        return send(res, 400, { error: "目标和来源是同一个会话 —— 想换个话题直接在这里说就行", code: "self_target" });
       }
       const envelope = buildBridgeEnvelope({
         from: fromRow.id,
@@ -1750,19 +1769,47 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         fromCwd: fromRow.workspace || fromRow.cwd,
         userText,
       });
-      try {
-        // `origin` is what makes the target's page label the bubble as 「来自 X」 instead of showing
-        // another session's words as if the operator typed them there.
-        void mgr.prompt(targetId, envelope, [], {
+      // 投递必须**等到回合真的开起来**才算数。
+      //
+      // 上一版这里是 `void mgr.prompt(...).catch(console.error)`，于是同步 try/catch 永远到不了：
+      // `prompt` 是 async，它只会 reject。目标忙到不肯让出话筒（settle 超时）、目标进程刚好死掉，
+      // 这些情况下信封没送出去，接口却回 200 —— 操作员看到的是「已转交」，实际什么也没发生。
+      // 形状照抄已经解决过同一个问题的 cockpit `send`（index.ts:900-930）：race「回合开起来」与「prompt 失败」。
+      //
+      // 同一目标的投递还要串行：两个标签页同时打到冷会话时，两次 `resume` 会看见彼此半建的槽位，
+      // 第二次直接 `session not ready`，一封信封就这么没了。
+      const deliver = async (): Promise<void> => {
+        let promptErr: unknown = null;
+        let markStarted: (() => void) | null = null;
+        const started = new Promise<void>((r) => { markStarted = r; });
+        const turn = mgr.prompt(targetId, envelope, [], {
           interrupt: true,
           origin: { sessionId: fromRow.id, title: fromRow.title ?? null },
-        }).catch((e: unknown) => {
-          console.error(`[agentus] bridge prompt to ${targetId} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+          onTurnStarted: () => markStarted?.(),
         });
-      } catch (e) {
-        return send(res, 409, { error: "deliver_failed", message: String((e as Error)?.message ?? e) });
-      }
-      return send(res, 200, { id: targetId, created, cwd: targetCwd });
+        const ok = await Promise.race([
+          started.then(() => true),
+          turn.then(() => false, (e) => { promptErr = e; return false; }),
+        ]);
+        if (!ok) {
+          const why = String((promptErr as Error)?.message ?? promptErr ?? "turn did not start").slice(0, 300);
+          return send(res, 409, {
+            error: `没能把这句话交给目标会话：${why}`,
+            code: "deliver_failed", id: targetId, created,
+          });
+        }
+        // 回合已经开起来了：从这里往后的失败由目标会话自己的转录呈现，这边不再替它负责。
+        void turn.catch((e: unknown) => {
+          console.error(`[agentus] bridge turn in ${targetId} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        });
+        return send(res, 200, { id: targetId, created, cwd: targetCwd });
+      };
+      const prev = bridgeDeliveries.get(targetId) ?? Promise.resolve();
+      const next = prev.catch(() => undefined).then(deliver);
+      bridgeDeliveries.set(targetId, next.finally(() => {
+        if (bridgeDeliveries.get(targetId) === next) bridgeDeliveries.delete(targetId);
+      }));
+      return next;
     }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);

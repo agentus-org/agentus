@@ -1696,7 +1696,9 @@ export class Cockpit {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ from, to, text }),
       },
-      { retry: false },
+      // 这次请求里服务端可能要等一次 ACP 握手（30s 上限），比通用的 15s 短多了会假超时：
+      // 页面判失败、把话退回输入框，服务端却还在继续投递 —— 再按一次就多建一个会话。
+      { retry: false, timeoutMs: 45_000 },
     );
     // A NEW session must appear in the rail immediately; the WS `sessions` frame would do it too,
     // but a stale page (socket reconnecting) would then show the transfer with no session to click.

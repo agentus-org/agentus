@@ -90,7 +90,7 @@ export function mentionWorkspaces(all: readonly MentionSession[], currentPath: s
  * `query` 是 `@` 之后打的字：空串时全给（截到 limit），有字时按标题/ID 过滤 —— 过滤时不截断，
  * 因为"我打了字搜出来的"这条判断必须覆盖全部候选，否则会漏掉排在后面但确实匹配的会话。
  */
-export function mentionChoices(ws: MentionWorkspace, query: string, limit = 20): MentionChoice[] {
+export function mentionChoices(ws: MentionWorkspace, query: string, limit = 20, excludeId?: string): MentionChoice[] {
   const q = query.trim().toLowerCase();
   const fresh: MentionChoice = {
     key: `new:${ws.path}`,
@@ -99,7 +99,9 @@ export function mentionChoices(ws: MentionWorkspace, query: string, limit = 20):
     hint: ws.label,
     workspace: ws.path,
   };
+  // `excludeId` = 你自己：转交给自己的会话会 cancel 掉正在跑的回合，还给自己贴一张「来自别处」的标签。
   const hits = ws.sessions
+    .filter((s) => s.id !== excludeId)
     .filter((s) => !q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q))
     .map<MentionChoice>((s) => ({
       key: `session:${s.id}`,
