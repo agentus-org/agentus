@@ -96,7 +96,9 @@
     "turn-usage": "tsx scripts/qa/turn-usage.mts",
     "turn-usage-sweep": "node scripts/qa/turn-usage-sweep.mjs",
     "tts-stream-units": "tsx scripts/qa/tts-stream-units.mts",
-    "tts-stream-sweep": "node scripts/qa/tts-stream-sweep.mjs"
+    "tts-stream-sweep": "node scripts/qa/tts-stream-sweep.mjs",
+    "mention-units": "tsx scripts/qa/mention-units.mts",
+    "mention-sweep": "node scripts/qa/mention-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"

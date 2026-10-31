@@ -24,6 +24,7 @@ import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
 import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
+import { bridgeTitle, buildBridgeEnvelope } from "./bridge.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
   SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
@@ -1683,6 +1684,85 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     // because a shell is a stream, not a request/response).
     if (url.pathname === "/api/term" && req.method === "GET") {
       return send(res, 200, { sessions: terms.list() });
+    }
+    // @ 跨工作空间转交（issue: 输入框里的 @）。传输层就是 `session send` 那条路，这里只做三件事：
+    // 需要时按工作空间建会话、用服务端那一份信封把来源说清楚、把操作员的话原样接在后面。
+    //
+    // 为什么不是前端拼文案：信封是这个功能的协议（谁能被读、怎么读、带什么身份），只该有一份。
+    // 为什么默认打断：这是操作员亲手点的转交，不是一条后台广播 —— 他要的是"那边现在就动手"，
+    // 排在别人后面等于没转。`mgr.prompt(..., { interrupt: true })` 走的是已有的
+    // cancel → 等真的停了 → 开新回合 那条路，不会有第二条打断逻辑。
+    if (url.pathname === "/api/bridge" && req.method === "POST") {
+      const body = await readJson(req);
+      const fromId = String(body.from ?? "");
+      const userText = String(body.text ?? "").trim();
+      const to = (body.to ?? {}) as { kind?: string; workspace?: string; id?: string };
+      const allRows = [...mgr.list(), ...mgr.cockpitCold().rows];
+      const fromRow = allRows.find((s) => s.id === fromId) ?? null;
+      if (!fromId) return send(res, 400, { error: "from is required" });
+      if (!fromRow) return send(res, 404, { error: `no such session: ${fromId}` });
+      if (!userText) return send(res, 400, { error: "text is required" });
+      let targetId = "";
+      let targetCwd: string | null = null;
+      let created = false;
+      if (to.kind === "new") {
+        let cwd = String(to.workspace ?? "").trim();
+        if (!cwd) return send(res, 400, { error: "workspace is required for kind=new" });
+        if (cwd === "~") cwd = homedir();
+        else if (cwd.startsWith("~/")) cwd = path.join(homedir(), cwd.slice(2));
+        if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+          return send(res, 400, { error: `cwd not a directory: ${cwd}` });
+        }
+        // Same backend as the session the operator is standing in: they are delegating to the same
+        // kind of agent in a different tree, not asking for a different runtime.
+        const info = await mgr.create(fromRow.backend, cwd, bridgeTitle(fromRow.title, fromRow.id));
+        targetId = info.id;
+        targetCwd = cwd;
+        created = true;
+        emit(sessionsEvent());
+        // `create()` returns before the ACP handshake, and a prompt against a `starting` slot throws
+        // "session not ready" — the page survives that by queueing, a server-side caller does not.
+        try {
+          await mgr.awaitReady(targetId);
+        } catch (e) {
+          return send(res, 409, { error: "target_not_ready", id: targetId, created: true, message: String((e as Error)?.message ?? e) });
+        }
+      } else if (to.kind === "session") {
+        targetId = String(to.id ?? "");
+        const target = allRows.find((s) => s.id === targetId) ?? null;
+        if (!target) return send(res, 404, { error: `no such session: ${targetId}` });
+        targetCwd = target.workspace || target.cwd;
+        // A cold slot cannot run a turn, and the operator's intent here is explicit ("到那边去修"),
+        // so waking is part of the action rather than a flag they must know about.
+        if (target.cold) {
+          try {
+            await mgr.resume(targetId);
+          } catch (e) {
+            return send(res, 409, { error: "wake_failed", message: String((e as Error)?.message ?? e) });
+          }
+        }
+      } else {
+        return send(res, 400, { error: 'to.kind must be "new" or "session"' });
+      }
+      const envelope = buildBridgeEnvelope({
+        from: fromRow.id,
+        fromTitle: fromRow.title,
+        fromCwd: fromRow.workspace || fromRow.cwd,
+        userText,
+      });
+      try {
+        // `origin` is what makes the target's page label the bubble as 「来自 X」 instead of showing
+        // another session's words as if the operator typed them there.
+        void mgr.prompt(targetId, envelope, [], {
+          interrupt: true,
+          origin: { sessionId: fromRow.id, title: fromRow.title ?? null },
+        }).catch((e: unknown) => {
+          console.error(`[agentus] bridge prompt to ${targetId} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        });
+      } catch (e) {
+        return send(res, 409, { error: "deliver_failed", message: String((e as Error)?.message ?? e) });
+      }
+      return send(res, 200, { id: targetId, created, cwd: targetCwd });
     }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);

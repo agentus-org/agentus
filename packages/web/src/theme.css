@@ -887,6 +887,46 @@ code.inline {
 .slash-item .src { font-size: 10px; color: var(--text-dim); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .slash-item.empty { color: var(--text-dim); font-size: 12px; cursor: default; }
 
+/* ---- @ 跨工作空间转交 ---- */
+/* 同一个盒子换内容（不是两个弹层）：换段时位置不动，眼睛不用重新找。 */
+.mention-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 5px 9px 4px; font-size: 11px; color: var(--text-dim);
+  border-bottom: 1px solid var(--line); margin-bottom: 3px;
+}
+.mention-head .mention-hint { font-size: 10px; opacity: .8; }
+.mention-item { align-items: center; }
+.mention-item .mention-ws { font-size: 11px; color: var(--text-dim); flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-item .mention-name { font-size: 12.5px; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「新会话」那一行永远在第一段之下、第一行之上：给它的名字一点重量，不然它看起来像另一个会话。 */
+.mention-item.is-new .mention-name { color: var(--accent-text); font-weight: 600; }
+
+/* 输入框里的原子标签。两层必须用同一套字体度量 —— 所以这两条规则共用下面的 .composer-mirror,
+   任何 font/padding 改动都要同时落在 .composer textarea 和 .composer-mirror 上。 */
+.composer textarea.tokenized { color: transparent; caret-color: var(--text); }
+.composer-mirror {
+  position: absolute; left: 0; right: 0; top: 0; bottom: 0;
+  pointer-events: none; overflow: hidden; z-index: 0;
+  padding: 10px 12px 4px; border: none;
+  font: inherit; white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--text);
+}
+/* 形状照 Markdown 里"被包裹的字符"：一块，不是一段文字。 */
+.mention-chip {
+  background: rgba(var(--accent-rgb), .16); color: var(--accent-text);
+  border: 1px solid var(--accent-dim); border-radius: 5px;
+  padding: 0 4px; white-space: pre;
+}
+/* 回音行里那两个按钮：小、贴着文字，不抢这条提示的位置。 */
+.composer-note .bridge-act {
+  background: transparent; border: none; color: var(--accent-text); cursor: pointer;
+  font-size: 11px; padding: 0 2px; text-decoration: underline; text-underline-offset: 2px;
+}
+.composer-note .bridge-act:hover { color: var(--text); }
+/* .composer-box 要当镜像层的定位基准 */
+.composer-box { position: relative; }
+.composer-box > textarea { position: relative; z-index: 1; }
+
 .perm-card { border: 1px solid var(--accent-dim); border-radius: 10px; padding: 12px 14px; background: rgba(var(--accent-rgb), 0.05); }
 .perm-card .q { font-size: 13.5px; margin-bottom: 4px; }
 .perm-card .tc { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); margin-bottom: 10px; overflow-wrap: anywhere; }
@@ -1488,6 +1528,7 @@ code.inline {
   /* slash palette: full-width rows a thumb can hit while the keyboard is up */
   .slash-palette { max-height: 40vh; }
   .slash-item { min-height: 44px; }
+  .mention-item { min-height: 44px; }
 
   .msg { max-width: 100%; }
   .empty .big { font-size: 42px; }
@@ -1879,6 +1920,8 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   .chat-head .head-actions .icon-btn svg { width: 18px; height: 18px; }
   .composer { padding: 6px 8px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .composer textarea { font-size: 16px; min-height: 44px; } /* 16px = no iOS zoom-on-focus */
+  /* 胶囊层必须跟着一起变 —— 两层字号一旦不同，换行位置就不同，标签会跑到别的字上面去。 */
+  .composer-mirror { font-size: 16px; }
   .composer-bar .icon-btn { width: 38px; height: 38px; }
   .send-btn { width: 46px; height: 38px; }
   .usage-row .usage-bar { max-width: 90px; }

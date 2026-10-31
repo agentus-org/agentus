@@ -1677,6 +1677,34 @@ export class Cockpit {
     return info.id;
   }
 
+  /**
+   * @ 跨工作空间转交：把一句话交给另一个工作空间（新会话或已有会话），信封由服务端拼。
+   *
+   * 为什么不复用 `createSession` + `sendPrompt` 两段：那样会在两者之间留下一个"会话建了但话还没到"
+   * 的状态 —— 界面得替它兜底（谁负责发第二条、失败时那条空会话算不算垃圾）。服务端一条请求里
+   * 做完，前端只需要画一个回音。
+   */
+  async bridge(
+    from: string,
+    to: { kind: "new"; workspace: string } | { kind: "session"; id: string },
+    text: string,
+  ): Promise<{ id: string; created: boolean }> {
+    const out = await this.#req<{ id: string; created?: boolean }>(
+      "/api/bridge",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ from, to, text }),
+      },
+      { retry: false },
+    );
+    // A NEW session must appear in the rail immediately; the WS `sessions` frame would do it too,
+    // but a stale page (socket reconnecting) would then show the transfer with no session to click.
+    if (out.created) void this.refreshRows();
+    this.bump();
+    return { id: out.id, created: Boolean(out.created) };
+  }
+
   /** Pull the two ON-DISK lists: cold rows (no process, not archived) and the operator's archive.
    *  Kept as REST (not only a WS event) so the rail still fills when the socket is down. */
   async refreshRows(): Promise<void> {

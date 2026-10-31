@@ -23,6 +23,10 @@ import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
 import { RAIL_RECENT, railRows, splitRecent } from "./rail";
+import {
+  backspaceToken, caretInsideToken, insertToken, mentionChoices, mentionWorkspaces, stripToken,
+  tokenIntact, tokenText, type MentionChoice, type MentionToken,
+} from "./mention";
 import { fitPlanSteps } from "./plan-fit";
 import { delegSummary, parseBgNotice, parseDelegNotice, shortCommand, type DelegNotice } from "./bgNotice";
 import { copyText } from "./clipboard";
@@ -394,6 +398,10 @@ interface RailGroup {
   label: string;
   items: { s: SessionInfo; cold: boolean }[];
 }
+
+/** 弹层里的一行：第一段是工作空间，第二段是「新会话 / 某个会话」。两段共用一个渲染器，
+ *  `path` 与 `choice` 谁有值就决定了回车该走哪条路。 */
+type MentionRowUi = { key: string; label: string; hint: string; current?: boolean; path?: string; choice?: MentionChoice };
 
 /** Group sessions by the directory they were pointed at — the ONE rule behind both rail sections
  *  (工作空间 and 已归档), so the archived list reads exactly like the live one instead of being a
@@ -4500,6 +4508,18 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   // advertise the desktop shortcut while the layout had already switched to the drawer.
   const busyHint = window.innerWidth <= 720 ? "message… (Enter queues)" : `message… (${modKey}Enter interrupts · Enter queues)`;
   const [pick, setPick] = useState(0); // highlighted row in the slash palette
+  // @ 跨工作空间转交：两段式选择器的**打开态**（纯 UI；排序与过滤的规则在 mention.ts 里）。
+  // `start` 是那个 `@` 在文本里的下标 —— 取消时要把这个字符删掉，恢复成操作员打字前的样子。
+  const [mention, setMention] = useState<{ stage: "workspace" | "target"; start: number; query: string; workspace: string } | null>(null);
+  const [mPick, setMPick] = useState(0);
+  /** 选中的目标块。它同时是"这条消息发给谁"和"输入框里那枚胶囊"的唯一真相。 */
+  const [token, setToken] = useState<MentionToken | null>(null);
+  /** 那枚胶囊指向谁。与 token 同生同灭：任何一边失效（文本被改散、被退格带走），两个都清掉。 */
+  const [mTarget, setMTarget] = useState<MentionChoice | null>(null);
+  /** 转交成功后的回音（含跳过去的入口）。空串 = 没有可说的。 */
+  const [bridgeNote, setBridgeNote] = useState<{ text: string; id: string } | null>(null);
+  /** 转交失败的原因（目标忙、目录没了…）：说人话，不要只写进控制台。 */
+  const [bridgeErr, setBridgeErr] = useState("");
   // clicking outside hides the palette without eating the "/..." the operator typed
   const [paletteHidden, setPaletteHidden] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -4578,6 +4598,8 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const dict = useDictation();
   const spoken = useSpeaker();
   const ta = useRef<HTMLTextAreaElement>(null);
+  /** 画胶囊的那一层（与 textarea 叠在一起，靠同一套字体度量对齐）。 */
+  const mirrorRef = useRef<HTMLDivElement>(null);
   // The call overlay is owned by Main (it is opened from the chat head); the composer
   // renders it so "改用键盘" can put the cursor back in the prompt box, draft intact.
   const fileRef = useRef<HTMLInputElement>(null);
@@ -4641,9 +4663,42 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
     return true;
   };
 
+  /**
+   * 把当前这句话交给别的会话。
+   *
+   * 三条必须守住的东西：
+   *  · 正文是**去掉胶囊之后**的文字 —— 胶囊是地址，不是话；
+   *  · 发送后输入框清空、胶囊消失，否则下一次回车会把同一句话再转一遍；
+   *  · 回音里带那个会话的 id —— 转交是"我把它送走了"，人得能跟过去看它到底做了什么。
+   */
+  const bridgeSend = async (choice: MentionChoice): Promise<void> => {
+    const body = stripToken(text, token);
+    if (!body) return;
+    hushSpeech();
+    setBridgeErr("");
+    try {
+      const to = choice.kind === "new"
+        ? { kind: "new" as const, workspace: choice.workspace }
+        : { kind: "session" as const, id: choice.id ?? "" };
+      const out = await cockpit.bridge(v.info.id, to, body);
+      setText("");
+      dropToken();
+      setDrafts([]);
+      setAttachErr("");
+      setBridgeNote({ text: `已转交 · ${choice.hint} › ${choice.label}`, id: out.id });
+    } catch (e) {
+      setBridgeErr(String((e as Error)?.message ?? e));
+    }
+  };
+
   const send = () => {
     const t = text.trim();
     if (!t && !drafts.length) return;
+    // @ 转交：这句话的收件人是别的会话。走服务端那一条请求，别落进本会话的队列。
+    if (tokenLive && mTarget) {
+      void bridgeSend(mTarget);
+      return;
+    }
     // Sending is taking over: the reply being read aloud is stale the moment this turn starts, and
     // the new turn's own auto-read must not have to fight the old voice for the speaker (#66).
     hushSpeech();
@@ -4794,8 +4849,87 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
     .slice(0, 8);
   const paletteOpen = slashQuery !== null && v.info.status === "ready" && !paletteHidden;
 
+  // ---- @ 跨工作空间转交 ------------------------------------------------------
+  // 排序与过滤的规则全在 mention.ts（单测在那儿）；这里只做三件事：把列表算出来、接键盘、
+  // 把选中的东西插成输入框里的一枚胶囊。
+  const hereCwd = v.info.workspace || v.info.cwd;
+  const mentionRows: MentionRowUi[] = (() => {
+    if (!mention) return [];
+    const rows = railRows(cockpit.sessions, cockpit.cold).map(({ s }) => s);
+    const ws = mentionWorkspaces(rows, hereCwd);
+    if (mention.stage === "workspace") {
+      const q = mention.query.trim().toLowerCase();
+      return ws
+        .filter((w) => !q || w.label.toLowerCase().includes(q) || w.path.toLowerCase().includes(q))
+        .map((w) => ({ key: `ws:${w.path}`, label: w.label, hint: w.path, current: w.current, path: w.path }));
+    }
+    const group = ws.find((w) => w.path === mention.workspace) ?? { path: mention.workspace, label: mention.workspace.split("/").filter(Boolean).pop() ?? mention.workspace, lastAt: 0, current: false, sessions: [] };
+    return mentionChoices(group, mention.query, 20).map((c) => ({ key: c.key, label: c.label, hint: c.hint, choice: c }));
+  })();
+  const mentionOpen = mention !== null;
+
+  /** `@` 只有作为**新的一段**才开始选目标：邮箱、代码里的 @decorator、@ 后面的字母都不该弹框。 */
+  const atStartsMention = (value: string, pos: number): boolean => {
+    if (pos <= 0) return true;
+    return /\s/.test(value[pos - 1] ?? "");
+  };
+
+  const openMention = (start: number): void => {
+    if (token) return;                                  // 一次只转交一个目标
+    setMention({ stage: "workspace", start, query: "", workspace: "" });
+    setMPick(0);
+  };
+
+  /** 收起弹层并把打出去的那段 `@query` 一起删掉 —— 取消要回到打字前的样子，不留半个 @。 */
+  const cancelMention = (): void => {
+    if (!mention) return;
+    const cut = mention.start;
+    setText((cur) => cur.slice(0, cut) + cur.slice(mention.start + 1 + mention.query.length));
+    setMention(null);
+    requestAnimationFrame(() => ta.current?.setSelectionRange(cut, cut));
+  };
+
+  const pickWorkspace = (wsPath: string): void => {
+    if (!mention) return;
+    // 空间名字本身在第二段里不必再被当成搜索词：把它删掉，让下面列的是整个空间的会话。
+    const head = mention.start + 1 + mention.query.length;
+    setText(text.slice(0, head));
+    setMention({ ...mention, stage: "target", workspace: wsPath, query: "" });
+    setMPick(0);
+    requestAnimationFrame(() => ta.current?.setSelectionRange(head, head));
+  };
+
+  const pickTarget = (choice: MentionChoice): void => {
+    if (!mention) return;
+    const head = mention.start;
+    const tail = mention.start + 1 + mention.query.length;
+    const label = `${choice.hint} › ${choice.label}`;
+    const rest = text.slice(0, head) + text.slice(tail);
+    const ins = insertToken(rest, head, label);
+    setText(ins.text);
+    setToken(ins.token);
+    setMTarget(choice);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const el = ta.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(ins.caret, ins.caret);
+    });
+  };
+
+  const dropToken = (): void => {
+    setToken(null);
+    setMTarget(null);
+  };
+
+  // 文本被改散（用户在胶囊中间插字、删字、粘贴覆盖）→ 放弃它，而不是按旧下标切错地方。
+  const tokenLive = tokenIntact(text, token) && mTarget !== null;
+
   // every popover in here goes away when the pointer leaves it or Escape is pressed
   useDismiss(paletteOpen, [composerRef], () => setPaletteHidden(true));
+  // 点别处 = 放弃这次 @（连同那个 @ 字符一起收回），与 Esc 同一个结局。
+  useDismiss(mentionOpen, [composerRef], () => cancelMention());
   // the toolbar counts as "inside" (its triggers own their own lists); the settings
   // panel is the other inside region. Anything else — a message, empty space, another
   // session — dismisses whatever is open.
@@ -4874,6 +5008,39 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                 {v.info.commands.length
                   ? `no command matches “/${slashQuery}”`
                   : "this agent advertises no slash commands"}
+              </div>
+            )}
+          </div>
+        )}
+        {/* @ 的两段式弹层：第一段工作空间（当前空间钉第一行），第二段「新会话 + 该空间的会话」。
+            同一个盒子换内容，不是两个弹层 —— 换段时位置不动，眼睛不用重新找。 */}
+        {mentionOpen && (
+          <div className="slash-palette mention-palette" role="listbox" aria-label={mention?.stage === "workspace" ? "workspaces" : "sessions in this workspace"}>
+            <div className="mention-head">
+              {mention?.stage === "workspace" ? "转到哪个工作空间" : "新会话，还是已有会话"}
+              <span className="mention-hint">{mention?.stage === "workspace" ? "当前空间在第一行" : "Enter 选中 · Esc 取消"}</span>
+            </div>
+            {mentionRows.length ? (
+              mentionRows.map((row, i) => (
+                <div
+                  key={row.key}
+                  role="option"
+                  aria-selected={i === mPick}
+                  className={`slash-item mention-item ${i === mPick ? "sel" : ""} ${row.choice?.kind === "new" ? "is-new" : ""}`}
+                  onMouseEnter={() => setMPick(i)}
+                  onClick={() => {
+                    if (mention?.stage === "workspace" && row.path) pickWorkspace(row.path);
+                    else if (row.choice) pickTarget(row.choice);
+                  }}
+                >
+                  <span className="mention-ws">{row.hint}</span>
+                  <span className="mention-name">{row.label}</span>
+                  {row.current ? <span className="src">当前</span> : null}
+                </div>
+              ))
+            ) : (
+              <div className="slash-item empty">
+                {mention?.stage === "workspace" ? `没有匹配的工作空间 “${mention.query}”` : `这个工作空间里没有匹配的会话 “${mention?.query}”`}
               </div>
             )}
           </div>
@@ -4986,6 +5153,31 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             Surfacing it here is the honest half of that fallback. */}
         {spoken.note ? <div className="composer-note">{spoken.note}</div> : null}
         {spoken.error ? <div className="composer-note err">{spoken.error}</div> : null}
+        {bridgeNote || bridgeErr ? (
+          <div className={`composer-note ${bridgeErr ? "err" : ""}`}>
+            {bridgeErr ? (
+              <>
+                {bridgeErr}
+                <button className="bridge-act" onClick={() => setBridgeErr("")}>知道了</button>
+              </>
+            ) : (
+              <>
+                {bridgeNote?.text}
+                <button
+                  className="bridge-act"
+                  onClick={() => {
+                    if (!bridgeNote) return;
+                    cockpit.setActive(bridgeNote.id);
+                    setBridgeNote(null);
+                  }}
+                >
+                  去看
+                </button>
+                <button className="bridge-act" aria-label="dismiss" onClick={() => setBridgeNote(null)}>×</button>
+              </>
+            )}
+          </div>
+        ) : null}
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />
@@ -5008,16 +5200,49 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
           </div>
         ) : null}
         <div className="composer-box">
+          {/* 胶囊的画法：文字在 textarea 里是透明的，这一层按同样的字体度量把它重新画一遍 ——
+              目标那一段画成圆角块，其余照原样。这样 IME、手机键盘、粘贴、自动长高都不用重写，
+              代价只是两层必须用同一套 font/padding（CSS 里同名的一份变量管着）。 */}
+          {tokenLive && token ? (
+            <div className="composer-mirror" aria-hidden="true" ref={mirrorRef}>
+              {text.slice(0, token.start)}
+              <span className="mention-chip" data-mention={mTarget?.key ?? ""}>
+                {tokenText(token.label).trim()}
+              </span>
+              {text.slice(token.start + token.len)}
+              {"\u200b"}
+            </div>
+          ) : null}
           <textarea
             ref={ta}
             rows={1}
+            className={tokenLive ? "tokenized" : undefined}
             value={text}
             onFocus={() => setPaletteHidden(false)}
+            onScroll={(e) => {
+              // 长草稿会在框里滚动：两层不同步，胶囊就会在文字上游走。
+              const m = mirrorRef.current;
+              if (!m) return;
+              m.scrollTop = e.currentTarget.scrollTop;
+              m.scrollLeft = e.currentTarget.scrollLeft;
+            }}
             placeholder={v.resuming ? "waking the agent…" : v.info.cold ? "no ACP process — Enter wakes it" : busyNow(v) ? busyHint : v.info.status === "ready" ? placeholder : v.info.status}
             onChange={(e) => {
-              setText(e.target.value);
+              const next = e.target.value;
+              setText(next);
               setPaletteHidden(false);
               setPick(0);
+              // `@` 打开的选定器：查询词就是 `@` 之后打的那段字；打着打着改主意就重排（不重开）。
+              if (mention) {
+                const q = next.slice(mention.start + 1);
+                if (q.includes("\n")) setMention(null);
+                else if (q !== mention.query) { setMention({ ...mention, query: q }); setMPick(0); }
+              } else if (next.length === text.length + 1) {
+                const pos = e.target.selectionStart ?? next.length;
+                if (next[pos - 1] === "@" && atStartsMention(next, pos - 1)) openMention(pos - 1);
+              }
+              // 胶囊所在的那段文字被改掉了（中间插字、粘贴覆盖）：这块目标就不作数了。
+              if (token && !tokenIntact(next, token)) dropToken();
               // Typing during a recall means "this is my message now" — leave the walk so the next ↑
               // starts from the current text as the draft (#25).
               if (histNav.current) histNav.current = false;
@@ -5036,6 +5261,35 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
                 e.preventDefault();
                 sendNow();
                 return;
+              }
+              // 选定器开着的时候，键盘归它：↑↓ 走行、Enter/Tab 选中、Esc 放弃这次 @。
+              // 放在 slash palette 之前：两者不可能同时开着（`/` 与 `@` 是不同触发），
+              // 但真同时开了也应当由"刚打开的那个"接键。
+              if (mentionOpen) {
+                if (e.key === "Escape") { e.preventDefault(); cancelMention(); return; }
+                if (e.key === "ArrowDown") { e.preventDefault(); setMPick((i) => (mentionRows.length ? (i + 1) % mentionRows.length : 0)); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setMPick((i) => (mentionRows.length ? (i - 1 + mentionRows.length) % mentionRows.length : 0)); return; }
+                if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && mentionRows.length) {
+                  e.preventDefault();
+                  const row = mentionRows[Math.min(mPick, mentionRows.length - 1)];
+                  if (mention && mention.stage === "workspace" && row.path) pickWorkspace(row.path);
+                  else if (row.choice) pickTarget(row.choice);
+                  return;
+                }
+              }
+              // 胶囊的右边界上按退格 = 整块删掉（打一个字打不掉半块标签）。
+              if (e.key === "Backspace" && token) {
+                const at = e.currentTarget.selectionStart ?? 0;
+                const gone = backspaceToken(text, at, token);
+                if (gone) {
+                  e.preventDefault();
+                  setText(gone.text);
+                  dropToken();
+                  requestAnimationFrame(() => ta.current?.setSelectionRange(gone.caret, gone.caret));
+                  return;
+                }
+                // 光标落在胶囊内部：先把胶囊作废再说，别让这枚标签继续指向一个已经被改过的位置。
+                if (caretInsideToken(at, token)) dropToken();
               }
               if (paletteOpen && matches.length) {
                 if (e.key === "ArrowDown") { e.preventDefault(); setPick((i) => (i + 1) % matches.length); return; }
