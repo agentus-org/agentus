@@ -243,6 +243,9 @@ export class DashscopeTtsConnection {
       this.#shut("closed");
     });
     this.#onClosed = opts.onClose;
+    // A socket that is dialled and then abandoned before any task (tab frozen, phone dropped the
+    // page) must not outlive the thing that opened it: nothing else here arms a deadline.
+    this.#armReap();
   }
 
   /** Is a task in flight right now? */
@@ -309,6 +312,7 @@ export class DashscopeTtsConnection {
           this.#fail(task, "dashscope tts: task exceeded the text limit");
           return;
         }
+        task.characters += text.length;
         armIdle();
         send({ header: { action: "continue-task", task_id: task.taskId, streaming: "duplex" }, payload: { input: { text } } });
       },
@@ -361,7 +365,7 @@ export class DashscopeTtsConnection {
     });
     // Binary frames carry no task id, so the only way to keep this task's tail out of the next
     // one is a short window in which binary frames are dropped. The ack takes ~75 ms; the window
-    // is bounded by TTS_CANCEL_FORGET_MS so a lost ack cannot mute the connection.
+    // is bounded by TTS_CANCEL_GRACE_MS (and ends early on the next task's `task-started`).
     if (task.sentFrames) {
       if (this.#draining) clearTimeout(this.#draining.timer);
       const timer = setTimeout(() => { this.#draining = null; }, TTS_CANCEL_GRACE_MS);
@@ -498,8 +502,8 @@ export class DashscopeTtsConnection {
     if (id && id !== task?.taskId) {
       // Either a cancelled task's tail (drop it; a `task-finished` closes the book on the id) or
       // an id we never started (not ours to interpret). Both mean "ignore".
-      if (event === "task-finished") {
-        this.#stale.delete(id);
+      if (event === "task-finished" || event === "task-failed") {
+        if (event === "task-finished") this.#stale.delete(id);
         if (this.#draining?.taskId === id) {
           clearTimeout(this.#draining.timer);
           this.#draining = null;
@@ -510,6 +514,13 @@ export class DashscopeTtsConnection {
     if (!task || task.finished) return;
     this.#armIdle(task);
     if (event === "task-started") {
+      if (this.#draining) {
+        // A new task has started, so the cancelled one is behind us on this socket. Closing the
+        // window here (instead of waiting out the timer) is what keeps the new sentence's opening
+        // syllable from being dropped: its first frame arrives ~350 ms after the cancel.
+        clearTimeout(this.#draining.timer);
+        this.#draining = null;
+      }
       task.ready = true;
       if (task.startTimer) { clearTimeout(task.startTimer); task.startTimer = null; }
       task.handlers.onReady("pcm", this.sampleRate);

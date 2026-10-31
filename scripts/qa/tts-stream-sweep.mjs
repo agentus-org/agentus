@@ -278,11 +278,13 @@ try {
   // actually started (that last one is the difference between "the bytes arrived" and "the
   // operator heard something").
   await ev(`(() => {
-    window.__tts = { readyAt: 0, firstFrameAt: 0, frames: 0, scheduled: 0, scheduledSeconds: 0, cancels: 0, closed: 0, errors: [] };
+    window.__tts = { readyAt: 0, firstFrameAt: 0, frames: 0, scheduled: 0, scheduledSeconds: 0, cancels: 0, closed: 0, errors: [], open: 0 };
     const OrigWS = window.WebSocket;
     window.WebSocket = function (url, protocols) {
       const sock = new OrigWS(url, protocols);
       if (String(url).includes('/ws/tts')) {
+        window.__tts.open += 1;
+        sock.addEventListener('close', () => { window.__tts.open -= 1; });
         sock.binaryType = 'arraybuffer';
         sock.addEventListener('message', (e) => {
           if (typeof e.data !== 'string') {
@@ -366,7 +368,6 @@ try {
   // speak() never settled — the lamp stayed on, nothing played, and the documented HTTP fallback
   // never ran.
   const httpBeforeFail = seen.httpTts;
-  const scheduledBeforeFail = ((await ev(`window.__tts.scheduled`)) ?? 0);
   // The toggle reads as "stop" while a reply is playing, so wait for the lamp to clear first —
   // section C only waits for the first frame, which is nowhere near the end of the sentence.
   for (let i = 0; i < 120; i++) {
@@ -392,6 +393,12 @@ try {
   // lamp in an automated browser. That is pre-existing behaviour, unrelated to the relay.)
   check("…and it does so promptly, i.e. the failed run really settled",
     fellBack && Date.now() - failAt < 5000, `${Date.now() - failAt}ms`);
+  const socketsHeld = (await ev(`window.__tts.open`)) ?? -1;
+  check("a failed relay is not left open behind the fallback (at most one /ws/tts)",
+    socketsHeld <= 1, `${socketsHeld} open`);
+  // The switch is consumed by the stand-in; clearing it here keeps a later section from inheriting
+  // a pending failure if this one never reached the upstream (e.g. the click landed as a stop).
+  failNextTask = false;
 
   // ---- D: the setting turns it off and the old one-shot path takes over
   seen.httpTts = 0;

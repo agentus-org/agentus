@@ -2470,17 +2470,22 @@ ttsWss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
     // Terminal, not advisory: `#fail` has already closed the upstream socket, and the page only
     // settles a run on `tts-done` or a close. Reporting the error and leaving /ws/tts open left
     // speak() waiting forever — lamp on, no audio, and the documented HTTP fallback never ran.
+    // `#fail` closes the connection itself and reports "failed"; closing here first would win the
+    // race and leave `tts-closed` saying "closed by caller", which is the opposite of what happened.
     onError: (error: string) => {
       reply({ t: "tts-error", error });
       task = null;
-      try { live.close(); } catch { /* already gone */ }
     },
   };
   const start = (rate?: number): void => {
     try {
       task = live.runTask(handlers, { rate });
     } catch (e) {
+      // Same invariant as a failed task: report it AND end the bridge. Leaving /ws/tts open after
+      // a start we could not honour is the exact shape that stranded the page before.
       reply({ t: "tts-error", error: String((e as Error)?.message ?? e) });
+      task = null;
+      try { live.close(); } catch { /* already gone */ }
     }
   };
   ws.on("message", (data: Buffer, isBinary: boolean) => {

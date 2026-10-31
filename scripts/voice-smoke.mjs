@@ -144,6 +144,9 @@ const wsSeen = { run: 0, texts: [], cancels: 0, finished: 0, socketAuth: [], soc
 /** Delay the upstream handshake, to test what happens when stop lands while the relay is still
  *  dialling (the real dial costs 200-650 ms). */
 let wsDialDelayMs = 0;
+/** Delay the cancel acknowledgement, to prove the frame-drop window ends on the next task's
+ *  `task-started` and not on a timer that the next sentence's own audio would have to outrun. */
+let wsCancelAckDelayMs = 0;
 const fakeUpstream = new WebSocketServer({ noServer: true });
 provider.on("upgrade", (req, socket, head) => {
   if (!String(req.url ?? "").startsWith("/api-ws/v1/inference")) { socket.destroy(); return; }
@@ -199,7 +202,8 @@ fakeUpstream.on("connection", (sock, req) => {
         // A frame of the cancelled sentence, still in flight when the cancel arrives. It must
         // NOT reach the page: it belongs to a task nobody will hear.
         try { sock.send(pcm()); } catch { /* gone */ }
-        send({ header: { task_id: taskId, event: "task-finished", attributes: {} }, payload: { output: {}, usage: {} } });
+        const ack = () => send({ header: { task_id: taskId, event: "task-finished", attributes: {} }, payload: { output: {}, usage: {} } });
+        if (wsCancelAckDelayMs) setTimeout(ack, wsCancelAckDelayMs); else ack();
         return;
       }
       wsSeen.finished += 1;
@@ -612,6 +616,62 @@ try {
     check("a cancel inside the dial window withdraws the queued task (nothing is billed)",
       wsSeen.run === runsBeforeDial && wsSeen.texts.length === textsBeforeDial,
       `runs +${wsSeen.run - runsBeforeDial}, texts +${wsSeen.texts.length - textsBeforeDial}`);
+
+    // The cancel acknowledgement can be slow (upstream queues, ~0.15 s throttling is a known
+    // shape). The window that drops the cancelled task's audio must end when the NEXT task starts,
+    // not on a 400 ms timer: the next sentence's own opening frame arrives at ~350 ms, so a timer
+    // would eat its first syllable.
+    wsCancelAckDelayMs = 600;
+    const slowAck = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      const state = { framesAfterRestart: 0, sawDone: false, errors: [] };
+      let restarted = false;
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) { if (restarted) state.framesAfterRestart += 1; return; }
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-error" || m.t === "tts-closed") state.errors.push(m.error ?? m.why ?? m.t);
+        if (m.t === "tts-done") { state.sawDone = true; resolve(state); }
+      });
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "先这一句。" }));
+        setTimeout(() => {
+          ws.send(JSON.stringify({ t: "tts-cancel" }));
+          setTimeout(() => {
+            restarted = true;
+            ws.send(JSON.stringify({ t: "tts-start" }));
+            ws.send(JSON.stringify({ t: "tts-say", text: "紧接着的下一句。" }));
+            ws.send(JSON.stringify({ t: "tts-end" }));
+          }, 40);
+        }, 120);
+      });
+      setTimeout(() => resolve(state), 8000);
+    });
+    wsCancelAckDelayMs = 0;
+    check("a slow cancel acknowledgement does not swallow the next sentence's audio",
+      slowAck.framesAfterRestart > 0 && slowAck.sawDone === true, JSON.stringify(slowAck));
+
+    // The protocol's own ceilings: 20000 characters per frame, 200000 per task. Eleven maximum-size
+    // frames are individually legal and must still be refused as a task.
+    const capRun = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      const state = { error: null, closed: false };
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) return;
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-error") state.error = m.error;
+      });
+      ws.on("close", () => { state.closed = true; resolve(state); });
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        const unit = "字".repeat(20_000);
+        for (let i = 0; i < 11; i++) ws.send(JSON.stringify({ t: "tts-say", text: unit }));
+        ws.send(JSON.stringify({ t: "tts-end" }));
+      });
+      setTimeout(() => resolve(state), 8000);
+    });
+    check("a task past the protocol's 200000-character ceiling is refused, not billed",
+      Boolean(capRun.error) && /text limit/i.test(capRun.error) && capRun.closed === true, JSON.stringify(capRun));
   }
 
   const sttEnv = await fetch(`${base2}/api/stt`, { method: "POST", headers: { ...H2, "content-type": "audio/wav" }, body: Buffer.from("RIFFfake-input") });

@@ -603,13 +603,23 @@ class PcmStreamPlayer {
     // exception here would drop every remaining waiter on the floor and leave those promises
     // pending forever (and `finish()` is awaited by the speaker's queue).
     for (const fn of waiting) { try { fn(); } catch { /* a waiter's own problem */ } }
+    // Every streamed sentence ends here — a successful one too. Without this the analyser stayed
+    // connected to `destination` and `PLAYBACK.analyser` kept pointing at a dead node, so
+    // playbackRms() returned 0 instead of -1 and the call's watchdog treated a browser-voice
+    // fallback line as "measured but silent" and cut it after 15 s.
+    this.#cleanup();
   }
 
   /** No more audio is coming: resolve once what was queued has actually been heard. */
   finish(): Promise<void> {
     this.#done = true;
     if (this.#sources.size === 0) { this.#cleanup(); return Promise.resolve(); }
-    return new Promise<void>((resolve) => { this.#drain.push(resolve); });
+    const heard = new Promise<void>((resolve) => { this.#drain.push(resolve); });
+    // The audio clock is the only thing that ends a source, and a context the OS has suspended
+    // (audio focus lost, tab frozen) never advances it. Without a deadline one stuck context
+    // parks the speaker's queue for the rest of the call.
+    const queuedMs = Math.max(1000, (this.#nextAt - this.#ctx.currentTime) * 1000) + 3000;
+    return Promise.race([heard, new Promise<void>((resolve) => { window.setTimeout(resolve, queuedMs); })]);
   }
 
   /** Abandon playback immediately (operator pressed stop, or the call ended). */
@@ -653,22 +663,29 @@ interface RelayRun {
   cleanup: () => void;
 }
 
-class TtsRelay {
+/** Exported so the unit suite can drive it with a stand-in socket: the failure paths here decide
+ *  whether the operator hears the sentence at all, and no browser sweep can hold a socket open
+ *  after a `tts-error` to prove the run settled without waiting for the close. */
+export class TtsRelay {
   #ws: WebSocket;
   #ctx: AudioContext;
-  #sampleRate: number;
   /** The rate actually being rendered: seeded from the capability, corrected by `tts-ready`. */
   #rate: number;
+  /** Set when a run was cut off after it had started speaking (the operator must be told). */
+  #note = "";
   #run: RelayRun | null = null;
   #failure: Error | null = null;
   #dead = false;
   #idleTimer = 0;
 
-  constructor(ctx: AudioContext, sampleRate: number) {
+  /** `connect` exists so the unit suite can hand in a stand-in socket; the browser path dials the
+   *  real `/ws/tts` and reads `location`, which a node process does not have. */
+  constructor(ctx: AudioContext, sampleRate: number, connect?: () => WebSocket) {
     this.#ctx = ctx;
-    this.#sampleRate = sampleRate;
     this.#rate = sampleRate;
-    this.#ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/tts`);
+    this.#ws = connect
+      ? connect()
+      : new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/tts`);
     this.#ws.binaryType = "arraybuffer";
     this.#ws.onmessage = (ev: MessageEvent) => this.#onMessage(ev);
     this.#ws.onerror = () => { this.#failure = this.#failure ?? new Error("streaming TTS relay failed to connect"); };
@@ -694,10 +711,21 @@ class TtsRelay {
       else run.reject(this.#failure);
       return;
     }
+    // Closed without an error, but also without a single sample: nothing was heard, so the caller
+    // must be allowed to fall back instead of being told the sentence was spoken.
+    if (!run.heard) { run.player?.stop(); run.reject(new Error("streaming TTS closed before any audio")); return; }
     this.#settle(run);
   }
 
   #settle(run: RelayRun): void {
+    if (!run.heard) {
+      // `tts-done` with no audio at all. Reported as a failure so `speak()` can still use the
+      // one-shot route; otherwise the lamp went out and the operator heard nothing, with no note.
+      this.#run = null;
+      run.reject(new Error("streaming TTS finished without audio"));
+      this.#armIdle();
+      return;
+    }
     const p = run.player;
     void (p ? p.finish() : Promise.resolve()).then(() => {
       if (this.#run === run) this.#run = null;
@@ -708,6 +736,8 @@ class TtsRelay {
 
   #armIdle(): void {
     window.clearTimeout(this.#idleTimer);
+    // A run in flight owns the socket; a 20 s deadline armed while it speaks would cut it off.
+    if (this.#run) return;
     // A closed AudioContext cannot render anything: keeping the socket open would only burn a
     // server slot, so drop the relay in the same tick rather than at the idle deadline.
     if (this.#ctx.state === "closed") { this.close(); return; }
@@ -748,6 +778,7 @@ class TtsRelay {
       if (failed) {
         this.#run = null;
         failed.player?.stop();
+        if (failed.heard) this.#note = "这一句被截断了";
         // Before the first sample the caller can still fall back; after it, restarting the
         // sentence in another voice is worse than stopping.
         if (failed.heard) failed.resolve();
@@ -761,6 +792,7 @@ class TtsRelay {
       // without one must not be able to strand a run.
       this.#failure = new Error(msg.why ?? msg.error ?? "streaming TTS closed");
       this.#settleOrFail();
+      if (!this.#run) this.close();
     }
   }
 
@@ -774,7 +806,10 @@ class TtsRelay {
     if (this.#run) this.cancel();        // one utterance at a time, like the speaker itself
     window.clearTimeout(this.#idleTimer);
     const units = splitForStream(text);
-    if (!units.length) return Promise.resolve();
+    // Nothing to say (a reply that is only emoji or punctuation): the idle timer was cleared
+    // above and no run exists to re-arm it on settle, so re-arm it here or the socket lives until
+    // the tab closes.
+    if (!units.length) { this.#armIdle(); return Promise.resolve(); }
 
     let onAbort = (): void => { /* replaced below */ };
     const run: RelayRun = { player: null, heard: false, ready: false, resolve: () => {}, reject: () => {}, cleanup: () => {} };
@@ -803,12 +838,21 @@ class TtsRelay {
     });
     return heard.finally(() => {
       signal.removeEventListener("abort", onAbort);
-      run.cleanup();
+      // Detaching must never replace the run's own outcome: a throwing cleanup would swallow the
+      // rejection the caller needs in order to fall back.
+      try { run.cleanup(); } catch { /* nothing left to detach */ }
     });
   }
 
   #send(m: unknown): void {
     if (this.#ws.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(m));
+  }
+
+  /** One-shot note for the speaker: set when a run was cut off after it had started speaking. */
+  takeNote(): string {
+    const note = this.#note;
+    this.#note = "";
+    return note;
   }
 
   /** Abandon what is playing. The CONNECTION stays open: the next sentence reuses it. */
@@ -857,7 +901,12 @@ async function speakStreaming(text: string, prefs: VoicePrefs, signal: AbortSign
   if (!Ctor) return false;
   audioCtx = audioCtx ?? new Ctor();
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  await relayFor(audioCtx, caps.sampleRate ?? 24000).speak(text, signal, prefs.rate);
+  const relay = relayFor(audioCtx, caps.sampleRate ?? 24000);
+  await relay.speak(text, signal, prefs.rate);
+  // A run that was cut off after it started speaking resolves (re-reading it in another voice is
+  // worse than stopping), so this is the only way the operator hears about it.
+  const note = relay.takeNote();
+  if (note) speaker.note(note);
   return true;
 }
 
@@ -896,6 +945,11 @@ class Speaker {
   };
 
   getSnapshot = (): SpeakState => this.#state;
+
+  /** Operator-facing note about the run that just ended (used by the streaming relay). */
+  note(text: string): void {
+    this.#set({ note: text });
+  }
 
   #set(patch: Partial<SpeakState>): void {
     this.#state = { ...this.#state, ...patch };

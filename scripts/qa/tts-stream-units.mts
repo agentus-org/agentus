@@ -6,7 +6,7 @@
 // the boundaries (an over-long sentence, a PCM frame that ends mid-sample, full-scale clipping).
 //
 // Run: npm run tts-stream-units   (tsx; no browser, no network, no key)
-import { splitForStream, pcmS16leToFloat } from "../../packages/web/src/voice.ts";
+import { splitForStream, pcmS16leToFloat, TtsRelay } from "../../packages/web/src/voice.ts";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -112,6 +112,95 @@ const show = (a: unknown): string => JSON.stringify(a);
   new DataView(pcm).setInt16(0, 1, true);
   const out = new Float32Array(1);
   check("a short output array does not overflow", pcmS16leToFloat(pcm, out) === 1, String(out[0]));
+}
+
+
+// ---------------------------------------------------------------- the relay's settlement rules
+//
+// These are the paths a browser sweep cannot reach: `/ws/tts` always closes right after a failure
+// there, so "the run settled BEFORE the close" is unobservable through the network. Driving the
+// relay with a stand-in socket that stays OPEN after `tts-error` is the only way to prove the page
+// does not wait for an event that may never come.
+
+// The relay is browser code and schedules through `window`; node has no such global.
+(globalThis as unknown as { window: unknown }).window = {
+  setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+  clearTimeout: (t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>),
+};
+
+/** Minimal stand-in for the browser's WebSocket: records what the relay sends, lets the test
+ *  deliver messages, and never fires anything on its own. */
+class FakeSocket {
+  static OPEN = 1;
+  static CONNECTING = 0;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  readyState = 1;
+  binaryType = "blob";
+  sent: string[] = [];
+  onmessage: ((ev: { data: unknown }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  send(data: unknown): void { this.sent.push(String(data)); }
+  addEventListener(): void { /* the relay passes `once` listeners it may remove again */ }
+  removeEventListener(): void { /* idem */ }
+  close(): void { this.readyState = 3; }
+  deliver(msg: unknown): void { this.onmessage?.({ data: JSON.stringify(msg) }); }
+  deliverBytes(buf: ArrayBuffer): void { this.onmessage?.({ data: buf }); }
+  closeQuietly(): void { this.readyState = 3; this.onclose?.(); }
+}
+
+const stubCtx = { state: "running", currentTime: 0, destination: {}, createBuffer: () => ({}) } as unknown as AudioContext;
+
+{
+  const sock = new FakeSocket();
+  const relay = new TtsRelay(stubCtx, 24000, () => sock as unknown as WebSocket);
+  const ac = new AbortController();
+  // The socket stays OPEN after the error on purpose: the run must not wait for the close.
+  const pending = relay.speak("这一句会失败。", ac.signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  // The socket stays OPEN after the error on purpose: the run must not wait for the close.
+  sock.deliver({ t: "tts-error", error: "boom" });
+  let settled = false;
+  const raced = Promise.race([
+    pending.then(() => "resolved", () => "rejected"),
+    new Promise<string>((r) => setTimeout(() => r("still pending"), 300)),
+  ]);
+  pending.catch(() => { settled = true; });
+  const outcome = await raced;
+  check("a tts-error settles the run even if the socket stays open", outcome === "rejected", `${outcome}, settled=${settled}`);
+  check("…and the relay closes itself afterwards (it cannot be reused)", relay.usable === false, String(relay.usable));
+}
+
+{
+  // A clean close with no audio must ALSO reject: the caller still has the one-shot route, and
+  // resolving here would tell it the sentence had been spoken when nothing was heard.
+  const sock = new FakeSocket();
+  const relay = new TtsRelay(stubCtx, 24000, () => sock as unknown as WebSocket);
+  const ac = new AbortController();
+  const pending = relay.speak("这一句没有声音。", ac.signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  const raced = Promise.race([
+    pending.then(() => "resolved", () => "rejected"),
+    new Promise<string>((r) => setTimeout(() => r("still pending"), 300)),
+  ]);
+  sock.closeQuietly();
+  const outcome = await raced;
+  check("a close with no audio at all rejects (so the fallback can run)", outcome === "rejected", outcome);
+}
+
+{
+  // The rate the operator chose must ride the start frame, not a hardcoded 1.0.
+  const sock = new FakeSocket();
+  const relay = new TtsRelay(stubCtx, 24000, () => sock as unknown as WebSocket);
+  const ac = new AbortController();
+  const pending = relay.speak("语速测试。", ac.signal, 1.4);
+  const startFrame = JSON.parse(sock.sent.find((m) => m.includes("tts-start")) ?? "{}");
+  check("the start frame carries the operator's rate", startFrame.rate === 1.4, JSON.stringify(startFrame));
+  const sayFrames = sock.sent.filter((m) => m.includes("tts-say")).map((m) => JSON.parse(m).text);
+  check("the text is fed as sentences, not as one blob", sayFrames.length === 1 && sayFrames[0] === "语速测试。", JSON.stringify(sayFrames));
+  relay.cancel();
+  await pending.catch(() => {});
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
