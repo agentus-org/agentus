@@ -92,6 +92,12 @@ export function voiceCapabilities(): Record<string, unknown> {
       server: r.tts,
       model: r.provider === "dashscope" ? v.ttsModel : (r.openai.tts?.model ?? null),
       voice: r.provider === "dashscope" ? v.ttsVoice : (r.openai.tts?.voice ?? null),
+      /** The browser may stream the reply through /ws/tts instead of asking for one clip per
+       *  sentence. Only 百炼 has a streaming synthesis surface, so it is offered only there —
+       *  an OpenAI-compatible endpoint keeps the one-shot /api/tts path. */
+      streaming: r.provider === "dashscope" && v.ttsStream,
+      /** the PCM rate the streaming path produces; the browser builds its buffer from this */
+      sampleRate: r.provider === "dashscope" && v.ttsStream ? 24000 : null,
     },
     stt: {
       server: r.stt,

@@ -34,6 +34,11 @@ export interface VoiceSettings {
   asrBatchModel: string;
   /** use the WebSocket streaming pipeline when the provider supports it */
   asrStream: boolean;
+  /** synthesise speech over the provider's WebSocket (first sound ~300 ms instead of ~700 ms,
+   *  and a cancelled sentence stops billing) instead of one-shot HTTP POST + download.
+   *  Default on; off restores the pre-0.15.13 behaviour exactly. 百炼 only — other providers
+   *  have no streaming synthesis surface, so the HTTP path stays for them. */
+  ttsStream: boolean;
   /** speech-synthesis model + voice (voice is provider-specific; longanhuan_v3.6 is
    *  龙安欢 on qwen-audio-3.0-tts-flash) */
   ttsModel: string;
@@ -473,6 +478,7 @@ const DEFAULTS: VoiceSettings = {
   asrModel: "qwen-audio-3.1-asr-flash-streaming",
   asrBatchModel: "qwen3-asr-flash",
   asrStream: true,
+  ttsStream: true,
   ttsModel: "qwen-audio-3.0-tts-flash",
   ttsVoice: "longanhuan_v3.6",
   // mp3, not wav: measured on a real endpoint, the same 84-character reply is 664 KB of wav
@@ -734,6 +740,7 @@ export function publicSettings(): Record<string, unknown> {
     asrModel: v.asrModel,
     asrBatchModel: v.asrBatchModel,
     asrStream: v.asrStream,
+    ttsStream: v.ttsStream,
     ttsModel: v.ttsModel,
     ttsVoice: v.ttsVoice,
     ttsFormat: v.ttsFormat,
@@ -790,6 +797,7 @@ export function saveSettings(patch: Record<string, unknown>): Settings {
   pick("asrModel", (x): x is string => typeof x === "string" && x.length <= 100);
   pick("asrBatchModel", (x): x is string => typeof x === "string" && x.length <= 100);
   pick("asrStream", (x): x is boolean => typeof x === "boolean");
+  pick("ttsStream", (x): x is boolean => typeof x === "boolean");
   pick("ttsModel", (x): x is string => typeof x === "string" && x.length <= 100);
   pick("ttsVoice", (x): x is string => typeof x === "string" && x.length <= 100);
   pick("ttsFormat", (x): x is "wav" | "mp3" => x === "wav" || x === "mp3");

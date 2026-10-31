@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer as createTcp } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -133,6 +133,65 @@ const provider = createServer((req, res) => {
 });
 const providerPort = await new Promise((resolve) => {
   provider.listen(0, "127.0.0.1", () => resolve(provider.address().port));
+});
+
+// ---- the stand-in streaming synthesiser -------------------------------------
+// The real /api-ws/v1/inference protocol, faked: run-task -> task-started -> one
+// result-generated + one binary PCM frame per text unit -> task-finished, and a cancel
+// directive answered with task-finished and no further audio. That is the whole contract the
+// relay depends on, so the suite can assert it without a provider key and without billing.
+const wsSeen = { run: 0, texts: [], cancels: 0, finished: 0, socketAuth: [], sockets: 0 };
+const fakeUpstream = new WebSocketServer({ server: provider, path: "/api-ws/v1/inference" });
+fakeUpstream.on("connection", (sock, req) => {
+  wsSeen.sockets += 1;
+  wsSeen.socketAuth.push(String(req.headers.authorization ?? ""));
+  let taskId = "";
+  let cancelled = false;
+  const send = (obj) => { try { sock.send(JSON.stringify(obj)); } catch { /* gone */ } };
+  const pcm = () => {
+    // 240 samples of a quiet tone at 24 kHz: real s16le, not filler bytes, so the relay
+    // forwards something a decoder can actually turn into sound.
+    const buf = Buffer.alloc(480);
+    for (let i = 0; i < 240; i++) buf.writeInt16LE(Math.round(Math.sin((i / 240) * Math.PI * 4) * 3000), i * 2);
+    return buf;
+  };
+  sock.on("message", (raw, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(String(raw));
+    const action = msg.header?.action;
+    if (action === "run-task") {
+      wsSeen.run += 1;
+      taskId = msg.header.task_id;
+      send({ header: { task_id: taskId, event: "task-started", attributes: {} }, payload: {} });
+      return;
+    }
+    if (action === "continue-task") {
+      const text = String(msg.payload?.input?.text ?? "");
+      wsSeen.texts.push(text);
+      if (cancelled) return;
+      send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
+        payload: { output: { type: "sentence-begin", original_text: text, sentence: { index: 0, words: [] } } } });
+      send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
+        payload: { output: { type: "sentence-end", original_text: text, sentence: { index: 0, words: [] } }, usage: { characters: text.length } } });
+      try { sock.send(pcm()); } catch { /* gone */ }
+      return;
+    }
+    if (action === "finish-task") {
+      if (msg.payload?.input?.directive === "cancel") {
+        cancelled = true;
+        wsSeen.cancels += 1;
+        send({ header: { task_id: taskId, event: "task-finished", attributes: {} }, payload: { output: {}, usage: {} } });
+        return;
+      }
+      wsSeen.finished += 1;
+      // The tail frame only for a real finish: a cancel must produce no further audio.
+      send({ header: { task_id: taskId, event: "result-generated", attributes: {} },
+        payload: { output: { type: "sentence-synthesis", sentence: { index: 0, words: [] } } } });
+      try { sock.send(pcm()); } catch { /* gone */ }
+      send({ header: { task_id: taskId, event: "task-finished", attributes: {} }, payload: { output: {}, usage: { characters: 7 } } });
+      return;
+    }
+  });
 });
 const PROVIDER = `http://127.0.0.1:${providerPort}/v1`;
 
@@ -355,6 +414,124 @@ try {
   // mp3 since 2026-10-04 (the same audio measured 2.4x smaller than wav); the assertion is the
   // shipped default, and the settings check above pins `defaults.ttsFormat` to the same value.
   check("百炼 TTS body carries model + voice + format", /qwen-audio-3\.0-tts-flash/.test(synthBody) && /longanhuan_v3\.6/.test(synthBody) && /"format":"mp3"/.test(synthBody), synthBody.slice(0, 130));
+
+  // ---- 9b. the streaming synthesis relay (#81) ----
+  // Runs on THIS instance on purpose: the relay refuses to open at all without a configured
+  // provider (the first instance asserts exactly that above), so the contract has to be
+  // checked here, where 百炼 is configured against the stand-in upstream.
+  // The browser cannot set an auth header on a WebSocket handshake, so the relay exists: the
+  // page sends {say|end|cancel} and receives s16le PCM as BINARY frames. This asserts the whole
+  // contract against the stand-in upstream above, with no provider key involved.
+  {
+    const port2 = Number(new URL(base2).port);
+    const openRelay = () => new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      const state = { ws, audio: 0, bytes: 0, sentences: [], done: 0, errors: [], ready: null, startedAt: 0, firstAudioAt: 0 };
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) {
+          state.audio += 1;
+          state.bytes += raw.length;
+          if (!state.firstAudioAt) state.firstAudioAt = Date.now();
+          return;
+        }
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-ready") state.ready = m;
+        else if (m.t === "tts-sentence") state.sentences.push(m.text);
+        else if (m.t === "tts-done") state.done += 1;
+        else if (m.t === "tts-error" || m.t === "tts-closed") state.errors.push(m.error ?? m.why ?? m.t);
+        if (state.done || state.errors.length) resolve(state);
+      });
+      ws.on("error", (e) => { state.errors.push(e.message); resolve(state); });
+      ws.on("open", () => {
+        state.startedAt = Date.now();
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "第一句。" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "第二句。" }));
+        ws.send(JSON.stringify({ t: "tts-end" }));
+      });
+      setTimeout(() => resolve(state), 8000);
+    });
+
+    const run1 = await openRelay();
+    check("the /ws/tts relay opens a task upstream", wsSeen.run >= 1, `run=${wsSeen.run}`);
+    check("the relay reports the PCM format and rate", run1.ready?.format === "pcm" && run1.ready?.sampleRate === 24000, JSON.stringify(run1.ready));
+    check("the sentences reach the upstream as continue-task text", wsSeen.texts.includes("第一句。") && wsSeen.texts.includes("第二句。"), JSON.stringify(wsSeen.texts.slice(-3)));
+    check("audio comes back to the page as binary PCM", run1.audio >= 2 && run1.bytes > 0, `${run1.audio} frames ${run1.bytes}B`);
+    check("the run ends with tts-done, not an error", run1.done >= 1 && run1.errors.length === 0, `done=${run1.done} errors=${JSON.stringify(run1.errors)}`);
+    check("the upstream was authenticated by the server, not the page", wsSeen.socketAuth.some((a) => /^Bear/.test(a) && a.length > 20), wsSeen.socketAuth.length ? `${wsSeen.socketAuth.length} socket(s)` : "none");
+    try { run1.ws.close(); } catch { /* already gone */ }
+
+    // A cancel must stop the audio AND leave the connection usable: that is what makes an
+    // interruption cheap on the call, where the next sentence follows immediately.
+    const cancelsBefore = wsSeen.cancels;
+    const run2 = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      // Only frames that arrive between the cancel and the NEXT task starting are "late audio":
+      // the second task is expected to produce its own, so they must not be counted as strays.
+      const state = { audioAfterCancel: 0, sawDone: false, errors: [] };
+      let window = false;
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) { if (window) state.audioAfterCancel += 1; return; }
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-error" || m.t === "tts-closed") state.errors.push(m.error ?? m.why ?? m.t);
+        if (m.t === "tts-ready" && state.cancelledAt) window = false;   // the new task is live
+      });
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "这一句会被打断。" }));
+        setTimeout(() => {
+          ws.send(JSON.stringify({ t: "tts-cancel" }));
+          state.cancelledAt = Date.now();
+          window = true;
+          // The same connection must accept a fresh task straight away.
+          setTimeout(() => {
+            ws.send(JSON.stringify({ t: "tts-start" }));
+            ws.send(JSON.stringify({ t: "tts-say", text: "打断后的一句。" }));
+            ws.send(JSON.stringify({ t: "tts-end" }));
+          }, 60);
+        }, 120);
+      });
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) return;
+        const m = JSON.parse(String(raw));
+        if (m.t === "tts-done") { state.sawDone = true; resolve(state); }
+      });
+      setTimeout(() => resolve(state), 8000);
+    });
+    check("a cancel reaches the upstream as finish-task + directive:cancel", wsSeen.cancels > cancelsBefore, `cancels=${wsSeen.cancels}`);
+    check("the connection survives a cancel and runs the next task", run2.sawDone === true, JSON.stringify(run2));
+    check("a cancelled task produces no further audio", run2.audioAfterCancel === 0, `${run2.audioAfterCancel} late frame(s)`);
+
+    // One connection per reply, not per sentence: the dial costs 200-650 ms upstream, so the
+    // relay is reused. Two tasks on one socket = the saving this whole change is about.
+    const runsBefore = wsSeen.run;
+    const socketsBefore = wsSeen.sockets;
+    await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port2}/ws/tts?token=${encodeURIComponent(token2)}`);
+      let tasks = 0;
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ t: "tts-start" }));
+        ws.send(JSON.stringify({ t: "tts-say", text: "甲。" }));
+        ws.send(JSON.stringify({ t: "tts-end" }));
+      });
+      ws.on("message", (raw, isBinary) => {
+        if (isBinary) return;
+        const m = JSON.parse(String(raw));
+        if (m.t !== "tts-done") return;
+        tasks += 1;
+        if (tasks === 1) {
+          ws.send(JSON.stringify({ t: "tts-start" }));
+          ws.send(JSON.stringify({ t: "tts-say", text: "乙。" }));
+          ws.send(JSON.stringify({ t: "tts-end" }));
+        } else { ws.close(); resolve(); }
+      });
+      setTimeout(resolve, 8000);
+    });
+    const newTasks = wsSeen.run - runsBefore;
+    const newSockets = wsSeen.sockets - socketsBefore;
+    check("two replies are two tasks on ONE upstream socket (the dial is not paid per reply)",
+      newTasks === 2 && newSockets === 1, `tasks=${newTasks} sockets=${newSockets}`);
+  }
 
   const sttEnv = await fetch(`${base2}/api/stt`, { method: "POST", headers: { ...H2, "content-type": "audio/wav" }, body: Buffer.from("RIFFfake-input") });
   const sttEnvBody = await sttEnv.json();

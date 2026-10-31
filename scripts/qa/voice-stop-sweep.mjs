@@ -200,13 +200,24 @@ try {
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
     localStorage.setItem('agentus.active', s.id);
+    // Wait for the agent to be READY before prompting: /prompt answers 202 even when the slot is
+    // still starting, the refusal only reaches the server log, and the sweep then dies on a
+    // missing speaker button — a harness race that looked like a broken stop path.
+    let agentStatus = 'starting';
+    for (let i = 0; i < 80; i++) {
+      const list = await fetch('/api/sessions').then((r) => r.json());
+      agentStatus = ((list.live ?? []).find((x) => x.id === s.id)?.status) ?? 'gone';
+      if (agentStatus === 'ready') break;
+      await new Promise((res) => setTimeout(res, 250));
+    }
     await fetch('/api/sessions/' + s.id + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '语音停止测试：这句话会被读出来，然后我要按停止。' }) });
     const caps = await fetch('/api/voice').then((r) => r.json());
     return { sid: s.id, serverTts: caps?.tts?.server ?? null, provider: caps?.provider ?? null,
-      putStatus: putRes.status, putText };
+      putStatus: putRes.status, putText, agentStatus };
   })()`);
   check("the instance reports a server TTS endpoint (the path under test exists)", setup.serverTts === true, JSON.stringify(setup));
+  check("the mock agent reached ready before the prompt", setup.agentStatus === "ready", String(setup.agentStatus));
 
   await send("Page.reload", { ignoreCache: true });
   for (let i = 0; i < 30; i++) { await sleep(500); if (await ev(`!!document.querySelector('.bubble-btn.speak')`)) break; }

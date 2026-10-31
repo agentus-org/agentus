@@ -86,6 +86,7 @@ interface SettingsView {
   asrStream: boolean;
   ttsModel: string;
   ttsVoice: string;
+  ttsStream: boolean;
   ttsFormat: "wav" | "mp3";
   hotwords: string[];
   dynamicHotwords: boolean;
@@ -146,6 +147,7 @@ interface Draft {
   asrStream: boolean;
   ttsModel: string;
   ttsVoice: string;
+  ttsStream: boolean;
   ttsFormat: "wav" | "mp3";
   dynamicHotwords: boolean;
   hotwordLimit: number;
@@ -167,6 +169,7 @@ function draftOf(v: SettingsView): Draft {
     asrStream: v.asrStream,
     ttsModel: v.ttsModel,
     ttsVoice: v.ttsVoice,
+    ttsStream: v.ttsStream,
     ttsFormat: v.ttsFormat,
     dynamicHotwords: v.dynamicHotwords,
     hotwordLimit: v.hotwordLimit,
@@ -1609,6 +1612,18 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           <datalist id="tts-models">
             {(models?.tts ?? []).map((m) => <option key={m} value={m} />)}
           </datalist>
+          <div className="set-row">
+            <label>流式合成</label>
+            <label className="set-check">
+              <input type="checkbox" checked={draft?.ttsStream !== false} onChange={(e) => field("ttsStream", e.target.checked)} />
+              边说边播（WebSocket）
+            </label>
+          </div>
+          <p className="set-hint">
+            流式合成一拿到第一句就出声（实测首声约 0.3 s，整句 HTTP 路径约 0.7 s），打断时上游立刻停、
+            没念完的部分不再计费。关掉则退回整句 HTTP 取回，行为与以前完全一致。仅百炼支持流式；
+            其它 OpenAI 兼容端点始终走整句路径。
+          </p>
           <div className="set-row">
             <label>音色</label>
             <div className="set-pair">

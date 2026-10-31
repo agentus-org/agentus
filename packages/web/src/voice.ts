@@ -86,7 +86,16 @@ export interface VoiceCaps {
   /** who would answer right now: 百炼 (dashscope) / any OpenAI-compatible endpoint /
    *  browser-only. The settings page shows this so "configured" is never a guess. */
   provider: "dashscope" | "openai" | "browser";
-  tts: { server: boolean; model: string | null; voice: string | null };
+  tts: {
+    server: boolean;
+    /** the server can relay a live PCM stream (/ws/tts): first sound in ~300 ms instead of
+     *  ~700 ms, and stopping it stops the billing for what was not generated yet. */
+    streaming: boolean;
+    /** the rate the streaming path delivers; null when it is not on offer */
+    sampleRate: number | null;
+    model: string | null;
+    voice: string | null;
+  };
   stt: {
     server: boolean;
     /** the server can relay a live PCM stream (/ws/asr) — live partials, hotwords */
@@ -100,7 +109,7 @@ export interface VoiceCaps {
 
 export const NO_CAPS: VoiceCaps = {
   provider: "browser",
-  tts: { server: false, model: null, voice: null },
+  tts: { server: false, streaming: false, sampleRate: null, model: null, voice: null },
   stt: { server: false, streaming: false, model: null, batchModel: null, language: null },
   hotwords: { fixed: 0, dynamic: false, limit: 0 },
 };
@@ -147,6 +156,17 @@ export function subscribeVoiceCaps(fn: () => void): () => void {
  *  next one is generated). The browser voice keeps the larger blocks: every utterance it
  *  starts has its own overhead. */
 const SERVER_CHUNK = 80;
+/** The streaming path does not chunk for the provider — it feeds SENTENCES, because the upstream
+ *  synthesises each one as soon as its text is complete and the browser can start playing the
+ *  first while the rest is still being generated. This cap only bounds one `continue-task` frame
+ *  (the protocol allows 20000 characters, but a single 2000-character "sentence" in a bulleted
+ *  reply would delay the first sound for no reason). */
+const STREAM_UNIT = 120;
+/** Seconds of scheduling headroom in front of the playhead. Audio chunks arrive asynchronously;
+ *  a chunk scheduled at exactly `currentTime` lands late and clicks. 80 ms absorbs the gap
+ *  without being audible as latency on the FIRST sound (the buffer is started immediately when
+ *  nothing is playing yet — see PcmPlayer#push). */
+const STREAM_LEAD = 0.08;
 const BROWSER_CHUNK = 220;
 /** How many TTS requests may be in flight: the next chunk is being generated and transferred
  *  while the current one plays, which is what removes the silence BETWEEN sentences. */
@@ -451,6 +471,331 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
   }
 }
 
+// ------------------------------------------------------- streaming PCM player
+
+/** Split text into the units fed to one `continue-task` frame.
+ *
+ *  This replaces the old 80-character chunking on the streaming path, and the difference is not
+ *  cosmetic: the HTTP path had to cut the reply into whole clips, so a long sentence was split
+ *  mid-clause and every cut was a request, a round trip and a possible voice change. The
+ *  streaming protocol takes text incrementally and synthesises each complete sentence as it
+ *  arrives, so the natural unit is the sentence — the first sound no longer waits for the rest
+ *  of the paragraph, nor for an arbitrary character count.
+ *
+ *  Deliberately NOT reusing `splitForSpeech`: that one is tuned for "how much text one clip
+ *  should hold" and its answer (80 chars) is exactly what we are getting rid of. */
+export function splitForStream(text: string, max = STREAM_UNIT): string[] {
+  const clean = text
+    .replace(/```[\s\S]*?```/g, " code block ")
+    .replace(/[*_`#>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return [];
+
+  const out: string[] = [];
+  // Split on sentence ends FIRST — that is the unit the upstream synthesises and the reason the
+  // first sound does not wait for the paragraph. A sentence that is still too long is then cut at
+  // a clause, and only then at a space, so the synthesiser is never handed a phrase that starts
+  // mid-word unless there is no alternative.
+  const SENTENCE_END = /[。！？!?]|[.](?=\s|$)/g;
+  let from = 0;
+  for (const m of clean.matchAll(SENTENCE_END)) {
+    const at = (m.index ?? 0) + m[0].length;
+    const piece = clean.slice(from, at).trim();
+    from = at;
+    if (piece) out.push(...hardWrap(piece, max));
+  }
+  const tail = clean.slice(from).trim();
+  if (tail) out.push(...hardWrap(tail, max));
+
+  // A unit that is nothing but punctuation (a stray 「。」 from a stripped block) carries no
+  // speech and would only start a task that produces no audio.
+  return out.filter((u) => /[\p{L}\p{N}]/u.test(u));
+}
+
+/** Cut one sentence that is longer than `max` at a clause, then at a space, then anywhere. */
+function hardWrap(piece: string, max: number): string[] {
+  if (piece.length <= max) return [piece];
+  const out: string[] = [];
+  let rest = piece;
+  while (rest.length > max) {
+    const win = rest.slice(0, max);
+    const clause = Math.max(win.lastIndexOf("，"), win.lastIndexOf(", "), win.lastIndexOf("；"), win.lastIndexOf("; "), win.lastIndexOf("、"));
+    const space = win.lastIndexOf(" ");
+    const at = clause > max * 0.4 ? clause + 1 : space > max * 0.4 ? space + 1 : max;
+    out.push(rest.slice(0, at).trim());
+    rest = rest.slice(at).trim();
+  }
+  if (rest) out.push(rest);
+  return out.filter(Boolean);
+}
+
+/** Playback of a live PCM stream.
+ *
+ *  Why not `playBlob` per sentence: the whole point of the streaming path is that the audio is
+ *  already a continuous sample sequence, and re-entering an AudioBufferSourceNode per sentence
+ *  puts the scheduling jitter of the JS thread between them (audible as a seam, and the reason
+ *  the old path needed a prefetch queue to hide the gaps). Here every chunk is appended to one
+ *  schedule: `nextAt` only ever moves forward by the exact duration of what was queued, so
+ *  consecutive chunks are sample-contiguous no matter how they arrive.
+ *
+ *  The player owns its analyser so the call UI keeps riding the real output (playbackLevel /
+ *  playbackRms / playbackWave), exactly as the one-shot path does. */
+/** Unpack s16le mono PCM into the -1..1 floats a Web Audio buffer wants.
+ *
+ *  Separate and exported so it can be unit-tested without an AudioContext: the sign handling is
+ *  the part that is easy to get subtly wrong (dividing by 0x8000 both ways clamps the positive
+ *  full scale to 0.99997 and, worse, makes -32768 and +32767 asymmetric) and a wrong scale is
+ *  audible as clipping rather than as an error. */
+export function pcmS16leToFloat(pcm: ArrayBuffer, out: Float32Array): number {
+  const view = new DataView(pcm);
+  const n = Math.min(out.length, Math.floor(pcm.byteLength / 2));
+  for (let i = 0; i < n; i++) {
+    const v = view.getInt16(i * 2, true);            // little endian: the protocol's format
+    out[i] = v < 0 ? v / 0x8000 : v / 0x7fff;
+  }
+  return n;
+}
+
+class PcmStreamPlayer {
+  #ctx: AudioContext;
+  #sampleRate: number;
+  #analyser: AnalyserNode;
+  #sources = new Set<AudioBufferSourceNode>();
+  #nextAt = 0;
+  #done = false;
+  /** Resolvers waiting for everything queued so far to have played. */
+  #drain: Array<() => void> = [];
+
+  constructor(ctx: AudioContext, sampleRate: number) {
+    this.#ctx = ctx;
+    this.#sampleRate = sampleRate;
+    this.#analyser = ctx.createAnalyser();
+    this.#analyser.fftSize = 512;
+    this.#analyser.connect(ctx.destination);
+    PLAYBACK.analyser = this.#analyser;
+  }
+
+  /** Queue one frame of s16le mono PCM. */
+  push(pcm: ArrayBuffer): void {
+    if (this.#done) return;
+    const samples = Math.floor(pcm.byteLength / 2);
+    if (!samples) return;
+    const buf = this.#ctx.createBuffer(1, samples, this.#sampleRate);
+    pcmS16leToFloat(pcm, buf.getChannelData(0));
+    const src = this.#ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.#analyser);
+    const at = Math.max(this.#nextAt, this.#ctx.currentTime + STREAM_LEAD);
+    src.start(at);
+    this.#nextAt = at + buf.duration;
+    this.#sources.add(src);
+    src.onended = () => {
+      this.#sources.delete(src);
+      if (this.#sources.size === 0 && this.#done) this.#flushDrain();
+    };
+  }
+
+  #flushDrain(): void {
+    const waiting = this.#drain;
+    this.#drain = [];
+    for (const fn of waiting) fn();
+  }
+
+  /** No more audio is coming: resolve once what was queued has actually been heard. */
+  finish(): Promise<void> {
+    this.#done = true;
+    if (this.#sources.size === 0) { this.#cleanup(); return Promise.resolve(); }
+    return new Promise<void>((resolve) => { this.#drain.push(resolve); });
+  }
+
+  /** Abandon playback immediately (operator pressed stop, or the call ended). */
+  stop(): void {
+    this.#done = true;
+    for (const src of this.#sources) {
+      try { src.stop(); } catch { /* already ended */ }
+    }
+    this.#sources.clear();
+    this.#flushDrain();
+    this.#cleanup();
+  }
+
+  #cleanup(): void {
+    if (PLAYBACK.analyser === this.#analyser) PLAYBACK.analyser = null;
+    try { this.#analyser.disconnect(); } catch { /* already gone */ }
+  }
+}
+
+/** One relay connection, kept open across the sentences of a reply — and across replies.
+ *
+ *  Why it is not dialled per `speak()`: measured 2026-10-31 against the real endpoint, a NEW
+ *  upstream socket costs 200-650 ms before the task starts (TLS + auth), while a task on an
+ *  open socket starts in ~50 ms. Call mode hands the speaker one SENTENCE at a time, so
+ *  per-sentence dialling would pay that back on every sentence and the streaming path would
+ *  end up slower than the HTTP one it replaces.
+ *
+ *  So the connection outlives a run: `speak()` on an idle session just starts a new task on
+ *  it. It closes itself after RELAY_IDLE_MS with nothing to say, and on any unrecoverable
+ *  error, in which case the next `speak()` dials a fresh one. */
+const RELAY_IDLE_MS = 20_000;
+
+interface RelayRun {
+  player: PcmStreamPlayer | null;
+  heard: boolean;
+  resolve: () => void;
+  reject: (e: Error) => void;
+}
+
+class TtsRelay {
+  #ws: WebSocket;
+  #ctx: AudioContext;
+  #sampleRate: number;
+  #run: RelayRun | null = null;
+  #failure: Error | null = null;
+  #dead = false;
+  #idleTimer = 0;
+
+  constructor(ctx: AudioContext, sampleRate: number) {
+    this.#ctx = ctx;
+    this.#sampleRate = sampleRate;
+    this.#ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/tts`);
+    this.#ws.binaryType = "arraybuffer";
+    this.#ws.onmessage = (ev: MessageEvent) => this.#onMessage(ev);
+    this.#ws.onerror = () => { this.#failure = this.#failure ?? new Error("streaming TTS relay failed to connect"); };
+    this.#ws.onclose = () => {
+      this.#dead = true;
+      window.clearTimeout(this.#idleTimer);
+      const run = this.#run;
+      if (!run) return;
+      this.#run = null;
+      if (this.#failure) {
+        // Before the first sample the caller can still fall back; after it, restarting the
+        // sentence in another voice would be worse than stopping.
+        run.player?.stop();
+        if (run.heard) run.resolve();
+        else run.reject(this.#failure);
+        return;
+      }
+      // Closed cleanly mid-reply (server restart): let what was queued be heard.
+      this.#settle(run);
+    };
+  }
+
+  get usable(): boolean {
+    return !this.#dead && !this.#failure;
+  }
+
+  #settle(run: RelayRun): void {
+    const p = run.player;
+    void (p ? p.finish() : Promise.resolve()).then(() => {
+      if (this.#run === run) this.#run = null;
+      run.resolve();
+      this.#armIdle();
+    });
+  }
+
+  #armIdle(): void {
+    window.clearTimeout(this.#idleTimer);
+    this.#idleTimer = window.setTimeout(() => this.close(), RELAY_IDLE_MS);
+  }
+
+  #onMessage(ev: MessageEvent): void {
+    const run = this.#run;
+    if (typeof ev.data !== "string") {
+      if (!run) return;                    // late frames after a cancel: nothing is waiting for them
+      run.player = run.player ?? new PcmStreamPlayer(this.#ctx, this.#sampleRate);
+      run.player.push(ev.data as ArrayBuffer);
+      run.heard = true;
+      return;
+    }
+    let msg: { t?: string; error?: string };
+    try { msg = JSON.parse(ev.data) as typeof msg; } catch { return; }
+    if (msg.t === "tts-done") {
+      if (!run) return;
+      this.#settle(run);
+      return;
+    }
+    if (msg.t === "tts-error" || msg.t === "tts-closed") {
+      this.#failure = new Error(msg.error ?? "streaming TTS failed");
+    }
+  }
+
+  /** Speak `text` on this connection. Resolves once it has been heard. */
+  speak(text: string, signal: AbortSignal): Promise<void> {
+    if (!this.usable) return Promise.reject(this.#failure ?? new Error("streaming TTS relay is closed"));
+    if (this.#run) this.cancel();        // one utterance at a time, like the speaker itself
+    window.clearTimeout(this.#idleTimer);
+    const units = splitForStream(text);
+    if (!units.length) return Promise.resolve();
+
+    let onAbort = (): void => { /* replaced below */ };
+    const heard = new Promise<void>((resolve, reject) => {
+      const run: RelayRun = { player: null, heard: false, resolve, reject };
+      this.#run = run;
+      onAbort = (): void => {
+        this.cancel();                   // releases #run and stops the PCM immediately
+        reject(new SpeechStopped());
+      };
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+      const start = (): void => {
+        this.#send({ t: "tts-start" });
+        for (const unit of units) this.#send({ t: "tts-say", text: unit });
+        this.#send({ t: "tts-end" });
+      };
+      if (this.#ws.readyState === WebSocket.OPEN) start();
+      else this.#ws.addEventListener("open", start, { once: true });
+    });
+    return heard.finally(() => signal.removeEventListener("abort", onAbort));
+  }
+
+  #send(m: unknown): void {
+    if (this.#ws.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(m));
+  }
+
+  /** Abandon what is playing. The CONNECTION stays open: the next sentence reuses it. */
+  cancel(): void {
+    const run = this.#run;
+    this.#run = null;
+    if (!run) return;
+    run.player?.stop();
+    if (this.#ws.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify({ t: "tts-cancel" }));
+    run.resolve();
+    this.#armIdle();
+  }
+
+  close(): void {
+    window.clearTimeout(this.#idleTimer);
+    this.cancel();
+    this.#dead = true;
+    try { this.#ws.close(); } catch { /* already gone */ }
+  }
+}
+
+/** The single relay this page talks through, or null when streaming is off. */
+let relay: TtsRelay | null = null;
+
+function relayFor(ctx: AudioContext, sampleRate: number): TtsRelay {
+  if (!relay || !relay.usable) relay = new TtsRelay(ctx, sampleRate);
+  return relay;
+}
+
+/** Speak `text` through the /ws/tts relay.
+ *
+ *  Returns false when streaming is not on offer (setting off, or a provider with no streaming
+ *  surface) so the caller can use the HTTP path unchanged. Throws when the relay was tried and
+ *  failed before any audio was heard — that is the fallback the setting promises. */
+async function speakStreaming(text: string, prefs: VoicePrefs, signal: AbortSignal): Promise<boolean> {
+  const caps = voiceCaps().tts;
+  if (!(prefs.serverTts && caps.server && caps.streaming)) return false;
+  const Ctor = audioContextCtor();
+  if (!Ctor) return false;
+  audioCtx = audioCtx ?? new Ctor();
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+  await relayFor(audioCtx, caps.sampleRate ?? 24000).speak(text, signal);
+  return true;
+}
+
 // ------------------------------------------------------------------- speaker
 
 interface SpeakState {
@@ -551,14 +896,23 @@ class Speaker {
     this.stop();                       // stops playback AND marks the previous run stopped
     const run = ++this.#run;           // this run's token: stale runs must not write state
     this.#stopped = false;
-    const onServer = prefs.serverTts && voiceCaps().tts.server;
-    const chunks = splitForSpeech(body, onServer ? SERVER_CHUNK : BROWSER_CHUNK);
-    if (!chunks.length) return;
+    const caps = voiceCaps().tts;
+    const onServer = prefs.serverTts && caps.server;
+    // The streaming path feeds sentences and never needs the 80-character chunking: it exists
+    // precisely because a cut mid-sentence used to be a whole round trip.
+    const streaming = onServer && caps.streaming;
+    const chunks = streaming ? [] : splitForSpeech(body, onServer ? SERVER_CHUNK : BROWSER_CHUNK);
+    if (!streaming && !chunks.length) return;
     const ctrl = new AbortController();   // one controller for the whole utterance
     this.#abort = ctrl;
     this.#set({ error: "", note: "", speakingId: id, speaking: true });
     try {
-      if (onServer) {
+      if (streaming && await speakStreaming(body, prefs, ctrl.signal)) {
+        // played through the relay
+      } else if (onServer) {
+        // Either streaming is off, or the relay failed before the first sample — in which case
+        // the HTTP path still has the whole reply to work with, which is the documented
+        // fallback (and from there the browser voice, in the catch below).
         await this.#speakServer(chunks, prefs, ctrl.signal);
       } else {
         await this.#speakBrowser(chunks, prefs, ctrl.signal);
@@ -663,6 +1017,12 @@ class Speaker {
    *  came from. Deliberately not tied to a run's AbortSignal: the cache outlives the sentence
    *  that happened to ask for it. */
   prefetch(text: string, prefs: VoicePrefs): void {
+    // The browser voice fetches nothing, and neither does a healthy streaming path: it feeds
+    // the sentences into one live task, so a clip fetched ahead of time would be a second
+    // synthesis of text that is then never played from it — billed, and useless. A relay that
+    // has already failed is excluded on purpose: the sentences behind it fall back to HTTP,
+    // and those DO need warming.
+    if (voiceCaps().tts.streaming && relay?.usable !== false) return;
     if (!(prefs.serverTts && voiceCaps().tts.server)) return;   // the browser voice fetches nothing
     const body = String(text ?? "").trim();
     if (!body) return;
@@ -711,6 +1071,7 @@ class Speaker {
 
   stop(): void {
     this.#stopped = true;              // marks the in-flight run: do NOT fall back, do not error
+    relay?.cancel();                   // streaming PCM stops here; the connection stays open
     this.#abort?.abort();
     this.#abort = null;
     // Web Audio playback stops through the abort signal above; the browser voice needs

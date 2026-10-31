@@ -23,7 +23,7 @@ import * as ide from "./ide/proxy.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
-import { openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
+import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
   SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
@@ -2107,7 +2107,7 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   }
   // The IDE's own sockets ride the same whitelist step (issue #77 rule 2): HTTP forwarded but upgrade
   // refused is an IDE whose editor never finishes loading, with nothing in the UI to say why.
-  if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr" && !ide.ownsPath(url.pathname)) {
+  if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/ws/asr" && url.pathname !== "/ws/tts" && !ide.ownsPath(url.pathname)) {
     socket.destroy();
     return;
   }
@@ -2132,6 +2132,10 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   }
   if (url.pathname === "/ws/asr") {
     asrWss.handleUpgrade(req, socket, head, (ws) => asrWss.emit("connection", ws, req, url));
+    return;
+  }
+  if (url.pathname === "/ws/tts") {
+    ttsWss.handleUpgrade(req, socket, head, (ws) => ttsWss.emit("connection", ws, req, url));
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
@@ -2414,6 +2418,79 @@ asrWss.on("connection", (ws: WebSocket, _req: IncomingMessage, url: URL) => {
     } catch { /* malformed control frame: ignore */ }
   });
   const done = (): void => { try { stream.stop(); } catch { /* already closed */ } };
+  ws.on("close", done);
+  ws.on("error", done);
+});
+
+// ---- narration: the streaming TTS path ----------------------------------------
+// The mirror image of dictation above, and it exists for the same reason: the synthesis
+// WebSocket authenticates with a header a browser may not set, and the key must stay here.
+// The browser sends {say|end|cancel} control frames and receives the audio as BINARY frames
+// (s16le mono PCM at `sampleRate`), so it can schedule samples exactly instead of waiting for
+// a whole clip and decoding it.
+//
+// One connection carries a whole reply: its sentences are fed as they arrive, and the browser
+// can start playing the first one while the rest is still being generated. `cancel` abandons
+// the task upstream (which stops the billing for what has not been generated yet) and leaves
+// the connection usable for the next reply — the dial costs 200-650 ms, the task start ~50 ms.
+const ttsWss = new WebSocketServer({ noServer: true });
+ttsWss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
+  const reply = (m: unknown): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+  };
+  const tts = voiceCapabilities().tts as { server?: boolean; streaming?: boolean; sampleRate?: number | null };
+  if (!tts.streaming) {
+    reply({ t: "tts-error", error: "streaming TTS is off (settings: 百炼 + 流式合成)" });
+    ws.close();
+    return;
+  }
+  let conn: DashscopeTtsConnection | null = null;
+  let task: ReturnType<DashscopeTtsConnection["runTask"]> | null = null;
+  try {
+    conn = new DashscopeTtsConnection({
+      onClose: (why) => {
+        reply({ t: "tts-closed", why });
+        try { ws.close(); } catch { /* already gone */ }
+      },
+    });
+  } catch (e) {
+    reply({ t: "tts-error", error: String((e as Error)?.message ?? e) });
+    ws.close();
+    return;
+  }
+  const live = conn;
+  const audio = (pcm: Buffer): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(pcm, { binary: true });
+  };
+  const handlers = {
+    onReady: (format: "pcm", sampleRate: number) => reply({ t: "tts-ready", format, sampleRate }),
+    onAudio: audio,
+    onSentence: (index: number, text: string) => reply({ t: "tts-sentence", index, text: text.slice(0, 80) }),
+    onDone: (characters: number) => reply({ t: "tts-done", characters }),
+    onError: (error: string) => reply({ t: "tts-error", error }),
+  };
+  const start = (): void => {
+    try {
+      task = live.runTask(handlers);
+    } catch (e) {
+      reply({ t: "tts-error", error: String((e as Error)?.message ?? e) });
+    }
+  };
+  ws.on("message", (data: Buffer, isBinary: boolean) => {
+    if (isBinary) return;                        // the browser sends no audio here
+    let cmd: { t?: string; text?: string };
+    try { cmd = JSON.parse(String(data)) as typeof cmd; } catch { return; }
+    if (cmd.t === "tts-start") { start(); return; }
+    if (!task) return;
+    if (cmd.t === "tts-say") task.say(String(cmd.text ?? ""));
+    else if (cmd.t === "tts-end") task.end();
+    else if (cmd.t === "tts-cancel") { task.cancel(); task = null; }
+  });
+  const done = (): void => {
+    try { task?.cancel(); } catch { /* already gone */ }
+    task = null;
+    try { live.close(); } catch { /* already gone */ }
+  };
   ws.on("close", done);
   ws.on("error", done);
 });

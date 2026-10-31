@@ -108,7 +108,11 @@ function status(res) {
 
 // ---- server A: the main matrix -------------------------------------------------
 const dataA = mkdtempSync(path.join(tmpdir(), "agentus-authA-"));
-const a = await boot(8899, dataA);
+// Never a hardcoded port: 8899 was held by an unrelated `python -m http.server` on this
+  // machine, and the failure reads as a broken auth suite rather than as "something else owns
+  // that port". freePort() asks the OS.
+  const PORT_A = await freePort();
+  const a = await boot(PORT_A, dataA);
 
 // key material landed with tight permissions
 const tokenFile = path.join(dataA, "auth.token");
@@ -137,7 +141,7 @@ check("GET /api/auth/me anon -> 200 authenticated:false", await (async () => {
 
 // 3. anonymous WS upgrade is refused before it becomes a socket
 check("WS anon is refused", await (async () => {
-  const ws = new WebSocket(`ws://127.0.0.1:8899/ws`);
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT_A}/ws`);
   return await new Promise((resolve) => {
     const done = (v) => resolve(v);
     ws.on("open", () => { ws.close(); done(false); });
@@ -188,7 +192,7 @@ check("hand-forged cookie -> 401", status(await fetch(`${a.base}/api/sessions`, 
 
 // 7. the cookie also authorises the socket
 check("WS with cookie -> hello event", await (async () => {
-  const ws = new WebSocket(`ws://127.0.0.1:8899/ws`, { headers: { cookie } });
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT_A}/ws`, { headers: { cookie } });
   return await new Promise((resolve) => {
     const t = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 4000);
     ws.on("message", (raw) => {
@@ -205,7 +209,7 @@ check("machine token as Bearer -> 200", status(await fetch(`${a.base}/api/sessio
 check("machine token as ?token= -> 200", status(await fetch(`${a.base}/api/sessions?token=${machineToken}`)) === 200);
 check("bogus machine token -> 401", status(await fetch(`${a.base}/api/sessions`, { headers: { authorization: "Bearer nope" } })) === 401);
 check("WS with ?token= -> hello event", await (async () => {
-  const ws = new WebSocket(`ws://127.0.0.1:8899/ws?token=${machineToken}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT_A}/ws?token=${machineToken}`);
   return await new Promise((resolve) => {
     const t = setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 4000);
     ws.on("message", (raw) => {
