@@ -37,11 +37,14 @@ import {
   type SpeechSummary,
 } from "./speechSummary";
 import {
-  browserDictationAvailable, dictation, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
+  browserDictationAvailable, dictation, getSpeakScript, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps,
+  speaker, speakDurationLabel, subscribeSpeakScripts, speakScriptsVersion, useAutoRead,
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
+import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
+import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldToTalk } from "./holdToTalk";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
@@ -1896,7 +1899,7 @@ const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; las
  *
  *  The clock lives in HERE, for the reason the deleted `Busy` also owned its own: a ticking second
  *  must not drag the transcript's rows into a re-render. */
-const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since: number | null }): JSX.Element | null {
+const TurnLine = memo(function TurnLine({ busy, since, tps }: { busy: boolean; since: number | null; tps?: { tps: number; at: number } | null }): JSX.Element | null {
   // Re-stamped on every (busy, since) change, so a SECOND message sent into a running turn restarts
   // the clock — the operator asked for the count from the send. A page that loaded MID-turn has no
   // `turn-start` for this turn: it anchors on first sight, which undercounts instead of inventing a
@@ -1917,6 +1920,17 @@ const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since:
       <span className="stream-spin" aria-hidden="true" />
       <span>处理中</span>
       {startedAt != null ? <span className="elapsed">({durationWords(now - startedAt)})</span> : null}
+      {/* Issue #70 step 1: 流式测速。三条规矩 ——
+          ① 是 token/秒（操作员要的就是这个），但**按字符估的**：ACP 的流里没有 usage，真实 token
+             只在回合结束时一次性给齐。所以前面带「≈」，title 里说清口径，准确数字看用量行；
+          ② 只看最近 2.5 秒：`now` 每秒重算，服务端一旦停推（说完了 / 在跑工具），数字自己消失
+             —— 它是「现在多快」，不是「刚才多快」；
+          ③ 没有就是没有：0 不画，宁可空着。 */}
+      {tps && busy && now - tps.at < 2500 && tps.tps > 0 ? (
+        <span className="tps-chip" title="最近 3 秒的输出速度，按字符估算成 token（中文约 0.6 token/字、英文约 4 字符/token）。协议流里没有 token 计数，精确值见这一轮回复下面的用量行。">
+          ≈{tps.tps >= 100 ? Math.round(tps.tps) : tps.tps.toFixed(1)} t/s
+        </span>
+      ) : null}
       {/* The agent's status lines are NOT here any more (operator, 2026-10-18): 「它不只是这一个状态，
           压缩什么的也会显示，所以应该放在会话记录框里面」. They are transcript rows now — see
           StatusNoteRow. This line is only the clock: 「我现在等了多久」. */}
@@ -2448,7 +2462,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
           <TranscriptRows msgs={v.msgs} notes={v.notes} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
-          <TurnLine busy={busyNow(v)} since={v.busySince} />
+          <TurnLine busy={busyNow(v)} since={v.busySince} tps={v.tps ?? null} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the
@@ -2657,6 +2671,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
             </div>
             {/* inside the bubble, under the action row: 「它念了什么」 belongs to this message */}
             <SummaryNote mkey={m.key} />
+            <ScriptNote id={m.key} />
           </div>
         </div>
       );
@@ -3674,6 +3689,8 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
   };
   if (!text.trim()) return null;
   const playing = spoken.speaking && spoken.speakingId === id;
+  // 规则版把代码块/表格/链接都改写过，时长要按**念出来的稿子**算，不是按原文长度。
+  const duration = speakDurationLabel(text, prefs.rate);
   // Only claim we cannot speak when the browser really has no speech synthesis at all:
   // "no voices yet" is a loading state, not a verdict (the list arrives late in Chromium).
   if (typeof window !== "undefined" && !("speechSynthesis" in window) && !prefs.serverTts) {
@@ -3681,23 +3698,25 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
   }
   // 字数档 (the operator's ask, 2026-10-18): the long press offers 100/150/200 字 beside 「按设置」,
   // and the count rides the server prompt's `{maxChars}` placeholder. `undefined` = 按设置.
-  const summarise = async (maxChars?: number): Promise<void> => {
+  // `mode` = "full" is 全文总结版 (issue #83): not a 字数档 but a rewrite that covers the WHOLE
+  // message. It rides the same endpoint with `mode`, and its own cache key (`#full`).
+  const summarise = async (maxChars?: number, mode?: "full"): Promise<void> => {
     if (busy) return;
     // Already summarised at THIS length: replay it. A second long press must not buy the same
     // paragraph twice (the note's ✕ forgets it, which turns the next press back into a real call).
     // The key carries the bucket, so 100 字 and 200 字 are two paragraphs, not one cache hit.
-    const cached = getSummary(summaryKey(id, maxChars));
+    const cached = getSummary(summaryKey(id, maxChars, mode));
     if (cached) {
       setMenu(false);
-      void speaker.speak(cached.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
+      void speaker.speak(cached.text, `${id}#summary:${mode ?? maxChars ?? "cfg"}`, prefs);
       return;
     }
     setBusy(true);
     setErr(null);
     try {
-      const s: SpeechSummary = await summarizeMessage(sid, id, maxChars);
+      const s: SpeechSummary = await summarizeMessage(sid, id, maxChars, mode);
       setMenu(false);
-      void speaker.speak(s.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
+      void speaker.speak(s.text, `${id}#summary:${mode ?? maxChars ?? "cfg"}`, prefs);
     } catch (e) {
       const se = e as SummaryError;
       // Say WHICH failure it was (off / not configured / timed out / endpoint said no) and never
@@ -3756,7 +3775,19 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
               onClick={() => { setMenu(false); void speaker.speak(text, id, prefs); }}
             >
               <span className="speak-check">›</span>
-              <span className="speak-name">读整条</span>
+              <span className="speak-name">读整条 · {duration}</span>
+            </button>
+            {/* issue #83: 全文总结版 —— 覆盖全文的模型改写，不设字数档（和下面那四档是两件事）。 */}
+            <button
+              type="button"
+              role="menuitem"
+              className="speak-menu-item"
+              disabled={busy}
+              data-speak-summary="full"
+              onClick={() => void summarise(undefined, "full")}
+            >
+              <span className="speak-check">{busy ? "•" : "›"}</span>
+              <span className="speak-name">{busy ? "总结中…" : "全文总结版播报"}</span>
             </button>
             {[100, 150, 200].map((n) => (
               <button
@@ -3783,7 +3814,9 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
               <span className="speak-check">›</span>
               <span className="speak-name">{busy ? "总结中…" : "语音播报总结 · 按设置"}</span>
             </button>
-            <p className="speak-hint">把这条压成一段能听完的话；字数写进提示词交给模型（提示词在 设置 → 语音总结）</p>
+            <p className="speak-hint">
+              读整条按规则适配（代码块报行数、表格逐行念、链接只念域名）；全文总结版走模型，覆盖全文但不压成一段
+            </p>
           </div>
         ) : null}
       </span>
@@ -3810,7 +3843,7 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
     ? `${sum.provider ?? ""}${sum.provider ? " · " : ""}${sum.model ?? ""}`
     : sum.model ? `语音端点 · ${sum.model}` : "";
   // The bucket is part of the record: 「约 150 字」 is why this paragraph is longer than the last one.
-  const bucket = sum.maxChars ? ` · 按 ${sum.maxChars} 字压` : "";
+  const bucket = sum.mode === "full" ? " · 全文版" : sum.maxChars ? ` · 按 ${sum.maxChars} 字压` : "";
   const meta = sum.via === "verbatim"
     ? "原文本身就够短，直接念"
     : `${sum.chars} 字${bucket} · ${(sum.ms / 1000).toFixed(1)}s${billed ? ` · ${billed}` : ""}`;
@@ -3829,6 +3862,31 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
         <IconClose size={11} />
       </button>
       {/* version keeps the subscription honest even when this key's summary is replaced */}
+      <span hidden>{version}</span>
+    </div>
+  );
+}
+
+/** 规则版的念稿，同样要看得见（issue #83）。
+ *
+ *  它零成本，但它会「跳过代码块、折叠表格、只念链接的域名」—— 这些没说出口的部分如果不留痕，
+ *  听到的就是一份没法核对的稿子。这一行只在**这条消息被念过之后**出现，展开就是逐字的稿子。 */
+function ScriptNote({ id }: { id: string }): JSX.Element | null {
+  const version = useSyncExternalStore(subscribeSpeakScripts, speakScriptsVersion, speakScriptsVersion);
+  const [open, setOpen] = useState(false);
+  const rec = getSpeakScript(id);
+  if (!rec || !rec.script) return null;
+  return (
+    // 用自己的一套类名，不复用 `.speech-note`：那份是「模型稿」的行，两行同时在场时
+    // querySelector 会挑错人（speech-summary-dom 的 8 条断言当场变红，就是这么发现的）。
+    <div className={`bubble-note script-note${open ? " open" : ""}`} data-speak-script="rules">
+      <button type="button" className="script-note-tag" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        念稿
+      </button>
+      <span className="script-note-text" onClick={() => setOpen((o) => !o)} title="点击展开/收起">
+        {rec.script}
+      </span>
+      <span className="script-note-meta">{describeSpeakable(rec.notes, rec.seconds)}</span>
       <span hidden>{version}</span>
     </div>
   );
@@ -4839,6 +4897,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         armed = true;
         dictation.cancel();
         void dictation.start(prefs, v.info.id);
+        hintOnce();
       }, 250);
     };
     const up = (e: KeyboardEvent): void => {
@@ -4969,6 +5028,63 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   };
 
   const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
+
+  // ---- 按住说话 (issue #82) ---------------------------------------------------
+  // 语音输入原来只有「按住 Ctrl」一条路，鼠标/触控板用户走不到：聊天页那颗麦克风是点击切换，
+  // 要两次点击。这里给它补指针等价物：按住按钮 or 在输入框里按住左键，松手就是「我说完了」。
+  // 短按仍然是原来的点击切换（`pressFired` 那套语义），别让老用法消失。
+  const [holdHint, setHoldHint] = useState("");
+  /** 第一次真正用上听写时，把「其实可以按住说」这件事说一遍 —— 只一遍（localStorage）。 */
+  const hintOnce = (): void => {
+    try {
+      if (localStorage.getItem(HOLD_HINT_KEY)) return;
+      localStorage.setItem(HOLD_HINT_KEY, "1");
+    } catch { /* private mode: 每次说一遍也比不说强不了多少，但不该因此崩 */ }
+    setHoldHint(holdHintText(finePointer()));
+    window.setTimeout(() => setHoldHint(""), 9000);
+  };
+  const startChatDictation = (): void => {
+    dictation.cancel();
+    // session id 是热词的来源，漏了它本会话的专有名词就识别不出来（voice.ts 的注释写了这条）
+    void dictation.start(prefs, v.info.id);
+    hintOnce();
+  };
+  const endChatDictation = (): void => {
+    if (dictation.owns("chat")) dictation.stop();
+  };
+  // 麦克风按钮那一路：pointerleave 绝不参与（按住时布局会动，按钮自己会「离开」指针）
+  const micHold = useRef<HoldToTalk | null>(null);
+  const micSwallow = useRef(false);
+  if (!micHold.current) {
+    micHold.current = createHoldToTalk({
+      onHold: () => {
+        micSwallow.current = true;
+        startChatDictation();
+      },
+    });
+  }
+  // 输入框里长按左键那一路（P1）：只有 focus 已经在框里才 arm，与按住 Ctrl 同一前提。
+  // 位移超阈值 / 出现选区 → 放弃本次手势，让原生拖选照常工作。
+  const areaHold = useRef<HoldToTalk | null>(null);
+  const areaArmed = useRef(false);
+  if (!areaHold.current) {
+    areaHold.current = createHoldToTalk({
+      onHold: () => startChatDictation(),
+    });
+  }
+  useEffect(() => {
+    const onSel = (): void => {
+      // 检测到选区 = 他在选字，不是要说话（双击选词、拖选、三击选段都走这里）
+      if (!areaArmed.current) return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      areaArmed.current = false;
+      areaHold.current?.cancel();
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+
   // The three controls the operator sees: attachments, thinking depth, settings, model —
   // model and depth only when the agent actually advertises them (never a dead button).
   const effortCfg = pickConfigOption(v.info.configOptions, "effort");
@@ -5229,6 +5345,13 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             </div>
           </div>
         ) : null}
+        {holdHint && !dict.error ? (
+          <div className="dict-chip hint" data-hold-hint="1">
+            <IconMic size={13} />
+            {holdHint}
+            <button className="dict-stop" onClick={() => setHoldHint("")} aria-label="dismiss">知道了</button>
+          </div>
+        ) : null}
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />
@@ -5269,6 +5392,32 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             rows={1}
             className={tokenLive ? "tokenized" : undefined}
             value={text}
+            /* 输入框里按住左键 = 按住说话 (issue #82 P1)。只在 focus 已经在框里（与 Ctrl 通道同一前提）、
+               且是鼠标/笔的时候 arm；**不 preventDefault**（点一下把光标放到某个字中间必须照旧可用），
+               拖选靠位移阈值和 selectionchange 让位。 */
+            onPointerDown={(e) => {
+              if (call) return;
+              if (e.pointerType !== "mouse" && e.pointerType !== "pen") return;
+              if (document.activeElement !== ta.current) return;
+              const ok = areaHold.current?.down(e.clientX, e.clientY) ?? false;
+              if (ok) areaArmed.current = true;
+            }}
+            onPointerMove={(e) => {
+              if (!areaArmed.current) return;
+              areaHold.current?.move(e.clientX, e.clientY);
+            }}
+            onPointerUp={() => {
+              if (!areaArmed.current) return;
+              areaArmed.current = false;
+              const g = areaHold.current?.up();
+              if (g === "hold") endChatDictation();
+            }}
+            onPointerCancel={() => {
+              areaArmed.current = false;
+              const wasHolding = areaHold.current?.holding() === true;
+              areaHold.current?.cancel();
+              if (wasHolding) endChatDictation();
+            }}
             onFocus={() => setPaletteHidden(false)}
             onScroll={(e) => {
               // 长草稿会在框里滚动：两层不同步，胶囊就会在文字上游走。
@@ -5491,12 +5640,34 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             <span className="head-spacer" />
             <button
               className={`icon-btn ${listening ? "on rec" : ""}`}
-              title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
+              title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（按压住说话 / 按住 Ctrl）"}
               aria-label="dictate"
+              onPointerDown={(e) => {
+                if (call) return;                       // 通话中麦克风归通话
+                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* older engines */ }
+                micSwallow.current = false;
+                micHold.current?.down(e.clientX, e.clientY);
+              }}
+              onPointerMove={(e) => micHold.current?.move(e.clientX, e.clientY)}
+              // 记住：这里**没有** onPointerLeave —— 按住时输入框会长高、状态条出现，按钮会自己下移，
+              // 指针没动却"离开"了按钮，按手机的实测经验那会把录音掐断。
+              onPointerUp={() => {
+                const g = micHold.current?.up();
+                if (g === "hold") { endChatDictation(); return; }
+                if (g === "tap") startChatDictation();
+                // g === null（这次手势作废）：旗子留给后面那个 click 自己清，别在这里清 ——
+                // 清了之后 pointercapture 派发的 click 会再 start 一次，一次按住听到两次。
+              }}
+              onPointerCancel={() => {
+                const wasHolding = micHold.current?.holding() === true;
+                micHold.current?.cancel();
+                if (wasHolding) endChatDictation();
+              }}
               onClick={() => {
-                dictation.cancel();
-                // the session is what lets the recogniser carry this conversation's hotwords
-                void dictation.start(prefs, v.info.id);
+                // 指针已经处理过的这一次不要再跑一遍（键盘 Enter/读屏仍走这里）
+                if (micSwallow.current) { micSwallow.current = false; return; }
+                if (micHold.current?.pending()) return;
+                startChatDictation();
               }}
             >
               <IconMic size={16} />

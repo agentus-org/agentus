@@ -27,7 +27,7 @@ import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech } from 
 import { bridgeTitle, buildBridgeEnvelope } from "./bridge.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
-  SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
+  SUMMARY_FULL_PROMPT_DEFAULT, SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
   saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
   modelUsage,
@@ -501,6 +501,9 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   // behaviour); the switch exists because a synthetic turn spends tokens the operator may not want
   // spent at 3am — and it is read live, so flipping it applies to the next completion.
   mgr.setCompletionWakeSource(() => agentSettings().completionWake);
+  // Issue #70 step 1: the live speed chip is the operator's call — read per turn, so flipping the
+  // switch in the settings page takes effect on the next turn with no restart.
+  mgr.setLiveSpeedSource(() => getSettings().prefs.showTps);
   // 语音通话（issue #48）: 「在打电话」 has exactly one authority in this process (the notify centre's
   // presence, which the page already reports every 30 s), so the voice-mode block and the thinking
   // dial derive from it instead of adding a second client→server state channel. The presence
@@ -781,11 +784,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           },
         });
       }
+      /** `not_found` 与 `out_of_scope` 是两件事（#73）：前者是 id 打错了（这类 id 库里根本没有），
+       *  后者是这条会话确实存在、只是不在本次调用的作用域里（例如已归档、又没带 --all）。
+       *  压成同一个码，调用方按码分支时就分不清「我手滑」和「我被拒」。 */
+      const refuseScope = (id: string): void => {
+        const any = store.getSession(id);
+        if (!any) return send(res, 404, { error: COCKPIT_ERRORS.notFound, id, message: `no such session: ${id}` });
+        return send(res, 404, {
+          error: COCKPIT_ERRORS.outOfScope,
+          id,
+          message: any.archivedAt ? "这条会话已归档 —— 加 --all，或先从 rail 里取消归档" : "这条会话不在本次调用的作用域里",
+        });
+      };
       if (url.pathname === "/api/cockpit/rename" && req.method === "POST") {
         const body = await readJson(req);
         const id = String(body.id ?? "");
         if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
-        if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!rowOf(id)) return refuseScope(id);
         // Recorded as THIS session's doing (titleBy), so the operator can tell an agent-named
         // conversation from one they named. `auto` clears back to the generated title.
         const title = body.auto === true ? null : String(body.title ?? "").trim();
@@ -988,7 +1003,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // transcript, and no cross-session caller gets to delete the operator's history.
         if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
-        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!target) return refuseScope(id);
         if (body.close === true) {
           if (target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, id, closed: false, already_cold: true });
           await mgr.closeSession(id);
@@ -1011,7 +1026,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // never disagree about whether an agent may pull another session's process up.
         if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
-        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!target) return refuseScope(id);
         if (!target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, woke: false, already_live: true, id });
         try {
           const info = await mgr.resume(id);
@@ -1853,7 +1868,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, { purged: id });
         }
-        return send(res, 404, { error: `no such session: ${id}` });
+        // 稳定码 + 人话分开（#73）：CLI/脚本按 `code` 分支，页面显示 `error` 那句话。
+        return send(res, 404, { error: `no such session: ${id}`, code: "not_found", id });
       }
       if (req.method === "POST" && sub === "/archive") {
         // 归档: the operator's own storage decision (and it stops a live process — see
@@ -1866,7 +1882,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
-          return send(res, 404, { error: String((e as Error)?.message ?? e) });
+          const msg = String((e as Error)?.message ?? e);
+          return send(res, 404, { error: msg, ...(/no such session/.test(msg) ? { code: "not_found", id } : {}) });
         }
       }
       if (req.method === "POST" && sub === "/unarchive") {
@@ -2060,15 +2077,24 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // rides the prompt's existing `{maxChars}` placeholder — so this is the only place it has to
         // be honoured. Clamped to the same range the settings page validates, so a crafted body
         // cannot ask for a 10k-character invoice.
+        // 全文总结版 (issue #83): 同一端点、同一路由链，只是「要它干什么」不同 —— 不是压成
+        // {maxChars} 字，是覆盖全文的改写。字数档在 full 模式下没有意义（传了也不用）。
+        const mode: "summary" | "full" = body.mode === "full" ? "full" : "summary";
         const asked = Math.round(Number(body.maxChars));
         const [clo, chi] = SUMMARY_CHARS_RANGE;
         const maxChars = Number.isFinite(asked) && asked >= clo && asked <= chi ? asked : cfg.maxChars;
         // Judge "short enough to just read" on what would actually be SPOKEN: voice.ts drops code
         // blocks, and a 20-line diff must not count as a long message worth a model call.
         const spoken = textOf(row.payload).replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+        // 全文版按「输入的比例」给输出预算：没有字数档可推导，且压得太狠就变回摘要了。
+        // 0.7 tokens/字 是「改写比摘要长、比原文短」的量级，下限 1200 保证推理模型也能给出答案。
+        const fullBudget = Math.max(1200, Math.round(spoken.length * 0.7));
         if (!spoken) return send(res, 409, { error: "这条消息没有可以念的文字", code: "empty" });
-        if (spoken.length <= maxChars) {
-          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars });
+        // 全文版没有「字数档」这个概念，但「本来就短、直接念」这条仍然成立 —— 用 200 字的门槛，
+        // 否则一句 300 字的话也会去买一次模型改写。
+        const verbatimLimit = mode === "full" ? Math.max(200, maxChars) : maxChars;
+        if (spoken.length <= verbatimLimit) {
+          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars, mode });
         }
         // Over the ceiling we REFUSE, loudly (#36). The old behaviour summarised the head and said
         // so in a footnote — but a summary that drops the second half is worse than none, because
@@ -2090,7 +2116,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const r = await summarizeForSpeech({
             text: spoken,
             maxChars,
-            prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
+            // 全文版用自己那份提示词：设置页那份是给「压成 N 字」用的，混用会让它照摘要的规矩办事。
+            prompt: mode === "full" ? SUMMARY_FULL_PROMPT_DEFAULT : (cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT),
+            ...(mode === "full" ? { maxOutputTokens: fullBudget } : {}),
             model,
             timeoutSec: cfg.timeoutSec,
             // Thinking stays ON for qwen3 models, capped at 200 tokens (operator's call, #36):
@@ -2108,6 +2136,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             // echo the bucket: the note prints 「约 150 字」 and a summary that silently used the
             // configured number would make the menu look broken
             maxChars,
+            mode,
             ms: r.ms, model,
             // which account this call was billed to — the note prints it, and a fallback that
             // silently used the OTHER provider would be a lie about the cost

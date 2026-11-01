@@ -115,6 +115,10 @@ export interface PrefsSettings {
   lang: string;
   /** route synthesis through the server endpoint instead of the browser */
   serverTts: boolean;
+  /** Issue #70 step 1: show the live speed while a turn is streaming. Off by default —
+   *  it is a diagnostic, and a number that flickers above every reply is noise until you
+   *  are the one asking "is this model slow or is my prompt huge". */
+  showTps: boolean;
   /** which recogniser to use, when the caller does not force one */
   stt: "auto" | "browser" | "stream" | "server";
   /** Whether — and how often — the cockpit tells the agent about the plan MCP it was handed.
@@ -152,7 +156,7 @@ export const SPEAK_MODES = ["off", "reply", "brief"] as const;
 export type SpeakMode = (typeof SPEAK_MODES)[number];
 
 export const PREFS_DEFAULT: PrefsSettings = {
-  autoRead: false, speakMode: "off", voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
+  autoRead: false, speakMode: "off", voiceURI: "", rate: 1, lang: "", serverTts: false, showTps: false, stt: "auto",
   // On + every turn by default: the feature exists because the tool was there and nobody used it,
   // and 对齐 Studio means the block rides on every turn (see everyTurn's note). Both are visible
   // and switchable in 设置 — this is a default, not a lock.
@@ -393,6 +397,21 @@ export const SUMMARY_PROMPT_DEFAULT = [
   "· 只讲结论和关键动作；不复述步骤，不念代码，不念表格里的数字（关键结论除外）",
   "· 口语化，一句话一个意思；不要 Markdown、列表、引号、括号、表情",
   "· 不超过 {maxChars} 字；先说发生了什么变化 / 发现了什么，再说影响",
+  "· 第一句直接说事，不要「这段内容讲了…」这种开场",
+].join("\n");
+
+/** 全文总结版 (issue #83) 的提示词：不是「压成 {maxChars} 字」，是「原文里说的事，这一版都还在」。
+ *
+ *  和上面那份的区别就是目的不同：那份是摘要（只留结论），这份是**改写**（覆盖全文、只换说法）。
+ *  长度跟原文走，所以这里刻意没有 {maxChars} 占位符 —— 一旦给了字数，模型就会往回压。 */
+export const SUMMARY_FULL_PROMPT_DEFAULT = [
+  "下面是我在一个工作会话里拿到的一段输出。请把它改写成一段「能从头听到尾」的口播稿：",
+  "· 按原文顺序覆盖每一个部分，一段都不能漏；不要压成概括，也不要把细节丢掉",
+  "· 代码块：讲清它在做什么、改了什么，不要念代码",
+  "· 表格：先用一句话说这张表在说明什么，再挑关键行讲，不要逐行照抄",
+  "· 链接：说它是什么、指向哪（例如「一个 GitHub issue，编号 76」），不要念 URL",
+  "· 数字、名称、条件照原文说，不要编造、不要重复；不要念符号",
+  "· 口语化，一句话一个意思；不要 Markdown、列表、引号、括号、表情；不要换行",
   "· 第一句直接说事，不要「这段内容讲了…」这种开场",
 ].join("\n");
 
@@ -661,6 +680,7 @@ function pickPrefs(raw: unknown): PrefsSettings {
     else if (typeof r.autoRead === "boolean") out.speakMode = r.autoRead ? "reply" : "off";
     out.autoRead = out.speakMode === "reply";
     if (typeof r.serverTts === "boolean") out.serverTts = r.serverTts;
+    if (typeof r.showTps === "boolean") out.showTps = r.showTps;
     if (typeof r.voiceURI === "string" && r.voiceURI.length <= 200) out.voiceURI = r.voiceURI;
     if (typeof r.lang === "string" && (!r.lang || /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(r.lang))) out.lang = r.lang;
     const rate = Number(r.rate);
@@ -887,6 +907,10 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
   if ("autoRead" in patch) {
     if (typeof patch.autoRead !== "boolean") throw new Error("invalid autoRead: expected true/false");
     next.autoRead = patch.autoRead;
+  }
+  if ("showTps" in patch) {
+    if (typeof patch.showTps !== "boolean") throw new Error("invalid showTps: expected true/false");
+    next.showTps = patch.showTps;
   }
   if ("serverTts" in patch) {
     if (typeof patch.serverTts !== "boolean") throw new Error("invalid serverTts: expected true/false");

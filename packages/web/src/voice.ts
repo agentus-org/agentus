@@ -19,6 +19,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { ReadTarget, SpeakMode } from "./autoRead";
 import { createSpeakQueue } from "./speakQueue";
+import { toSpeakable, estimateSpeechSeconds, humanDuration, SPEAKABLE_RULES_VERSION, type SpeakableNotes } from "./speakable";
 
 // ---------------------------------------------------------------- preferences
 
@@ -232,6 +233,51 @@ async function withTtsSlot<T>(priority: number, signal: AbortSignal | undefined,
     if (next) next.run();
     else ttsInFlight--;
   }
+}
+
+/** 念稿记录 — 「它到底念了什么、漏了什么」必须能看见。
+ *
+ *  规则版是零成本的，但它会跳过代码块、折叠表格：这些「没说出口的部分」如果不留痕，用户听到的
+ *  就是一份无法核对的稿子。`SpeakButton` 下面那一行读这里。 */
+export interface SpeakScriptRecord {
+  script: string;
+  notes: SpeakableNotes;
+  /** 预估时长（按播放当时的 rate 算，改速度不重算旧稿） */
+  seconds: number;
+}
+
+const speakScripts = new Map<string, SpeakScriptRecord>();
+const speakScriptListeners = new Set<() => void>();
+let speakScriptVersion = 0;
+
+function noteSpeakScript(id: string, script: string, notes: SpeakableNotes, rate: number): void {
+  if (!id) return;
+  speakScripts.set(id, { script, notes, seconds: estimateSpeechSeconds(script, rate) });
+  speakScriptVersion++;
+  for (const fn of speakScriptListeners) fn();
+}
+
+export function getSpeakScript(id: string): SpeakScriptRecord | undefined {
+  const rec = speakScripts.get(id);
+  // 规则版本是稿子的一部分：规则改过之后，上一版规则生成的稿子不能再被念/展示（它会和现在的
+  // 行为对不上，而且用户会以为改规则没用）。
+  if (!rec || rec.notes.version !== SPEAKABLE_RULES_VERSION) return undefined;
+  return rec;
+}
+
+export function subscribeSpeakScripts(fn: () => void): () => void {
+  speakScriptListeners.add(fn);
+  return () => speakScriptListeners.delete(fn);
+}
+
+export function speakScriptsVersion(): number {
+  return speakScriptVersion;
+}
+
+/** 「读整条 · 约 N 分钟」：播报前先把代价说清楚（分钟级的东西不能让人点了才发现）。 */
+export function speakDurationLabel(text: string, rate: number): string {
+  const { script } = toSpeakable(text);
+  return humanDuration(estimateSpeechSeconds(script, rate));
 }
 
 export function splitForSpeech(text: string, max = BROWSER_CHUNK): string[] {
@@ -1019,10 +1065,17 @@ class Speaker {
     );
   }
 
-  /** Speak `text`. `id` labels the source so the UI can highlight the playing button. */
+  /** Speak `text`. `id` labels the source so the UI can highlight the playing button.
+   *
+   *  Every read-aloud in the cockpit funnels through here (单条朗读 / 自动朗读 / 通话 / 工作播报), so
+   *  this is the one place the L0 rule layer has to be applied — code blocks become 「代码块，N 行」,
+   *  tables are read row by row, links lose their protocol and query string. See `speakable.ts`. */
   async speak(text: string, id: string, prefs: VoicePrefs): Promise<void> {
-    const body = String(text ?? "").trim();
-    if (!body) return;
+    const raw = String(text ?? "").trim();
+    if (!raw) return;
+    const adapted = toSpeakable(raw);
+    const body = adapted.script.trim() || raw;
+    noteSpeakScript(id, adapted.script, adapted.notes, prefs.rate);
     this.stop();                       // stops playback AND marks the previous run stopped
     const run = ++this.#run;           // this run's token: stale runs must not write state
     this.#stopped = false;

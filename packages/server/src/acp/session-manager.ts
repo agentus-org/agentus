@@ -52,6 +52,7 @@ import type {
   TurnUsage,
   UsageTotals,
 } from "../../../shared/src/index.js";
+import { estimateStreamTokens } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
@@ -210,6 +211,20 @@ interface PendingCompletion {
 
 interface LiveSession {
   info: SessionInfo;
+  /** 操作员在握手还没回来的时候就把这条槽关掉了。`#stop` 对 starting 槽只做有界等待，
+   *  超时后照样写 closed 并删掉自己；如果握手在那之后才落地，`#startup` 会把 ready 写回去 ——
+   *  一行「没有进程的 ready」。这个旗子就是握手落地时用来认这一眼的。 */
+  tornDown?: boolean;
+  /** Issue #70 step 1 —— 流式测速的窗口。只在「开着这个开关 + 这一轮正在出字」时存在：
+   *  1Hz 推一次 `t:"tps"`，窗口空了就自己收摊（不开定时器空转）。
+   *
+   *  为什么是估算：ACP 的流里没有 usage，token 只在 prompt 的响应上一次性给齐（那是 turn-end 的账）。
+   *  操作员要的是 token/秒，所以这里按字符估 token（`estimateStreamTokens`：中日韩 0.6 / 其余 0.25），
+   *  帧里始终带 `estimated: true` —— 它是速度表，不是账单；准确的数字在用量行上。 */
+  meter?: {
+    buckets: { at: number; chars: number; tokens: number }[];
+    timer: NodeJS.Timeout | null;
+  };
   child?: ReturnType<typeof spawn>;
   conn?: ClientSideConnection;
   busy: boolean;
@@ -311,6 +326,7 @@ export class SessionManager {
    *  to hibernate. Default ON — this is the CLI/gateway behaviour, and the whole point is that the
    *  agent takes its own result instead of the operator noticing a stale screen. */
   #completionWake: () => boolean = () => true;
+  #liveSpeed: () => boolean = () => false; // off unless the settings page switches it on (#70)
   /** 跨会话 send 的「它跑完回我一声」登记（#59）。
    *
    *  内存而已，刻意不落库：这是一次性通知，不是数据 —— 服务端重启后那条回合早就结束了，
@@ -333,6 +349,12 @@ export class SessionManager {
     this.#emit = emit;
     this.#dataDir = opts.dataDir ?? null;
     this.#instanceId = opts.instanceId ?? "";
+  }
+
+  /** Issue #70 step 1: is the operator showing the live speed chip? Read on every turn, so the
+   *  switch takes effect without a restart — and when it is off we never even start the timer. */
+  setLiveSpeedSource(fn: () => boolean): void {
+    this.#liveSpeed = typeof fn === "function" ? fn : () => false;
   }
 
   /** Wire the operator's 「后台任务完成唤醒」 switch in (index.ts → settings.agent.completionWake). */
@@ -958,6 +980,12 @@ export class SessionManager {
       });
       live.caps = readCaps(init?.agentCapabilities);
       const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
+      if (live.tornDown) {
+        // 握手期间被关掉了（#73 的"关闭中回魂"）：这条槽已经不在 map 里，写 ready 只会造出一行
+        // 没有进程的 ready。杀掉子进程，什么都不广播。
+        child.kill("SIGKILL");
+        return;
+      }
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
@@ -978,6 +1006,7 @@ export class SessionManager {
       await this.#replayPendingModel(live.info.id);
     } catch (err) {
       child.kill("SIGKILL");
+      if (live.tornDown) return;   // 已经关了：失败也不是这条槽的失败，别往 rail 上写 error
       live.info.status = "error";
       live.info.lastError = errMessage(err) + stderrTail(live);
       // Announce the failure WHILE the slot is still live: `{t:"session"}` is the only frame that
@@ -1609,6 +1638,7 @@ export class SessionManager {
       this.#settleTurnReplies(sessionId, mine, { failed: errMessage(err), failureKind: "turn", durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
+      this.#meterStop(s);
       if (s.info.status === "running") {
         s.info.status = "ready";
         this.#updateSession(s);
@@ -2231,6 +2261,7 @@ export class SessionManager {
    *  all three teaches the operator to distrust the column. */
   async #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): Promise<void> {
     this.#dropPending(live);
+    this.#meterStop(live); // 关槽顺手收表：不然这个定时器会绑着一个已经没有进程的会话一直转
     // A slot can be closed while its handshake is still in flight — `create()` no longer waits for it
     // (see there). Killing the child on the spot was WRONG in a way the operator would eventually hit:
     // the agent had already created a session, but the row was written with `acpSessionId: null`, and
@@ -2250,6 +2281,8 @@ export class SessionManager {
     // Applied LAST, and only over a non-terminal status: `#startup` writes `ready` when the handshake
     // lands and `error` (with `lastError`) when it fails — and a handshake that failed on its own has a
     // better answer than 「closed」, so it keeps it.
+    // 先落旗子再改状态：晚到的握手必须在它写 ready 之前看到这一眼（见 LiveSession.tornDown）。
+    live.tornDown = true;
     if (live.info.status !== "error") live.info.status = why === "reaped" ? "reaped" : "closed";
     // Anyone waiting for this session's turn gets an answer: the child is about to be signalled and
     // #onChildExit will bail out early (the slot is deleted below), so this is the last moment that
@@ -2513,6 +2546,9 @@ export class SessionManager {
     if (live.replaying && (isTextFrame || isToolFrame) && this.#store.maxSeq(live.info.id) > 0) {
       return;
     }
+    // Issue #70 step 1: 只有真正在流的正文算速度。重放帧在上面就返回了（会二次算一遍历史），
+    // 思考帧不算（它不是「这一轮说得多快」），工具帧更不算 —— 工具跑十分钟不代表模型慢。
+    if (st === "agent_message_chunk") this.#meterAdd(live, textOf(u));
     // A status line from the agent (issue #18). Hermes sends these on ACP as an EMPTY thought chunk
     // whose `_meta.hermes` carries the sentence — the protocol has no status object, and `_meta` is the
     // extension door it does leave open. Honoured here rather than in the web, because the decision that
@@ -2805,6 +2841,61 @@ export class SessionManager {
     this.#finalizePlan(live.info.id, "failed"); // the turn died with the process — close the card honestly
     this.#emit({ t: "session", session: live.info });
     this.#emit({ t: "turn-end", sessionId: live.info.id, error: live.info.lastError });
+  }
+
+  // ---- live speed meter (issue #70 step 1) ----
+
+  /** 记一笔字，必要时把 1Hz 的表拨起来。窗口是 3 秒 —— 短到能反映「现在」，长到不被逐个 chunk
+   *  的抖动带偏。 */
+  #meterAdd(live: LiveSession, text: string): void {
+    if (!this.#liveSpeed()) return;
+    const chars = text.length;
+    if (!(chars > 0)) return;
+    const now = Date.now();
+    if (!live.meter) live.meter = { buckets: [], timer: null };
+    live.meter.buckets.push({ at: now, chars, tokens: estimateStreamTokens(text) });
+    if (live.meter.timer) return;
+    const timer = setInterval(() => this.#meterTick(live), 1000);
+    timer.unref?.();
+    live.meter.timer = timer;
+  }
+
+  #meterTick(live: LiveSession): void {
+    const m = live.meter;
+    if (!m) return;
+    const now = Date.now();
+    const from = now - 3000;
+    m.buckets = m.buckets.filter((b) => b.at >= from);
+    const chars = m.buckets.reduce((n, b) => n + b.chars, 0);
+    const tokens = m.buckets.reduce((n, b) => n + b.tokens, 0);
+    if (!chars || !live.busy) {
+      // 一句说完了、或者这一轮已经结束：不再推数字，把表停掉。前端见不到更新就把胶囊收起来
+      // （它是「正在多快」，不是「刚才多快」—— 后者是 turn-end 那行账的活）。
+      this.#meterStop(live);
+      return;
+    }
+    const round1 = (x: number) => Math.round(x * 10) / 10;
+    this.#emit({
+      t: "tps",
+      sessionId: live.info.id,
+      // 主数字是 token/秒 —— 操作员要的就是它。按字符估算（流里没有 usage），`estimated` 如实标着。
+      tps: round1(tokens / 3),
+      // 原始测量值一起给出：估算口径改的时候，这个不用重新解释。
+      cps: round1(chars / 3),
+      windowMs: 3000,
+      available: true,
+      estimated: true,
+      unit: "tokens",
+      at: now,
+    });
+  }
+
+  #meterStop(live: LiveSession): void {
+    const m = live.meter;
+    if (!m) return;
+    if (m.timer) clearInterval(m.timer);
+    live.meter = undefined;
+    this.#emit({ t: "tps", sessionId: live.info.id, available: false, streaming: false, at: Date.now() });
   }
 
   // ---- helpers ----

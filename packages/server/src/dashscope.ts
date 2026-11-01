@@ -707,6 +707,10 @@ export async function summarizeForSpeech(opts: {
    *  model, without the 235-token wander measured on the default budget (4000). Sending this to
    *  a non-qwen3 model would be a lie, so the caller decides and we just transmit. */
   thinkingBudget?: number;
+  /** The output ceiling in tokens. Absent = derived from `maxChars` (the 字数档 path). 全文总结版
+   *  (issue #83) has no 字数档 to derive from — it asks for a share of the input instead, because a
+   *  budget derived from 字数 would make the model summarise a long message back into a short one. */
+  maxOutputTokens?: number;
 }): Promise<{ text: string; ms: number }> {
   const { key, compat } = opts.endpoint
     ? { key: opts.endpoint.apiKey, compat: opts.endpoint.baseUrl.replace(/\/+$/, "") }
@@ -734,7 +738,7 @@ export async function summarizeForSpeech(opts: {
         // the floor that makes a reasoning model answer, and for a plain one it is only a ceiling
         // nobody reaches. The think budget is added on top so capping the think never eats the
         // answer.
-        max_completion_tokens: Math.max(1200, opts.maxChars * 6) + (opts.thinkingBudget ?? 0),
+        max_completion_tokens: (opts.maxOutputTokens ?? Math.max(1200, opts.maxChars * 6)) + (opts.thinkingBudget ?? 0),
         // qwen3 family (#36): thinking ON, budget 200. `thinking_budget` and `reasoning_effort`
         // must never travel together (the vendor rejects the pair), so this is the only knob.
         ...(opts.thinkingBudget

@@ -122,6 +122,9 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       { name: "session wake", args: ["<id>"], returns: "start a cold session's agent process — the same thing the operator's rail does when they open it; the session then accepts send. Gated by the same 驾驶舱互发消息 switch as send" },
       { name: "session create", args: ["<cwd>", "--backend <id>", "--title <text>"], returns: "create a session in <cwd> and answer with its row (id included), so the caller can send into it at once. --backend defaults to the first registered backend; ~ is expanded and a path that is not a directory answers bad_cwd. Gated by the same 驾驶舱互发消息 switch as send — a create costs one agent process, so do it for work you actually need" },
       { name: "session stop", args: ["<id>", "--close"], returns: "interrupt the turn the target is running (default: the session stays alive and keeps its transcript) — answers stopped:true, or stopped:false when nothing was running. --close stops the agent PROCESS instead (the slot becomes cold, the transcript stays); a cold target answers closed:false. Gated by the same 驾驶舱互发消息 switch as send" },
+      { name: "session delete", args: ["<id>"], returns: "OPERATOR ONLY (reads <data>/auth.token; an agent identity is refused with agents_may_not_delete). Same call as DELETE /api/sessions/:id: a LIVE session answers {closed:true} — process stopped, transcript KEPT; a COLD one answers {purged:true} — the transcript is really gone. The asymmetry is deliberate: deleting history is not something an agent may do, and 'executed' is not the same as 'purged'" },
+      { name: "session archive", args: ["<id>"], returns: "OPERATOR ONLY. Hides the session from the rail; archiving a LIVE session also stops its process" },
+      { name: "session unarchive", args: ["<id>"], returns: "OPERATOR ONLY. Puts an archived session back in the rail" },
     ],
     truncation: {
       messages: `each message's text is cut to ${MESSAGE_CHARS} characters; a cut one ends with … and reports truncated:true`,
@@ -454,6 +457,9 @@ export function sendAllowed(setting: unknown): boolean {
 export const COCKPIT_ERRORS = {
   badToken: "bad_token",
   noSuchSession: "no_such_session",
+  /** 这个 id 库里根本没有（多半是打错字）—— 与下面那条"有、但在作用域外"分开，
+   *  否则调用方按稳定码分支时分不清「我打错了」和「我被拒了」（#73）。 */
+  notFound: "not_found",
   outOfScope: "out_of_scope",
   sendsDisabled: "sends_disabled",
   targetBusy: "target_busy",

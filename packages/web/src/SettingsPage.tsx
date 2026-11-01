@@ -118,7 +118,11 @@ interface SettingsView {
   /** The plan-tool hint (settings.prefs.planHint): whether the cockpit tells the agent about the
    *  plan MCP mounted on the session, how often, and in whose words. Server-read per prompt, so
    *  this applies to the very next turn. */
-  prefs?: { planHint?: { on: boolean; everyTurn: boolean; instruction: string } };
+  prefs?: {
+    planHint?: { on: boolean; everyTurn: boolean; instruction: string };
+    /** Issue #70 step 1: 流式测速胶囊的开关（默认关）。服务端读它决定要不要 1Hz 推送。 */
+    showTps?: boolean;
+  };
   updatedAt: number;
 }
 
@@ -224,6 +228,8 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
   const [recallItem, setRecallItem] = useState<number | null>(null);
   const [recallTotal, setRecallTotal] = useState<number | null>(null);
   const [recallMsg, setRecallMsg] = useState("");
+  const [showTps, setShowTps] = useState(false);
+  const [showTpsMsg, setShowTpsMsg] = useState("");
   const [planHint, setPlanHint] = useState<{ on: boolean; everyTurn: boolean; instruction: string } | null>(null);
   const [planHintMsg, setPlanHintMsg] = useState("");
   // 驾驶舱互发消息 — the write half of the cockpit CLI (server `settings.agent.cockpitSend`, default off).
@@ -267,6 +273,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
       if (typeof data.agent?.recallItemChars === "number") setRecallItem(data.agent.recallItemChars);
       if (typeof data.agent?.recallTotalChars === "number") setRecallTotal(data.agent.recallTotalChars);
       if (data.prefs?.planHint) setPlanHint(data.prefs.planHint);
+      if (typeof data.prefs?.showTps === "boolean") setShowTps(data.prefs.showTps);
       if (typeof data.agent?.cockpitSend === "boolean") setCockpitSend(data.agent.cockpitSend);
       if (typeof data.agent?.modelWriteBack === "boolean") setModelWriteBack(data.agent.modelWriteBack);
       if (typeof data.agent?.showSilentBackground === "boolean") setShowSilentBg(data.agent.showSilentBackground);
@@ -517,6 +524,27 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
 
   /** 计划提示注入 saves on its own, like the lifecycle numbers: it is not part of the voice draft
    *  and it must apply to the next turn, not to the next 保存. */
+  /** Issue #70 step 1: 即时保存（和计划提示同一个口）。开关是服务端的：关掉之后服务端连定时器都不开。 */
+  const saveShowTps = async (on: boolean): Promise<void> => {
+    setShowTps(on);
+    setShowTpsMsg("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prefs: { showTps: on } }),
+      });
+      const data = (await res.json().catch(() => ({}))) as SettingsView & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `save failed (${res.status})`);
+      setView(data);
+      setShowTpsMsg(on ? "已开启：这一轮开始出字时，时钟后面会出现「≈N 字/秒」。" : "已关闭：不再推送、不再显示。");
+    } catch (e) {
+      setShowTps(!on);
+      setShowTpsMsg(`保存失败：${(e as Error).message}`);
+    }
+  };
+
   const savePlanHint = async (patch: { on?: boolean; everyTurn?: boolean; instruction?: string }): Promise<void> => {
     const next = {
       on: planHint?.on ?? true,
@@ -1176,6 +1204,28 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             进程一死就失效；也只听本机回环地址。改动立刻对下一轮生效，不用重启会话。
           </p>
           {cockpitMsg ? <p className="set-hint">{cockpitMsg}</p> : null}
+        </section>
+
+        <section className="set-card" id="set-chat" data-setgroup="agent">
+          <h3>对话</h3>
+          <div className="set-row" data-setrow="show-tps">
+            <label>显示流式速度</label>
+            <div className="set-pair">
+              <input
+                type="checkbox"
+                checked={showTps}
+                onChange={(e) => void saveShowTps(e.target.checked)}
+                data-set="show-tps"
+              />
+              <span className="set-hint">
+                回合进行中，在「处理中」后面显示最近 3 秒的输出速度（<b>t/s</b>）。协议流里没有 token
+                计数，所以这是按字符估算的（中文约 0.6 token/字、英文约 4 字符/token），前面带「≈」；
+                那一轮的<b>精确</b>平均值在回复下面的用量行上。开着它很便宜，但会每秒给你一条 WS 消息，
+                所以默认关。
+              </span>
+            </div>
+          </div>
+          {showTpsMsg ? <p className="set-hint">{showTpsMsg}</p> : null}
         </section>
 
         <section className="set-card" id="set-model-default" data-setgroup="agent">

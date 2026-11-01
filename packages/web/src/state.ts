@@ -284,6 +284,11 @@ export interface SessionView {
    *  start (`durationMs` on turn-end) but does not put it on the wire, and a server change is a
    *  restart, so this stamp is client-side by design. */
   busySince: number | null;
+  /** 流式测速（issue #70 step 1）：服务端 1Hz 推的「这三秒大约多少 token」。只在开关打开时才有值，
+   *  收不到更新（`at` 太旧）就整块不画 —— 它是「现在多快」，不是「刚才多快」。
+   *  数字是**估算**的：ACP 流里没有 usage，服务端按字符折 token（见 `estimateStreamTokens`），
+   *  准确值在那一轮的用量行上。 */
+  tps?: { tps: number; at: number } | null;
   /** The agent's STATUS lines (issue #18), as ROWS in the transcript rather than a suffix on the tail
    *  line — the operator's call (2026-10-18): 「压缩什么的也会显示，所以应该放在会话记录框里面」.
    *  In memory only, on purpose: they describe process state, not something anybody said, so they must
@@ -2281,6 +2286,11 @@ export class Cockpit {
           const sid = e.sessionId;
           window.setTimeout(() => this.drainQueue(sid), 250);
         }
+        break;
+      }
+      case "tps": {
+        const v = this.#view(e.sessionId);
+        v.tps = e.available === false ? null : { tps: Number(e.tps) || 0, at: Number(e.at) || Date.now() };
         break;
       }
       case "permission":

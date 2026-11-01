@@ -20,6 +20,9 @@ import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientpro
 import { Readable, Transform, Writable } from "node:stream";
 
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
+// MOCK_IGNORE_TERM=1 -> 不理会 SIGTERM（只有 SIGKILL 能停它）。用来复刻「关闭时它还在握手、而且
+// 关不掉」的窗口：有界等待超时后槽被删掉，握手随后落地，正好能验证"关闭中回魂"那道守卫。
+if (process.env.MOCK_IGNORE_TERM === "1") process.on("SIGTERM", () => {});
 /** Boot latency — deliberately BEFORE the stream is wired, so the slot sits in `starting` for as
  *  long as QA asks. Defaults to 0: the mock is instant unless a sweep needs the wake window. */
 const SPAWN_MS = Number(process.env.MOCK_SPAWN_MS || 0);
