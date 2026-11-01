@@ -44,6 +44,7 @@ import {
 } from "./voice";
 import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
+import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldToTalk } from "./holdToTalk";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
@@ -4885,6 +4886,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         armed = true;
         dictation.cancel();
         void dictation.start(prefs, v.info.id);
+        hintOnce();
       }, 250);
     };
     const up = (e: KeyboardEvent): void => {
@@ -5015,6 +5017,63 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   };
 
   const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
+
+  // ---- 按住说话 (issue #82) ---------------------------------------------------
+  // 语音输入原来只有「按住 Ctrl」一条路，鼠标/触控板用户走不到：聊天页那颗麦克风是点击切换，
+  // 要两次点击。这里给它补指针等价物：按住按钮 or 在输入框里按住左键，松手就是「我说完了」。
+  // 短按仍然是原来的点击切换（`pressFired` 那套语义），别让老用法消失。
+  const [holdHint, setHoldHint] = useState("");
+  /** 第一次真正用上听写时，把「其实可以按住说」这件事说一遍 —— 只一遍（localStorage）。 */
+  const hintOnce = (): void => {
+    try {
+      if (localStorage.getItem(HOLD_HINT_KEY)) return;
+      localStorage.setItem(HOLD_HINT_KEY, "1");
+    } catch { /* private mode: 每次说一遍也比不说强不了多少，但不该因此崩 */ }
+    setHoldHint(holdHintText(finePointer()));
+    window.setTimeout(() => setHoldHint(""), 9000);
+  };
+  const startChatDictation = (): void => {
+    dictation.cancel();
+    // session id 是热词的来源，漏了它本会话的专有名词就识别不出来（voice.ts 的注释写了这条）
+    void dictation.start(prefs, v.info.id);
+    hintOnce();
+  };
+  const endChatDictation = (): void => {
+    if (dictation.owns("chat")) dictation.stop();
+  };
+  // 麦克风按钮那一路：pointerleave 绝不参与（按住时布局会动，按钮自己会「离开」指针）
+  const micHold = useRef<HoldToTalk | null>(null);
+  const micSwallow = useRef(false);
+  if (!micHold.current) {
+    micHold.current = createHoldToTalk({
+      onHold: () => {
+        micSwallow.current = true;
+        startChatDictation();
+      },
+    });
+  }
+  // 输入框里长按左键那一路（P1）：只有 focus 已经在框里才 arm，与按住 Ctrl 同一前提。
+  // 位移超阈值 / 出现选区 → 放弃本次手势，让原生拖选照常工作。
+  const areaHold = useRef<HoldToTalk | null>(null);
+  const areaArmed = useRef(false);
+  if (!areaHold.current) {
+    areaHold.current = createHoldToTalk({
+      onHold: () => startChatDictation(),
+    });
+  }
+  useEffect(() => {
+    const onSel = (): void => {
+      // 检测到选区 = 他在选字，不是要说话（双击选词、拖选、三击选段都走这里）
+      if (!areaArmed.current) return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      areaArmed.current = false;
+      areaHold.current?.cancel();
+    };
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+
   // The three controls the operator sees: attachments, thinking depth, settings, model —
   // model and depth only when the agent actually advertises them (never a dead button).
   const effortCfg = pickConfigOption(v.info.configOptions, "effort");
@@ -5275,6 +5334,13 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             </div>
           </div>
         ) : null}
+        {holdHint && !dict.error ? (
+          <div className="dict-chip hint" data-hold-hint="1">
+            <IconMic size={13} />
+            {holdHint}
+            <button className="dict-stop" onClick={() => setHoldHint("")} aria-label="dismiss">知道了</button>
+          </div>
+        ) : null}
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />
@@ -5315,6 +5381,32 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             rows={1}
             className={tokenLive ? "tokenized" : undefined}
             value={text}
+            /* 输入框里按住左键 = 按住说话 (issue #82 P1)。只在 focus 已经在框里（与 Ctrl 通道同一前提）、
+               且是鼠标/笔的时候 arm；**不 preventDefault**（点一下把光标放到某个字中间必须照旧可用），
+               拖选靠位移阈值和 selectionchange 让位。 */
+            onPointerDown={(e) => {
+              if (call) return;
+              if (e.pointerType !== "mouse" && e.pointerType !== "pen") return;
+              if (document.activeElement !== ta.current) return;
+              const ok = areaHold.current?.down(e.clientX, e.clientY) ?? false;
+              if (ok) areaArmed.current = true;
+            }}
+            onPointerMove={(e) => {
+              if (!areaArmed.current) return;
+              areaHold.current?.move(e.clientX, e.clientY);
+            }}
+            onPointerUp={() => {
+              if (!areaArmed.current) return;
+              areaArmed.current = false;
+              const g = areaHold.current?.up();
+              if (g === "hold") endChatDictation();
+            }}
+            onPointerCancel={() => {
+              areaArmed.current = false;
+              const wasHolding = areaHold.current?.holding() === true;
+              areaHold.current?.cancel();
+              if (wasHolding) endChatDictation();
+            }}
             onFocus={() => setPaletteHidden(false)}
             onScroll={(e) => {
               // 长草稿会在框里滚动：两层不同步，胶囊就会在文字上游走。
@@ -5537,12 +5629,34 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             <span className="head-spacer" />
             <button
               className={`icon-btn ${listening ? "on rec" : ""}`}
-              title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
+              title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（按压住说话 / 按住 Ctrl）"}
               aria-label="dictate"
+              onPointerDown={(e) => {
+                if (call) return;                       // 通话中麦克风归通话
+                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* older engines */ }
+                micSwallow.current = false;
+                micHold.current?.down(e.clientX, e.clientY);
+              }}
+              onPointerMove={(e) => micHold.current?.move(e.clientX, e.clientY)}
+              // 记住：这里**没有** onPointerLeave —— 按住时输入框会长高、状态条出现，按钮会自己下移，
+              // 指针没动却"离开"了按钮，按手机的实测经验那会把录音掐断。
+              onPointerUp={() => {
+                const g = micHold.current?.up();
+                if (g === "hold") { endChatDictation(); return; }
+                if (g === "tap") startChatDictation();
+                // g === null（这次手势作废）：旗子留给后面那个 click 自己清，别在这里清 ——
+                // 清了之后 pointercapture 派发的 click 会再 start 一次，一次按住听到两次。
+              }}
+              onPointerCancel={() => {
+                const wasHolding = micHold.current?.holding() === true;
+                micHold.current?.cancel();
+                if (wasHolding) endChatDictation();
+              }}
               onClick={() => {
-                dictation.cancel();
-                // the session is what lets the recogniser carry this conversation's hotwords
-                void dictation.start(prefs, v.info.id);
+                // 指针已经处理过的这一次不要再跑一遍（键盘 Enter/读屏仍走这里）
+                if (micSwallow.current) { micSwallow.current = false; return; }
+                if (micHold.current?.pending()) return;
+                startChatDictation();
               }}
             >
               <IconMic size={16} />

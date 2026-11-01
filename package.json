@@ -100,7 +100,9 @@
     "mention-units": "tsx scripts/qa/mention-units.mts",
     "mention-sweep": "node scripts/qa/mention-sweep.mjs",
     "speakable-units": "tsx scripts/qa/speakable-units.mts",
-    "speakable-sweep": "node scripts/qa/speakable-sweep.mjs"
+    "speakable-sweep": "node scripts/qa/speakable-sweep.mjs",
+    "hold-to-talk-units": "tsx scripts/qa/hold-to-talk-units.mts",
+    "hold-to-talk-sweep": "node scripts/qa/hold-to-talk-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"

@@ -432,6 +432,11 @@ button { font: inherit; }
 .script-note.open .script-note-text { display: inline; -webkit-line-clamp: unset; overflow: visible; }
 .script-note-meta { flex: 0 0 auto; color: var(--text-dim); opacity: 0.75; font-size: 10.5px; }
 
+/* 一次性提示（issue #82）：不抢位置，长在输入框下方那条状态区里；「知道了」是唯一入口，
+   9 秒后自己消失 —— 它只是提示，不该需要操作。 */
+.dict-chip.hint { border-color: var(--accent); color: var(--text); }
+.dict-chip.hint .dict-stop { color: var(--accent); }
+
 /* A failure must be readable, not a whisper: it says why nothing was spoken. */
 .bubble-note.err { color: var(--err); }
 /* The turn indicator, at zero HEIGHT: a breathing dot beside the session title. It replaces two
