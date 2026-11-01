@@ -144,9 +144,11 @@ try {
   check("a 650ms hold on the message speaker opens its menu", await ev(`Boolean(document.querySelector('.bubble-menu'))`));
   check("…without buying anything yet", (await ev(`window.__sumCalls`)) === 0);
   // The menu is a flat ACTION list (operator's ask, 2026-10-18): 读整条 + three 字数档 + 按设置.
+  // 契约变更（issue #83）：读整条之后多了「全文总结版播报」（data-speak-summary="full"）——
+  // 它和下面四条不是同一件事（不设字数档、覆盖全文），所以位置固定在读整条的下一条。
   const items = await ev(`[...document.querySelectorAll('.bubble-menu [data-speak-summary]')].map(b => b.getAttribute('data-speak-summary'))`);
-  check("the menu offers 读整条 / 100 / 150 / 200 字 / 按设置",
-    JSON.stringify(items) === JSON.stringify(["verbatim", "100", "150", "200", "cfg"]), JSON.stringify(items));
+  check("the menu offers 读整条 / 全文总结版 / 100 / 150 / 200 字 / 按设置",
+    JSON.stringify(items) === JSON.stringify(["verbatim", "full", "100", "150", "200", "cfg"]), JSON.stringify(items));
   const label = await ev(`document.querySelector('.bubble-menu [data-speak-summary="100"]')?.textContent ?? ''`);
   check("…naming the length it will aim for", label.includes("总结") && label.includes("100"), label);
 

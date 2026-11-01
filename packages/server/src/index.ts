@@ -27,7 +27,7 @@ import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech } from 
 import { bridgeTitle, buildBridgeEnvelope } from "./bridge.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
-  SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
+  SUMMARY_FULL_PROMPT_DEFAULT, SUMMARY_MAX_INPUT_CHARS, SUMMARY_THINKING_BUDGET,
   agentSettings, getSettings, initSettings, observerSettings, planHintSettings, publicSettings,
   saveAgent, saveCall, saveObserver, savePrefs, saveSettings, saveSummary, saveTheme, summarySettings,
   modelUsage,
@@ -2060,15 +2060,24 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // rides the prompt's existing `{maxChars}` placeholder — so this is the only place it has to
         // be honoured. Clamped to the same range the settings page validates, so a crafted body
         // cannot ask for a 10k-character invoice.
+        // 全文总结版 (issue #83): 同一端点、同一路由链，只是「要它干什么」不同 —— 不是压成
+        // {maxChars} 字，是覆盖全文的改写。字数档在 full 模式下没有意义（传了也不用）。
+        const mode: "summary" | "full" = body.mode === "full" ? "full" : "summary";
         const asked = Math.round(Number(body.maxChars));
         const [clo, chi] = SUMMARY_CHARS_RANGE;
         const maxChars = Number.isFinite(asked) && asked >= clo && asked <= chi ? asked : cfg.maxChars;
         // Judge "short enough to just read" on what would actually be SPOKEN: voice.ts drops code
         // blocks, and a 20-line diff must not count as a long message worth a model call.
         const spoken = textOf(row.payload).replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+        // 全文版按「输入的比例」给输出预算：没有字数档可推导，且压得太狠就变回摘要了。
+        // 0.7 tokens/字 是「改写比摘要长、比原文短」的量级，下限 1200 保证推理模型也能给出答案。
+        const fullBudget = Math.max(1200, Math.round(spoken.length * 0.7));
         if (!spoken) return send(res, 409, { error: "这条消息没有可以念的文字", code: "empty" });
-        if (spoken.length <= maxChars) {
-          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars });
+        // 全文版没有「字数档」这个概念，但「本来就短、直接念」这条仍然成立 —— 用 200 字的门槛，
+        // 否则一句 300 字的话也会去买一次模型改写。
+        const verbatimLimit = mode === "full" ? Math.max(200, maxChars) : maxChars;
+        if (spoken.length <= verbatimLimit) {
+          return send(res, 200, { ok: true, via: "verbatim", text: spoken, chars: spoken.length, ms: 0, maxChars, mode });
         }
         // Over the ceiling we REFUSE, loudly (#36). The old behaviour summarised the head and said
         // so in a footnote — but a summary that drops the second half is worse than none, because
@@ -2090,7 +2099,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const r = await summarizeForSpeech({
             text: spoken,
             maxChars,
-            prompt: cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT,
+            // 全文版用自己那份提示词：设置页那份是给「压成 N 字」用的，混用会让它照摘要的规矩办事。
+            prompt: mode === "full" ? SUMMARY_FULL_PROMPT_DEFAULT : (cfg.prompt.trim() || SUMMARY_PROMPT_DEFAULT),
+            ...(mode === "full" ? { maxOutputTokens: fullBudget } : {}),
             model,
             timeoutSec: cfg.timeoutSec,
             // Thinking stays ON for qwen3 models, capped at 200 tokens (operator's call, #36):
@@ -2108,6 +2119,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             // echo the bucket: the note prints 「约 150 字」 and a summary that silently used the
             // configured number would make the menu look broken
             maxChars,
+            mode,
             ms: r.ms, model,
             // which account this call was billed to — the note prints it, and a fallback that
             // silently used the OTHER provider would be a lie about the cost

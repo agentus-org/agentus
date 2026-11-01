@@ -11,6 +11,9 @@
 //     这一行同时也是判断提示词好不好用的唯一入口。
 //  3) **不许假装**：失败就是失败，绝不把原文当成摘要念（那会让人以为模型总结过了）。
 
+/** "summary" = 压成 {maxChars} 字的播报总结; "full" = 覆盖全文的改写（不设字数档）。 */
+export type SpeechMode = "summary" | "full";
+
 export interface SpeechSummary {
   /** the text to speak — a model paraphrase, or the message itself when it was already short */
   text: string;
@@ -32,6 +35,8 @@ export interface SpeechSummary {
   truncated?: boolean;
   /** which 字数档 produced this one (absent on server rows that predate the buckets) */
   maxChars?: number;
+  /** "full" = 全文总结版（不压字数），absent/"summary" = 旧的转载档 */
+  mode?: SpeechMode;
 }
 
 const cache = new Map<string, SpeechSummary>();
@@ -43,7 +48,10 @@ let version = 0;
 
 /** The cache key for one (message, 字数档) pair. No bucket = 「按设置」, which keeps the old key so a
  *  summary generated before this change still plays. */
-export function summaryKey(messageKey: string, maxChars?: number): string {
+export function summaryKey(messageKey: string, maxChars?: number, mode?: SpeechMode): string {
+  // 全文总结版 (issue #83) 不吃字数档：它是「覆盖全文」的另一种稿子，键里必须能区分，
+  // 否则一次全文总结会把 100 字档那份旧稿顶掉，菜单看起来像坏了。
+  if (mode === "full") return `${messageKey}#full`;
   return maxChars === undefined || maxChars === null ? messageKey : `${messageKey}#${maxChars}`;
 }
 
@@ -103,14 +111,15 @@ export class SummaryError extends Error {
  * Only the message KEY travels: the body is read from the store server-side, so the browser cannot
  * decide what reaches the model (nor skip the length guard by claiming a shorter text).
  */
-export async function summarizeMessage(sid: string, key: string, maxChars?: number): Promise<SpeechSummary> {
+export async function summarizeMessage(sid: string, key: string, maxChars?: number, mode?: SpeechMode): Promise<SpeechSummary> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/speech-summary`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
     // `maxChars` is optional on purpose: absent = 「按设置」, and the server keeps using the
     // configured number (which is also what a page that predates the buckets sends).
-    body: JSON.stringify(maxChars === undefined ? { key } : { key, maxChars }),
+    // `mode: "full"` = 全文总结版：服务端换成「覆盖全文」的提示词与输出预算。
+    body: JSON.stringify({ key, ...(maxChars === undefined ? {} : { maxChars }), ...(mode ? { mode } : {}) }),
   });
   const data = (await res.json().catch(() => ({}))) as Partial<SpeechSummary> & { error?: string; code?: string };
   if (!res.ok) {
@@ -137,7 +146,8 @@ export async function summarizeMessage(sid: string, key: string, maxChars?: numb
     routeNote: data.routeNote,
     truncated: data.truncated === true,
     maxChars: data.maxChars === undefined ? maxChars : Number(data.maxChars),
+    mode: data.mode === "full" ? "full" : undefined,
   };
-  remember(key, summaryKey(key, maxChars), out);
+  remember(key, summaryKey(key, maxChars, mode), out);
   return out;
 }

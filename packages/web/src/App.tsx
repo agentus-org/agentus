@@ -37,10 +37,12 @@ import {
   type SpeechSummary,
 } from "./speechSummary";
 import {
-  browserDictationAvailable, dictation, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps, speaker, useAutoRead,
+  browserDictationAvailable, dictation, getSpeakScript, hushSpeech, isCallActive, loadServerVoicePrefs, loadVoiceCaps,
+  speaker, speakDurationLabel, subscribeSpeakScripts, speakScriptsVersion, useAutoRead,
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
+import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
@@ -2657,6 +2659,7 @@ function Bubble({ m, sid, backend, last, busy, live, base }: { m: MsgView; sid: 
             </div>
             {/* inside the bubble, under the action row: 「它念了什么」 belongs to this message */}
             <SummaryNote mkey={m.key} />
+            <ScriptNote id={m.key} />
           </div>
         </div>
       );
@@ -3674,6 +3677,8 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
   };
   if (!text.trim()) return null;
   const playing = spoken.speaking && spoken.speakingId === id;
+  // 规则版把代码块/表格/链接都改写过，时长要按**念出来的稿子**算，不是按原文长度。
+  const duration = speakDurationLabel(text, prefs.rate);
   // Only claim we cannot speak when the browser really has no speech synthesis at all:
   // "no voices yet" is a loading state, not a verdict (the list arrives late in Chromium).
   if (typeof window !== "undefined" && !("speechSynthesis" in window) && !prefs.serverTts) {
@@ -3681,23 +3686,25 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
   }
   // 字数档 (the operator's ask, 2026-10-18): the long press offers 100/150/200 字 beside 「按设置」,
   // and the count rides the server prompt's `{maxChars}` placeholder. `undefined` = 按设置.
-  const summarise = async (maxChars?: number): Promise<void> => {
+  // `mode` = "full" is 全文总结版 (issue #83): not a 字数档 but a rewrite that covers the WHOLE
+  // message. It rides the same endpoint with `mode`, and its own cache key (`#full`).
+  const summarise = async (maxChars?: number, mode?: "full"): Promise<void> => {
     if (busy) return;
     // Already summarised at THIS length: replay it. A second long press must not buy the same
     // paragraph twice (the note's ✕ forgets it, which turns the next press back into a real call).
     // The key carries the bucket, so 100 字 and 200 字 are two paragraphs, not one cache hit.
-    const cached = getSummary(summaryKey(id, maxChars));
+    const cached = getSummary(summaryKey(id, maxChars, mode));
     if (cached) {
       setMenu(false);
-      void speaker.speak(cached.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
+      void speaker.speak(cached.text, `${id}#summary:${mode ?? maxChars ?? "cfg"}`, prefs);
       return;
     }
     setBusy(true);
     setErr(null);
     try {
-      const s: SpeechSummary = await summarizeMessage(sid, id, maxChars);
+      const s: SpeechSummary = await summarizeMessage(sid, id, maxChars, mode);
       setMenu(false);
-      void speaker.speak(s.text, `${id}#summary:${maxChars ?? "cfg"}`, prefs);
+      void speaker.speak(s.text, `${id}#summary:${mode ?? maxChars ?? "cfg"}`, prefs);
     } catch (e) {
       const se = e as SummaryError;
       // Say WHICH failure it was (off / not configured / timed out / endpoint said no) and never
@@ -3756,7 +3763,19 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
               onClick={() => { setMenu(false); void speaker.speak(text, id, prefs); }}
             >
               <span className="speak-check">›</span>
-              <span className="speak-name">读整条</span>
+              <span className="speak-name">读整条 · {duration}</span>
+            </button>
+            {/* issue #83: 全文总结版 —— 覆盖全文的模型改写，不设字数档（和下面那四档是两件事）。 */}
+            <button
+              type="button"
+              role="menuitem"
+              className="speak-menu-item"
+              disabled={busy}
+              data-speak-summary="full"
+              onClick={() => void summarise(undefined, "full")}
+            >
+              <span className="speak-check">{busy ? "•" : "›"}</span>
+              <span className="speak-name">{busy ? "总结中…" : "全文总结版播报"}</span>
             </button>
             {[100, 150, 200].map((n) => (
               <button
@@ -3783,7 +3802,9 @@ function SpeakButton({ id, text, sid }: { id: string; text: string; sid: string 
               <span className="speak-check">›</span>
               <span className="speak-name">{busy ? "总结中…" : "语音播报总结 · 按设置"}</span>
             </button>
-            <p className="speak-hint">把这条压成一段能听完的话；字数写进提示词交给模型（提示词在 设置 → 语音总结）</p>
+            <p className="speak-hint">
+              读整条按规则适配（代码块报行数、表格逐行念、链接只念域名）；全文总结版走模型，覆盖全文但不压成一段
+            </p>
           </div>
         ) : null}
       </span>
@@ -3810,7 +3831,7 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
     ? `${sum.provider ?? ""}${sum.provider ? " · " : ""}${sum.model ?? ""}`
     : sum.model ? `语音端点 · ${sum.model}` : "";
   // The bucket is part of the record: 「约 150 字」 is why this paragraph is longer than the last one.
-  const bucket = sum.maxChars ? ` · 按 ${sum.maxChars} 字压` : "";
+  const bucket = sum.mode === "full" ? " · 全文版" : sum.maxChars ? ` · 按 ${sum.maxChars} 字压` : "";
   const meta = sum.via === "verbatim"
     ? "原文本身就够短，直接念"
     : `${sum.chars} 字${bucket} · ${(sum.ms / 1000).toFixed(1)}s${billed ? ` · ${billed}` : ""}`;
@@ -3829,6 +3850,31 @@ function SummaryNote({ mkey }: { mkey: string }): JSX.Element | null {
         <IconClose size={11} />
       </button>
       {/* version keeps the subscription honest even when this key's summary is replaced */}
+      <span hidden>{version}</span>
+    </div>
+  );
+}
+
+/** 规则版的念稿，同样要看得见（issue #83）。
+ *
+ *  它零成本，但它会「跳过代码块、折叠表格、只念链接的域名」—— 这些没说出口的部分如果不留痕，
+ *  听到的就是一份没法核对的稿子。这一行只在**这条消息被念过之后**出现，展开就是逐字的稿子。 */
+function ScriptNote({ id }: { id: string }): JSX.Element | null {
+  const version = useSyncExternalStore(subscribeSpeakScripts, speakScriptsVersion, speakScriptsVersion);
+  const [open, setOpen] = useState(false);
+  const rec = getSpeakScript(id);
+  if (!rec || !rec.script) return null;
+  return (
+    // 用自己的一套类名，不复用 `.speech-note`：那份是「模型稿」的行，两行同时在场时
+    // querySelector 会挑错人（speech-summary-dom 的 8 条断言当场变红，就是这么发现的）。
+    <div className={`bubble-note script-note${open ? " open" : ""}`} data-speak-script="rules">
+      <button type="button" className="script-note-tag" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        念稿
+      </button>
+      <span className="script-note-text" onClick={() => setOpen((o) => !o)} title="点击展开/收起">
+        {rec.script}
+      </span>
+      <span className="script-note-meta">{describeSpeakable(rec.notes, rec.seconds)}</span>
       <span hidden>{version}</span>
     </div>
   );
