@@ -40,11 +40,18 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-summary-sweep-"));
 // ---- stub vendor -------------------------------------------------------------------------
 type Body = Record<string, unknown>;
 const seen: Body[] = [];
+/** Flipped to a 4xx to prove the route carries the vendor's own status out (#85). */
+let stubStatus = 200;
 const stub = http.createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {
     try { seen.push(JSON.parse(raw) as Body); } catch { seen.push({}); }
+    if (stubStatus !== 200) {
+      res.writeHead(stubStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify({ code: "model_not_allowed", error: "model_not_allowed: qwen3.8-flash" }));
+      return;
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       choices: [{ message: { content: "这是摘要。" }, finish_reason: "stop" }],
@@ -100,7 +107,7 @@ const plain = await call("一段需要压成口播的话。");
 check("非 qwen3 模型不带思考字段", !("enable_thinking" in plain.body) && !("thinking_budget" in plain.body));
 check("非 qwen3 也走 max_completion_tokens", !("max_tokens" in plain.body) && Number(plain.body.max_completion_tokens) >= 1200);
 
-stub.close();
+// (the stub stays up: §5 below asks it to answer 403)
 
 // ---- 3) the session's own model actually resolves ----------------------------------------
 const home = process.env.HERMES_HOME ?? path.join(os.homedir(), ".hermes");
@@ -127,6 +134,67 @@ const openrouter = routeForModel("openrouter:anthropic/claude-x", home);
 check("冒号形态的目录名保留斜杠（openrouter:anthropic/claude-x）",
   openrouter.route === null || openrouter.route.model === "anthropic/claude-x",
   openrouter.route ? `${openrouter.route.provider} ${openrouter.route.model}` : openrouter.why);
+
+// ---- 4) `custom:<provider>:<model>` resolves to that provider entry (#85) ------------------
+// The id the agent reports looks like `custom:lab:qwen38-27b`: `custom` is the NAMESPACE, `lab` is a
+// `config.yaml providers` entry. Treating `custom` as the provider found nothing and every such
+// session fell back to the voice endpoint — a 403 there, reported as 502.
+const customHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-custom-home-"));
+fs.writeFileSync(path.join(customHome, "config.yaml"), [
+  "providers:",
+  "  lab:",
+  "    base_url: https://lab.example.invalid/v1",
+  "    api_key: sk-lab-from-config",
+  "    model: qwen38-27b",
+  "model:",
+  "  default: lab:qwen38-27b",
+  "  provider: lab",
+].join("\n"));
+
+const customLab = routeForModel("custom:lab:qwen38-27b", customHome);
+check("custom:lab:qwen38-27b 解析到 providers.lab（不是「provider custom」）",
+  customLab.route?.provider === "lab" && customLab.route?.model === "qwen38-27b",
+  customLab.route ? `${customLab.route.provider} ${customLab.route.model} · ${customLab.route.source}` : customLab.why);
+check("端点是配置里那一行，key 也是那一行的",
+  customLab.route?.baseUrl === "https://lab.example.invalid/v1" && customLab.route?.apiKey === "sk-lab-from-config",
+  String(customLab.route?.baseUrl));
+
+const customQoder = routeForModel("custom:qoder:qwen3.8-flash", home);
+check("本机真配置的 custom:qoder:… 也能解析（qoder 是 providers 里的具名条目）",
+  customQoder.route?.provider === "qoder" && customQoder.route?.model === "qwen3.8-flash",
+  customQoder.route ? `${customQoder.route.provider} ${customQoder.route.baseUrl}` : customQoder.why);
+
+const customUnknown = routeForModel("custom:nope-provider:some-model", customHome);
+check("custom 指向不存在的 provider 时，失败原因点名那条 provider（并指路 config.yaml）",
+  customUnknown.route === null
+    && /nope-provider/.test(customUnknown.why)
+    && /providers/.test(customUnknown.why)
+    && !/provider「custom」/.test(customUnknown.why),
+  customUnknown.why);
+
+// ---- 5) the vendor's own status survives the error path (#85) ------------------------------
+// A 403 `model_not_allowed` used to arrive as 502 「网关故障」. The error object now carries the
+// status, which is what index.ts maps back onto the response.
+const { DashscopeError } = await import("../../packages/server/src/dashscope.ts");
+stubStatus = 403;
+let thrown: unknown = null;
+try {
+  await summarizeForSpeech({
+    text: "一段需要压成口播的话。", maxChars: 120, prompt: "压成 {maxChars} 字", model: "qwen3.8-flash",
+    timeoutSec: 5, endpoint: { baseUrl, apiKey: "sk-stub" },
+  });
+} catch (e) { thrown = e; }
+check("上游 403 时抛的是 DashscopeError（不是被吞掉）", thrown instanceof DashscopeError,
+  thrown instanceof DashscopeError ? "" : String(thrown));
+check("错误里带着上游真实状态码 403（路由据此不再一律 502）",
+  (thrown as { upstreamStatus?: number } | null)?.upstreamStatus === 403,
+  String((thrown as { upstreamStatus?: number } | null)?.upstreamStatus));
+check("错误文本保留上游原话（model_not_allowed）",
+  /model_not_allowed/.test(String((thrown as Error)?.message ?? "")),
+  String((thrown as Error)?.message ?? "").slice(0, 90));
+stubStatus = 200;
+
+stub.close();
 
 // ---- verdict ------------------------------------------------------------------------------
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);

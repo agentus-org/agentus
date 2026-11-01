@@ -2090,8 +2090,17 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // for every row on this box), so reading the store alone answered 「agent 未握手」 and
           // every summary silently fell back to the voice endpoint's qwen-flash.
           const live = mgr.list().find((s) => s.id === id);
+          // THREE sources, in that order (issue #85): the live object, the row, and — the one that
+          // was missing — the backend's cached ACP handshake. On a cold/historical session the first
+          // two are both empty (every `sessions.models` column in the deployed DB was null), while
+          // `backends.handshake.models.currentModelId` holds the id the agent actually last reported.
+          // Without this source `modelId` was null for exactly the sessions the long-press menu is
+          // used on, and the summary fell back to the voice endpoint's default model.
+          const handshakeModel = (be?.handshake as { models?: { currentModelId?: string | null } } | null)
+            ?.models?.currentModelId ?? null;
           const modelId = live?.models?.currentModelId
             ?? ((row.models ?? {}) as { currentModelId?: string | null }).currentModelId
+            ?? handshakeModel
             ?? null;
           // The provider keys live in this box's agent home, which is a property of the runtime —
           // not of the vendor that happens to be driving this session. A backend that owns no home
@@ -2149,9 +2158,22 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           });
         }
         try {
-          // The operator's rule: bill this to the model he is already talking to. The voice
-          // endpoint stays as the fallback (and is the whole route when followSession is off).
+          // The operator's rule: bill this to the model he is already talking to. When
+          // `followSession` is on there is exactly ONE target — that model — and a route that does
+          // not resolve is an ERROR, not a cue to quietly bill another vendor (issue #85). The old
+          // fallback assumed the voice key could call any chat model; on a deployment whose voice
+          // endpoint only allows speech models it turned every summary into a 403 wearing a 502's
+          // clothes. The voice endpoint serves 「说」 and 「听」 (TTS/ASR); summarizing is neither.
           const own = cfg.followSession ? sessionRoute() : { route: null, why: "" };
+          if (cfg.followSession && !own.route) {
+            return send(res, 409, {
+              error: `这条会话的模型没法用来总结：${own.why}`,
+              code: "no_route",
+              why: own.why,
+              // what the operator can do about it, next to the reason it happened
+              hint: "把会话换到有端点的模型，或在 设置 → 语音总结 关掉「跟随会话模型」改用语音端点",
+            });
+          }
           const model = own.route?.model || cfg.model || SUMMARY_MODEL_DEFAULT;
           const r = await summarizeForSpeech({
             text: spoken,
@@ -2188,9 +2210,20 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // 409 = nothing is configured, 504 = we gave up waiting, 502 = the endpoint said no.
           // None of them may be papered over with the original text: a fallback that looks like a
           // summary is worse than an honest failure the UI can offer to retry.
-          const err = e as { code?: string; message?: string };
-          const status = err.code === "not_configured" ? 409 : err.code === "timeout" ? 504 : 502;
-          return send(res, status, { error: String(err.message ?? e), code: err.code ?? "upstream" });
+          // #85: an upstream 4xx is the vendor telling us something ACTIONABLE (`model_not_allowed`,
+          // a rejected key, a rate limit) — passing it out as 502 reads as 「语音网关挂了」 and sends
+          // the operator to the wrong place. Those travel verbatim; only a real 5xx is our 502.
+          const err = e as { code?: string; message?: string; upstreamStatus?: number };
+          const up = err.upstreamStatus;
+          const status = err.code === "not_configured" ? 409
+            : err.code === "timeout" ? 504
+              : up && up >= 400 && up < 500 ? up
+                : 502;
+          return send(res, status, {
+            error: String(err.message ?? e),
+            code: err.code ?? "upstream",
+            ...(up ? { upstream_status: up } : {}),
+          });
         }
       }
       if (req.method === "POST" && sub === "/fork") {
