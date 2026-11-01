@@ -26,7 +26,9 @@ import WebSocket from "ws";
 import { getSettings, dashscopeUrls, SUMMARY_MODEL_DEFAULT } from "./settings.js";
 
 export class DashscopeError extends Error {
-  constructor(message: string, readonly code: "not_configured" | "upstream" | "timeout" | "bad_audio") {
+  /** #85: the vendor's own HTTP status, when the failure WAS an HTTP answer. The route maps it back
+   *  out (a 403 with a `model_not_allowed` body must not arrive at the UI as 502 「网关故障」). */
+  constructor(message: string, readonly code: "not_configured" | "upstream" | "timeout" | "bad_audio", readonly upstreamStatus?: number) {
     super(message);
   }
 }
@@ -49,7 +51,7 @@ async function fetchJson(url: string, init: RequestInit, label: string): Promise
     const res = await fetch(url, { ...init, signal: ac.signal });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      throw new DashscopeError(`${label} ${res.status}: ${detail.slice(0, 300) || res.statusText}`, "upstream");
+      throw new DashscopeError(`${label} ${res.status}: ${detail.slice(0, 300) || res.statusText}`, "upstream", res.status);
     }
     return res;
   } catch (e) {
@@ -749,7 +751,7 @@ export async function summarizeForSpeech(opts: {
     });
     if (!res.ok) {
       const detail = (await res.text().catch(() => "")).slice(0, 200);
-      throw new DashscopeError(`chat/completions ${res.status}: ${detail}`, "upstream");
+      throw new DashscopeError(`chat/completions ${res.status}: ${detail}`, "upstream", res.status);
     }
     const data = (await res.json()) as {
       choices?: { message?: { content?: string; reasoning_content?: string }; finish_reason?: string }[];

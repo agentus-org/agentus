@@ -121,18 +121,28 @@ export async function summarizeMessage(sid: string, key: string, maxChars?: numb
     // `mode: "full"` = 全文总结版：服务端换成「覆盖全文」的提示词与输出预算。
     body: JSON.stringify({ key, ...(maxChars === undefined ? {} : { maxChars }), ...(mode ? { mode } : {}) }),
   });
-  const data = (await res.json().catch(() => ({}))) as Partial<SpeechSummary> & { error?: string; code?: string };
+  const data = (await res.json().catch(() => ({}))) as Partial<SpeechSummary> & {
+    error?: string; code?: string; hint?: string; why?: string; upstream_status?: number;
+  };
   if (!res.ok) {
     // The server distinguishes "nothing is configured" from "the endpoint refused" from "we gave
     // up waiting" — the operator's next move is different in each case, so say which one it is.
     const hint =
-      data.code === "disabled"
-        ? "到 设置 → 语音总结 打开开关"
-        : data.code === "not_configured"
-          ? "先到 设置 → 语音 配置 DashScope 端点与 API Key（ASR / TTS 用的就是它）"
-          : data.code === "timeout"
-            ? "模型超时了，可以重试；或把超时时间调大"
-            : undefined;
+      data.hint                          // the server already wrote the actionable one (e.g. no_route)
+        ? data.hint
+        : data.code === "disabled"
+          ? "到 设置 → 语音总结 打开开关"
+          : data.code === "not_configured"
+            ? "先到 设置 → 语音 配置 DashScope 端点与 API Key（ASR / TTS 用的就是它）"
+            : data.code === "timeout"
+              ? "模型超时了，可以重试；或把超时时间调大"
+              // #85: the vendor answered, and its answer is about THIS model/keys — not about the
+              // voice service being down. Say what the code actually forbids.
+              : data.upstream_status === 403 || data.upstream_status === 401
+                ? "这个端点不允许用该模型（或凭证无效）—— 换一个该 key 能调的模型，或在 设置 → 语音总结 关掉「跟随会话模型」"
+                : data.upstream_status === 429
+                  ? "被限流了，等一会儿再试"
+                  : undefined;
     throw new SummaryError(data.error || `HTTP ${res.status}`, hint);
   }
   const out: SpeechSummary = {

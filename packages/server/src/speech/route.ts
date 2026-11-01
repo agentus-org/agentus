@@ -120,16 +120,31 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   const parsed = splitModelId(modelId);
   if (!parsed.model) return { route: null, why: "会话还没报出模型（agent 未握手）" };
 
+  // `custom:<declared>:<model>` (issue #85, layer 2). The agent reports a model that lives on a
+  // NAMED entry of `config.yaml providers`, and says so by putting that entry's name in the middle
+  // (hermes' `has_named_custom_provider`). Reading `custom` as the provider name found nothing —
+  // `providers.custom` does not exist and `custom` is not a vendor — so every such session resolved
+  // to 「没有可用的 OpenAI 兼容端点」 forever, and the summary fell back to the voice endpoint.
+  // The real provider is the MIDDLE segment; the model keeps whatever colons remain in its own name.
+  const custom = parsed.provider === "custom" && parsed.model.includes(":")
+    ? { name: parsed.model.slice(0, parsed.model.indexOf(":")).trim().toLowerCase(),
+        model: parsed.model.slice(parsed.model.indexOf(":") + 1).trim() }
+    : null;
+  const bareModel = custom ? custom.model : parsed.model;
+  if (!bareModel) return { route: null, why: "会话还没报出模型（agent 未握手）" };
+
   const cfg = readConfig(home);
   // Slash form is a LAST resort after the colon form (#36): `deepseek/deepseek-v4-flash` is what
   // this session reports, and before this the split returned no provider at all, so the summary
   // silently fell back to the voice endpoint on `qwen-flash`.
-  const slash = parsed.provider
-    ? { provider: parsed.provider, model: parsed.model }
-    : slashProvider(
-        (cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {}) as Record<string, unknown>,
-        parsed.model,
-      );
+  const slash = custom
+    ? { provider: custom.name, model: custom.model }
+    : parsed.provider
+      ? { provider: parsed.provider, model: parsed.model }
+      : slashProvider(
+          (cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {}) as Record<string, unknown>,
+          parsed.model,
+        );
   const model = slash.model;
   // An alias row may rename the model as well as point at a provider (`lab-qwen38-27b` →
   // `qwen38-27b`); the wire id is not the name the vendor knows.
@@ -191,7 +206,11 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   if (!builtin) {
     return {
       route: null,
-      why: `provider「${provider}」没有可用的 OpenAI 兼容端点（config.yaml providers 里没声明，也不在已知列表内）`,
+      // A `custom:<name>:<model>` id names a config.yaml provider entry; when that entry is missing
+      // the sentence has to point at the ENTRY, not at a vendor called "custom" (issue #85).
+      why: custom
+        ? `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${home ? `${home}/config.yaml` : "config.yaml"} 的 providers 里没有这一条 —— 补上 base_url 与 api_key，或把会话换到别的模型`
+        : `provider「${provider}」没有可用的 OpenAI 兼容端点（config.yaml providers 里没声明，也不在已知列表内）`,
     };
   }
   const baseUrl = trimSlash((builtin.baseEnv ? env(builtin.baseEnv) : "") || builtin.baseUrl);
