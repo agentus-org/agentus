@@ -109,6 +109,73 @@ function slashProvider(cfgProviders: Record<string, unknown>, model: string): { 
 }
 
 /**
+ * ONE declared custom endpoint, whichever generation of `config.yaml` declared it (issue #86).
+ *
+ * Mirrors hermes' `get_compatible_custom_providers()`: the legacy top-level `custom_providers` LIST
+ * and the v12+ `providers` MAP are the same thing written two ways, and deployments upgraded from
+ * older versions usually still carry the list. Field names follow the same aliases hermes accepts
+ * (`base_url`/`api`, `model`/`default_model`, `api_key`/`key_env`/`api_key_env`), and an explicit
+ * `enabled: false` hides an entry from both shapes — a disabled endpoint must not be routable.
+ */
+interface CustomEndpoint {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  source: string;
+}
+
+function customEndpointOf(
+  raw: unknown,
+  name: string,
+  source: string,
+  env: (n: string) => string,
+): CustomEndpoint | null {
+  if (!raw || typeof raw !== "object") return null;
+  const e = raw as Record<string, unknown>;
+  const flag = e.enabled;
+  if (flag === false || (typeof flag === "string" && flag.trim().toLowerCase() === "false")) return null;
+  const baseUrl = trimSlash(asString(e.base_url) || asString(e.api));
+  const literal = asString(e.api_key);
+  const envName = asString(e.key_env) || asString(e.api_key_env);
+  const apiKey = literal || (envName ? env(envName) : "");
+  if (!baseUrl || !apiKey) return null;
+  return { name, baseUrl, apiKey, model: asString(e.model) || asString(e.default_model), source };
+}
+
+/** The merged view: legacy list first (its entries are what an upgraded deployment actually has),
+ *  then the v12+ map, first declaration of a name winning. */
+function customEndpoints(cfg: Record<string, unknown>, env: (n: string) => string): CustomEndpoint[] {
+  const out: CustomEndpoint[] = [];
+  const seen = new Set<string>();
+  const push = (e: CustomEndpoint | null): void => {
+    if (!e || seen.has(e.name)) return;
+    seen.add(e.name);
+    out.push(e);
+  };
+  const legacy = cfg.custom_providers;
+  if (Array.isArray(legacy)) {
+    for (const raw of legacy) {
+      const e = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+      const name = (asString(e?.name) || asString(e?.provider_key)).toLowerCase();
+      if (!name) continue;
+      push(customEndpointOf(raw, name, `config.yaml custom_providers.${name}`, env));
+    }
+  }
+  const map = cfg.providers && typeof cfg.providers === "object" ? (cfg.providers as Record<string, unknown>) : {};
+  for (const [key, raw] of Object.entries(map)) {
+    const name = key.trim().toLowerCase();
+    if (!name) continue;
+    push(customEndpointOf(raw, name, `config.yaml providers.${name}`, env));
+  }
+  return out;
+}
+
+function customEndpoint(cfg: Record<string, unknown>, name: string, env: (n: string) => string): CustomEndpoint | null {
+  return customEndpoints(cfg, env).find((e) => e.name === name) ?? null;
+}
+
+/**
  * Resolve the route for one session's model. `home` is the home of the backend that session runs
  * on (`planFor(row).home`) — reading a DIFFERENT agent's config would hand this call a key its
  * model was never entitled to use.
@@ -134,17 +201,40 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   if (!bareModel) return { route: null, why: "会话还没报出模型（agent 未握手）" };
 
   const cfg = readConfig(home);
+  const envFile = home ? readEnvFile(path.join(home, ".env")) : {};
+  const env = (name: string): string => String(process.env[name] ?? envFile[name] ?? "").trim();
+
+  // A `custom:<name>:<model>` id names a declared endpoint, and there are TWO generations of that
+  // declaration in the same file (issue #86): the legacy `custom_providers` LIST and the v12+
+  // `providers` MAP. Hermes reads both through `get_compatible_custom_providers()` and treats them as
+  // one view; a cockpit that only knew the map answered 「providers 里没有这一条」 to an operator whose
+  // endpoint is right there in `custom_providers` — chat works, every side call fails. Same file, same
+  // agents, so the same view.
+  if (custom) {
+    const hit = customEndpoint(cfg, custom.name, env);
+    if (hit) {
+      return {
+        route: { provider: custom.name, model: custom.model || hit.model, baseUrl: hit.baseUrl, apiKey: hit.apiKey, source: hit.source },
+        why: "",
+      };
+    }
+    // NOT falling through to the alias/builtin rungs: a `custom:` id is a claim about a declared
+    // endpoint, and guessing a vendor for it is how the wrong key gets billed.
+    return {
+      route: null,
+      why: `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${home ? `${home}/config.yaml` : "config.yaml"} 的 providers 与 custom_providers 里都没有这一条（或它缺 base_url / api_key）—— 补上凭据，或把会话换到别的模型`,
+    };
+  }
+
   // Slash form is a LAST resort after the colon form (#36): `deepseek/deepseek-v4-flash` is what
   // this session reports, and before this the split returned no provider at all, so the summary
   // silently fell back to the voice endpoint on `qwen-flash`.
-  const slash = custom
-    ? { provider: custom.name, model: custom.model }
-    : parsed.provider
-      ? { provider: parsed.provider, model: parsed.model }
-      : slashProvider(
-          (cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {}) as Record<string, unknown>,
-          parsed.model,
-        );
+  const slash = parsed.provider
+    ? { provider: parsed.provider, model: parsed.model }
+    : slashProvider(
+        (cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {}) as Record<string, unknown>,
+        parsed.model,
+      );
   const model = slash.model;
   // An alias row may rename the model as well as point at a provider (`lab-qwen38-27b` →
   // `qwen38-27b`); the wire id is not the name the vendor knows.
@@ -172,9 +262,6 @@ export function routeForModel(modelId: string | null | undefined, home: string |
     if (defModel && (defModel === model || defModel.endsWith(`:${model}`))) provider = asString(def.provider).toLowerCase();
   }
   if (!provider) return { route: null, why: `不知道该模型属于哪个 provider（会话报的是 ${modelId ?? "空"}）` };
-
-  const envFile = home ? readEnvFile(path.join(home, ".env")) : {};
-  const env = (name: string): string => String(process.env[name] ?? envFile[name] ?? "").trim();
 
   // 1) declared in config.yaml by the operator — the literal values win
   const declared = providers[provider] && typeof providers[provider] === "object"
@@ -206,11 +293,7 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   if (!builtin) {
     return {
       route: null,
-      // A `custom:<name>:<model>` id names a config.yaml provider entry; when that entry is missing
-      // the sentence has to point at the ENTRY, not at a vendor called "custom" (issue #85).
-      why: custom
-        ? `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${home ? `${home}/config.yaml` : "config.yaml"} 的 providers 里没有这一条 —— 补上 base_url 与 api_key，或把会话换到别的模型`
-        : `provider「${provider}」没有可用的 OpenAI 兼容端点（config.yaml providers 里没声明，也不在已知列表内）`,
+      why: `provider「${provider}」没有可用的 OpenAI 兼容端点（config.yaml providers 里没声明，也不在已知列表内）`,
     };
   }
   const baseUrl = trimSlash((builtin.baseEnv ? env(builtin.baseEnv) : "") || builtin.baseUrl);
