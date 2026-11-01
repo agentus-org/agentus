@@ -496,6 +496,9 @@ export class SessionManager {
         archivedAt: null,
         // a row in the manager's map has a process, by definition
         cold: false,
+        // 派出去了、还没回来的活 (#84 follow-up): a live-only field so the rail can pulse the 主 agent
+        // while its own turn runs and show one dot per session it is still waiting on.
+        ...(this.#turnReplies.size ? { dispatched: this.dispatchedBy(s.info.id) } : {}),
       }))
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || b.createdAt - a.createdAt);
   }
@@ -529,6 +532,20 @@ export class SessionManager {
 
   isBusy(id: string): boolean {
     return this.#sessions.get(id)?.busy ?? false;
+  }
+
+  /** The sessions `origin` has handed work to and is still waiting on — the reply registrations are
+   *  the record (#59), so this cannot drift from the receipts the 主 agent will actually get. Empty
+   *  for an ordinary session, which has nothing to report; used by the rail to say 「它派出去的活在
+   *  跑」 without inventing a second bookkeeping path that could leak stale dots. */
+  dispatchedBy(origin: string): string[] {
+    const out: string[] = [];
+    for (const [target, rows] of this.#turnReplies) {
+      for (const r of rows.values()) {
+        if (r.origin === origin) { out.push(target); break; }
+      }
+    }
+    return out.sort();
   }
 
   /** 登记一条「目标回合自然结束后，通知这个发起方」（#59）。返回 id，用于事后撤销
@@ -1859,6 +1876,10 @@ export class SessionManager {
     }
     if (!rows.size) this.#turnReplies.delete(target);
     void this.#deliverTurnReplies(target, entries, outcome);
+    // The 主 agent's rail row draws one dot per outstanding delegation; a settled receipt is exactly
+    // the instant that dot must go away, so the frame is emitted HERE rather than waiting for the
+    // next unrelated session event (「干完立刻消失，别留残点」 — the operator).
+    if (entries.length) this.#emitSessions();
   }
 
   #drainHeldCompletion(s: LiveSession): void {
@@ -3124,6 +3145,11 @@ export class SessionManager {
    *  running child keeps the cwd it was spawned with (ACP fixes cwd at newSession).
    *  Cold slot: the resume will come up in the new directory. */
   setWorkspace(id: string, workspace: string | null): SessionInfo {
+    // The 主 agent's workspace is the cockpit's own `<data>/main-bot`, created and owned by the
+    // server (#84). Pointing it elsewhere would not "move a conversation" — it would point the one
+    // session that may write into other sessions at an arbitrary directory. Refused at the source
+    // so every caller (HTTP, CLI, a future verb) inherits the rule instead of re-checking it.
+    if (this.#store.getSession(id)?.role === "main") throw new Error("main_bot_workspace_fixed");
     const live = this.#sessions.get(id);
     if (live) {
       live.info.workspace = workspace;

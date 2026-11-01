@@ -946,6 +946,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             // 那条路径的 settle 可能早于本次登记（登记是微任务之后才落地的），所以不能靠它：
             // 明确投一条失败回推，否则调用方等一个永远不会来的回执。
             void turn.catch((e) => mgr.failTurnReply(to, replyId, String((e as Error)?.message ?? e)));
+            // The registration is the dot (see `dispatchedBy`): announce it now so the caller's rail
+            // row shows the handoff immediately instead of on the next unrelated event.
+            emit(sessionsEvent());
             return send(res, 200, {
               delivered: true, to, code: "delivered", reply_on_done: true,
               ...(woke ? { delivered_after_wake: true } : {}),
@@ -2006,7 +2009,22 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             return send(res, 400, { error: `not a directory: ${workspace}` });
           }
         }
-        const info = mgr.setWorkspace(id, workspace);
+        const info = (() => {
+          try {
+            return mgr.setWorkspace(id, workspace);
+          } catch (e) {
+            const msg = String((e as Error)?.message ?? e);
+            if (msg === "main_bot_workspace_fixed") {
+              return send(res, 400, {
+                error: "Main Bot 的工作空间由驾驶舱内置，不能改",
+                code: "main_bot_workspace_fixed",
+                id,
+              });
+            }
+            return send(res, /no such session/.test(msg) ? 404 : 400, { error: msg });
+          }
+        })();
+        if (!info || res.writableEnded) return undefined;
         emit(sessionsEvent());
         return send(res, 200, info);
       }

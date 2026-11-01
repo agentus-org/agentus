@@ -22,7 +22,7 @@ import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
-import { MAIN_BOT_GROUP, RAIL_RECENT, railRows, splitRecent } from "./rail";
+import { delegationColor, MAIN_BOT_GROUP, RAIL_RECENT, railRows, splitRecent } from "./rail";
 import {
   backspaceToken, caretInsideToken, insertToken, mentionChoices, mentionWorkspaces, stripToken,
   tokenIntact, tokenText, type MentionChoice, type MentionToken,
@@ -592,7 +592,7 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
         onRetitle,
       )}
       {canFork ? item(cold ? "fork 会话（先恢复）" : "fork 会话", <IconFork size={14} />, onFork) : null}
-      {item("工作目录…", <IconFolder size={14} />, onWorkspace)}
+      {info.role === "main" ? null : item("工作目录…", <IconFolder size={14} />, onWorkspace)}
       {item("导出会话（Markdown）", <IconDownload size={14} />, onExport)}
       {item("复制会话 ID", <IconCopy size={14} />, () => { void copyText(info.id); })}
       {/* Two independent questions, so two independent controls. ① is there a process (wake it /
@@ -1032,10 +1032,36 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                             cannot star anything else, and this one cannot be unstarred. The NAME is
                             fixed too — `s.title` is whatever the agent last called itself, and the
                             server refuses to rename a 主 agent; this keeps a stale row honest. */}
-                        {s.role === "main" ? <IconStar size={11} className="main-star" /> : null}
+                        {s.role === "main" ? (
+                          <IconStar
+                            size={11}
+                            className={`main-star${cockpit.byId.get(s.id)?.busy ? " breathing" : ""}`}
+                          />
+                        ) : null}
                         {s.role === "main" ? "Main Bot" : s.title}
                       </span>
                     )}
+                    {/* 它派出去的活在不在跑 (#84 follow-up). One dot per session the 主 agent is still
+                        waiting on, colour fixed to the target so the same job keeps its colour, and all
+                        of them pulse so 「有东西在动」 reads at a glance. The list comes from the reply
+                        registrations themselves (`SessionInfo.dispatched`), so a cleared receipt removes
+                        its dot on the very frame the turn settled — no timer, no stale dot. */}
+                    {s.role === "main" && (s.dispatched?.length ?? 0) > 0 ? (
+                      <span
+                        className="main-delegations"
+                        data-delegations={s.dispatched!.length}
+                        title={`${s.dispatched!.length} 个会话正在替它干活`}
+                      >
+                        {s.dispatched!.map((id) => (
+                          <span
+                            key={id}
+                            className="deleg-dot"
+                            data-delegation={id}
+                            style={{ background: delegationColor(id) }}
+                          />
+                        ))}
+                      </span>
+                    ) : null}
                     {cockpit.byId.get(s.id)?.perms.length ? (
                       <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
                     ) : null}
@@ -1054,8 +1080,13 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                     })()}
                     {/* When I last talked to this session — sorted by it, so it has to be visible.
                         Relative on purpose ("刚刚" / "3 小时前" / "昨天"), with the exact stamp in
-                        the tooltip; the operator asked for exactly this and for it to age. */}
-                    <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
+                        the tooltip; the operator asked for exactly this and for it to age.
+                        NOT on the 主 agent's row (#84 follow-up): that row is a standing presence, not
+                        a conversation you return to, so 「3 小时前」 beside it answers nothing — the
+                        operator asked for it to go. Its delegation dots state what matters there. */}
+                    {s.role === "main" ? null : (
+                      <span className="rail-at" title={`最后一次消息：${stamp(lastOf(s))}`}>{relTime(lastOf(s))}</span>
+                    )}
                     {/* 「跑完了，还没看」 — AionUi's completion dot, at the row's right end (a flex item,
                         not an overlay: the ⋯ button keeps its slot, so nothing jumps on hover). Shown
                         only when this row is NOT already the thing to look at — a running turn has the
