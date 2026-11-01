@@ -423,6 +423,25 @@ export class SessionManager {
     this.#emit = emit;
     this.#dataDir = opts.dataDir ?? null;
     this.#instanceId = opts.instanceId ?? "";
+    // Rows written before the name rule existed still carry whatever the agent called itself
+    // (measured on live: `0bb50670|main|Friendly greeting #3|Friendly greeting #3`). Nothing on the
+    // page waits for the operator to press a button to fix that: the repair happens here, on boot.
+    this.repairMainBotTitles();
+  }
+
+  /** Bring every 主 agent row's `title` AND `autoTitle` back to the canonical name.
+   *
+   *  Separate from `#applyAutoTitle` so it can run before any session is loaded, and idempotent so
+   *  boot can call it every time. Returns how many rows it had to touch. */
+  repairMainBotTitles(): number {
+    let fixed = 0;
+    for (const row of this.#store.listSessions(true)) {
+      if (row.role !== "main") continue;
+      if (row.title === MAIN_BOT_TITLE && row.autoTitle === MAIN_BOT_TITLE) continue;
+      this.#store.setAutoTitle(row.id, MAIN_BOT_TITLE, { force: true, src: "operator" });
+      fixed++;
+    }
+    return fixed;
   }
 
   /** Issue #70 step 1: is the operator showing the live speed chip? Read on every turn, so the
@@ -3201,11 +3220,33 @@ export class SessionManager {
    *  row when it comes from a better source, which is what keeps Hermes' per-turn regeneration from
    *  renaming a running conversation. */
   #applyAutoTitle(id: string, title: string, force: boolean, src: TitleSrc = "agent"): SessionRow | null {
-    // Issue #84 (operator, live): 「为什么还是显示会话名啊，不是要固定显示 main bot 吗」—— Hermes
-    // regenerates a title on EVERY turn and announces it through `session_info_update`, so a 主 agent
-    // that owned a free name would drift into 「用一句话说明你是谁的会话」 within one exchange. The name
-    // is a product name, not a summary of the conversation: only the canonical string is accepted.
-    if (this.#store.getSession(id)?.role === "main" && title !== MAIN_BOT_TITLE) return null;
+    // Issue #84 (operator): 「主 agent 的会话名本身也要变成 Main Bot，而且要一直保持」.
+    //
+    // Hermes regenerates a title on EVERY turn and announces it through `session_info_update`, so a
+    // 主 agent that owned a free name drifted into 「Friendly greeting #3」 within one exchange — and
+    // the row is what the 转交信封 and every consumer outside the page reads (`sessions.title`), not
+    // just what the rail draws. The name is a product name, not a summary of the conversation.
+    //
+    // Discarding the incoming title is not enough: a row that ALREADY carries a generated name has to
+    // come back, and it has to stay back no matter how many times the agent tries again. So the three
+    // title doors (agent frame, derived fallback, regenerate) all land here, and here we WRITE the
+    // canonical name back — `operator` rank so no later `agent` name can win on rank either.
+    if (this.#store.getSession(id)?.role === "main") {
+      if (title === MAIN_BOT_TITLE) {
+        // already right; fall through so auto_title is kept in sync (and so a stale src is healed)
+      } else {
+        const fixed = this.#store.setAutoTitle(id, MAIN_BOT_TITLE, { force: true, src: "operator" });
+        if (!fixed) return null;
+        const liveMain = this.#sessions.get(id);
+        if (liveMain) {
+          liveMain.info.title = fixed.title;
+          liveMain.info.autoTitle = fixed.autoTitle ?? null;
+          this.#updateSession(liveMain);
+        }
+        this.#emitSessions();
+        return fixed;
+      }
+    }
     const row = this.#store.setAutoTitle(id, title, { force, src });
     if (!row) return null;
     const live = this.#sessions.get(id);

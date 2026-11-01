@@ -1679,7 +1679,15 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
   return (
     <div className="chat-head">
       <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
-      <span className="title" title={info.title}>{info.title}</span>
+      {/* The 主 agent's head shows its IDENTITY, not the session's name (issue #84). A session name
+          is a summary of the work; this one is 「你是 Main Bot」, and the agent renames itself every
+          turn — so the head would otherwise disagree with the fixed rail row above it. Same ★ as the
+          rail row, so the two read as one thing in two places. */}
+      <span className="title" title={info.role === "main" ? "Main Bot" : info.title}>
+        {info.role === "main"
+          ? <><IconStar size={12} className="main-star" />Main Bot</>
+          : info.title}
+      </span>
       <TurnPulse busy={busyNow(v)} lastAt={v.lastAt} />
       {v.perms.length > 0 ? (
         <button
