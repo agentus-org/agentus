@@ -2382,9 +2382,11 @@ body.pane-dragging-row * { cursor: row-resize !important; }
    (`margin: 0 8px 6px` there). The indent the operator kept seeing came from the PARENT, not from
    this row: `.rail-group-body { padding-left: 28px }` reserves the width of a directory's folder
    icon, and this group has no folder — so it is zeroed here rather than fighting it per-row. */
-/* Left margin is 0 because the list itself already carries the search box's 8px inset; the right
-   margin matches the box's so the row's two edges line up with it (measured: 8.0 vs 8.0). */
-.rail-main-bot { margin: 2px 8px 6px 0; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+/* Both edges line up with the 「Search sessions」 box above (measured 8.0..191.0 on both, Δ=0).
+   Left: 0, because the list's own 8px padding IS the box's inset. Right: -8, because the list pads
+   its right edge by 8px AND this group sits inside that padding — a negative keeps the hover/selected
+   background flush with the box instead of stopping 16px short. */
+.rail-main-bot { margin: 2px -8px 6px 0; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .rail-main-bot .rail-group-body { padding-left: 0; }
 /* Smaller than a workspace row on purpose: it is one line above everything else, not a heading. */
 /* Flush with the rail's left edge: it is a single line at the top, not a row nested in a directory. */
