@@ -176,10 +176,12 @@ const identityOf = (pid) => {
 // 「驾驶舱互发消息」必须真的关着，否则下面两条都在测一个开着闸的世界。
 {
   const { body: prefs } = await api("/api/settings");
-  const on = prefs?.cockpitSend ?? prefs?.agent?.cockpitSend ?? false;
-  if (on) await api("/api/settings", { method: "PUT", body: JSON.stringify({ cockpitSend: false }) });
+  // 闸门住在 `agent` 块里：顶层写 `{cockpitSend:false}` 是无效 patch（saveSettings 只认 voice
+  // 那一组键），于是「前置：闸是关的」曾因为默认值本来就是 false 而假绿。
+  const on = prefs?.agent?.cockpitSend === true;
+  if (on) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: false } }) });
   const { body: after } = await api("/api/settings");
-  check("前置：驾驶舱互发消息是关的", (after?.cockpitSend ?? after?.agent?.cockpitSend ?? false) === false);
+  check("前置：驾驶舱互发消息是关的", after?.agent?.cockpitSend === false);
 }
 
 /** 以某个会话的 agent 身份，跑一次真正的 cockpit CLI。 */
@@ -227,6 +229,53 @@ const asAgent = (pid, args) => {
 
   const { body } = await api(`/api/sessions/${target.id}/messages`);
   check("普通会话那条没进去（只拒了回执，没有半成功）", !JSON.stringify(body ?? "").includes("普通会话派活"));
+}
+
+// ---- ④b. role 必须活过「进程重启」和「冷下来」两端 ---------------------------------------
+// 「主 agent」是行上的一个事实（`role='main'`，只在 insert 时写一次），而 rail 读的是
+// `list()`/`cold()` 造出来的 info。这两条路径**都能在重启里把 role 丢掉**：
+//   · resume/restart 重建内存里的 info（原来只从 row 抄了 system）；
+//   · 冷行走 #infoFromRow（同样只抄了 system）。
+// 丢掉的后果不是「有点怪」，而是整条身份塌掉：顶部换回「创建 Main Bot」，真正的主 agent
+// 掉进工作空间分组，而 `ensureMainBot()` 再按一次还回同一个会话 —— 操作者看到的正是
+// 「又让我建、建了又跳到旧的、旧的还在下面列表里」（2026-11-01 live 实测）。
+{
+  const before = await waitPid(mainId);
+  const { status } = await api(`/api/sessions/${mainId}/restart`, { method: "POST" });
+  const after = await waitPid(mainId);
+  check("restart 换掉了进程（同一个会话、新 pid）", status === 200 && Boolean(after) && after !== before, `${before} -> ${after}`);
+  const { body } = await api("/api/sessions");
+  const row = (body?.live ?? []).find((s) => s.id === mainId);
+  check("★ 进程重启之后 role 还是 main（重建的 info 从行里带回来）", row?.role === "main", String(row?.role));
+}
+{
+  // 冷行：把进程真正收掉（cockpit close 走 closeSession，槽位离开内存 map），此后 rail 读的是
+  // store 里那一行 —— 也就是 `#infoFromRow`。只杀进程是不够的：崩溃的槽位仍留在 map 里，
+  // 走的还是内存 info，那一半什么也证不出来。
+  // 收进程这条命令走驾驶舱通道，闸门关着时会被拒 —— 这里临时开一下，用完立刻恢复。
+  const { body: prefs } = await api("/api/settings");
+  const gateOn = prefs?.agent?.cockpitSend === true;
+  if (!gateOn) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
+  const closed = asAgent(caller.pid, ["session", "stop", mainId, "--close"]);
+  if (!gateOn) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: false } }) });
+  check("收进程的请求被接受（session stop --close）", closed.code === 0,
+    closed.out.trim().split("\n").slice(-1)[0]?.slice(0, 100));
+  let coldRow = null;
+  for (let i = 0; i < 100; i++) {
+    const { body } = await api("/api/sessions");
+    const live = (body?.live ?? []).find((s) => s.id === mainId);
+    coldRow = (body?.cold ?? []).find((s) => s.id === mainId) ?? null;
+    if (!live && coldRow) break;
+    await sleep(150);
+  }
+  check("★ 进程没了之后冷行里 role 还是 main（否则它会掉进工作空间分组）", coldRow?.role === "main", String(coldRow?.role));
+  const { status } = await api(`/api/sessions/${mainId}/resume`, { method: "POST" });
+  const back = await waitPid(mainId);
+  const { body } = await api("/api/sessions");
+  const liveRow = (body?.live ?? []).find((s) => s.id === mainId);
+  check("冷行 resume 回来还是 role=main（id 没变、身份没变）",
+    (status === 200 || status === 204) && Boolean(back) && liveRow?.id === mainId && liveRow?.role === "main",
+    `HTTP ${status} pid=${back} role=${liveRow?.role}`);
 }
 
 // ---- ⑤ 真页面：它在最顶上的一行，而且只有一行 -------------------------------------------

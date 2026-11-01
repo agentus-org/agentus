@@ -1180,6 +1180,13 @@ export class SessionManager {
         // a resumed system session is still a system session (issue #16): the observer is reaped and
         // resumed like any slot, and must come back out of the rail's scope, not into it
         ...(row.system ? { system: true } : {}),
+        // issue #84, and the same trap the `system` line above exists for: `role` is written to the
+        // ROW once, at creation (`upsertSession`'s update branch never touches it), so a rebuilt
+        // LiveSession has to carry it back from the row. Without this a resume silently demoted the
+        // 主 agent to an ordinary session — `list()` reads the in-memory info, the rail then found no
+        // `role === "main"` row, drew 「创建 Main Bot」 at the top and put the actual slot back under
+        // 工作空间 (measured 2026-11-01 on live: db role='main', /api/sessions role=null).
+        ...(row.role === "main" ? { role: "main" as const } : {}),
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
         configOptions: (row.configOptions ?? []) as ConfigOptionView[],
@@ -1542,6 +1549,10 @@ export class SessionManager {
       lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       archivedAt: r.archivedAt ?? null,
       ...(r.system ? { system: true } : {}),
+      // the 主 agent (issue #84) is a row fact like `system`, so every path that rebuilds an info
+      // from the store must carry it: a cold 主 agent that came back without its role showed up as
+      // an ordinary row under 工作空间 (and `ensureMainBot()` then read 「no main bot yet」).
+      ...(r.role === "main" ? { role: "main" as const } : {}),
       // no process by construction: this path only ever runs for a row that is not in the map
       cold: true,
     };
