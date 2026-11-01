@@ -2380,7 +2380,8 @@ body.pane-dragging-row * { cursor: row-resize !important; }
    section: no directory header, a hairline under it so the workspace list keeps a clear start. */
 .rail-main-bot { margin: 2px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 /* Smaller than a workspace row on purpose: it is one line above everything else, not a heading. */
-.rail-main-bot .session-item { padding-left: 8px; }
+/* Flush with the rail's left edge: it is a single line at the top, not a row nested in a directory. */
+.rail-main-bot .session-item { padding-left: 2px; }
 .rail-main-bot .session-item .title { font-size: 12px; font-weight: 600; letter-spacing: 0.1px; }
 .main-star { color: #e8b544; margin-right: 6px; vertical-align: -1px; flex: none; }
 .rail-main-create {

@@ -130,6 +130,20 @@ check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空�
     (after?.live ?? []).some((s) => s.id === mainId) && !(after?.archived ?? []).some((s) => s.id === mainId));
 }
 
+// ---- ③b 名字是产品名，不许被 agent 或人改掉 ---------------------------------------------
+// Hermes 每一轮都会重新生成会话标题并通过 `session_info_update` 送回来 —— live 上看到的就是这个：
+// 名字在一轮对话之后变成了会话标题。主 agent 的名字不是「对内容的概括」，它是「你是 Main Bot」。
+{
+  const { status, body } = await api(`/api/sessions/${mainId}/rename`, {
+    method: "POST", body: JSON.stringify({ title: "用一句话说明你是谁的会话" }),
+  });
+  check("重命名主 agent 被拒（400）", status === 400, `HTTP ${status}`);
+  check("拒绝有机器可读的码", /main_bot_title_fixed/.test(String(body?.error ?? "")), String(body?.error ?? ""));
+  const { body: still } = await api("/api/sessions");
+  const row = [...(still?.live ?? []), ...(still?.cold ?? [])].find((s) => s.id === mainId);
+  check("名字还是 Main Bot", row?.title === "Main Bot", String(row?.title));
+}
+
 // ---- ④ 写闸：只有主 agent 拿到豁免 ------------------------------------------------------
 // 造两个普通会话：A 是被派活的目标，B 是「普通调用者」。
 const mkSession = async (title) => {
@@ -176,10 +190,12 @@ const identityOf = (pid) => {
 // 「驾驶舱互发消息」必须真的关着，否则下面两条都在测一个开着闸的世界。
 {
   const { body: prefs } = await api("/api/settings");
-  const on = prefs?.cockpitSend ?? prefs?.agent?.cockpitSend ?? false;
-  if (on) await api("/api/settings", { method: "PUT", body: JSON.stringify({ cockpitSend: false }) });
+  // 闸门住在 `agent` 块里：顶层写 `{cockpitSend:false}` 是无效 patch（saveSettings 只认 voice
+  // 那一组键），于是「前置：闸是关的」曾因为默认值本来就是 false 而假绿。
+  const on = prefs?.agent?.cockpitSend === true;
+  if (on) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: false } }) });
   const { body: after } = await api("/api/settings");
-  check("前置：驾驶舱互发消息是关的", (after?.cockpitSend ?? after?.agent?.cockpitSend ?? false) === false);
+  check("前置：驾驶舱互发消息是关的", after?.agent?.cockpitSend === false);
 }
 
 /** 以某个会话的 agent 身份，跑一次真正的 cockpit CLI。 */
@@ -229,6 +245,53 @@ const asAgent = (pid, args) => {
   check("普通会话那条没进去（只拒了回执，没有半成功）", !JSON.stringify(body ?? "").includes("普通会话派活"));
 }
 
+// ---- ④b. role 必须活过「进程重启」和「冷下来」两端 ---------------------------------------
+// 「主 agent」是行上的一个事实（`role='main'`，只在 insert 时写一次），而 rail 读的是
+// `list()`/`cold()` 造出来的 info。这两条路径**都能在重启里把 role 丢掉**：
+//   · resume/restart 重建内存里的 info（原来只从 row 抄了 system）；
+//   · 冷行走 #infoFromRow（同样只抄了 system）。
+// 丢掉的后果不是「有点怪」，而是整条身份塌掉：顶部换回「创建 Main Bot」，真正的主 agent
+// 掉进工作空间分组，而 `ensureMainBot()` 再按一次还回同一个会话 —— 操作者看到的正是
+// 「又让我建、建了又跳到旧的、旧的还在下面列表里」（2026-11-01 live 实测）。
+{
+  const before = await waitPid(mainId);
+  const { status } = await api(`/api/sessions/${mainId}/restart`, { method: "POST" });
+  const after = await waitPid(mainId);
+  check("restart 换掉了进程（同一个会话、新 pid）", status === 200 && Boolean(after) && after !== before, `${before} -> ${after}`);
+  const { body } = await api("/api/sessions");
+  const row = (body?.live ?? []).find((s) => s.id === mainId);
+  check("★ 进程重启之后 role 还是 main（重建的 info 从行里带回来）", row?.role === "main", String(row?.role));
+}
+{
+  // 冷行：把进程真正收掉（cockpit close 走 closeSession，槽位离开内存 map），此后 rail 读的是
+  // store 里那一行 —— 也就是 `#infoFromRow`。只杀进程是不够的：崩溃的槽位仍留在 map 里，
+  // 走的还是内存 info，那一半什么也证不出来。
+  // 收进程这条命令走驾驶舱通道，闸门关着时会被拒 —— 这里临时开一下，用完立刻恢复。
+  const { body: prefs } = await api("/api/settings");
+  const gateOn = prefs?.agent?.cockpitSend === true;
+  if (!gateOn) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
+  const closed = asAgent(caller.pid, ["session", "stop", mainId, "--close"]);
+  if (!gateOn) await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: false } }) });
+  check("收进程的请求被接受（session stop --close）", closed.code === 0,
+    closed.out.trim().split("\n").slice(-1)[0]?.slice(0, 100));
+  let coldRow = null;
+  for (let i = 0; i < 100; i++) {
+    const { body } = await api("/api/sessions");
+    const live = (body?.live ?? []).find((s) => s.id === mainId);
+    coldRow = (body?.cold ?? []).find((s) => s.id === mainId) ?? null;
+    if (!live && coldRow) break;
+    await sleep(150);
+  }
+  check("★ 进程没了之后冷行里 role 还是 main（否则它会掉进工作空间分组）", coldRow?.role === "main", String(coldRow?.role));
+  const { status } = await api(`/api/sessions/${mainId}/resume`, { method: "POST" });
+  const back = await waitPid(mainId);
+  const { body } = await api("/api/sessions");
+  const liveRow = (body?.live ?? []).find((s) => s.id === mainId);
+  check("冷行 resume 回来还是 role=main（id 没变、身份没变）",
+    (status === 200 || status === 204) && Boolean(back) && liveRow?.id === mainId && liveRow?.role === "main",
+    `HTTP ${status} pid=${back} role=${liveRow?.role}`);
+}
+
 // ---- ⑤ 真页面：它在最顶上的一行，而且只有一行 -------------------------------------------
 // REST 说清了「有这一条、它是 main」；只有真页面能回答「它出现在哪里、长什么样、菜单里有没有
 // 一个按了会 400 的选项」。这一段用操作员自己的 Edge（CDP），连不上就跳过，不伪装成通过。
@@ -263,6 +326,14 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("页面里主 agent 有一行", await ev(`document.querySelectorAll('.rail-main-bot .session-item').length === 1`));
     check("★ 星标在行上（身份标识，不是收藏）", await ev(`!!document.querySelector('.rail-main-bot .main-star')`));
     check("这一行没有目录头（不是一个工作空间）", await ev(`!document.querySelector('.rail-main-bot .rail-group-head')`));
+    check("行上写的就 是 Main Bot（不是会话名）", await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim() === 'Main Bot'`),
+      await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim()`));
+    // 操作者：「缩进也不对啊，不需要缩进啊，顶着左边就好」—— 它不属于任何目录，所以也不该继承
+    // 目录体的缩进；判据是它自己的左内边距几乎为零，而不是「和某一行对齐」。
+    check("顶着左边（自身 padding-left ≤ 4px）", await ev(`(() => {
+      const a = document.querySelector('.rail-main-bot .session-item');
+      return !!a && parseFloat(getComputedStyle(a).paddingLeft) <= 4;
+    })()`), await ev(`document.querySelector('.rail-main-bot .session-item') && getComputedStyle(document.querySelector('.rail-main-bot .session-item')).paddingLeft`));
     check("这一行不画后端头像（只有 ★ 和名字）", await ev(`!document.querySelector('.rail-main-bot .be-avatar')`));
     check("★ 就在名字前", await ev(`(() => {
       const t = document.querySelector('.rail-main-bot .session-item .title');
@@ -287,7 +358,8 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     const menuText = await ev(`document.querySelector('.sess-menu')?.innerText ?? ''`);
     check("菜单打开了", menuText.length > 0, menuText.replace(/\n/g, " / ").slice(0, 80));
     check("菜单里没有「归档会话」", !/归档会话/.test(menuText), menuText.replace(/\n/g, " / ").slice(0, 80));
-    check("菜单里还有能用的动作（不是整块被砍掉）", /重命名/.test(menuText) && /重启 agent 进程/.test(menuText));
+    check("菜单里还有能用的动作（不是整块被砍掉）", /重启 agent 进程/.test(menuText) && /导出会话/.test(menuText));
+    check("菜单里也没有「重命名」（名字是产品名）", !/重命名/.test(menuText) && !/重新生成会话名/.test(menuText));
     await ev(`document.body.click()`);
   } catch (e) {
     console.log(`SKIP  真页面段（连不上 Edge CDP ${CDP}：${String(e.message ?? e).slice(0, 60)}）`);

@@ -217,6 +217,9 @@ interface PendingCompletion {
  *
  *  Deliberately about the CONTRACT, not the personality: what it can do, how work is handed out and
  *  reported, and where it must not go. Tone stays the operator's business. */
+/** The one name the 主 agent ever has, in the rail, the menu, notifications and exports. */
+const MAIN_BOT_TITLE = "Main Bot";
+
 const MAIN_BOT_AGENTS_MD = `# Main Bot
 
 你是 **Main Bot**。
@@ -1180,6 +1183,13 @@ export class SessionManager {
         // a resumed system session is still a system session (issue #16): the observer is reaped and
         // resumed like any slot, and must come back out of the rail's scope, not into it
         ...(row.system ? { system: true } : {}),
+        // issue #84, and the same trap the `system` line above exists for: `role` is written to the
+        // ROW once, at creation (`upsertSession`'s update branch never touches it), so a rebuilt
+        // LiveSession has to carry it back from the row. Without this a resume silently demoted the
+        // 主 agent to an ordinary session — `list()` reads the in-memory info, the rail then found no
+        // `role === "main"` row, drew 「创建 Main Bot」 at the top and put the actual slot back under
+        // 工作空间 (measured 2026-11-01 on live: db role='main', /api/sessions role=null).
+        ...(row.role === "main" ? { role: "main" as const } : {}),
         createdAt: row.createdAt,
         modes: (row.modes ?? null) as SessionModeState | null,
         configOptions: (row.configOptions ?? []) as ConfigOptionView[],
@@ -1542,6 +1552,10 @@ export class SessionManager {
       lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       archivedAt: r.archivedAt ?? null,
       ...(r.system ? { system: true } : {}),
+      // the 主 agent (issue #84) is a row fact like `system`, so every path that rebuilds an info
+      // from the store must carry it: a cold 主 agent that came back without its role showed up as
+      // an ordinary row under 工作空间 (and `ensureMainBot()` then read 「no main bot yet」).
+      ...(r.role === "main" ? { role: "main" as const } : {}),
       // no process by construction: this path only ever runs for a row that is not in the map
       cold: true,
     };
@@ -2349,8 +2363,13 @@ export class SessionManager {
       // and holds no opinion about tone — this is the same door the operator's own workspaces use.
       fs.writeFileSync(brief, MAIN_BOT_AGENTS_MD, { mode: 0o600 });
     }
-    if (existing) return { info: this.#sessions.get(existing.id)?.info ?? this.#coldInfo(existing.id), created: false, cwd: existing.cwd };
-    const info = await this.create("hermes", cwd, "Main Bot", { role: "main" });
+    if (existing) {
+      // A row created before this rule existed may already carry a generated name. Put it back —
+      // this is the one place that is allowed to write the title of a 主 agent.
+      if (existing.title !== MAIN_BOT_TITLE) this.#applyAutoTitle(existing.id, MAIN_BOT_TITLE, true, "derived");
+      return { info: this.#sessions.get(existing.id)?.info ?? this.#coldInfo(existing.id), created: false, cwd: existing.cwd };
+    }
+    const info = await this.create("hermes", cwd, MAIN_BOT_TITLE, { role: "main" });
     return { info, created: true, cwd };
   }
 
@@ -3111,6 +3130,10 @@ export class SessionManager {
    *  clears back to the generated title; control characters fold to spaces and the
    *  result is capped, because this string is rendered in a single-line row. */
   rename(id: string, title: string | null, by: string | null = null): SessionInfo {
+    // Issue #84: the 主 agent's name is the product name — in the rail, the menu, notifications and
+    // exports. Renaming it is the same mistake as letting the agent title itself, so the one door
+    // that writes titles refuses. Editing the brief is how you change what it is; the name is ours.
+    if (this.#store.getSession(id)?.role === "main") throw new Error("main_bot_title_fixed");
     const clean = title == null ? null : title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 120).trim();
     // A cleared name has no author: after `--auto` the session carries the GENERATED title again, so
     // keeping "an agent named this" would describe a name that no longer exists.
@@ -3178,6 +3201,11 @@ export class SessionManager {
    *  row when it comes from a better source, which is what keeps Hermes' per-turn regeneration from
    *  renaming a running conversation. */
   #applyAutoTitle(id: string, title: string, force: boolean, src: TitleSrc = "agent"): SessionRow | null {
+    // Issue #84 (operator, live): 「为什么还是显示会话名啊，不是要固定显示 main bot 吗」—— Hermes
+    // regenerates a title on EVERY turn and announces it through `session_info_update`, so a 主 agent
+    // that owned a free name would drift into 「用一句话说明你是谁的会话」 within one exchange. The name
+    // is a product name, not a summary of the conversation: only the canonical string is accepted.
+    if (this.#store.getSession(id)?.role === "main" && title !== MAIN_BOT_TITLE) return null;
     const row = this.#store.setAutoTitle(id, title, { force, src });
     if (!row) return null;
     const live = this.#sessions.get(id);
