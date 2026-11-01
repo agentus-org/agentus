@@ -431,19 +431,27 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
       const row = document.querySelector('.rail-main-bot .session-item');
       const box = document.querySelector('.rail-search-wrap');
       if (!row || !box) return null;
+      const r = row.getBoundingClientRect(), b = box.getBoundingClientRect();
       const grp = document.querySelector('.rail-main-bot');
-      const body = grp && grp.querySelector('.rail-group-body');
-      return { row: row.getBoundingClientRect().left, box: box.getBoundingClientRect().left,
-               pad: parseFloat(getComputedStyle(row).paddingLeft),
-               grp: grp ? grp.getBoundingClientRect().left : null,
-               grpML: grp ? parseFloat(getComputedStyle(grp).marginLeft) : null,
-               body: body ? body.getBoundingClientRect().left : null,
-               bodyPL: body ? parseFloat(getComputedStyle(body).paddingLeft) : null,
-               listPL: grp && grp.parentElement ? parseFloat(getComputedStyle(grp.parentElement).paddingLeft) : null };
+      const body = grp.querySelector('.rail-group-body');
+      const gg = grp.getBoundingClientRect(), bb = body.getBoundingClientRect();
+      const cs = getComputedStyle(grp);
+      const listEl = grp.parentElement;
+      const lr = listEl.getBoundingClientRect(); const ls = getComputedStyle(listEl);
+      return { rowL: +r.left.toFixed(1), rowR: +r.right.toFixed(1),
+               boxL: +b.left.toFixed(1), boxR: +b.right.toFixed(1),
+               grpL: +gg.left.toFixed(1), grpR: +gg.right.toFixed(1),
+               bodyL: +bb.left.toFixed(1), bodyR: +bb.right.toFixed(1),
+               listL: +lr.left.toFixed(1), listR: +lr.right.toFixed(1),
+               listPad: ls.padding, listId: listEl.id || listEl.className,
+               grpML: cs.marginLeft, grpMR: cs.marginRight };
     })()`);
-    check("左缘与「Search sessions」平齐（≤1px）", Boolean(geo) && Math.abs(geo.row - geo.box) <= 1,
-      geo ? "row=" + geo.row.toFixed(1) + " search=" + geo.box.toFixed(1) + " delta=" + (geo.row - geo.box).toFixed(1)
-        + " (" + JSON.stringify(geo) + ")" : "not found");
+    const g = geo ?? { rowL: NaN, rowR: NaN, boxL: NaN, boxR: NaN };
+    const fmt = `row=${g.rowL}..${g.rowR} search=${g.boxL}..${g.boxR} `
+      + `Δleft=${(g.rowL - g.boxL).toFixed(1)} Δright=${(g.rowR - g.boxR).toFixed(1)} `
+      + `margins=${g.grpML}/${g.grpMR} grp=${g.grpL}..${g.grpR} body=${g.bodyL}..${g.bodyR} list=${g.listL}..${g.listR} listPad=${g.listPad} (${g.listId})`;
+    check("左缘与「Search sessions」平齐（≤1px）", !!geo && Math.abs(g.rowL - g.boxL) <= 1, fmt);
+    check("右缘也与「Search sessions」平齐（≤1px，两侧一样的留白）", !!geo && Math.abs(g.rowR - g.boxR) <= 1, fmt);
     check("这一行不画后端头像（只有 ★ 和名字）", await ev(`!document.querySelector('.rail-main-bot .be-avatar')`));
     check("★ 就在名字前", await ev(`(() => {
       const t = document.querySelector('.rail-main-bot .session-item .title');
