@@ -998,12 +998,17 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                       else cockpit.setActive(s.id);
                     }}
                   >
-                    <BackendAvatar
-                      backend={s.backend}
-                      cold={cold}
-                      status={s.status}
-                      wake={(cockpit.byId.get(s.id)?.background ?? []).some((t) => t.status === "running")}
-                    />
+                    {/* Issue #84 (operator): the 主 agent row carries the ★ and the name, nothing
+                        else — a backend face next to 「Main Bot」 reads as 「one of the agents」,
+                        which is exactly the wrong idea. Every other row keeps its avatar. */}
+                    {s.role === "main" ? null : (
+                      <BackendAvatar
+                        backend={s.backend}
+                        cold={cold}
+                        status={s.status}
+                        wake={(cockpit.byId.get(s.id)?.background ?? []).some((t) => t.status === "running")}
+                      />
+                    )}
                     {editing === s.id ? (
                       <input
                         className="title-input"
@@ -1180,11 +1185,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
             type="button"
             className="rail-main-create"
             data-main-create="1"
-            title="创建主 agent —— 驾驶舱内置的一个常驻会话，可以替你盯着别的会话、派活"
+            title="创建 Main Bot —— 一个常驻的助手，可以替你盯着别的 agent、派活"
             onClick={() => void cockpit.createMainBot()}
           >
             <IconStar size={12} />
-            <span>创建主 agent</span>
+            <span>创建 Main Bot</span>
           </button>
         )}
         <button type="button" className={`rail-section ${teamOpen ? "open" : ""}`} data-section="team"

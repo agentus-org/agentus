@@ -103,7 +103,11 @@ check("预置 AGENTS.md", existsSync(brief));
 check("AGENTS.md 0600", existsSync(brief) && (statSync(brief).mode & 0o777) === 0o600,
   existsSync(brief) ? (statSync(brief).mode & 0o777).toString(8) : "missing");
 const seeded = existsSync(brief) ? readFileSync(brief, "utf8") : "";
-check("AGENTS.md 说清了它是什么（不是一句空话）", /主 agent/.test(seeded) && /session send/.test(seeded), `${seeded.length} 字符`);
+check("AGENTS.md 说清了它是什么（不是一句空话）", /Main Bot/.test(seeded) && /session send/.test(seeded), `${seeded.length} 字符`);
+// 操作者 2026-11-01 明确要求：别把内部概念讲给它 —— 它只需要知道「我是 Main Bot、能干什么」，
+// 不需要读一段关于「会话」的架构说明。
+check("AGENTS.md 不把身份解释成「会话」（身份是恒定的，不是某条会话）",
+  !/其它会话/.test(seeded) && /一直是|不随回合变/.test(seeded), seeded.split("\n")[2]?.slice(0, 40));
 
 // 人改过的，绝不覆盖
 writeFileSync(brief, "# 我自己改的\n\n别覆盖我。\n", "utf8");
@@ -113,7 +117,7 @@ check("已存在的 AGENTS.md 不会被覆盖（server 不写 prompt）", readFi
 // 文件被删了才重建
 rmSync(brief);
 await api("/api/main-bot", { method: "POST" });
-check("文件被删掉会重建（新装/误删不至于让主 agent 变成空白人格）", existsSync(brief) && /主 agent/.test(readFileSync(brief, "utf8")));
+check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空白人格）", existsSync(brief) && /你是 \*\*Main Bot\*\*/.test(readFileSync(brief, "utf8")));
 
 // ---- ③ 不能归档 -------------------------------------------------------------------------
 {
@@ -259,6 +263,11 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("页面里主 agent 有一行", await ev(`document.querySelectorAll('.rail-main-bot .session-item').length === 1`));
     check("★ 星标在行上（身份标识，不是收藏）", await ev(`!!document.querySelector('.rail-main-bot .main-star')`));
     check("这一行没有目录头（不是一个工作空间）", await ev(`!document.querySelector('.rail-main-bot .rail-group-head')`));
+    check("这一行不画后端头像（只有 ★ 和名字）", await ev(`!document.querySelector('.rail-main-bot .be-avatar')`));
+    check("★ 就在名字前", await ev(`(() => {
+      const t = document.querySelector('.rail-main-bot .session-item .title');
+      return !!t && t.firstElementChild?.classList.contains('main-star') === true;
+    })()`));
     check("它排在「团队」之前（真·最上面一行）", await ev(`(() => {
       const row = document.querySelector('.rail-main-bot');
       const team = document.querySelector('[data-section="team"]');
