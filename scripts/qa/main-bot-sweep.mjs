@@ -328,12 +328,27 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("这一行没有目录头（不是一个工作空间）", await ev(`!document.querySelector('.rail-main-bot .rail-group-head')`));
     check("行上写的就 是 Main Bot（不是会话名）", await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim() === 'Main Bot'`),
       await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim()`));
-    // 操作者：「缩进也不对啊，不需要缩进啊，顶着左边就好」—— 它不属于任何目录，所以也不该继承
-    // 目录体的缩进；判据是它自己的左内边距几乎为零，而不是「和某一行对齐」。
-    check("顶着左边（自身 padding-left ≤ 4px）", await ev(`(() => {
-      const a = document.querySelector('.rail-main-bot .session-item');
-      return !!a && parseFloat(getComputedStyle(a).paddingLeft) <= 4;
-    })()`), await ev(`document.querySelector('.rail-main-bot .session-item') && getComputedStyle(document.querySelector('.rail-main-bot .session-item')).paddingLeft`));
+    // 操作者：「缩进也不对啊，不需要缩进啊，顶着左边就好」，随后给了判据：「对齐 Search sessions
+    // 那个搜索框吗，平齐」。所以量的是几何：行的盒左缘 vs 搜索框盒左缘，差 ≤ 1px。
+    // 只查 session-item 自己的 padding 是不够的 —— 真正的缩进来自父级 `.rail-group-body`
+    // 的 28px（它给所有目录里的行让出目录图标的宽度），主 agent 不属于任何目录。
+    const geo = await ev(`(() => {
+      const row = document.querySelector('.rail-main-bot .session-item');
+      const box = document.querySelector('.rail-search-wrap');
+      if (!row || !box) return null;
+      const grp = document.querySelector('.rail-main-bot');
+      const body = grp && grp.querySelector('.rail-group-body');
+      return { row: row.getBoundingClientRect().left, box: box.getBoundingClientRect().left,
+               pad: parseFloat(getComputedStyle(row).paddingLeft),
+               grp: grp ? grp.getBoundingClientRect().left : null,
+               grpML: grp ? parseFloat(getComputedStyle(grp).marginLeft) : null,
+               body: body ? body.getBoundingClientRect().left : null,
+               bodyPL: body ? parseFloat(getComputedStyle(body).paddingLeft) : null,
+               listPL: grp && grp.parentElement ? parseFloat(getComputedStyle(grp.parentElement).paddingLeft) : null };
+    })()`);
+    check("左缘与「Search sessions」平齐（≤1px）", Boolean(geo) && Math.abs(geo.row - geo.box) <= 1,
+      geo ? "row=" + geo.row.toFixed(1) + " search=" + geo.box.toFixed(1) + " delta=" + (geo.row - geo.box).toFixed(1)
+        + " (" + JSON.stringify(geo) + ")" : "not found");
     check("这一行不画后端头像（只有 ★ 和名字）", await ev(`!document.querySelector('.rail-main-bot .be-avatar')`));
     check("★ 就在名字前", await ev(`(() => {
       const t = document.querySelector('.rail-main-bot .session-item .title');

@@ -2378,10 +2378,17 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 
 /* ★ Main Bot (issue #84) — one row at the very top, outside 工作空间. It reads as a row, not as a
    section: no directory header, a hairline under it so the workspace list keeps a clear start. */
-.rail-main-bot { margin: 2px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+/* ★ Main Bot (issue #84) — the row's left edge lines up with the 「Search sessions」 box above it
+   (`margin: 0 8px 6px` there). The indent the operator kept seeing came from the PARENT, not from
+   this row: `.rail-group-body { padding-left: 28px }` reserves the width of a directory's folder
+   icon, and this group has no folder — so it is zeroed here rather than fighting it per-row. */
+/* Left margin is 0 because the list itself already carries the search box's 8px inset; the right
+   margin matches the box's so the row's two edges line up with it (measured: 8.0 vs 8.0). */
+.rail-main-bot { margin: 2px 8px 6px 0; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.rail-main-bot .rail-group-body { padding-left: 0; }
 /* Smaller than a workspace row on purpose: it is one line above everything else, not a heading. */
 /* Flush with the rail's left edge: it is a single line at the top, not a row nested in a directory. */
-.rail-main-bot .session-item { padding-left: 2px; }
+.rail-main-bot .session-item { padding-left: 8px; }
 .rail-main-bot .session-item .title { font-size: 12px; font-weight: 600; letter-spacing: 0.1px; }
 .main-star { color: #e8b544; margin-right: 6px; vertical-align: -1px; flex: none; }
 .rail-main-create {
