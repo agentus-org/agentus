@@ -1899,7 +1899,7 @@ const TurnPulse = memo(function TurnPulse({ busy, lastAt }: { busy: boolean; las
  *
  *  The clock lives in HERE, for the reason the deleted `Busy` also owned its own: a ticking second
  *  must not drag the transcript's rows into a re-render. */
-const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since: number | null }): JSX.Element | null {
+const TurnLine = memo(function TurnLine({ busy, since, tps }: { busy: boolean; since: number | null; tps?: { cps: number; at: number } | null }): JSX.Element | null {
   // Re-stamped on every (busy, since) change, so a SECOND message sent into a running turn restarts
   // the clock — the operator asked for the count from the send. A page that loaded MID-turn has no
   // `turn-start` for this turn: it anchors on first sight, which undercounts instead of inventing a
@@ -1920,6 +1920,17 @@ const TurnLine = memo(function TurnLine({ busy, since }: { busy: boolean; since:
       <span className="stream-spin" aria-hidden="true" />
       <span>处理中</span>
       {startedAt != null ? <span className="elapsed">({durationWords(now - startedAt)})</span> : null}
+      {/* Issue #70 step 1: 流式测速。三条规矩 ——
+          ① 单位是「字/秒」，不是 t/s：ACP 的流里没有 usage，token 只在回合结束时一次性给齐，
+             拿字符数冒充 token 就是这个 issue 点名不许做的事；
+          ② 只看最近 2.5 秒：`now` 每秒重算，服务端一旦停推（说完了 / 在跑工具），数字自己消失
+             —— 它是「现在多快」，不是「刚才多快」；
+          ③ 没有就是没有：,0 字/秒」不画，宁可空着。 */}
+      {tps && busy && now - tps.at < 2500 && tps.cps > 0 ? (
+        <span className="tps-chip" title="最近 3 秒的字数换算成每秒。ACP 流里没有 token 计数，所以是字符不是 t/s —— 平均 t/s 见这一轮回复下面的用量行。">
+          ≈{tps.cps >= 100 ? Math.round(tps.cps) : tps.cps.toFixed(1)} 字/秒
+        </span>
+      ) : null}
       {/* The agent's status lines are NOT here any more (operator, 2026-10-18): 「它不只是这一个状态，
           压缩什么的也会显示，所以应该放在会话记录框里面」. They are transcript rows now — see
           StatusNoteRow. This line is only the clock: 「我现在等了多久」. */}
@@ -2451,7 +2462,7 @@ function Stream({ v }: { v: SessionView }): JSX.Element {
             <div className="load-earlier"><span className="load-earlier-end">已到开头</span></div>
           ) : null}
           <TranscriptRows msgs={v.msgs} notes={v.notes} sid={v.info.id} backend={v.info.backend} busy={busyNow(v)} base={v.info.workspace || v.info.cwd} />
-          <TurnLine busy={busyNow(v)} since={v.busySince} />
+          <TurnLine busy={busyNow(v)} since={v.busySince} tps={v.tps ?? null} />
           {/* A request belongs NEXT TO the turn that is waiting on it — at the tail, where the
               eye already is. Rendering it above the whole transcript (the old place) put it
               thousands of pixels out of sight in any conversation longer than a screen: the

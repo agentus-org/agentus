@@ -115,6 +115,10 @@ export interface PrefsSettings {
   lang: string;
   /** route synthesis through the server endpoint instead of the browser */
   serverTts: boolean;
+  /** Issue #70 step 1: show the live speed while a turn is streaming. Off by default —
+   *  it is a diagnostic, and a number that flickers above every reply is noise until you
+   *  are the one asking "is this model slow or is my prompt huge". */
+  showTps: boolean;
   /** which recogniser to use, when the caller does not force one */
   stt: "auto" | "browser" | "stream" | "server";
   /** Whether — and how often — the cockpit tells the agent about the plan MCP it was handed.
@@ -152,7 +156,7 @@ export const SPEAK_MODES = ["off", "reply", "brief"] as const;
 export type SpeakMode = (typeof SPEAK_MODES)[number];
 
 export const PREFS_DEFAULT: PrefsSettings = {
-  autoRead: false, speakMode: "off", voiceURI: "", rate: 1, lang: "", serverTts: false, stt: "auto",
+  autoRead: false, speakMode: "off", voiceURI: "", rate: 1, lang: "", serverTts: false, showTps: false, stt: "auto",
   // On + every turn by default: the feature exists because the tool was there and nobody used it,
   // and 对齐 Studio means the block rides on every turn (see everyTurn's note). Both are visible
   // and switchable in 设置 — this is a default, not a lock.
@@ -676,6 +680,7 @@ function pickPrefs(raw: unknown): PrefsSettings {
     else if (typeof r.autoRead === "boolean") out.speakMode = r.autoRead ? "reply" : "off";
     out.autoRead = out.speakMode === "reply";
     if (typeof r.serverTts === "boolean") out.serverTts = r.serverTts;
+    if (typeof r.showTps === "boolean") out.showTps = r.showTps;
     if (typeof r.voiceURI === "string" && r.voiceURI.length <= 200) out.voiceURI = r.voiceURI;
     if (typeof r.lang === "string" && (!r.lang || /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(r.lang))) out.lang = r.lang;
     const rate = Number(r.rate);
@@ -902,6 +907,10 @@ export function savePrefs(patch: Record<string, unknown>): Settings {
   if ("autoRead" in patch) {
     if (typeof patch.autoRead !== "boolean") throw new Error("invalid autoRead: expected true/false");
     next.autoRead = patch.autoRead;
+  }
+  if ("showTps" in patch) {
+    if (typeof patch.showTps !== "boolean") throw new Error("invalid showTps: expected true/false");
+    next.showTps = patch.showTps;
   }
   if ("serverTts" in patch) {
     if (typeof patch.serverTts !== "boolean") throw new Error("invalid serverTts: expected true/false");

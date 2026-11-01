@@ -103,7 +103,8 @@
     "speakable-sweep": "node scripts/qa/speakable-sweep.mjs",
     "hold-to-talk-units": "tsx scripts/qa/hold-to-talk-units.mts",
     "hold-to-talk-sweep": "node scripts/qa/hold-to-talk-sweep.mjs",
-    "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs"
+    "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs",
+    "live-speed-sweep": "node scripts/qa/live-speed-sweep.mjs"
   },
   "engines": {
     "node": ">=22.5"

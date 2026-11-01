@@ -506,6 +506,20 @@ button { font: inherit; }
      · `tabular-nums` because the number changes every second — proportional digits make the line
        jitter sideways as 「9 秒」 becomes 「10 秒」;
      · the spinner is one ring on the EXISTING `spin` keyframes, not a new animation. */
+/* Issue #70 step 1: the live speed chip, inside the clock line. Deliberately quiet — a number
+   that SHOUTS next to every streaming reply is noise; it is a diagnostic the operator switches on. */
+.tps-chip {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted, #8a8f98);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .stream-hint {
   display: flex; gap: 7px; padding: 2px 0;
   color: var(--text-dim); font-size: 12.5px;

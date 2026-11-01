@@ -260,6 +260,14 @@ export type ServerEvent =
    *  (issue #74 review): the message is in the server's hands, and reporting it as lost invites a
    *  retry that sends it twice. */
   | { t: "prompt-held"; sessionId: string; pid: string }
+  /** Issue #70 step 1: the live speed meter. 1Hz while a turn is streaming, and ONLY while the
+   *  operator's 「显示流式速度」 switch is on — otherwise the timer never starts and no frame is
+   *  ever sent. `cps` is CHARACTERS per second, not tokens: ACP streams no usage, tokens arrive
+   *  once on the prompt response (that per-turn average is `turn-usage`). `estimated: true` says
+   *  exactly that, so a client can never dress it up as t/s. `available: false` closes the meter
+   *  (the turn's text stopped arriving) — the chip goes away rather than showing a stale number. */
+  | { t: "tps"; sessionId: string; cps?: number; windowMs?: number; available: boolean;
+      estimated?: boolean; unit?: "chars"; streaming?: boolean; at: number }
   /** A config pick (thinking depth / context budget) the agent did NOT take: the picker showed the
    *  new value while the wire dropped it — the exact shape an operator reads as "这个设置没用".
    *  `actual` is what the session really runs with, so the cockpit can put the control back and say
