@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer as createTcp } from "node:net";
 import { WebSocket } from "ws";
+import { DatabaseSync } from "node:sqlite";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,25 +37,42 @@ const freePort = () => new Promise((res, rej) => {
 const PORT = await freePort();
 const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-mainbot-"));
 const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-mainbot-home-"));
-const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
-  detached: true,
-  cwd: ROOT,
-  env: {
-    ...process.env, NODE_ENV: "development", HOME: emptyHome,
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
-    MOCK_SLOW_MS: "30",
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let log = "";
-proc.stdout.on("data", (d) => { log += String(d); });
-proc.stderr.on("data", (d) => { log += String(d); });
 const BASE = `http://127.0.0.1:${PORT}`;
+let log = "";
+let proc = null;
+
+/** Boot (or re-boot) the instance. A second boot against the SAME data directory is how the sweep
+ *  proves startup repairs a stale 主 agent row — that repair runs in the SessionManager constructor,
+ *  so only a real process start exercises it. */
+const boot = async () => {
+  log = "";
+  proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
+    detached: true,
+    cwd: ROOT,
+    env: {
+      ...process.env, NODE_ENV: "development", HOME: emptyHome,
+      AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
+      MOCK_SLOW_MS: "30",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  proc.stdout.on("data", (d) => { log += String(d); });
+  proc.stderr.on("data", (d) => { log += String(d); });
+  for (let i = 0; i < 160 && !log.includes(`:${PORT}`); i++) await sleep(150);
+  for (let i = 0; i < 80; i++) { try { if ((await fetch(`${BASE}/healthz`)).ok) return; } catch { /* booting */ } await sleep(250); }
+};
+
+const stopServer = async () => {
+  try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone */ }
+  for (let i = 0; i < 60; i++) {
+    try { await fetch(`${BASE}/healthz`); await sleep(150); } catch { return; }
+  }
+};
+
 const cleanup = () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone */ } };
 process.on("exit", cleanup);
 
-for (let i = 0; i < 160 && !log.includes(`:${PORT}`); i++) await sleep(150);
-for (let i = 0; i < 80; i++) { try { if ((await fetch(`${BASE}/healthz`)).ok) break; } catch { /* booting */ } await sleep(250); }
+await boot();
 
 const api = async (p, init = {}) => {
   const res = await fetch(`${BASE}${p}`, { ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) } });
@@ -142,6 +160,83 @@ check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空�
   const { body: still } = await api("/api/sessions");
   const row = [...(still?.live ?? []), ...(still?.cold ?? [])].find((s) => s.id === mainId);
   check("名字还是 Main Bot", row?.title === "Main Bot", String(row?.title));
+}
+
+// ---- ③c 库里的名字也必须是 Main Bot，而且要一直保持 -------------------------------------
+// 前端写死的只是「画出来什么」；跨会话转交的信封取的是 `sessions.title`，所以名字必须在库里。
+// 三条路径都验：初始值、被 agent 改过之后的派生路径（regenerate 走同一道门）、以及转交信封。
+{
+  const db = () => new DatabaseSync(path.join(dataDir, "agentus.sqlite"), { readOnly: true });
+  const titleOf = (id) => {
+    const d = db();
+    try {
+      const r = d.prepare("select title, auto_title from sessions where id = ?").get(id);
+      return { title: r?.title ?? null, auto: r?.auto_title ?? null };
+    } finally { d.close(); }
+  };
+
+  const start = titleOf(mainId);
+  check("库里 title = Main Bot", start.title === "Main Bot", JSON.stringify(start));
+  check("库里 auto_title 也是 Main Bot（派生列不许留旧值）", start.auto === "Main Bot", JSON.stringify(start));
+
+  const { body: listed } = await api("/api/sessions");
+  check("GET /api/sessions 返回的名字是 Main Bot",
+    [...(listed?.live ?? []), ...(listed?.cold ?? [])].find((s) => s.id === mainId)?.title === "Main Bot");
+
+  // `create()` 不等握手，`POST /prompt` 打在一个还没 ready 的槽上会被拒（这条踩过：
+  // 「session not ready」之后所有断言都在验一个没跑的回合）。先等到 ready。
+  for (let i = 0; i < 60; i++) {
+    const { body } = await api("/api/sessions");
+    if ((body?.live ?? []).find((s) => s.id === mainId)?.status === "ready") break;
+    await sleep(200);
+  }
+
+  // 先让这条会话有内容 —— regenerate 需要一条 user 消息，否则它会 409 而根本走不到那道门。
+  let hasUser = false;
+  for (let i = 0; i < 60 && !hasUser; i++) {
+    const { body: msgs } = await api(`/api/sessions/${mainId}/messages`);
+    hasUser = JSON.stringify(msgs ?? "").includes('"kind":"user"');
+    if (!hasUser) {
+      if (i === 0) await api(`/api/sessions/${mainId}/prompt`, { method: "POST", body: JSON.stringify({ text: "在吗" }) });
+      await sleep(250);
+    }
+  }
+  check("（前提）主 agent 这条有对话内容，可以走重新生成", hasUser);
+  {
+    const d = new DatabaseSync(path.join(dataDir, "agentus.sqlite"));
+    try {
+      d.prepare("update sessions set title = ?, auto_title = ?, title_src = 'agent' where id = ?")
+        .run("Friendly greeting #3", "Friendly greeting #3", mainId);
+    } finally { d.close(); }
+  }
+  check("（前提）库里已经被写成旧名", titleOf(mainId).title === "Friendly greeting #3");
+
+  // 派生路径：和 agent 每轮发 session_info_update 走的是同一道门（#applyAutoTitle）。
+  const regen = await api(`/api/sessions/${mainId}/title/regenerate`, { method: "POST" });
+  check("重新生成会话名不会把主 agent 改回去（要么拒、要么不动）",
+    [200, 409].includes(regen.status), `HTTP ${regen.status} ${JSON.stringify(regen.body).slice(0, 120)}`);
+  // 这一条才是「agent 每轮发标题」那条路径的替身：它走的是同一个 #applyAutoTitle 门，
+  // 到达时库里确实是旧名 —— 若守卫只是丢弃而不写回，这里就会停在旧名。
+  check("走过命名门之后，库里的名字仍是 Main Bot", titleOf(mainId).title === "Main Bot", JSON.stringify(titleOf(mainId)));
+
+
+  // 转交信封的来源名取的就是 sessions.title —— 这一条是操作者要这个改动的理由。
+  const wsDir = mkdtempSync(path.join(tmpdir(), "mainbot-env-"));
+  const bridge = await api("/api/bridge", {
+    method: "POST",
+    body: JSON.stringify({ from: mainId, to: { kind: "new", workspace: wsDir }, text: "信封来源名检查" }),
+  });
+  const bridged = bridge.body?.id ?? "";
+  check("转交成功（校验信封用）", bridge.status === 200 && Boolean(bridged), `HTTP ${bridge.status}`);
+  let envelope = "";
+  for (let i = 0; i < 40 && !envelope; i++) {
+    const { body } = await api(`/api/sessions/${bridged}/messages`);
+    const text = JSON.stringify(body ?? "");
+    if (text.includes("信封来源名检查")) envelope = text;
+    else await sleep(200);
+  }
+  check("转交信封里的来源名是 Main Bot", envelope.includes("Main Bot"), envelope.slice(0, 160));
+  check("信封里没有旧名", !envelope.includes("Friendly greeting"), envelope.slice(0, 160));
 }
 
 // ---- ④ 写闸：只有主 agent 拿到豁免 ------------------------------------------------------
@@ -417,9 +512,36 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     rebuilt.body?.session?.role === "main" && rebuilt.body?.session?.cwd === mainDir);
 }
 
+// ---- ⑦ 存量自愈：重启一次，旧名必须自己回来 ---------------------------------------------
+// 「服务启动后的首轮帧 / 下一次自动标题到达」—— 这里验的是最硬的那一半：进程启动时就不该带着
+// 旧名。写入旧名之后重启同一个数据目录，构造函数里的 repairMainBotTitles() 应当把它纠回来。
+{
+  const q = path.join(dataDir, "agentus.sqlite");
+  const db = new DatabaseSync(q);
+  try {
+    db.prepare("update sessions set title = ?, auto_title = ?, title_src = 'agent' where role = 'main'")
+      .run("Friendly greeting #3", "Friendly greeting #3");
+  } finally { db.close(); }
+  check("（前提）库里的主 agent 又变成旧名", true);
+  await stopServer();
+  await boot();
+  const d = new DatabaseSync(q, { readOnly: true });
+  let row;
+  try { row = d.prepare("select title, auto_title from sessions where role = 'main'").get(); } finally { d.close(); }
+  check("重启后旧名被自动纠回 Main Bot（存量行自愈，不用点按钮）",
+    row?.title === "Main Bot" && row?.auto_title === "Main Bot", JSON.stringify(row));
+  const { body: relisted } = await api("/api/sessions");
+  check("重启后 GET /api/sessions 也是 Main Bot",
+    [...(relisted?.live ?? []), ...(relisted?.cold ?? [])].some((s) => s.role === "main" && s.title === "Main Bot"));
+}
+
 // ---- 收尾 ------------------------------------------------------------------------------
 const { body: final } = await api("/api/sessions");
-check("主 agent 全程没有被归档、也没有重复", (final?.live ?? []).filter((s) => s.role === "main").length === 1);
+// 收尾时它可能已经因为重启变成冷行（进程在重启时就注册了），所以两个列表一起数：
+// 判据是「整份列表里 role=main 恰好一条、且不在已归档里」，不是「进程还活着」。
+const mains = [...(final?.live ?? []), ...(final?.cold ?? [])].filter((s) => s.role === "main");
+check("主 agent 全程没有被归档、也没有重复", mains.length === 1 && !(final?.archived ?? []).some((s) => s.role === "main"),
+  `live+cold=${mains.length} archived=${(final?.archived ?? []).filter((s) => s.role === "main").length}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 cleanup();
