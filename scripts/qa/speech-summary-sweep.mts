@@ -169,8 +169,70 @@ check("custom 指向不存在的 provider 时，失败原因点名那条 provide
   customUnknown.route === null
     && /nope-provider/.test(customUnknown.why)
     && /providers/.test(customUnknown.why)
+    && /custom_providers/.test(customUnknown.why)
     && !/provider「custom」/.test(customUnknown.why),
   customUnknown.why);
+
+// ---- 4b) the LEGACY `custom_providers` list is the same declaration (#86) -------------------
+// Upgraded deployments still carry the pre-v12 list form; hermes reads both shapes as one view, so
+// answering 「providers 里没有这一条」 about an endpoint that is right there in `custom_providers`
+// meant chat worked and every side call (voice summary) failed.
+const legacyHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-legacy-home-"));
+fs.writeFileSync(path.join(legacyHome, ".env"), "LEGACY_KEY=fake-legacy-key\n");
+fs.writeFileSync(path.join(legacyHome, "config.yaml"), [
+  "custom_providers:",
+  "  - name: legacy-lab",
+  "    base_url: https://legacy.example.invalid/v1",
+  "    api_key: fake-legacy-inline",
+  "    model: legacy-model",
+  "  - name: legacy-env",
+  "    api: https://legacy-env.example.invalid/v1",
+  "    key_env: LEGACY_KEY",
+  "    default_model: legacy-env-model",
+  "  - name: legacy-off",
+  "    base_url: https://legacy-off.example.invalid/v1",
+  "    api_key: fake-legacy-off",
+  "    enabled: false",
+  "  - provider_key: legacy-keyname",
+  "    base_url: https://legacy-key.example.invalid/v1",
+  "    api_key: fake-legacy-keyname",
+  "  - name: both",
+  "    base_url: https://from-legacy.example.invalid/v1",
+  "    api_key: fake-from-legacy",
+  "providers:",
+  "  both:",
+  "    base_url: https://from-map.example.invalid/v1",
+  "    api_key: fake-from-map",
+].join("\n"));
+
+const legacyInline = routeForModel("custom:legacy-lab:legacy-model", legacyHome);
+check("legacy custom_providers 列表里的条目也能路由（name + base_url + api_key 字面量）",
+  legacyInline.route?.baseUrl === "https://legacy.example.invalid/v1"
+    && legacyInline.route?.apiKey === "fake-legacy-inline"
+    && /custom_providers\.legacy-lab/.test(String(legacyInline.route?.source)),
+  legacyInline.route ? `${legacyInline.route.source} ${legacyInline.route.baseUrl}` : legacyInline.why);
+
+const legacyEnv = routeForModel("custom:legacy-env:whatever", legacyHome);
+check("legacy 条目用 key_env + api 别名时，key 从该 home 的 .env 取、模型回落到 default_model",
+  legacyEnv.route?.apiKey === "fake-legacy-key"
+    && legacyEnv.route?.model === "whatever"
+    && legacyEnv.route?.baseUrl === "https://legacy-env.example.invalid/v1",
+  legacyEnv.route ? `${legacyEnv.route.model} ${legacyEnv.route.apiKey === "fake-legacy-key" ? "key:env" : "key:?"}` : legacyEnv.why);
+
+const legacyKeyName = routeForModel("custom:legacy-keyname:x", legacyHome);
+check("legacy 条目缺 name 时用 provider_key 当条目名",
+  legacyKeyName.route?.baseUrl === "https://legacy-key.example.invalid/v1",
+  legacyKeyName.route ? String(legacyKeyName.route.source) : legacyKeyName.why);
+
+const legacyOff = routeForModel("custom:legacy-off:x", legacyHome);
+check("enabled: false 的条目不可路由（不能给停用的端点花钱）",
+  legacyOff.route === null && /legacy-off/.test(legacyOff.why),
+  legacyOff.route ? String(legacyOff.route.baseUrl) : legacyOff.why);
+
+const bothForms = routeForModel("custom:both:m", legacyHome);
+check("同一个名字在两处都声明时，沿用 hermes 的顺序：legacy 列表先声明先赢",
+  bothForms.route?.baseUrl === "https://from-legacy.example.invalid/v1",
+  String(bothForms.route?.baseUrl));
 
 // ---- 5) the vendor's own status survives the error path (#85) ------------------------------
 // A 403 `model_not_allowed` used to arrive as 502 「网关故障」. The error object now carries the
