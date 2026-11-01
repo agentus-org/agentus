@@ -52,6 +52,7 @@ import type {
   TurnUsage,
   UsageTotals,
 } from "../../../shared/src/index.js";
+import { estimateStreamTokens } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
@@ -217,11 +218,11 @@ interface LiveSession {
   /** Issue #70 step 1 —— 流式测速的窗口。只在「开着这个开关 + 这一轮正在出字」时存在：
    *  1Hz 推一次 `t:"tps"`，窗口空了就自己收摊（不开定时器空转）。
    *
-   *  为什么数「字符」而不是 token：ACP 的流里没有 usage，token 只在 prompt 的响应上一次性给齐
-   *  （那是 turn-end 的账）。把字符数冒充成 token 再每秒报一个「t/s」，正是 issue 里点名不许做的事
-   *  —— 所以推的是 `cps`（字符/秒），前端也按「约 N 字/秒」显示，绝不写成 t/s。 */
+   *  为什么是估算：ACP 的流里没有 usage，token 只在 prompt 的响应上一次性给齐（那是 turn-end 的账）。
+   *  操作员要的是 token/秒，所以这里按字符估 token（`estimateStreamTokens`：中日韩 0.6 / 其余 0.25），
+   *  帧里始终带 `estimated: true` —— 它是速度表，不是账单；准确的数字在用量行上。 */
   meter?: {
-    buckets: { at: number; chars: number }[];
+    buckets: { at: number; chars: number; tokens: number }[];
     timer: NodeJS.Timeout | null;
   };
   child?: ReturnType<typeof spawn>;
@@ -2547,7 +2548,7 @@ export class SessionManager {
     }
     // Issue #70 step 1: 只有真正在流的正文算速度。重放帧在上面就返回了（会二次算一遍历史），
     // 思考帧不算（它不是「这一轮说得多快」），工具帧更不算 —— 工具跑十分钟不代表模型慢。
-    if (st === "agent_message_chunk") this.#meterAdd(live, textOf(u).length);
+    if (st === "agent_message_chunk") this.#meterAdd(live, textOf(u));
     // A status line from the agent (issue #18). Hermes sends these on ACP as an EMPTY thought chunk
     // whose `_meta.hermes` carries the sentence — the protocol has no status object, and `_meta` is the
     // extension door it does leave open. Honoured here rather than in the web, because the decision that
@@ -2846,12 +2847,13 @@ export class SessionManager {
 
   /** 记一笔字，必要时把 1Hz 的表拨起来。窗口是 3 秒 —— 短到能反映「现在」，长到不被逐个 chunk
    *  的抖动带偏。 */
-  #meterAdd(live: LiveSession, chars: number): void {
+  #meterAdd(live: LiveSession, text: string): void {
     if (!this.#liveSpeed()) return;
+    const chars = text.length;
     if (!(chars > 0)) return;
     const now = Date.now();
     if (!live.meter) live.meter = { buckets: [], timer: null };
-    live.meter.buckets.push({ at: now, chars });
+    live.meter.buckets.push({ at: now, chars, tokens: estimateStreamTokens(text) });
     if (live.meter.timer) return;
     const timer = setInterval(() => this.#meterTick(live), 1000);
     timer.unref?.();
@@ -2865,21 +2867,25 @@ export class SessionManager {
     const from = now - 3000;
     m.buckets = m.buckets.filter((b) => b.at >= from);
     const chars = m.buckets.reduce((n, b) => n + b.chars, 0);
+    const tokens = m.buckets.reduce((n, b) => n + b.tokens, 0);
     if (!chars || !live.busy) {
       // 一句说完了、或者这一轮已经结束：不再推数字，把表停掉。前端见不到更新就把胶囊收起来
       // （它是「正在多快」，不是「刚才多快」—— 后者是 turn-end 那行账的活）。
       this.#meterStop(live);
       return;
     }
+    const round1 = (x: number) => Math.round(x * 10) / 10;
     this.#emit({
       t: "tps",
       sessionId: live.info.id,
-      cps: Math.round((chars / 3) * 10) / 10,
+      // 主数字是 token/秒 —— 操作员要的就是它。按字符估算（流里没有 usage），`estimated` 如实标着。
+      tps: round1(tokens / 3),
+      // 原始测量值一起给出：估算口径改的时候，这个不用重新解释。
+      cps: round1(chars / 3),
       windowMs: 3000,
       available: true,
-      // 字符不是 token：标出来，前端照这个措辞显示，别把它打扮成 t/s。
       estimated: true,
-      unit: "chars",
+      unit: "tokens",
       at: now,
     });
   }

@@ -127,10 +127,11 @@ await sleep(800);
 const mine = tpsFrames(onId);
 const live = mine.filter((f) => f.available !== false);
 check("a streaming turn pushes tps frames", live.length >= 2, `${live.length} live frame(s)`);
-check("…and they are all measured in CHARACTERS, never dressed up as tokens",
-  live.every((f) => f.unit === "chars" && f.estimated === true), JSON.stringify(live[0] ?? null));
-check("…with a positive speed and the 3s window they describe",
-  live.every((f) => f.cps > 0 && f.windowMs === 3000), live.map((f) => f.cps).join(", "));
+check("…and they report TOKENS per second, flagged as an estimate (the stream carries no usage)",
+  live.every((f) => f.unit === "tokens" && f.estimated === true && f.tps > 0), JSON.stringify(live[0] ?? null));
+check("…the raw character rate rides along, so the estimate can be re-derived",
+  live.every((f) => f.cps > 0 && f.tps <= f.cps + 0.001), live.map((f) => `${f.tps}/${f.cps}`).join(", "));
+check("…with the 3s window they describe", live.every((f) => f.windowMs === 3000));
 
 // 1Hz 的节奏：相邻两帧的间隔应是「秒」量级，不是 100ms 的洪水
 const gaps = live.slice(1).map((f, i) => f.at - live[i].at);
@@ -226,7 +227,7 @@ try {
     await sleep(250);
   }
   check("the live chip shows up while the reply is streaming", Boolean(chip), String(chip));
-  check("…and it says 字/秒 (characters), never t/s", /字\/秒/.test(String(chip)), String(chip));
+  check("…and it says t/s", /t\/s/.test(String(chip)), String(chip));
   check("…with a real number in it", /≈\s*\d/.test(String(chip)), String(chip));
 
   // 说完了就该收起来：胶囊是「现在多快」，不是「刚才多快」

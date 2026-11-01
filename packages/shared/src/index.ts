@@ -235,6 +235,28 @@ export interface PermissionDiff {
 }
 
 // ---- WS envelope (server -> browser) ----
+/** How many tokens a chunk of streamed text will ROUGHLY bill (issue #70 step 1).
+ *
+ *  The operator asked for tokens/second, and the stream only gives us characters — ACP carries no
+ *  usage until the turn ends. So the live number is an ESTIMATE, and the two ratios below are the
+ *  honest ones for the models this cockpit runs:
+ *   · CJK (and full-width punctuation) ≈ 0.6 token per character — Qwen/Claude-class BPEs pack
+ *     Chinese at roughly 1.5 characters per token;
+ *   · everything else ≈ 0.25 token per character — the usual ~4 characters per token for Latin
+ *     text, code and JSON.
+ *  Deliberately coarse: this is a speedometer, not a bill. The exact numbers are on the usage row,
+ *  measured from the provider's own `usage`. */
+export function estimateStreamTokens(text: string): number {
+  let cjk = 0, other = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c <= 0x20) continue;                                   // whitespace bills with its word
+    if ((c >= 0x2e80 && c <= 0x9fff) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff00 && c <= 0xffef)) cjk++;
+    else other++;
+  }
+  return cjk * 0.6 + other * 0.25;
+}
+
 export type ServerEvent =
   | { t: "hello"; clientId: string; resumed: boolean }
   | { t: "sessions"; sessions: SessionInfo[]; /** current background snapshots, for a page that connects AFTER the frame that carried them */ background?: { sessionId: string; tasks: BackgroundTask[] }[]; /** rows on disk with NO process and no archive flag — they belong in 工作空间 beside the live ones (a crashed slot must not look archived, and must not vanish from the rail either) */ cold?: SessionInfo[]; /** rows the operator explicitly archived (archivedAt set) — the 已归档 section, whatever their process state */ archived?: SessionInfo[]; /** requests already waiting for an answer, so a page that connects or refreshes learns about them (they are STATE; the events happened before it existed) */ pending?: PermissionRequestView[] }
@@ -262,12 +284,17 @@ export type ServerEvent =
   | { t: "prompt-held"; sessionId: string; pid: string }
   /** Issue #70 step 1: the live speed meter. 1Hz while a turn is streaming, and ONLY while the
    *  operator's 「显示流式速度」 switch is on — otherwise the timer never starts and no frame is
-   *  ever sent. `cps` is CHARACTERS per second, not tokens: ACP streams no usage, tokens arrive
-   *  once on the prompt response (that per-turn average is `turn-usage`). `estimated: true` says
-   *  exactly that, so a client can never dress it up as t/s. `available: false` closes the meter
-   *  (the turn's text stopped arriving) — the chip goes away rather than showing a stale number. */
-  | { t: "tps"; sessionId: string; cps?: number; windowMs?: number; available: boolean;
-      estimated?: boolean; unit?: "chars"; streaming?: boolean; at: number }
+   *  ever sent.
+   *
+   *  `tps` is TOKENS per second — what the operator asked to see — but it is ESTIMATED from the
+   *  characters that actually arrived (`estimateStreamTokens`), because ACP's stream carries no
+   *  usage: the real counts arrive once, on the prompt response, and that per-turn average is the
+   *  `turn-usage` row. `cps` rides along so a client can show the raw measurement behind the
+   *  estimate, and `estimated: true` is always set — this number must never be presented as a
+   *  reading taken from the provider. `available: false` closes the meter (the turn's text stopped
+   *  arriving) — the chip goes away rather than showing a stale number. */
+  | { t: "tps"; sessionId: string; tps?: number; cps?: number; windowMs?: number; available: boolean;
+      estimated?: boolean; unit?: "tokens"; streaming?: boolean; at: number }
   /** A config pick (thinking depth / context budget) the agent did NOT take: the picker showed the
    *  new value while the wire dropped it — the exact shape an operator reads as "这个设置没用".
    *  `actual` is what the session really runs with, so the cockpit can put the control back and say

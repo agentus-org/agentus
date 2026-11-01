@@ -1218,9 +1218,10 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
                 data-set="show-tps"
               />
               <span className="set-hint">
-                回合进行中，在「处理中」后面显示最近 3 秒的 <b>字/秒</b>。这是<b>字符</b>不是 token ——
-                ACP 的流里没有 token 计数，token 只在回合结束时一次性给齐（那一轮的平均 t/s 由回复下面的
-                用量行给出）。开着它很便宜，但会每秒给你一条 WS 消息，所以默认关。
+                回合进行中，在「处理中」后面显示最近 3 秒的输出速度（<b>t/s</b>）。协议流里没有 token
+                计数，所以这是按字符估算的（中文约 0.6 token/字、英文约 4 字符/token），前面带「≈」；
+                那一轮的<b>精确</b>平均值在回复下面的用量行上。开着它很便宜，但会每秒给你一条 WS 消息，
+                所以默认关。
               </span>
             </div>
           </div>
