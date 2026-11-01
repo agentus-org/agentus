@@ -2375,6 +2375,19 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .rail-group-folder { flex: 0 0 auto; color: var(--text-dim); }
 .rail-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-group-count { font-size: 11px; color: var(--text-dim); }
+
+/* ★ Main Bot (issue #84) — one row at the very top, outside 工作空间. It reads as a row, not as a
+   section: no directory header, a hairline under it so the workspace list keeps a clear start. */
+.rail-main-bot { margin: 2px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.rail-main-bot .session-item .title { font-weight: 600; }
+.main-star { color: #e8b544; margin-right: 5px; vertical-align: -1px; flex: none; }
+.rail-main-create {
+  display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); margin: 4px 8px 6px;
+  padding: 7px 9px; border: 1px dashed var(--line); border-radius: 8px; background: transparent;
+  color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+}
+.rail-main-create:hover { color: var(--text); border-color: var(--accent); }
+.rail-main-create svg { color: #e8b544; flex: none; }
 .rail-group-body { padding-left: 28px; }
 /* 「展开其余 N 条」 — inset like a session row so it reads as the group's own tail, not a new one. */
 .rail-more {

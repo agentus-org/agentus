@@ -157,6 +157,8 @@ export interface SessionRow {
    *  session, kept out of the rail and out of the cockpit CLI's scope. Written on insert only —
    *  like `home`, it is a fact about how the row was born, not something a rename can change. */
   system?: boolean;
+  /** 'main' = the 主 agent (issue #84). See the sessions.role column. */
+  role?: string | null;
   /** JSON round-trip of the ACP mode state + config options, so a resumed
    *  session (M4-lite) comes back with the operator's mode/effort intact. */
   modes?: unknown;
@@ -197,6 +199,7 @@ interface RawSessionRow {
   models?: string | null; context_limit?: number | null;
   pending_model_id?: string | null;
   system?: number | null;
+  role?: string | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -263,6 +266,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     workspace: r.workspace ?? null,
     home: r.home ?? null,
     system: Boolean(r.system),
+    role: r.role ?? null,
     models: parseJson(r.models),
     contextLimit: r.context_limit ?? null,
     pendingModelId: r.pending_model_id ?? null,
@@ -400,7 +404,12 @@ export class Store {
         pid integer, created_at integer not null, closed_at integer, home text,
         -- 1 = a session the COCKPIT spawned for itself (the 工作播报 observer), never the operator's
         -- work: filtered out of the rail and out of the cockpit CLI's scope. See SessionRow.system.
-        system integer not null default 0
+        system integer not null default 0,
+        -- 'main' = the one 主 agent (issue #84): visible and listable (unlike a system session), living in the
+        -- cockpit's own <data>/main-bot directory, and the ONE session allowed to hand work to other
+        -- sessions while 驾驶舱互发消息 is off. Written once, by ensureMainBot() — no API can
+        -- promote an existing session into this role.
+        role text
       );
       create table if not exists messages (
         seq integer not null, session_id text not null, kind text not null,
@@ -490,6 +499,9 @@ export class Store {
     // allowed into the rail, the warm-slot ranking and the cockpit CLI's scope — a rename must not be
     // able to move a session between those worlds.
     if (!cols.has("system")) this.#db.exec("alter table sessions add column system integer not null default 0");
+    // issue #84: the 主 agent role. NULL on every existing row = "an ordinary session", which is the
+    // right answer — the role is never inferred from a title, a cwd or a name.
+    if (!cols.has("role")) this.#db.exec("alter table sessions add column role text");
     // WHEN THE OPERATOR PUT THE SESSION AWAY (已归档 — a STORAGE state). Before this column the rail
     // inferred "archived" from "has no process", so a slot that merely crashed (or was killed by an
     // idle reap) filed itself under 已归档 next to the ones the operator really put away, and
@@ -1030,13 +1042,13 @@ export class Store {
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system, role)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0);
+          JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0, s.role ?? null);
     }
   }
 

@@ -209,6 +209,45 @@ interface PendingCompletion {
   origin?: { sessionId: string; title: string | null };
 }
 
+/** What the 主 agent reads about itself, written once into `<data>/main-bot/AGENTS.md` (issue #84).
+ *
+ *  Kept in code rather than shipped as a static file so the cockpit and the package can never drift
+ *  apart, and so a fresh install has no extra asset to lose. The operator may edit it freely; the
+ *  cockpit only re-creates it when the file is GONE (see `ensureMainBot`).
+ *
+ *  Deliberately about the CONTRACT, not the personality: what it can do, how work is handed out and
+ *  reported, and where it must not go. Tone stays the operator's business. */
+const MAIN_BOT_AGENTS_MD = `# Main Bot
+
+你是这个驾驶舱的**主 agent**。你和其它会话的唯一区别是：你是被操作者点名的那一个，
+它们各自绑在某个项目目录上，而这里是你自己的目录。
+
+## 你能做什么
+
+- 看：\`agentus session list\`（谁在跑、谁在等我）、\`agentus session show <id>\`、
+  \`agentus session messages <id> --tail 20\`（读别人的对话）
+- 派活：\`agentus session send <id> "<任务>" --reply-on-done\`。它只等对方**回合开始**就返回，
+  对方回合结束时服务端会往这里投一条【完成回推】并唤醒你 —— 所以你可以一次派几件事，不用守着。
+- 叫醒/新建：\`agentus session wake <id>\`、\`agentus session create <目录> --title "<名字>"\`
+- 停：\`agentus session stop <id>\`（只收进程，记录留着）
+
+命令都在环境变量 \`$AGENTUS_COCKPIT_BIN\` 里，会话内用 \`"$AGENTUS_COCKPIT_BIN" session list\`。
+
+## 怎么干活
+
+1. 先弄清楚操作者要什么，再决定要不要派活。不要为了显得忙而制造任务。
+2. 派活时把「要什么结果、什么算做完」写清楚，别让对方猜。
+3. 汇报先给结论，一到三句；细节放在后面，操作者要才展开。
+4. 收到【完成回推】时，先说结果，再问你还要不要继续。
+
+## 边界
+
+- **不要**改操作者的项目文件，除非他明确指到那个文件和那件事。
+- **不要**删除会话或别人的聊天记录（\`session delete\` 是操作者的动作，你没这个权限）。
+- **不要**擅自改驾驶舱的设置、后端、凭据。
+- 不确定的事就说「不确定」，不要编一个看起来合理的答案。
+`;
+
 interface LiveSession {
   info: SessionInfo;
   /** 操作员在握手还没回来的时候就把这条槽关掉了。`#stop` 对 starting 槽只做有界等待，
@@ -833,7 +872,7 @@ export class SessionManager {
   /** `opts.system` marks a session the COCKPIT is spawning for itself (issue #16's observer). It
    *  is a real ACP session and behaves like one everywhere below (close, idle-reap, resume), but it
    *  is born out of the rail's scope and stays out of it. */
-  async create(backend: BackendId, cwd: string, title?: string, opts: { system?: boolean } = {}): Promise<SessionInfo> {
+  async create(backend: BackendId, cwd: string, title?: string, opts: { system?: boolean; role?: "main" } = {}): Promise<SessionInfo> {
     const shape = this.#spawnShape(backend);
     if (!shape) throw new Error(`unknown backend: ${backend}`);
     const { spec, args } = shape;
@@ -896,6 +935,8 @@ export class SessionManager {
         title: title || `${spec.label} @ ${shortCwd(cwd)}`,
         autoTitle: title || `${spec.label} @ ${shortCwd(cwd)}`,
         ...(opts.system ? { system: true } : {}),
+        // issue #84: written exactly once, on the insert below — no later upsert can move it.
+        ...(opts.role ? { role: opts.role } : {}),
         createdAt: now, modes: null, configOptions: [], commands: [],
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
@@ -2243,10 +2284,45 @@ export class SessionManager {
    *  says nothing about intent. Un-archiving only moves the flag — the row lands back in 工作空间 as
    *  a cold slot, and the rail's 「取消归档并恢复」 wakes it with a separate resume (so a restore that
    *  fails to load leaves a visible cold slot rather than an error nobody asked for). */
+  /** The 主 agent (issue #84). ONE per cockpit, created here and nowhere else.
+   *
+   *  Why it cannot be an existing session: every ordinary session is bound to a project directory
+   *  and carries that project's context. Promoting one would make it play two roles at once and hand
+   *  it the cross-session write exemption on the way — the exact permission widening the operator
+   *  rejected when this was proposed. So the only door is this function: a dedicated directory under
+   *  the data dir, a pre-seeded AGENTS.md, `role='main'` written once on the insert.
+   *
+   *  Idempotent: an existing row (live or cold) is returned untouched. The AGENTS.md is written only
+   *  when it is missing — the operator's edits are theirs and are never overwritten. */
+  async ensureMainBot(): Promise<{ info: SessionInfo; created: boolean; cwd: string }> {
+    const cwd = path.join(this.#dataDir ?? process.cwd(), "main-bot");
+    const existing = [...this.#sessions.values()].find((s) => s.info.role === "main")?.info
+      ?? this.#store.listSessions().find((r) => r.role === "main")
+      ?? null;
+    // The brief is checked on BOTH paths: an existing 主 agent whose file was deleted (a stray
+    // `rm`, a restored backup, a half-copied data dir) would otherwise come back as a blank-slate
+    // agent with no idea what it is. Written only when MISSING — never overwritten, so the
+    // operator's own edits survive every call.
+    fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+    const brief = path.join(cwd, "AGENTS.md");
+    if (!fs.existsSync(brief)) {
+      // The persona lives in a FILE the agent runtime reads on its own. The server writes no prompt
+      // and holds no opinion about tone — this is the same door the operator's own workspaces use.
+      fs.writeFileSync(brief, MAIN_BOT_AGENTS_MD, { mode: 0o600 });
+    }
+    if (existing) return { info: this.#sessions.get(existing.id)?.info ?? this.#coldInfo(existing.id), created: false, cwd: existing.cwd };
+    const info = await this.create("hermes", cwd, "Main Bot", { role: "main" });
+    return { info, created: true, cwd };
+  }
+
   async setArchived(id: string, on: boolean): Promise<SessionInfo> {
     const live = this.#sessions.get(id);
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`no such session: ${id}`);
+    // issue #84: 主 agent 不能归档 —— 「已归档」是一条「这件事结束了」的陈述，而它没有结束这一说；
+    // 真不想用了就删掉（删除即消失），下次要用重新创建。留一个「已归档的主 agent」只会让
+    // 「我是谁的总管」这件事变得含糊。
+    if (on && row.role === "main") throw new Error("main_bot_not_archivable");
     if (on && live) await this.#stop(live, "archived");
     this.#store.setArchived(id, on ? Date.now() : null);
     this.#emitSessions();
@@ -3660,6 +3736,7 @@ function sessionRow(i: SessionInfo, home: string | null = null) {
     models: i.models ?? null,
     system: Boolean(i.system),
     // only ever written by the insert (creation); see Store.upsertSession
+    role: i.role ?? null,
     home,
   };
 }

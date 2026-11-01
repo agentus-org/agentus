@@ -97,6 +97,9 @@ export const IconActivity = (p: IconProps = {}): JSX.Element =>
 /** context window — concentric rings, fills by percent (see ContextGauge) */
 export const IconStop = (p: IconProps = {}): JSX.Element => svg(<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none" />, p);
 
+export const IconStar = (p: IconProps = {}): JSX.Element =>
+  svg(<path d="M12 3.6l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9z" />, p);
+
 export const IconClose = (p: IconProps = {}): JSX.Element => svg(<path d="M6 6l12 12M18 6L6 18" />, p);
 
 export const IconChevronDown = (p: IconProps = {}): JSX.Element => svg(<path d="M6 9l6 6 6-6" />, p);

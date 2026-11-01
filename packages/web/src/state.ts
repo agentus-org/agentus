@@ -1712,6 +1712,28 @@ export class Cockpit {
     return { id: out.id, created: Boolean(out.created) };
   }
 
+  /** Create the 主 agent (issue #84) and focus it.
+   *
+   *  There is no `promote(id)` counterpart on purpose: an ordinary session is bound to a project
+   *  directory and must not gain the cross-session write exemption by being renamed. This route is
+   *  the only door — the server owns the directory, seeds `AGENTS.md`, and writes `role='main'` once.
+   *  Idempotent server-side: pressing it twice returns the existing session, never a second one. */
+  async createMainBot(): Promise<void> {
+    const out = await this.#req<{ session: SessionInfo; created: boolean; cwd: string }>(
+      "/api/main-bot",
+      { method: "POST" },
+      // a spawn can take seconds; the generic 15s is fine, but no retry — a retried POST that lands
+      // after the first one succeeded would still be idempotent server-side, and a retry that fires
+      // while a spawn is in flight only makes the UI wait twice as long.
+      { retry: false, timeoutMs: 45_000 },
+    );
+    if (out.session?.id) {
+      await this.refreshRows();
+      this.setActive(out.session.id);
+    }
+    this.bump();
+  }
+
   /** Pull the two ON-DISK lists: cold rows (no process, not archived) and the operator's archive.
    *  Kept as REST (not only a WS event) so the rail still fills when the socket is down. */
   async refreshRows(): Promise<void> {

@@ -22,7 +22,7 @@ import type { PanelTarget } from "./ToolPanel";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
-import { RAIL_RECENT, railRows, splitRecent } from "./rail";
+import { MAIN_BOT_GROUP, RAIL_RECENT, railRows, splitRecent } from "./rail";
 import {
   backspaceToken, caretInsideToken, insertToken, mentionChoices, mentionWorkspaces, stripToken,
   tokenIntact, tokenText, type MentionChoice, type MentionToken,
@@ -50,7 +50,7 @@ import {
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
   IconCode, IconTerminal,
   IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
-  IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers,
+  IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar,
 } from "./Icons";
 import { PANES, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
@@ -603,9 +603,13 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
         : cold
           ? item("恢复会话", <IconResume size={14} />, onResume)
           : item("重启 agent 进程", <IconPower size={14} />, onRestart)}
+      {/* Issue #84: no 「归档」 for the 主 agent. Archiving says 「这件事结束了」 — it never does.
+          Deleting it (which only exists once it is cold) is the honest way to get rid of one, and
+          the server refuses archive anyway (400 main_bot_not_archivable) — this just keeps the menu
+          from offering what would fail. */}
       {archived
         ? (cold ? null : item("取消归档", <IconResume size={14} />, onUnarchive))
-        : item("归档会话", <IconArchive size={14} />, onArchive)}
+        : info.role === "main" ? null : item("归档会话", <IconArchive size={14} />, onArchive)}
       {cold ? item("删除会话（连记录）", <IconClose size={14} />, onDelete, true) : null}
     </div>
   );
@@ -845,9 +849,21 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   // without (cold — closed, crashed, or reclaimed for being idle). A dead slot is still a slot the
   // operator may want back, so it belongs here — NOT under 已归档, which is now a statement about
   // what HE decided (see the archived flag) rather than about what happened to a process.
+  // Issue #84: the 主 agent does NOT belong to any 工作空间 — it is not a project, it is the cockpit's
+  // own stand-in. So it is pulled out of the ordinary grouping here and drawn on ONE row at the very
+  // top of the rail (see `renderMainBot`). Every other row is untouched: this is a carve-out for
+  // `role === "main"`, not a new grouping rule.
+  const mainRow = useMemo(() => {
+    const found = [...railRows(sessions, cold), ...archived.map((s) => ({ s, cold: Boolean(s.cold) }))]
+      .find(({ s }) => s.role === "main");
+    return found && match(found.s) ? found : null;
+  }, [sessions, cold, archived, needle]);
+
   const groups = useMemo(
     () => {
-      const rows = railRows(sessions, cold).filter(({ s }) => match(s));
+      const rows = railRows(sessions, cold)
+        .filter(({ s }) => s.role !== "main")
+        .filter(({ s }) => match(s));
       return groupSessions(rows);
     },
     [sessions, cold, needle]
@@ -859,7 +875,12 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   // whatever its process is doing, and a session that merely lost its process stays in 工作空间.
   // `cold` comes from the server with each row (an archived row that has been resumed is live).
   const archivedGroups = useMemo(
-    () => groupSessions(archived.map((s) => ({ s, cold: Boolean(s.cold) })).filter(({ s }) => match(s))),
+    () => groupSessions(
+      archived
+        .filter((s) => s.role !== "main")   // 主 agent 不该出现在这里：它不能被归档（见 setArchived）
+        .map((s) => ({ s, cold: Boolean(s.cold) }))
+        .filter(({ s }) => match(s))
+    ),
     [archived, needle]
   );
 
@@ -887,7 +908,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   const renderGroups = (list: RailGroup[], ns: string): JSX.Element[] =>
     list.map((g) => {
       const key = ns + g.path;
-        const isOpen = Boolean(needle) || !closed[key];
+        // The 主 agent's single row is drawn WITHOUT a directory header: it is not a workspace, and a
+        // folder header over one session would invite exactly the misreading we are avoiding
+        // (`<data>/main-bot` is ours, not a project). It is always open — there is nothing to fold.
+        const isMain = g.path === MAIN_BOT_GROUP;
+        const isOpen = isMain || Boolean(needle) || !closed[key];
         const liveCount = g.items.filter((i) => !i.cold).length;
         // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
         // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
@@ -903,7 +928,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           expanded: Boolean(more[key]),
         });
         return (
-          <div className="rail-group" key={g.path}>
+          <div className={`rail-group ${isMain ? "rail-main-bot" : ""}`} key={g.path}>
+            {isMain ? null : (
             <div className="rail-group-row">
             <button
               type="button"
@@ -942,6 +968,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
               <IconPlus size={12} />
             </button>
           </div>
+            )}
             {isOpen ? (
               <div className="rail-group-body">
                 {shown.map(({ s, cold }) => (
@@ -995,7 +1022,12 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                         }}
                       />
                     ) : (
-                      <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>{s.title}</span>
+                      <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>
+                        {/* ★ = 这是主 agent (issue #84). It marks IDENTITY, not a favourite: the operator
+                            cannot star anything else, and this one cannot be unstarred. */}
+                        {s.role === "main" ? <IconStar size={11} className="main-star" /> : null}
+                        {s.title}
+                      </span>
                     )}
                     {cockpit.byId.get(s.id)?.perms.length ? (
                       <span className="badge perm" title="有审批在等你">⚿ {cockpit.byId.get(s.id)!.perms.length}</span>
@@ -1137,6 +1169,24 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
         {/* A section head is a fold control, not a label (AionUi's team section has exactly this
             chevron, and the state is remembered there too). Folding is what the operator asked for
             after comparing the two rails. */}
+        {/* ★ Main Bot — issue #84. ONE row, above everything, because it belongs to no workspace: it is
+            the cockpit's own stand-in, not a project. Drawn with the same row component (avatar,
+            status, name, ⋯ menu) so it behaves like every other session; only its identity differs.
+            No header, no fold, no 「+ 在这里新建」. */}
+        {mainRow ? (
+          renderGroups([{ path: MAIN_BOT_GROUP, label: "Main Bot", items: [mainRow] }], "main:")
+        ) : (
+          <button
+            type="button"
+            className="rail-main-create"
+            data-main-create="1"
+            title="创建主 agent —— 驾驶舱内置的一个常驻会话，可以替你盯着别的会话、派活"
+            onClick={() => void cockpit.createMainBot()}
+          >
+            <IconStar size={12} />
+            <span>创建主 agent</span>
+          </button>
+        )}
         <button type="button" className={`rail-section ${teamOpen ? "open" : ""}`} data-section="team"
                 aria-expanded={teamOpen} aria-controls="rail-team"
                 title={teamOpen ? "折叠团队" : "展开团队"}

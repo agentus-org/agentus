@@ -71,6 +71,11 @@ export interface SessionInfo {
   status: SessionStatus;
   pid: number | null;
   title: string;
+  /** `"main"` = this is THE 主 agent (issue #84). One per cockpit, created by `ensureMainBot()`, living
+   *  in `<data>/main-bot`. It is an ordinary session in every other respect (listable, archivable=no,
+   *  same transcript/messages API) — the rail just draws it on its own top row and the cockpit's
+   *  write gate lets it delegate while 驾驶舱互发消息 is off. null = an ordinary session. */
+  role?: "main" | null;
   /** WHO named this session's CURRENT title: null = the operator (or nobody in particular), a
    *  session id = that session's agent renamed it through the cockpit CLI. The rail shows a note
    *  when a name came from another agent — a rename is a claim about what a conversation IS, and
