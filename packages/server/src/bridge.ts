@@ -85,5 +85,9 @@ export function sameCwd(a: string, b: string): boolean {
 
 /** 工作空间在弹层里怎么显示：路径的最后一段（与 rail 同一套规则）。 */
 export function workspaceLabel(cwd: string): string {
-  return cwd.split("/").filter(Boolean).pop() ?? cwd;
+  const tail = cwd.split("/").filter(Boolean).pop() ?? cwd;
+  // Issue #84: the 主 agent's directory is OURS, not a project — printing `main-bot` (or, worse, the
+  // whole `<data>/main-bot` path) in a bridge receipt or `session list` reads like a workspace the
+  // operator owns. Everything else still shows the directory's own name.
+  return tail === "main-bot" ? "主 agent" : tail;
 }

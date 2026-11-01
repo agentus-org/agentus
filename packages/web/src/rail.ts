@@ -10,6 +10,11 @@
  *  enough that four projects still fit on one screen. */
 export const RAIL_RECENT = 5;
 
+/** The rail's synthetic group for the 主 agent (issue #84). It is NOT a path and never matches one:
+ *  the row is rendered without a directory header, at the very top, outside 工作空间. Kept as a
+ *  sentinel so `groupSessions()` can never accidentally produce it from a real `<data>/main-bot` path. */
+export const MAIN_BOT_GROUP = "__main-bot__";
+
 /**
  * The rail's row list: every session ONCE, the live copy winning over a cold one.
  *

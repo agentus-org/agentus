@@ -726,6 +726,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         permissions: mgr.pendingFor(s.id).length,
       });
       const sendOk = sendAllowed(agentSettings().cockpitSend);
+      // Issue #84: the 主 agent is the operator's stand-in — it may hand work out even while
+      // 驾驶舱互发消息 is switched OFF. Exactly ONE session can carry that role (see
+      // SessionManager.ensureMainBot), and nothing else about the gate changes: two ordinary
+      // sessions still cannot write into each other.
+      const writeOk = sendOk || (caller ? rowOf(caller)?.role === "main" : false);
 
       if (url.pathname === "/api/cockpit/capabilities" && req.method === "GET") {
         return send(res, 200, capabilities(sendOk));
@@ -856,7 +861,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const to = String(body.to ?? "");
         const message = String(body.message ?? "").trim();
         if (!to || !message) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
-        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        if (!writeOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(to);
         if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
         // #41: a cold target used to end the conversation here. Waking is now EXPLICIT (`--wake`),
@@ -960,7 +965,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (url.pathname === "/api/cockpit/create" && req.method === "POST") {
         const body = await readJson(req);
-        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        if (!writeOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const backendRaw = String(body.backend ?? "").trim();
         // Same resolution as the operator's own "+" (POST /api/sessions): a registry row wins, a
         // builtin id still resolves. An empty backend means "the one this cockpit would default to",
@@ -1001,7 +1006,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // target is already cold there is nothing to end and the answer says so rather than
         // pretending. Deliberately NOT DELETE /api/sessions/:id: for a cold row that route PURGES the
         // transcript, and no cross-session caller gets to delete the operator's history.
-        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        if (!writeOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
         if (!target) return refuseScope(id);
         if (body.close === true) {
@@ -1024,7 +1029,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
         // Same gate as send (#41): waking is what makes a send possible, so the two answers must
         // never disagree about whether an agent may pull another session's process up.
-        if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
+        if (!writeOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
         if (!target) return refuseScope(id);
         if (!target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, woke: false, already_live: true, id });
@@ -1826,6 +1831,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       }));
       return next;
     }
+    // Issue #84: the 主 agent has exactly one door — this route. There is deliberately no
+    // "promote this session" API: an ordinary session is bound to a project directory and must not
+    // gain the cross-session write exemption by being renamed.
+    if (url.pathname === "/api/main-bot" && req.method === "POST") {
+      try {
+        const { info, created, cwd } = await mgr.ensureMainBot();
+        emit(sessionsEvent());
+        return send(res, created ? 201 : 200, { session: info, created, cwd });
+      } catch (e) {
+        return send(res, 500, { error: String((e as Error)?.message ?? e), code: "main_bot_failed" });
+      }
+    }
     if (url.pathname === "/api/sessions" && req.method === "POST") {
       const body = await readJson(req);
       const backendRaw = String(body.backend ?? "");
@@ -1883,6 +1900,11 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return send(res, 200, info);
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
+          // Issue #84: 主 agent 没有「归档」这一说 —— 400（不是 404：会话在，是动作不允许）,
+          // 让人一眼看出是规则拒绝而不是打错 id。
+          if (msg === "main_bot_not_archivable") {
+            return send(res, 400, { error: "主 agent 不能归档；不想用了直接删除（删除即消失）", code: "main_bot_not_archivable", id });
+          }
           return send(res, 404, { error: msg, ...(/no such session/.test(msg) ? { code: "not_found", id } : {}) });
         }
       }
