@@ -781,11 +781,23 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           },
         });
       }
+      /** `not_found` 与 `out_of_scope` 是两件事（#73）：前者是 id 打错了（这类 id 库里根本没有），
+       *  后者是这条会话确实存在、只是不在本次调用的作用域里（例如已归档、又没带 --all）。
+       *  压成同一个码，调用方按码分支时就分不清「我手滑」和「我被拒」。 */
+      const refuseScope = (id: string): void => {
+        const any = store.getSession(id);
+        if (!any) return send(res, 404, { error: COCKPIT_ERRORS.notFound, id, message: `no such session: ${id}` });
+        return send(res, 404, {
+          error: COCKPIT_ERRORS.outOfScope,
+          id,
+          message: any.archivedAt ? "这条会话已归档 —— 加 --all，或先从 rail 里取消归档" : "这条会话不在本次调用的作用域里",
+        });
+      };
       if (url.pathname === "/api/cockpit/rename" && req.method === "POST") {
         const body = await readJson(req);
         const id = String(body.id ?? "");
         if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
-        if (!rowOf(id)) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!rowOf(id)) return refuseScope(id);
         // Recorded as THIS session's doing (titleBy), so the operator can tell an agent-named
         // conversation from one they named. `auto` clears back to the generated title.
         const title = body.auto === true ? null : String(body.title ?? "").trim();
@@ -988,7 +1000,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // transcript, and no cross-session caller gets to delete the operator's history.
         if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
-        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!target) return refuseScope(id);
         if (body.close === true) {
           if (target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, id, closed: false, already_cold: true });
           await mgr.closeSession(id);
@@ -1011,7 +1023,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // never disagree about whether an agent may pull another session's process up.
         if (!sendOk) return send(res, 403, { error: COCKPIT_ERRORS.sendsDisabled });
         const target = rowOf(id);
-        if (!target) return send(res, 404, { error: COCKPIT_ERRORS.outOfScope });
+        if (!target) return refuseScope(id);
         if (!target.cold) return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, woke: false, already_live: true, id });
         try {
           const info = await mgr.resume(id);
@@ -1853,7 +1865,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, { purged: id });
         }
-        return send(res, 404, { error: `no such session: ${id}` });
+        // 稳定码 + 人话分开（#73）：CLI/脚本按 `code` 分支，页面显示 `error` 那句话。
+        return send(res, 404, { error: `no such session: ${id}`, code: "not_found", id });
       }
       if (req.method === "POST" && sub === "/archive") {
         // 归档: the operator's own storage decision (and it stops a live process — see
@@ -1866,7 +1879,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           emit(sessionsEvent());
           return send(res, 200, info);
         } catch (e) {
-          return send(res, 404, { error: String((e as Error)?.message ?? e) });
+          const msg = String((e as Error)?.message ?? e);
+          return send(res, 404, { error: msg, ...(/no such session/.test(msg) ? { code: "not_found", id } : {}) });
         }
       }
       if (req.method === "POST" && sub === "/unarchive") {

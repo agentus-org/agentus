@@ -58,6 +58,9 @@ another one
                                       three user messages even after forty tool rows; --user is
                                       --role user. meta carries filtered = the pool it read from.
   agentus session plan <id>           the plan object the operator's card renders
+  agentus session delete <id>         OPERATOR ONLY — close it if live, PURGE the transcript if cold
+  agentus session archive <id>        OPERATOR ONLY — hide it from the rail (live: its process stops)
+  agentus session unarchive <id>      OPERATOR ONLY — bring it back
   agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done]
                                        deliver a message into another session (stdin if no text);
                                        --wake also starts the target when it is cold;
@@ -225,6 +228,12 @@ if (cmd === "capabilities") {
 } else if (cmd === "session") {
   const [verb, ...args] = rest;
   const id = args[0];
+  // `agentus session stop --close`（漏了 id）曾经被当成 id="--close" 打到服务端，回一个 404
+  // out_of_scope —— 调用方以为"被拒"，其实是自己打错了（#73）。这一类在解析阶段就拒。
+  const TAKES_ID = new Set(["show", "messages", "plan", "send", "wake", "stop", "rename", "delete", "archive", "unarchive"]);
+  if (id && id.startsWith("--") && TAKES_ID.has(verb)) {
+    fail("bad_request", `expected a session id, got the flag "${id}" — flags come after the id (agentus session ${verb} <id> …)`);
+  }
 
   if (verb === "list") {
     // Flags only after the verb, and the id-less list is the one command where that is the whole
@@ -487,6 +496,54 @@ if (cmd === "capabilities") {
         note: close
           ? (body?.closed ? "its agent process is stopped and the slot is cold; the transcript is untouched." : "nothing was running: the slot was already cold.")
           : (body?.stopped ? "the turn was cancelled; the words it had already produced stay in the transcript." : "no turn was running — nothing was interrupted."),
+      },
+    });
+  } else if (verb === "delete" || verb === "archive" || verb === "unarchive") {
+    // 只对 operator 身份开放（#73）。这道边界是刻意的：cockpit 通道 "Deliberately NOT
+    // DELETE /api/sessions/:id"（server index.ts 的注释），因为没有任何跨会话调用方该动操作员的
+    // 历史。CLI 是操作员的工具，不是 agent 的 —— 所以这里用 <data>/auth.token 直连 operator 路由，
+    // 并且在 agent 身份（AGENTUS_COCKPIT_TOKEN/_SESSION 都在）时**一律拒绝**。
+    const usage = `usage: agentus session ${verb} <id>`;
+    if (!id) fail("bad_request", usage);
+    const leftover = args.slice(1);
+    if (leftover.length) fail("bad_request", `unexpected argument "${leftover[0]}" (${usage})`);
+    if (TOKEN && SELF) {
+      fail(
+        verb === "delete" ? "agents_may_not_delete" : "agents_may_not_archive",
+        `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。${usage}`,
+      );
+    }
+    if (!OPERATOR) {
+      fail("no_identity", `this needs the operator credential: set AGENTUS_DATA to the cockpit's data dir so ${verb} can read auth.token. ${usage}`);
+    }
+    const opHeaders = { authorization: `Bearer ${OPERATOR.token}` };
+    const url = verb === "delete"
+      ? `${OPERATOR.endpoint}/api/sessions/${q(id)}`
+      : `${OPERATOR.endpoint}/api/sessions/${q(id)}/${verb}`;
+    let res;
+    try {
+      res = await fetch(url, { method: verb === "delete" ? "DELETE" : "POST", headers: opHeaders });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      // operator 路由把稳定码放 `code`、人话放 `error`：按码分支，别把整句英文当码用。
+      fail(String(body?.code ?? body?.error ?? `http_${res.status}`), String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    }
+    out({
+      success: true,
+      data: body,
+      meta: {
+        schema_version: 1,
+        note: verb === "delete"
+          // 这个不对称必须用大白话说清：执行过了 ≠ 彻底删掉了。
+          ? (body && "purged" in body
+            ? "PURGED — the transcript is gone from the store. Nothing left to recover."
+            : "CLOSED, not purged — its agent process is stopped but the record and the transcript are still there. Run delete again to purge a cold session.")
+          : (verb === "archive"
+            ? "hidden from the rail; run `session delete` to purge it for real, or `session unarchive` to bring it back."
+            : "back in the rail."),
       },
     });
   } else {

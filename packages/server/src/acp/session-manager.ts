@@ -210,6 +210,10 @@ interface PendingCompletion {
 
 interface LiveSession {
   info: SessionInfo;
+  /** 操作员在握手还没回来的时候就把这条槽关掉了。`#stop` 对 starting 槽只做有界等待，
+   *  超时后照样写 closed 并删掉自己；如果握手在那之后才落地，`#startup` 会把 ready 写回去 ——
+   *  一行「没有进程的 ready」。这个旗子就是握手落地时用来认这一眼的。 */
+  tornDown?: boolean;
   child?: ReturnType<typeof spawn>;
   conn?: ClientSideConnection;
   busy: boolean;
@@ -958,6 +962,12 @@ export class SessionManager {
       });
       live.caps = readCaps(init?.agentCapabilities);
       const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
+      if (live.tornDown) {
+        // 握手期间被关掉了（#73 的"关闭中回魂"）：这条槽已经不在 map 里，写 ready 只会造出一行
+        // 没有进程的 ready。杀掉子进程，什么都不广播。
+        child.kill("SIGKILL");
+        return;
+      }
       live.info.acpSessionId = res.sessionId;
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
@@ -978,6 +988,7 @@ export class SessionManager {
       await this.#replayPendingModel(live.info.id);
     } catch (err) {
       child.kill("SIGKILL");
+      if (live.tornDown) return;   // 已经关了：失败也不是这条槽的失败，别往 rail 上写 error
       live.info.status = "error";
       live.info.lastError = errMessage(err) + stderrTail(live);
       // Announce the failure WHILE the slot is still live: `{t:"session"}` is the only frame that
@@ -2250,6 +2261,8 @@ export class SessionManager {
     // Applied LAST, and only over a non-terminal status: `#startup` writes `ready` when the handshake
     // lands and `error` (with `lastError`) when it fails — and a handshake that failed on its own has a
     // better answer than 「closed」, so it keeps it.
+    // 先落旗子再改状态：晚到的握手必须在它写 ready 之前看到这一眼（见 LiveSession.tornDown）。
+    live.tornDown = true;
     if (live.info.status !== "error") live.info.status = why === "reaped" ? "reaped" : "closed";
     // Anyone waiting for this session's turn gets an answer: the child is about to be signalled and
     // #onChildExit will bail out early (the slot is deleted below), so this is the last moment that
