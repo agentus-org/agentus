@@ -15,6 +15,18 @@ export const RAIL_RECENT = 5;
  *  sentinel so `groupSessions()` can never accidentally produce it from a real `<data>/main-bot` path. */
 export const MAIN_BOT_GROUP = "__main-bot__";
 
+/** The rail's delegation dot colours (#84 follow-up). Deterministic by target id: the same session
+ *  keeps its colour across events, so 「那个紫点是哪个活」 stays answerable — an index-based colour
+ *  would repaint every dot the moment one of them finished. Eight well-separated hues, chosen to stay
+ *  distinct at 7px against both the light and the dark rail. */
+const DELEGATION_HUES = [210, 265, 145, 25, 320, 45, 185, 0];
+export function delegationColor(targetId: string): string {
+  let h = 0;
+  for (let i = 0; i < targetId.length; i++) h = (h * 31 + targetId.charCodeAt(i)) | 0;
+  const hue = DELEGATION_HUES[Math.abs(h) % DELEGATION_HUES.length];
+  return `hsl(${hue} 72% 55%)`;
+}
+
 /**
  * The rail's row list: every session ONCE, the live copy winning over a cold one.
  *

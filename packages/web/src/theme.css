@@ -2393,6 +2393,38 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .rail-main-bot .session-item { padding-left: 8px; }
 .rail-main-bot .session-item .title { font-size: 12px; font-weight: 600; letter-spacing: 0.1px; }
 .main-star { color: #e8b544; margin-right: 6px; vertical-align: -1px; flex: none; }
+/* 「它自己正在干活」 (#84 follow-up): the star breathes while the 主 agent's turn runs. Opacity + a
+   slight scale, slow on purpose — the rail is scanned, not stared at, and a fast blink would read as
+   an error. `prefers-reduced-motion` keeps the information (a still brighter star) but drops the drip. */
+.main-star.breathing { animation: main-star-breathe 1.9s ease-in-out infinite; transform-origin: center; }
+@keyframes main-star-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.9); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .main-star.breathing { animation: none; opacity: 0.7; }
+}
+/* One dot per session it is still waiting on. A fixed 7px dot in the row's flow (not an overlay), so
+   nothing shifts when the third job starts; the colour comes from the target id (rail.ts). */
+.main-delegations { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; flex: none; }
+.deleg-dot {
+  width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg) 55%, transparent);
+  animation: deleg-dot-pulse 1.6s ease-in-out infinite;
+}
+/* Staggered so three dots do not read as one blinking bar; each dot's phase is offset by its index
+   (nth-child) rather than a per-dot timer, which the DOM can do for free. */
+.deleg-dot:nth-child(2) { animation-delay: 0.35s; }
+.deleg-dot:nth-child(3) { animation-delay: 0.7s; }
+.deleg-dot:nth-child(4) { animation-delay: 1.05s; }
+.deleg-dot:nth-child(5) { animation-delay: 1.4s; }
+@keyframes deleg-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.82); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deleg-dot, .deleg-dot:nth-child(n) { animation: none; animation-delay: 0s; }
+}
 .rail-main-create {
   display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); margin: 4px 8px 6px;
   padding: 7px 9px; border: 1px dashed var(--line); border-radius: 8px; background: transparent;

@@ -76,6 +76,10 @@ export interface SessionInfo {
    *  same transcript/messages API) — the rail just draws it on its own top row and the cockpit's
    *  write gate lets it delegate while 驾驶舱互发消息 is off. null = an ordinary session. */
   role?: "main" | null;
+  /** Live-only, never stored: the sessions this one has handed work to and is still waiting on
+   *  (`--reply-on-done`). Derived from the reply registrations the server already keeps — a target
+   *  disappears the moment its turn settles, so a dot can never outlive the work it describes. */
+  dispatched?: string[];
   /** WHO named this session's CURRENT title: null = the operator (or nobody in particular), a
    *  session id = that session's agent renamed it through the cockpit CLI. The rail shows a note
    *  when a name came from another agent — a rename is a claim about what a conversation IS, and

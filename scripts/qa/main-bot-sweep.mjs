@@ -340,6 +340,24 @@ const asAgent = (pid, args) => {
   check("普通会话那条没进去（只拒了回执，没有半成功）", !JSON.stringify(body ?? "").includes("普通会话派活"));
 }
 
+// ---- ④c. 派活登记不能留残点（#84 follow-up）-----------------------------------------------
+// 主 agent 行上的彩点读的就是这条登记（`SessionInfo.dispatched`，服务端从回推登记里派生）。
+// mock 的回合只有几十毫秒，抓不到「正在跑」的那一瞬，所以这里断言的是更容易被写坏的一半：
+// 回合结束之后登记必须清空 —— 一个不消失的点比没有点糟得多，它会让操作者一直等一件已经完了的事。
+{
+  let left = null;
+  for (let i = 0; i < 60; i++) {
+    const { body } = await api("/api/sessions");
+    const row = (body?.live ?? []).find((s) => s.id === mainId);
+    left = row?.dispatched ?? [];
+    if (left.length === 0) break;
+    await sleep(150);
+  }
+  check("派活结束后主 agent 的派活登记清空（不留残点）", Array.isArray(left) && left.length === 0, JSON.stringify(left));
+  const { body: prefs } = await api("/api/settings");
+  check("（同一条登记）没有把驾驶舱互发消息的闸门打开", prefs?.agent?.cockpitSend === false);
+}
+
 // ---- ④b. role 必须活过「进程重启」和「冷下来」两端 ---------------------------------------
 // 「主 agent」是行上的一个事实（`role='main'`，只在 insert 时写一次），而 rail 读的是
 // `list()`/`cold()` 造出来的 info。这两条路径**都能在重启里把 role 丢掉**：
@@ -423,6 +441,14 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("这一行没有目录头（不是一个工作空间）", await ev(`!document.querySelector('.rail-main-bot .rail-group-head')`));
     check("行上写的就 是 Main Bot（不是会话名）", await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim() === 'Main Bot'`),
       await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim()`));
+    // 操作者：「会话列表里 Main Bot 那一行最右边的时间没必要，去掉」——这一行是常驻身份，不是
+    // 「你上次聊到哪」的那种会话，时间戳在上面回答不了任何问题。
+    check("这一行不画最右边的时间", await ev(`document.querySelectorAll('.rail-main-bot .rail-at').length === 0`),
+      await ev(`document.querySelector('.rail-main-bot .session-item')?.innerText?.replace(/\\s+/g,' ')`));
+    // 派活的彩点是「有没有活跃登记」派生出来的：没有登记时连容器都不该出现，否则空容器会占住
+    // 行右端的位置，让行随着派活开始/结束左右跳。
+    check("没有派活时不画点容器（行不会因为点出现而位移）",
+      await ev(`!document.querySelector('.rail-main-bot .main-delegations')`));
     // 操作者：「缩进也不对啊，不需要缩进啊，顶着左边就好」，随后给了判据：「对齐 Search sessions
     // 那个搜索框吗，平齐」。所以量的是几何：行的盒左缘 vs 搜索框盒左缘，差 ≤ 1px。
     // 只查 session-item 自己的 padding 是不够的 —— 真正的缩进来自父级 `.rail-group-body`
