@@ -347,6 +347,21 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("它没有同时出现在工作空间分组里（同一个东西只出现一次）", await ev(
       `document.querySelectorAll('.rail-group:not(.rail-main-bot) .session-item[data-session="${mainId}"]').length === 0`));
 
+    // 会话头部（聊天区顶部）：主 agent 这里也不显示会话名 —— 名字是产品名，且 agent 每轮都会
+    // 通过 session_info_update 把标题改回它自己生成的那个。带 ★，与 rail 那一行是同一件事。
+    check("点头部标题前：先打开主 agent 这一行", await ev(`(() => {
+      const row = document.querySelector('.rail-main-bot .session-item');
+      if (!row) return false;
+      row.click();
+      return true;
+    })()`));
+    await sleep(1500);
+    const headText = await ev(`document.querySelector('.chat-head .title')?.textContent?.trim() ?? ''`);
+    check("★ 会话头部写的是 Main Bot（不是会话名）", headText === "Main Bot", headText.slice(0, 40));
+    check("★ 头部那行带星标", await ev(`!!document.querySelector('.chat-head .title .main-star')`));
+    check("头部没有退化成 DB 里的旧标题", await ev(
+      `(document.querySelector('.chat-head .title')?.textContent ?? '').indexOf(${JSON.stringify("Friendly greeting")}) === -1`));
+
     // ⋯ 菜单：不能有「归档会话」（服务端会 400，菜单不该提供一个按了就错的按钮）
     await ev(`(() => {
       const btn = document.querySelector('.rail-main-bot .session-item .row-menu');
