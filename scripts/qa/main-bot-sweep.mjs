@@ -130,6 +130,20 @@ check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空�
     (after?.live ?? []).some((s) => s.id === mainId) && !(after?.archived ?? []).some((s) => s.id === mainId));
 }
 
+// ---- ③b 名字是产品名，不许被 agent 或人改掉 ---------------------------------------------
+// Hermes 每一轮都会重新生成会话标题并通过 `session_info_update` 送回来 —— live 上看到的就是这个：
+// 名字在一轮对话之后变成了会话标题。主 agent 的名字不是「对内容的概括」，它是「你是 Main Bot」。
+{
+  const { status, body } = await api(`/api/sessions/${mainId}/rename`, {
+    method: "POST", body: JSON.stringify({ title: "用一句话说明你是谁的会话" }),
+  });
+  check("重命名主 agent 被拒（400）", status === 400, `HTTP ${status}`);
+  check("拒绝有机器可读的码", /main_bot_title_fixed/.test(String(body?.error ?? "")), String(body?.error ?? ""));
+  const { body: still } = await api("/api/sessions");
+  const row = [...(still?.live ?? []), ...(still?.cold ?? [])].find((s) => s.id === mainId);
+  check("名字还是 Main Bot", row?.title === "Main Bot", String(row?.title));
+}
+
 // ---- ④ 写闸：只有主 agent 拿到豁免 ------------------------------------------------------
 // 造两个普通会话：A 是被派活的目标，B 是「普通调用者」。
 const mkSession = async (title) => {
@@ -312,6 +326,14 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     check("页面里主 agent 有一行", await ev(`document.querySelectorAll('.rail-main-bot .session-item').length === 1`));
     check("★ 星标在行上（身份标识，不是收藏）", await ev(`!!document.querySelector('.rail-main-bot .main-star')`));
     check("这一行没有目录头（不是一个工作空间）", await ev(`!document.querySelector('.rail-main-bot .rail-group-head')`));
+    check("行上写的就 是 Main Bot（不是会话名）", await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim() === 'Main Bot'`),
+      await ev(`document.querySelector('.rail-main-bot .session-item .title')?.textContent?.trim()`));
+    // 操作者：「缩进也不对啊，不需要缩进啊，顶着左边就好」—— 它不属于任何目录，所以也不该继承
+    // 目录体的缩进；判据是它自己的左内边距几乎为零，而不是「和某一行对齐」。
+    check("顶着左边（自身 padding-left ≤ 4px）", await ev(`(() => {
+      const a = document.querySelector('.rail-main-bot .session-item');
+      return !!a && parseFloat(getComputedStyle(a).paddingLeft) <= 4;
+    })()`), await ev(`document.querySelector('.rail-main-bot .session-item') && getComputedStyle(document.querySelector('.rail-main-bot .session-item')).paddingLeft`));
     check("这一行不画后端头像（只有 ★ 和名字）", await ev(`!document.querySelector('.rail-main-bot .be-avatar')`));
     check("★ 就在名字前", await ev(`(() => {
       const t = document.querySelector('.rail-main-bot .session-item .title');
@@ -336,7 +358,8 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
     const menuText = await ev(`document.querySelector('.sess-menu')?.innerText ?? ''`);
     check("菜单打开了", menuText.length > 0, menuText.replace(/\n/g, " / ").slice(0, 80));
     check("菜单里没有「归档会话」", !/归档会话/.test(menuText), menuText.replace(/\n/g, " / ").slice(0, 80));
-    check("菜单里还有能用的动作（不是整块被砍掉）", /重命名/.test(menuText) && /重启 agent 进程/.test(menuText));
+    check("菜单里还有能用的动作（不是整块被砍掉）", /重启 agent 进程/.test(menuText) && /导出会话/.test(menuText));
+    check("菜单里也没有「重命名」（名字是产品名）", !/重命名/.test(menuText) && !/重新生成会话名/.test(menuText));
     await ev(`document.body.click()`);
   } catch (e) {
     console.log(`SKIP  真页面段（连不上 Edge CDP ${CDP}：${String(e.message ?? e).slice(0, 60)}）`);

@@ -581,12 +581,12 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
         <BackendAvatar backend={info.backend} cold={cold} status={info.status} />
         <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
       </div>
-      {item("重命名", <IconPencil size={14} />, onRename)}
+      {info.role === "main" ? null : item("重命名", <IconPencil size={14} />, onRename)}
       {/* A switch, not a state: the label says what the click will DO. 「设为未读」 is the operator's
           way back — they opened the row, so the completion dot went away, but they were not ready to
           decide and want the reminder to survive the reload. */}
       {item(unread ? "设为已读" : "设为未读", unread ? <IconEye size={14} /> : <IconDot size={14} />, onToggleUnread)}
-      {item(
+      {info.role === "main" ? null : item(
         retitling ? "正在重新生成…" : "重新生成会话名",
         retitling ? <IconRefresh size={14} className="spin" /> : <IconRefresh size={14} />,
         onRetitle,
@@ -1029,9 +1029,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                     ) : (
                       <span className="title" onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}>
                         {/* ★ = 这是主 agent (issue #84). It marks IDENTITY, not a favourite: the operator
-                            cannot star anything else, and this one cannot be unstarred. */}
+                            cannot star anything else, and this one cannot be unstarred. The NAME is
+                            fixed too — `s.title` is whatever the agent last called itself, and the
+                            server refuses to rename a 主 agent; this keeps a stale row honest. */}
                         {s.role === "main" ? <IconStar size={11} className="main-star" /> : null}
-                        {s.title}
+                        {s.role === "main" ? "Main Bot" : s.title}
                       </span>
                     )}
                     {cockpit.byId.get(s.id)?.perms.length ? (
