@@ -144,6 +144,15 @@ export const IconPanelRight = (p: IconProps = {}): JSX.Element =>
 export const IconTerminal = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M13 15h4" /></>, p);
 
+/** Maximize: arrows reaching for two opposite corners (#91). Paired with `IconCollapse` below — the
+ *  button is a toggle, so the glyph has to say which way the NEXT click goes. */
+export const IconExpand = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></>, p);
+
+/** Restore: the same arrows pointing back in. */
+export const IconCollapse = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /></>, p);
+
 /** Two rows trading places: a VERTICAL double arrow (⇅). The horizontal `IconSwap` next to it said
  *  the opposite of what the button does — the rows are stacked, so "move this one up / down" has to
  *  point up and down (issue #90 §1). */

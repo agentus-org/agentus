@@ -26,7 +26,7 @@ import { PANES, RATIO_KEY, readPair, splitSeed, useWide, writePair, type IdeStat
 import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
-  IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
+  IconArrowLeft, IconChevronRight, IconClose, IconCollapse, IconExpand, IconFile, IconFolder, IconHome,
   IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwapVertical,
 } from "./Icons";
 
@@ -86,13 +86,13 @@ function readRatio(pair: string[] | null): number | null {
 
 /** A remembered on/off layout flag. Private mode has no localStorage, so folding then simply does
  *  not stick — same `try` shape as `usePaneWidth` beside it. */
-function readFlag(key: string, fallback: boolean): boolean {
+export function readFlag(key: string, fallback: boolean): boolean {
   try {
     const raw = localStorage.getItem(key);
     return raw == null ? fallback : raw === "1";
   } catch { return fallback; }
 }
-function writeFlag(key: string, on: boolean): void {
+export function writeFlag(key: string, on: boolean): void {
   try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* private mode */ }
 }
 
@@ -111,9 +111,13 @@ function workspaceName(path: string): string {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
-export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle, tab, onTab, ide }: {
+export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, panelHandle, tab, onTab, ide, maximized, onToggleMax }: {
   v: SessionView;
   onClose: () => void;
+  /** #91: the panel owns the whole right-hand area (the rail stays). A LAYOUT state, not a width —
+   *  see `.main-body.panel-maximized` in theme.css, and the note on `--panel-w` staying untouched. */
+  maximized: boolean;
+  onToggleMax: () => void;
   onPickWorkspace: () => void;
   /** Which pane is showing. OWNED BY THE HEAD (#80 §1): the head's terminal/ide buttons open the
    *  panel on that pane, so the choice cannot live below the panel's mount. */
@@ -630,6 +634,19 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
               <IconPanelRight size={15} />
             </button>
           </>
+        ) : null}
+        {/* #91: 放大 / 还原. Only on a wide window — a phone's panel is already a full-screen sheet,
+            so the button would have nothing to do there (and the head there is already full). */}
+        {wide ? (
+          <button
+            className={`icon-btn ${maximized ? "on" : ""}`}
+            title={maximized ? "还原面板宽度" : "最大化（把聊天区让出来）"}
+            aria-label="maximize the panel"
+            aria-pressed={maximized}
+            onClick={onToggleMax}
+          >
+            {maximized ? <IconCollapse size={15} /> : <IconExpand size={15} />}
+          </button>
         ) : null}
         <button className="icon-btn" title="close panel" aria-label="close panel" onClick={onClose}>
           <IconClose size={15} />

@@ -1725,6 +1725,29 @@ code.inline {
      a column that no longer exists and squeeze the text exactly when the panel is open. */
   container-type: inline-size;
 }
+/* #91: 最大化 —— the panel takes the whole right-hand area and the chat column steps aside, while the
+   rail keeps its width and stays clickable (「会话列表还要留着切会话」).
+
+   Implemented as a LAYOUT class, not a width: `--panel-w` is untouched, so restoring gives back exactly
+   the width the operator set, and `usePaneWidth`'s `MIN_CHAT` clamp (which exists to keep the chat
+   column alive) simply does not apply here — nothing to re-clamp on resize, so a maximized panel cannot
+   shrink itself back on the next window resize. The chat column is `display: none`, never unmounted:
+   drafts, scroll position and a streaming turn all survive. The left drag handle is hidden with it —
+   there is no width to drag, and grabbing it would fight the layout. */
+/* The chat column steps aside WITHOUT being taken out of layout: `display: none` would give it a zero
+   height, and the stream's own follow logic reads `scrollHeight - scrollTop - clientHeight` — with
+   clientHeight 0 that is "at the tail", so restoring would snap the reader to the bottom of a
+   conversation she had scrolled up in (measured: 2390px → 3250px). Positioned out of the flow and
+   made invisible instead: the panel gets the whole row, the chat keeps its box, its container width
+   and its scroll offset. Nothing is unmounted, so drafts and a streaming turn survive too. */
+.main-body { position: relative; }
+.main-body.panel-maximized > .chat-col {
+  position: absolute; top: 0; bottom: 0; left: 0;
+  width: calc(100% - var(--panel-w, 430px));
+  visibility: hidden; pointer-events: none;
+}
+.main-body.panel-maximized > .tool-panel { flex: 1 1 auto; width: auto; }
+.main-body.panel-maximized > .tool-panel > .pane-handle { display: none; }
 .tool-panel {
   width: var(--panel-w, 430px); flex: 0 0 auto; display: flex; flex-direction: column;
   min-height: 0; border-left: 1px solid var(--line); background: var(--bg-panel);

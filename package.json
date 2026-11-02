@@ -107,6 +107,7 @@
     "pane-head-dom": "node scripts/qa/pane-head-dom.mjs",
     "title-upgrade-sweep": "node scripts/qa/title-upgrade-sweep.mjs",
     "split-interactions-dom": "node scripts/qa/split-interactions-dom.mjs",
+    "panel-maximize-dom": "node scripts/qa/panel-maximize-dom.mjs",
     "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs",
     "live-speed-sweep": "node scripts/qa/live-speed-sweep.mjs",
     "stream-tokens": "tsx scripts/qa/stream-tokens.mts",
