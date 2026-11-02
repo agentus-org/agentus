@@ -7,8 +7,9 @@
 // it) and the split geometry (the pair, the ratio, the divider — ToolPanel's business). What lives
 // here is the fact-shaped part: an id, a label, an availability test, and whether the pane gets a
 // button in the head outside the panel.
-import { useEffect, useState } from "react";
+import { useEffect, useState, type JSX } from "react";
 import { cockpit } from "./state";
+import { IconCode, IconFile, IconTerminal, type IconProps } from "./Icons";
 
 /** What /api/ide/status answers (server: packages/server/src/ide/proxy.ts). `start` is the command
  *  the tab prints when the upstream is configured but not up — the failure mode this feature is
@@ -38,15 +39,36 @@ export interface PaneSpec {
   /** #80 §1: on a wide window this pane also gets its own button in the head, beside the file
    *  browser's — 「终端和 IDE 不是浏览工作区，是两个独立的工具窗口」, and reaching them through
    *  panel-then-tab costs two clicks for something the operator opens all day. On a phone the head
-   *  has no room, so the tab bar stays the only door there (phones never split either). */
-  headEntry: boolean;
+   *  has no room, so the tab bar stays the only door there (phones never split either).
+   *
+   *  OPT-OUT, defaulting to true (issue #88). It used to be required, and `false` was the value a new
+   *  row inherited by copying its neighbour (`files`) — the pane then worked everywhere except the
+   *  head, and on a phone not even through the `⋯` menu, since that menu is fed by the same filtered
+   *  list. Silently, with no type error. A pane an operator can open is a pane they should be able to
+   *  open in one click; `files` opts out explicitly because it has a more natural door (the folder
+   *  button in the head corner). */
+  headEntry?: boolean;
+  /** The pane's glyph, on the row rather than in each view. With two panes the head could afford a
+   *  `pane.id === "ide" ? … : …` ternary; with three, the third pane silently rendered the
+   *  terminal's icon while its own `title` said otherwise (issue #88). The registry already owns
+   *  `label`; an icon is the same kind of fact. */
+  icon: (p?: IconProps) => JSX.Element;
 }
 
 export const PANES: PaneSpec[] = [
-  { id: "files", label: "files", available: () => true, headEntry: false },
-  { id: "terminal", label: "terminal", available: () => true, headEntry: true },
-  { id: "ide", label: "ide", available: (ide) => Boolean(ide?.configured), headEntry: true },
+  { id: "files", label: "files", available: () => true, headEntry: false, icon: (p) => IconFile({ ...p, size: p?.size ?? 16 }) },
+  { id: "terminal", label: "terminal", available: () => true, icon: (p) => IconTerminal({ ...p, size: p?.size ?? 16 }) },
+  { id: "ide", label: "ide", available: (ide) => Boolean(ide?.configured), icon: (p) => IconCode({ ...p, size: p?.size ?? 16 }) },
 ];
+
+/** Which panes get a door in the head, ON THIS MACHINE RIGHT NOW.
+ *
+ *  Derived, never a second stored fact (issue #88): the filter is `available` plus the single opt-out,
+ *  so a row cannot be available in the panel and unavailable in the head. Both the wide-window buttons
+ *  and the phone's `⋯` menu read this, which is what keeps those two doors in step too. */
+export function headPanes(ide: IdeStatus | null): PaneSpec[] {
+  return PANES.filter((p) => p.headEntry !== false && p.available(ide));
+}
 
 /** Which two panes a fresh split starts with. Deterministic, and the same shape the docs describe:
  *  IDE above, terminal below when there is an IDE — and FILES above, terminal below when there is

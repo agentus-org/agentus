@@ -48,11 +48,10 @@ import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldTo
 import {
   IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
-  IconCode, IconTerminal,
   IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar,
 } from "./Icons";
-import { PANES, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
+import { PANES, headPanes, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
@@ -1379,7 +1378,8 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // `active` can be undefined here (the empty-state return sits further down), so the hook takes the
   // empty key rather than throwing on a cockpit with no session selected.
   const ide = useIdeStatus(active?.info.id ?? "", active?.info.workspace || active?.info.cwd || "");
-  const headPanes = PANES.filter((x) => x.headEntry && x.available(ide));
+  // The registry derives it (#88): `available` on this machine, minus the one row that opts out.
+  const headDoorPanes = headPanes(ide);
   /* One door for the head's pane buttons: a pane is a tool window the operator opens all day, so a
    * click on its head button opens the panel straight onto it; if the panel is already open on that
    * pane, the same click CLOSES it (the operator, 2026-10-30: 「按钮二次点击时应该关闭啊」 — a toggle
@@ -1457,7 +1457,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         panelOpen={panelOpen}
         panelTab={panelTab}
         onOpenPane={openPane}
-        panes={headPanes}
+        panes={headDoorPanes}
         wide={wide}
         call={call}
         onCall={(wantTus) => { dictation.stop(); setTus(wantTus); setCall(true); }}
@@ -1874,7 +1874,7 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
                     className={`speak-menu-item ${panelOpen && panelTab === pane.id ? "on" : ""}`}
                     onClick={() => { setMoreMenu(false); onOpenPane(pane.id); }}
                   >
-                    {pane.id === "ide" ? <IconCode size={14} /> : <IconTerminal size={14} />}
+                    {pane.icon({ size: 14 })}
                     <span>{pane.label}</span>
                     <span className="head-more-note">{panelOpen && panelTab === pane.id ? "已打开" : "打开"}</span>
                   </button>
@@ -1896,7 +1896,7 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
             aria-expanded={panelOpen && panelTab === pane.id}
             onClick={() => onOpenPane(pane.id)}
           >
-            {pane.id === "ide" ? <IconCode /> : <IconTerminal />}
+            {pane.icon({})}
           </button>
         )) : null}
       </span>

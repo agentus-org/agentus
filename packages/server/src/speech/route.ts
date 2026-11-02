@@ -125,32 +125,73 @@ interface CustomEndpoint {
   source: string;
 }
 
+/** `${VAR}` references inside a config value (issue #87). Hermes expands the WHOLE config recursively
+ *  before use (`_ENV_REF_RE` / `_expand_env_vars` in hermes_cli/config.py), so `api_key: ${MY_KEY}` is
+ *  a normal, documented way to keep the secret in `.env`. Reading the file ourselves means we have to
+ *  do the same expansion — otherwise the placeholder string is a non-empty value, passes every
+ *  emptiness check, and goes to the vendor as the credential: a 401 that reads like 「密钥错了」 while
+ *  the chat on the very same provider works. */
+const ENV_REF_RE = /\$\{([^}]+)\}/g;
+
+function expandEnvRefs(raw: string, env: (n: string) => string): { value: string; missing: string[] } {
+  const missing: string[] = [];
+  const value = raw.replace(ENV_REF_RE, (_m, name: string) => {
+    const key = String(name).trim();
+    const v = env(key);
+    if (!v) missing.push(key);
+    return v;
+  });
+  return { value: value.trim(), missing: [...new Set(missing)] };
+}
+
+/** The entry's key, and — when there is none — the sentence that says WHICH way it is missing. A
+ *  placeholder that resolves to nothing is a different failure from a field that was never written,
+ *  and only the second one is the operator's typo to find (issue #87). */
+function secretOf(e: Record<string, unknown>, env: (n: string) => string): { apiKey: string; why: string } {
+  const literal = asString(e.api_key);
+  const envName = asString(e.key_env) || asString(e.api_key_env);
+  if (literal) {
+    const { value, missing } = expandEnvRefs(literal, env);
+    if (missing.length) {
+      return { apiKey: "", why: `api_key 里的 ${missing.map((n) => `\${${n}}`).join(" ")} 在环境变量和 .env 里都没找到` };
+    }
+    if (!value) return { apiKey: "", why: "api_key 展开后是空的" };
+    return { apiKey: value, why: "" };
+  }
+  if (envName) {
+    const v = env(envName);
+    return v ? { apiKey: v, why: "" } : { apiKey: "", why: `key_env 指的 ${envName} 在环境变量和 .env 里都没有` };
+  }
+  return { apiKey: "", why: "条目既没有 api_key 也没有 key_env" };
+}
+
 function customEndpointOf(
   raw: unknown,
   name: string,
   source: string,
   env: (n: string) => string,
-): CustomEndpoint | null {
+): CustomEndpoint | { name: string; why: string } | null {
   if (!raw || typeof raw !== "object") return null;
   const e = raw as Record<string, unknown>;
   const flag = e.enabled;
   if (flag === false || (typeof flag === "string" && flag.trim().toLowerCase() === "false")) return null;
   const baseUrl = trimSlash(asString(e.base_url) || asString(e.api));
-  const literal = asString(e.api_key);
-  const envName = asString(e.key_env) || asString(e.api_key_env);
-  const apiKey = literal || (envName ? env(envName) : "");
-  if (!baseUrl || !apiKey) return null;
-  return { name, baseUrl, apiKey, model: asString(e.model) || asString(e.default_model), source };
+  if (!baseUrl) return { name, why: `${source} 缺 base_url（或 api）` };
+  const secret = secretOf(e, env);
+  if (!secret.apiKey) return { name, why: `${source} 的 ${secret.why}` };
+  return { name, baseUrl, apiKey: secret.apiKey, model: asString(e.model) || asString(e.default_model), source };
 }
 
 /** The merged view: legacy list first (its entries are what an upgraded deployment actually has),
  *  then the v12+ map, first declaration of a name winning. */
-function customEndpoints(cfg: Record<string, unknown>, env: (n: string) => string): CustomEndpoint[] {
-  const out: CustomEndpoint[] = [];
+function customEndpoints(cfg: Record<string, unknown>, env: (n: string) => string): (CustomEndpoint | { name: string; why: string })[] {
+  const out: (CustomEndpoint | { name: string; why: string })[] = [];
   const seen = new Set<string>();
-  const push = (e: CustomEndpoint | null): void => {
-    if (!e || seen.has(e.name)) return;
-    seen.add(e.name);
+  const push = (e: CustomEndpoint | { name: string; why: string } | null): void => {
+    if (!e) return;
+    const name = "name" in e ? e.name : "";
+    if (name && seen.has(name)) return;
+    if (name) seen.add(name);
     out.push(e);
   };
   const legacy = cfg.custom_providers;
@@ -171,8 +212,8 @@ function customEndpoints(cfg: Record<string, unknown>, env: (n: string) => strin
   return out;
 }
 
-function customEndpoint(cfg: Record<string, unknown>, name: string, env: (n: string) => string): CustomEndpoint | null {
-  return customEndpoints(cfg, env).find((e) => e.name === name) ?? null;
+function customEndpoint(cfg: Record<string, unknown>, name: string, env: (n: string) => string): CustomEndpoint | { name: string; why: string } | null {
+  return customEndpoints(cfg, env).find((e) => "name" in e && e.name === name) ?? null;
 }
 
 /**
@@ -212,7 +253,7 @@ export function routeForModel(modelId: string | null | undefined, home: string |
   // agents, so the same view.
   if (custom) {
     const hit = customEndpoint(cfg, custom.name, env);
-    if (hit) {
+    if (hit && !("why" in hit)) {
       return {
         route: { provider: custom.name, model: custom.model || hit.model, baseUrl: hit.baseUrl, apiKey: hit.apiKey, source: hit.source },
         why: "",
@@ -220,9 +261,15 @@ export function routeForModel(modelId: string | null | undefined, home: string |
     }
     // NOT falling through to the alias/builtin rungs: a `custom:` id is a claim about a declared
     // endpoint, and guessing a vendor for it is how the wrong key gets billed.
+    const where = home ? `${home}/config.yaml` : "config.yaml";
     return {
       route: null,
-      why: `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${home ? `${home}/config.yaml` : "config.yaml"} 的 providers 与 custom_providers 里都没有这一条（或它缺 base_url / api_key）—— 补上凭据，或把会话换到别的模型`,
+      // The entry exists but cannot be used: say which field, and for a `${VAR}` placeholder say
+      // which variable is missing. Sending the placeholder and letting the vendor answer 401 is the
+      // one outcome that reads as 「key 错了」 and sends the operator hunting for a new key (#87).
+      why: hit
+        ? `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${hit.why} —— 补上凭据，或把会话换到别的模型`
+        : `会话跑在自定义 provider 「${custom.name}」（${modelId}），但 ${where} 的 providers 与 custom_providers 里都没有这一条 —— 补 base_url 与 api_key，或把会话换到别的模型`,
     };
   }
 
@@ -268,7 +315,9 @@ export function routeForModel(modelId: string | null | undefined, home: string |
     ? (providers[provider] as Record<string, unknown>) : null;
   if (declared) {
     const baseUrl = trimSlash(asString(declared.base_url));
-    const apiKey = asString(declared.api_key);
+    // `${VAR}` is expanded exactly as the runtime does it (#87); a placeholder that resolves to
+    // nothing must not be sent as if it were a key.
+    const apiKey = secretOf(declared, env).apiKey;
     const cfgModel = asString(declared.model);
     if (baseUrl && apiKey) {
       return {

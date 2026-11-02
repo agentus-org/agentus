@@ -27,7 +27,7 @@ import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
-  IconCode, IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwap, IconTerminal,
+  IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwap,
 } from "./Icons";
 
 interface Entry {
@@ -234,7 +234,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       style={splitActive ? rowStyle(livePair?.[0] === pane.id) : { order: 0 }}
       aria-label={pane.label}
     >
-      {splitActive ? <PaneHead id={pane.id} label={pane.label} top={livePair?.[0] === pane.id} onSwap={swapPanes} /> : null}
+      {splitActive ? <PaneHead pane={pane} top={livePair?.[0] === pane.id} onSwap={swapPanes} /> : null}
       {body}
     </section>
   );
@@ -507,7 +507,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
               title={title}
               onClick={() => chooseTool(pane.id)}
             >
-              {pane.id === "ide" ? <IconCode size={14} /> : pane.id === "files" ? <IconFile size={14} /> : <IconTerminal size={14} />} {pane.label}
+              {pane.icon({ size: 14 })} {pane.label}
               {pane.id === "ide" && ide0 && !ide0.reachable ? <span className="tab-dot" aria-label="not reachable" /> : null}
             </button>
           );
@@ -581,15 +581,15 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 /** One row's title bar in split mode: the pane's name, and a ⇅ that swaps the two rows. It exists
  *  because a bare divider reads as a border — a label that says what the rows are is the minimum
  *  affordance for "this line between you and the other pane is draggable" (issue #78 §1). */
-function PaneHead({ id, label, top, onSwap }: { id: PaneId; label: string; top: boolean; onSwap: () => void }): JSX.Element {
+function PaneHead({ pane, top, onSwap }: { pane: PaneSpec; top: boolean; onSwap: () => void }): JSX.Element {
   return (
     <div className="split-head">
-      {id === "ide" ? <IconCode size={13} /> : <IconTerminal size={13} />} <span>{label}</span>
+      {pane.icon({ size: 13 })} <span>{pane.label}</span>
       <span className="head-spacer" />
       <button
         className="icon-btn"
-        title={top ? `把 ${label} 移到下面` : `把 ${label} 移到上面`}
-        aria-label={`move the ${label} pane`}
+        title={top ? `把 ${pane.label} 移到下面` : `把 ${pane.label} 移到上面`}
+        aria-label={`move the ${pane.label} pane`}
         onClick={onSwap}
       >
         <IconSwap size={14} />
