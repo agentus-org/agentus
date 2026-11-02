@@ -2,10 +2,14 @@ package app.agentus.companion;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Context;
 import android.content.pm.PackageManager;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
@@ -50,6 +54,14 @@ final class Mic {
     private AudioRecord rec;
     private Thread pump;
     private volatile boolean running = false;
+    /** The headset input we routed to (null = the device's own microphone). */
+    private AudioDeviceInfo routed;
+    /** The communication device we selected, and the mode we found on the way in, so `release()`
+     *  can put the phone back exactly as it was. Leaving MODE_IN_COMMUNICATION behind makes every
+     *  other app's audio sound like a phone call. */
+    private AudioDeviceInfo commDevice;
+    private int prevMode = AudioManager.MODE_INVALID;
+    private boolean scoLegacy = false;
     /** Frames handed to the page. If the page reports 0 received while this is > 0, the bridge is
      *  broken; if this is 0, the recorder never filled. Two numbers, two different causes. */
     private volatile int sent = 0;
@@ -106,7 +118,39 @@ final class Mic {
             NotifyService.log("原生麦克风：getMinBufferSize=" + min);
             return "error: getMinBufferSize=" + min;
         }
-        rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, hz,
+        // Which microphone, not just which sample rate. Plain AudioRecord binds the BUILT-IN mic:
+        // the operator's earbuds were connected and the page still recorded the phone itself,
+        // because nothing here ever named an input device. Bluetooth headsets are worse than that
+        // — their microphone lives on the HFP/SCO link, which Android only opens in communication
+        // mode, and A2DP (music profile) carries sound one way and never a microphone at all.
+        final AudioManager am = (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
+        AudioDeviceInfo headset = pickHeadset(am);
+        int source = MediaRecorder.AudioSource.VOICE_RECOGNITION;
+        if (headset != null) {
+            routed = headset;
+            if (isBluetooth(headset.getType())) {
+                source = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+                try {
+                    if (prevMode == AudioManager.MODE_INVALID) prevMode = am.getMode();
+                    am.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (am.setCommunicationDevice(headset)) commDevice = headset;
+                        else NotifyService.log("原生麦克风：setCommunicationDevice 拒绝 " + name(headset));
+                    } else {
+                        am.startBluetoothSco();
+                        am.setBluetoothScoOn(true);
+                        scoLegacy = true;
+                    }
+                } catch (Throwable t) {
+                    NotifyService.log("原生麦克风：切蓝牙通道失败 " + t.getClass().getSimpleName()
+                        + " :: " + t.getMessage());
+                }
+            }
+            NotifyService.log("原生麦克风：选择输入设备 " + name(headset));
+        } else {
+            NotifyService.log("原生麦克风：没有耳机输入设备，用手机自带麦克风");
+        }
+        rec = new AudioRecord(source, hz,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, hz * 2));
         if (rec.getState() != AudioRecord.STATE_INITIALIZED) {
             int state = rec.getState();
@@ -114,11 +158,31 @@ final class Mic {
             NotifyService.log("原生麦克风：初始化失败 state=" + state);
             return "error: init state=" + state;
         }
+        if (headset != null) {
+            // Wired / USB headsets need this one call; for Bluetooth it pins the SCO route the
+            // communication device just opened. Must be before startRecording().
+            try {
+                if (!rec.setPreferredDevice(headset)) {
+                    NotifyService.log("原生麦克风：setPreferredDevice 拒绝 " + name(headset));
+                }
+            } catch (Throwable t) {
+                NotifyService.log("原生麦克风：setPreferredDevice 抛错 " + t.getMessage());
+            }
+        }
         rec.startRecording();
         running = true;
         pump = new Thread(this::pump, "agentus-mic");
         pump.start();
-        NotifyService.log("原生麦克风：已开始（" + hz + "Hz 单声道 s16le）");
+        // What the OS actually routed to — the one line that tells a later "戴耳机还是手机麦"
+        // report whether the request worked.
+        String live = "";
+        try {
+            AudioDeviceInfo got = rec.getRoutedDevice();
+            live = got == null ? "未知" : name(got);
+        } catch (Throwable ignored) {
+            // older ROMs
+        }
+        NotifyService.log("原生麦克风：已开始（" + hz + "Hz 单声道 s16le，走 " + live + "）");
         return "ok";
     }
 
@@ -191,6 +255,51 @@ final class Mic {
         return running;
     }
 
+    /** Which input to record from, most-specific first. Bluetooth ranks above wired because it is
+     *  the case that silently falls back to the phone's own microphone: the HFP input only exists
+     *  once the SCO link is up, so it is also looked for in the full device list. */
+    private AudioDeviceInfo pickHeadset(AudioManager am) {
+        if (am == null) return null;
+        AudioDeviceInfo best = null;
+        int bestRank = 0;
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
+            int r = rank(d.getType());
+            if (r > bestRank) {
+                best = d;
+                bestRank = r;
+            }
+        }
+        if (best != null && isBluetooth(best.getType())) return best;
+        // A headset that is connected but whose input is not listed yet (SCO down) still has to be
+        // found: without selecting it there is nothing for setCommunicationDevice to bring up.
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_ALL)) {
+            int r = rank(d.getType());
+            if (r > bestRank) {
+                best = d;
+                bestRank = r;
+            }
+        }
+        return best;
+    }
+
+    private static int rank(int type) {
+        if (type == AudioDeviceInfo.TYPE_BLE_HEADSET) return 5;
+        if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) return 4;
+        if (type == AudioDeviceInfo.TYPE_USB_HEADSET) return 3;
+        if (type == AudioDeviceInfo.TYPE_WIRED_HEADSET) return 2;
+        if (type == AudioDeviceInfo.TYPE_USB_DEVICE) return 1;
+        return 0;
+    }
+
+    private static boolean isBluetooth(int type) {
+        return type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || type == AudioDeviceInfo.TYPE_BLE_HEADSET;
+    }
+
+    private static String name(AudioDeviceInfo d) {
+        String n = String.valueOf(d.getProductName());
+        return n + "(" + d.getType() + ")";
+    }
+
     /** Frames handed to the page so far (see the field: "sent" and "received" are different bugs). */
     int sentFrames() {
         return sent;
@@ -199,16 +308,47 @@ final class Mic {
     private void release() {
         AudioRecord r = rec;
         rec = null;
-        if (r == null) return;
         try {
-            if (r.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) r.stop();
-        } catch (Throwable ignored) {
-            // already stopped
+            if (r != null) {
+                try {
+                    if (r.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) r.stop();
+                } catch (Throwable ignored) {
+                    // already stopped
+                }
+                try {
+                    r.release();
+                } catch (Throwable ignored) {
+                    // already released
+                }
+            }
+        } finally {
+            restoreRoute();
         }
+    }
+
+    /** Put the phone's audio output back the way it was. Leaving MODE_IN_COMMUNICATION or a pinned
+     *  communication device behind makes music and video sound like a phone call afterwards. */
+    private void restoreRoute() {
+        final AudioManager am = (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
+        AudioDeviceInfo comm = commDevice;
+        commDevice = null;
+        routed = null;
+        if (am == null) return;
         try {
-            r.release();
-        } catch (Throwable ignored) {
-            // already released
+            if (comm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice();
+            }
+            if (scoLegacy) {
+                am.setBluetoothScoOn(false);
+                am.stopBluetoothSco();
+                scoLegacy = false;
+            }
+            if (prevMode != AudioManager.MODE_INVALID) {
+                am.setMode(prevMode);
+                prevMode = AudioManager.MODE_INVALID;
+            }
+        } catch (Throwable t) {
+            NotifyService.log("原生麦克风：恢复音频路由失败 " + t.getMessage());
         }
     }
 }
