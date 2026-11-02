@@ -27,6 +27,10 @@
          independent reports of the same symptom name this line as the fix
          (react-native-webview#3658, capacitor#802: "RECORD_AUDIO is not enough"). -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Android 12+: without this the HFP link cannot be raised, and recording silently stays on
+         the phone's own microphone. Never fatal — the router degrades to the built-in mic. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 
     <!-- Android 11+ package visibility: without this, queryIntentActivities() answers "nothing"
          for EVERY mime, so the download notification's "can this device open it?" pre-check would

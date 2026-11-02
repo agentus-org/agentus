@@ -1418,6 +1418,13 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
+        if (code == 3) {
+            // The native bridge's own dialog (RECORD_AUDIO / BLUETOOTH_CONNECT): it is waiting in
+            // start(), so the answer has to reach it rather than only the log.
+            if (mic != null) mic.onPermissionsResult(permissions, results);
+            refresh();
+            return;
+        }
         if (code != 2) return;
         boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
         if (pendingAudioRequest != null) {

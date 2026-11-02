@@ -16,6 +16,8 @@ import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 
+import org.json.JSONObject;
+
 import java.util.function.BooleanSupplier;
 
 /**
@@ -62,6 +64,11 @@ final class Mic {
     private AudioDeviceInfo commDevice;
     private int prevMode = AudioManager.MODE_INVALID;
     private boolean scoLegacy = false;
+    /** Set once we have asked for BLUETOOTH_CONNECT: a refused permission must not become a dialog
+     *  on every single tap. Routing still works without it, just to the built-in microphone. */
+    private boolean askedBt = false;
+    /** Non-null while `start()` is waiting on a permission dialog, so the answer can wake it. */
+    private java.util.concurrent.CountDownLatch permGate;
     /** Frames handed to the page. If the page reports 0 received while this is > 0, the bridge is
      *  broken; if this is 0, the recorder never filled. Two numbers, two different causes. */
     private volatile int sent = 0;
@@ -106,10 +113,11 @@ final class Mic {
                 != PackageManager.PERMISSION_GRANTED) {
             // The page never asked (it went straight to the bridge), so the app has to: the dialog is
             // the app's own runtime permission and only the activity can raise it.
-            activity.runOnUiThread(() ->
-                activity.requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC));
-            NotifyService.log("原生麦克风：还没有录音权限，弹系统授权");
-            return "permission";
+            if (!askPermissions(true)) return "denied";
+        } else if (!askPermissions(false)) {
+            // BLUETOOTH_CONNECT is what makes the HFP link possible on Android 12+; without it the
+            // recorder silently stays on the built-in microphone. Not fatal: record anyway.
+            NotifyService.log("原生麦克风：蓝牙权限没给，只能走手机自带麦克风");
         }
         final int hz = rate > 0 ? rate : 16000;
         int min = AudioRecord.getMinBufferSize(hz, AudioFormat.CHANNEL_IN_MONO,
@@ -120,35 +128,87 @@ final class Mic {
         }
         // Which microphone, not just which sample rate. Plain AudioRecord binds the BUILT-IN mic:
         // the operator's earbuds were connected and the page still recorded the phone itself,
-        // because nothing here ever named an input device. Bluetooth headsets are worse than that
-        // — their microphone lives on the HFP/SCO link, which Android only opens in communication
-        // mode, and A2DP (music profile) carries sound one way and never a microphone at all.
+        // because nothing here ever named an input device.
+        //
+        // Bluetooth is the hard case and the order matters. Its microphone lives on the HFP/SCO
+        // link, which is only raised in communication mode, and while that link is down the headset
+        // is listed in getDevices() as an A2DP OUTPUT only — a "sink", never an input. So "pick a
+        // headset input, then open the link" can never find a Bluetooth mic: the input appears only
+        // AFTER the link is up. Raise the link first, then look for the input, then hand it to
+        // AudioRecord. That is the whole bug behind "戴耳机还是手机麦".
         final AudioManager am = (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
-        AudioDeviceInfo headset = pickHeadset(am);
+        final String inputs = listInputs(am);
+        AudioDeviceInfo scoDev = pickBluetoothInput(am);
+        AudioDeviceInfo wiredDev = pickWiredInput(am);
+        final boolean btThere = scoDev != null || anyBluetooth(am);
         int source = MediaRecorder.AudioSource.VOICE_RECOGNITION;
-        if (headset != null) {
-            routed = headset;
-            if (isBluetooth(headset.getType())) {
-                source = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+        AudioDeviceInfo chosen = null;
+        String link = "无";
+        if (btThere) {
+            if (prevMode == AudioManager.MODE_INVALID) prevMode = am.getMode();
+            try {
+                am.setMode(AudioManager.MODE_IN_COMMUNICATION);
+            } catch (Throwable t) {
+                NotifyService.log("原生麦克风：进通信模式失败 " + t.getMessage());
+            }
+            boolean viaComm = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && scoDev != null) {
                 try {
-                    if (prevMode == AudioManager.MODE_INVALID) prevMode = am.getMode();
-                    am.setMode(AudioManager.MODE_IN_COMMUNICATION);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        if (am.setCommunicationDevice(headset)) commDevice = headset;
-                        else NotifyService.log("原生麦克风：setCommunicationDevice 拒绝 " + name(headset));
-                    } else {
-                        am.startBluetoothSco();
-                        am.setBluetoothScoOn(true);
-                        scoLegacy = true;
-                    }
+                    viaComm = am.setCommunicationDevice(scoDev);
                 } catch (Throwable t) {
-                    NotifyService.log("原生麦克风：切蓝牙通道失败 " + t.getClass().getSimpleName()
-                        + " :: " + t.getMessage());
+                    NotifyService.log("原生麦克风：setCommunicationDevice 抛错 " + t.getMessage());
+                }
+                if (viaComm) {
+                    commDevice = scoDev;
+                    link = "communicationDevice";
+                } else {
+                    NotifyService.log("原生麦克风：setCommunicationDevice 拒绝，改走 startBluetoothSco");
                 }
             }
-            NotifyService.log("原生麦克风：选择输入设备 " + name(headset));
+            if (!viaComm) {
+                // Deprecated on 31+, still the only way to raise SCO when the candidate device is
+                // not listed yet (which is exactly the state before the link exists).
+                try {
+                    am.startBluetoothSco();
+                    am.setBluetoothScoOn(true);
+                    scoLegacy = true;
+                    link = "startBluetoothSco";
+                } catch (Throwable t) {
+                    NotifyService.log("原生麦克风：startBluetoothSco 失败 " + t.getMessage());
+                }
+            }
+            // SCO is asynchronous: without this wait the recorder is built while the link is still
+            // coming up and silently binds the built-in mic — the reported symptom, again.
+            for (int i = 0; i < 12; i++) {
+                if (i > 0) {
+                    try {
+                        Thread.sleep(150);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                AudioDeviceInfo up = pickBluetoothInput(am);
+                if (up != null) {
+                    scoDev = up;
+                    break;
+                }
+            }
+            if (scoDev != null) {
+                chosen = scoDev;
+                source = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+            }
+        }
+        if (chosen == null && wiredDev != null) {
+            chosen = wiredDev;
+            source = MediaRecorder.AudioSource.VOICE_RECOGNITION;
+        }
+        if (chosen != null) {
+            routed = chosen;
+            NotifyService.log("原生麦克风：选择输入设备 " + name(chosen) + "（蓝牙链路 " + link + "）");
         } else {
-            NotifyService.log("原生麦克风：没有耳机输入设备，用手机自带麦克风");
+            NotifyService.log("原生麦克风：没有耳机输入，用手机自带麦克风（有蓝牙设备=" + btThere
+                + "，输入列表=" + inputs + "）");
         }
         rec = new AudioRecord(source, hz,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, hz * 2));
@@ -158,12 +218,12 @@ final class Mic {
             NotifyService.log("原生麦克风：初始化失败 state=" + state);
             return "error: init state=" + state;
         }
-        if (headset != null) {
+        if (chosen != null) {
             // Wired / USB headsets need this one call; for Bluetooth it pins the SCO route the
             // communication device just opened. Must be before startRecording().
             try {
-                if (!rec.setPreferredDevice(headset)) {
-                    NotifyService.log("原生麦克风：setPreferredDevice 拒绝 " + name(headset));
+                if (!rec.setPreferredDevice(chosen)) {
+                    NotifyService.log("原生麦克风：setPreferredDevice 拒绝 " + name(chosen));
                 }
             } catch (Throwable t) {
                 NotifyService.log("原生麦克风：setPreferredDevice 抛错 " + t.getMessage());
@@ -182,7 +242,14 @@ final class Mic {
         } catch (Throwable ignored) {
             // older ROMs
         }
-        NotifyService.log("原生麦克风：已开始（" + hz + "Hz 单声道 s16le，走 " + live + "）");
+        final String report = "原生麦克风：已开始（" + hz + "Hz 单声道 s16le，走 " + live
+            + "）；请求=" + (chosen == null ? "手机自带" : name(chosen))
+            + " 链路=" + link + " 模式=" + (am == null ? "?" : am.getMode())
+            + " 蓝牙设备=" + btThere + " 输入列表=" + inputs;
+        NotifyService.log(report);
+        // The phone answers "戴耳机还是手机麦" itself: this line lands in the server's device record
+        // (and its log) so the next round does not depend on anyone reading a log off the screen.
+        reportToServer(report);
         return "ok";
     }
 
@@ -255,31 +322,140 @@ final class Mic {
         return running;
     }
 
-    /** Which input to record from, most-specific first. Bluetooth ranks above wired because it is
-     *  the case that silently falls back to the phone's own microphone: the HFP input only exists
-     *  once the SCO link is up, so it is also looked for in the full device list. */
-    private AudioDeviceInfo pickHeadset(AudioManager am) {
+    /**
+     * Ask for what the route needs, and WAIT for the answer.
+     *
+     * Returning "permission" and letting the page retry looked harmless, but the page gives up after
+     * a few seconds and the dialog is answered whenever the operator gets to it — which turned a slow
+     * tap into "点了没反应". One dialog, answered before anything else happens, is the whole point.
+     */
+    private boolean askPermissions(final boolean needMic) {
+        final java.util.List<String> want = new java.util.ArrayList<>();
+        if (needMic) want.add(android.Manifest.permission.RECORD_AUDIO);
+        final boolean bt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !askedBt
+            && activity.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED;
+        if (bt) want.add(android.Manifest.permission.BLUETOOTH_CONNECT);
+        if (want.isEmpty()) return true;
+        if (bt) askedBt = true;
+        final java.util.concurrent.CountDownLatch gate = new java.util.concurrent.CountDownLatch(1);
+        permGate = gate;
+        activity.runOnUiThread(() -> {
+            try {
+                activity.requestPermissions(want.toArray(new String[0]), REQ_MIC);
+            } catch (Throwable t) {
+                NotifyService.log("原生麦克风：弹授权失败 " + t.getMessage());
+                gate.countDown();
+            }
+        });
+        NotifyService.log("原生麦克风：申请权限 " + want);
+        try {
+            gate.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        permGate = null;
+        final boolean mic = activity.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED;
+        final boolean btOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+            || activity.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+                == PackageManager.PERMISSION_GRANTED;
+        NotifyService.log("原生麦克风：权限结果 录音=" + mic + " 蓝牙=" + btOk);
+        return needMic ? mic : btOk;
+    }
+
+    /** Called from the activity's onRequestPermissionsResult for {@link #REQ_MIC}. */
+    void onPermissionsResult(String[] permissions, int[] results) {
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < permissions.length; i++) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(permissions[i].replace("android.permission.", ""))
+              .append('=').append(i < results.length && results[i] == PackageManager.PERMISSION_GRANTED
+                  ? "给" : "拒");
+        }
+        NotifyService.log("原生麦克风：授权回来 " + sb);
+        final java.util.concurrent.CountDownLatch gate = permGate;
+        if (gate != null) gate.countDown();
+    }
+
+    /** The Bluetooth input, if the link already exists (SCO or LE Audio). */
+    private AudioDeviceInfo pickBluetoothInput(AudioManager am) {
+        if (am == null) return null;
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
+            if (isBluetooth(d.getType())) return d;
+        }
+        return null;
+    }
+
+    /** Wired / USB headsets need no link: they are inputs the moment they are plugged in. */
+    private AudioDeviceInfo pickWiredInput(AudioManager am) {
         if (am == null) return null;
         AudioDeviceInfo best = null;
         int bestRank = 0;
         for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
             int r = rank(d.getType());
-            if (r > bestRank) {
-                best = d;
-                bestRank = r;
-            }
-        }
-        if (best != null && isBluetooth(best.getType())) return best;
-        // A headset that is connected but whose input is not listed yet (SCO down) still has to be
-        // found: without selecting it there is nothing for setCommunicationDevice to bring up.
-        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_ALL)) {
-            int r = rank(d.getType());
-            if (r > bestRank) {
+            if (!isBluetooth(d.getType()) && r > bestRank) {
                 best = d;
                 bestRank = r;
             }
         }
         return best;
+    }
+
+    /**
+     * Is a Bluetooth headset attached at all? Checked across every device, sinks included: before
+     * the HFP link is up the headset shows up only as an A2DP output, and that output is the one
+     * and only hint that there is a microphone to go and fetch.
+     */
+    private boolean anyBluetooth(AudioManager am) {
+        if (am == null) return false;
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_ALL)) {
+            int t = d.getType();
+            if (isBluetooth(t) || t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) return true;
+        }
+        return false;
+    }
+
+    /** Every input the OS reports, for the log line: the list itself is the evidence. */
+    private String listInputs(AudioManager am) {
+        if (am == null) return "（无 AudioManager）";
+        StringBuilder sb = new StringBuilder();
+        try {
+            for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
+                if (sb.length() > 0) sb.append('、');
+                sb.append(name(d));
+            }
+        } catch (Throwable t) {
+            return "枚举失败：" + t.getMessage();
+        }
+        return sb.length() == 0 ? "（空）" : sb.toString();
+    }
+
+    /**
+     * One line back to the server (POST /api/notify/diag), best-effort and off the calling thread:
+     * the point is that a routing answer exists on the server side afterwards, not that it always
+     * arrives. The local log has the same text either way.
+     */
+    private void reportToServer(final String text) {
+        try {
+            final Profiles.P p = new Profiles(activity).active();
+            if (p == null || !p.hasToken()) return;
+            final String url = p.url + "/api/notify/diag";
+            final String token = p.token;
+            final String body = new JSONObject()
+                .put("text", text)
+                .put("appVersion", BuildConfig.VERSION_NAME)
+                .toString();
+            new Thread(() -> {
+                try {
+                    Http.postJson(activity, url, token, body);
+                } catch (Throwable ignored) {
+                    // offline is fine; the log line already holds it
+                }
+            }, "agentus-mic-diag").start();
+        } catch (Throwable ignored) {
+            // no profile store yet — nothing to report to
+        }
     }
 
     private static int rank(int type) {
