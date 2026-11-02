@@ -234,6 +234,41 @@ check("同一个名字在两处都声明时，沿用 hermes 的顺序：legacy �
   bothForms.route?.baseUrl === "https://from-legacy.example.invalid/v1",
   String(bothForms.route?.baseUrl));
 
+// ---- 4c) `${VAR}` in api_key is expanded, exactly as the runtime does it (#87) ---------------
+// `api_key: ${MY_KEY}` is the documented way to keep the secret in .env. Read literally, the
+// placeholder is a NON-EMPTY string — it passes every emptiness check and goes to the vendor as the
+// credential, so the summary fails with the vendor's own 401 while chat on the same provider works.
+const phHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-placeholder-home-"));
+fs.writeFileSync(path.join(phHome, ".env"), "PLACEHOLDER_KEY=fake-expanded-key\n");
+fs.writeFileSync(path.join(phHome, "config.yaml"), [
+  "custom_providers:",
+  "  - name: ph-ok",
+  "    base_url: https://ph.example.invalid/v1",
+  "    api_key: ${PLACEHOLDER_KEY}",
+  "providers:",
+  "  ph-missing:",
+  "    base_url: https://ph2.example.invalid/v1",
+  "    api_key: ${NOT_IN_ANY_ENV}",
+  "  ph-plain:",
+  "    base_url: https://ph3.example.invalid/v1",
+  "    api_key: fake-plain-key",
+].join("\n"));
+
+const phOk = routeForModel("custom:ph-ok:m", phHome);
+check("api_key 写成 ${VAR} 时按运行时语义展开（不再把占位符当密钥发出去）",
+  phOk.route?.apiKey === "fake-expanded-key",
+  phOk.route ? (phOk.route.apiKey === "fake-expanded-key" ? "expanded" : "not expanded") : phOk.why);
+
+const phPlain = routeForModel("custom:ph-plain:m", phHome);
+check("api_key 写明文时照旧原样使用（展开不能误伤明文）",
+  phPlain.route?.apiKey === "fake-plain-key",
+  phPlain.route ? "literal" : phPlain.why);
+
+const phMissing = routeForModel("custom:ph-missing:m", phHome);
+check("占位符指向不存在的变量时拒绝路由，并点名那个变量（不带着假密钥打上游）",
+  phMissing.route === null && phMissing.why.includes("${NOT_IN_ANY_ENV}") && !phMissing.why.includes("\\$"),
+  phMissing.why);
+
 // ---- 5) the vendor's own status survives the error path (#85) ------------------------------
 // A 403 `model_not_allowed` used to arrive as 502 「网关故障」. The error object now carries the
 // status, which is what index.ts maps back onto the response.
