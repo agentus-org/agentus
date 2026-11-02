@@ -126,7 +126,24 @@ const panes = `JSON.stringify([...document.querySelectorAll('.panel-stack .stack
   xterm: Boolean(p.querySelector('.xterm')) })).sort((a, b) => a.top - b.top))`;
 
 check("the split switch is offered on a desktop window", await ev(`Boolean(document.querySelector('${splitBtn}'))`), "");
-await ev(`document.querySelector('${splitBtn}').click(); true`);
+
+/* #90 §3: opening a split no longer pairs the panes for the operator. The top row is the tool they
+ * were on, and the lower half ASKS which tool belongs there — so the first thing to assert is the
+ * question itself, and only a click on an answer produces a pair. */
+await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/^ide/.test(t.textContent.trim())).click(); true`);
+await sleep(2000);
+const picker = JSON.parse(await ev(`(() => { const el = document.querySelector('.pane-picker');
+  return JSON.stringify({ present: Boolean(el),
+    items: el ? [...el.querySelectorAll('.pane-picker-item')].map(b => (b.textContent || '').trim()) : [],
+    labeled: el ? [...el.querySelectorAll('.pane-picker-item')].map(b => b.getAttribute('aria-label')) : [],
+    pair: localStorage.getItem('agentus.panel-pair'),
+    top: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane) }); })()`));
+check("开分屏时下方是选择态（不替用户选工具）", picker.present === true, JSON.stringify(picker));
+check("…选择态里不含上方那个工具", !picker.items.includes("ide"), picker.items.join(","));
+check("…列出的是可用的工具（图标 + 名字）", picker.items.includes("terminal"), picker.items.join(","));
+check("…选择态不落盘（刷新不会恢复一个没答完的分屏）", picker.pair === null, String(picker.pair));
+check("…上方仍是操作者刚才在的那个工具", picker.top.join(",") === "ide", picker.top.join(","));
+await ev(`document.querySelector('.pane-picker [aria-label="put terminal below"]').click(); true`);
 await sleep(6000);
 const split = JSON.parse(await ev(panes));
 check("splitting shows BOTH panes at once", split.length === 2 && split.every((p) => !p.hidden), await ev(panes));

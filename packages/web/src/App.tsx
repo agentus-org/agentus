@@ -17,8 +17,11 @@ import { watchingNow } from "./presence";
 import { loadServerCallSettings } from "./callSettings";
 import { WorkspacePicker } from "./WorkspacePicker";
 import { WorkspaceButton } from "./WorkspaceButton";
-import { ToolPanel } from "./ToolPanel";
+import { ToolPanel, readFlag, writeFlag } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
+/** #91: the panel's 放大 state, stored beside the other layout preferences (`agentus.panel-width`,
+ *  `agentus.rail-width`, `agentus.rail-mode`). */
+const PANEL_MAX_KEY = "agentus.panel-maximized";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
@@ -1365,6 +1368,13 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   // The panel (files · terminal) is per-slot UI state, not a server thing: it lives
   // here so switching slots keeps the panel open on the new slot's workspace.
   const [panelOpen, setPanelOpen] = useState(false);
+  /* #91: the panel can take the whole right-hand area (「放大缩小的按钮」), the rail staying put so the
+   * operator can still switch sessions. Deliberately a LAYOUT state, not a width: `--panel-w` is never
+   * touched while it is on, so the width that comes back on restore is exactly the one she set, and
+   * `usePaneWidth`'s `MIN_CHAT` clamp cannot drag a full-width panel back to 360px on the next resize
+   * (the clamp only ever applies to the non-maximized layout). Stored like the other layout flags;
+   * ignored below 721px, where the panel is a full-screen sheet anyway. */
+  const [panelMaxFlag, setPanelMaxFlag] = useState<boolean>(() => readFlag(PANEL_MAX_KEY, false));
   /* WHICH PANE the panel shows, owned here rather than inside the panel (#80 §1): the head grows a
    * button per wide-screen pane (terminal, IDE), and "open the panel on THAT pane" is a fact the
    * head has to be able to set. It is also why the panel no longer answers this question itself. */
@@ -1375,6 +1385,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
   /* One IDE status for both consumers — the head decides whether its ide button exists, the panel
    * decides whether the ide row is available. Asked once per session/workspace (panes.ts). */
   const wide = useWide();
+  /* The flag only applies on a wide window; narrowing past 721px suspends it (the panel there is a
+   * full-screen sheet already) without forgetting the operator's choice. */
+  const panelMax = panelMaxFlag && wide;
+  const setPanelMax = (on: boolean): void => { setPanelMaxFlag(on); writeFlag(PANEL_MAX_KEY, on); };
   // `active` can be undefined here (the empty-state return sits further down), so the hook takes the
   // empty key rather than throwing on a cockpit with no session selected.
   const ide = useIdeStatus(active?.info.id ?? "", active?.info.workspace || active?.info.cwd || "");
@@ -1464,7 +1478,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         onPerm={onPermClick}
         speak={speak}
       />
-      <div className="main-body">
+      <div className={`main-body ${panelMax ? "panel-maximized" : ""}`}>
         <div className="chat-col">
           <Stream v={active} />
           <Composer v={active} call={call} tus={tus} onCloseCall={() => { setCall(false); setTus(false); }} />
@@ -1472,7 +1486,12 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
         {panelOpen && (
           <ToolPanel
             v={active}
-            onClose={() => setPanelOpen(false)}
+            onClose={() => {
+              // #91 §5: closing the panel also drops the maximized flag — otherwise the next open
+              // springs to full width and reads as 「面板坏了」.
+              setPanelMax(false);
+              setPanelOpen(false);
+            }}
             onPickWorkspace={() => setPickWorkspace(true)}
             tab={panelTab}
             onTab={setPanelTab}
@@ -1480,6 +1499,8 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
             focus={panelFocus}
             panelWidth={panelWidth}
             panelHandle={panelHandle}
+            maximized={panelMax}
+            onToggleMax={() => setPanelMax(!panelMax)}
           />
         )}
       </div>

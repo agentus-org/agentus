@@ -30,7 +30,7 @@ import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
-  cleanAgentTitle, deriveTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
+  cleanAgentTitle, deriveTitle, titleFromFirstPrompt, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
 import type { Store, SessionRow, TitleSrc } from "../store/store.js";
 import { textOf, withText } from "../store/store.js";
@@ -2881,7 +2881,7 @@ export class SessionManager {
         // ONE name per session. Hermes re-generates a title on every turn (auxiliary `title_generation`
         // in `agent/turn_context.py`), and this frame is how it arrives — subscribing to all of them was
         // the churn: the rail kept renaming a conversation the operator was reading.
-        if (t) this.#applyAutoTitle(live.info.id, t, false, "agent");
+        if (t) this.#applyAgentFrameTitle(live, t);
         return;
       }
       case "usage_update": {
@@ -3230,6 +3230,32 @@ export class SessionManager {
    *  one, or the operator regenerated it — quoting the newest prompt over it would be a
    *  downgrade. (AionUi draws the same line: it only re-derives while the name is still the
    *  default one.) */
+  /**
+   * Issue #89: this frame carries a title and NOTHING about where it came from. Hermes announces two
+   * of them in the opening turn — a slice of the operator's own message at turn start, the model's
+   * title a few seconds later — and both ride `session_info_update`. Ranked as one tier the slice won
+   * (it arrived first, over the client's `derived` name) and the model's title, arriving over an
+   * equal rank, was dropped: the rail kept the opening words for the rest of the session's life, and
+   * the fallback could not heal it either (the name was no longer a placeholder).
+   *
+   * The slice is REPRODUCIBLE from our own store — it is `deriveTitle` of a user prompt — so
+   * the two can be told apart without touching the protocol: text equal to that slice is the
+   * placeholder tier (`agent`); anything else is the agent's own name, which outranks it (`llm`).
+   * Later turns still recompute after that, and an equal rank still never overwrites, so 「跑着跑着
+   * 标题就变了」 stays fixed.
+   */
+  #applyAgentFrameTitle(live: LiveSession, title: string): void {
+    const msgs = this.#store.messagesTail(live.info.id, Number.MAX_SAFE_INTEGER).messages;
+    // BOTH ends of the transcript, not just the first message: the placeholder tier is "the opening
+    // words of a user prompt", and hermes writes that slice at the START of each turn — a session
+    // resumed days later announces a slice of the LATEST prompt. Checking only the first one would
+    // rank every later slice as a model title and let it overwrite the name (which is precisely the
+    // churn the equal-rank rule exists to prevent).
+    const tiers = [titleFromFirstPrompt(msgs), titleFromLatestPrompt(msgs)];
+    const src: TitleSrc = tiers.some((t) => t && t === title) ? "agent" : "llm";
+    this.#applyAutoTitle(live.info.id, title, false, src);
+  }
+
   #autoTitleFrom(s: LiveSession, text: string): void {
     const row = this.#store.getSession(s.info.id);
     if (!row) return;
