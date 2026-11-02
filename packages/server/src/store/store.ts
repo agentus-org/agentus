@@ -129,8 +129,13 @@ const PAGE_BYTES = 256 * 1024;
 
 /** Provenance of a session's name, ranked: a name may only be overwritten by a BETTER source
  *  (or by the operator asking for a new one). See `setAutoTitle`. */
-export type TitleSrc = "derived" | "agent" | "operator";
-const TITLE_RANK: Record<TitleSrc, number> = { derived: 1, agent: 2, operator: 3 };
+export type TitleSrc = "derived" | "agent" | "llm" | "operator";
+/** Who wins, in order. `llm` sits ABOVE `agent` because the two arrive through the same channel and
+ *  the same field: the agent announces a slice of the operator's own message when a turn starts and
+ *  the model's title a few seconds later, both as `session_info_update` (issue #89). Ranked equal,
+ *  the slice — which arrives first — won, and the model's name lost the tie. Ranked apart, the
+ *  upgrade happens once and every later recomputation still loses to the name already there. */
+const TITLE_RANK: Record<TitleSrc, number> = { derived: 1, agent: 2, llm: 3, operator: 4 };
 
 export interface SessionRow {
   id: string;

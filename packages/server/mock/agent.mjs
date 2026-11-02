@@ -385,6 +385,24 @@ const agent = () => ({
     // A title request (the cockpit's 重新生成) is answered from what this session already
     // knows. On a FORK that is the parent's copied transcript, so the count is the proof the
     // copy arrived; a session with no parent cannot be a title fork at all.
+    // QA (#89): the REAL shape of hermes' auto title — two frames through the same channel. At turn
+    // start it announces a slice of the operator's own message (`title_source=derived`), and a few
+    // seconds later the model's title (`title_source=llm`). Both arrive as `session_info_update`, and
+    // the frame carries no provenance — which is exactly what made the client drop the second one.
+    if (process.env.MOCK_TITLE_STAGE === "1" && !/^\[/.test(text)) {
+      const slice = (text.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("```")) || "")
+        .replace(/^[#>*\-\d.\s]+/u, "").replace(/\s+/g, " ").trim().slice(0, 50);
+      if (slice) {
+        await send(agent._conn, sessionId, { sessionUpdate: "session_info_update", title: slice });
+      }
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "session_info_update",
+          title: process.env.MOCK_TITLE_LLM || "Mock model title",
+        });
+      }, Number(process.env.MOCK_TITLE_LLM_MS || 700));
+    }
+
     const inherited = (s.history || []).length;
     s.history = [...(s.history || []), text];
     if (/会话标题/.test(text)) {

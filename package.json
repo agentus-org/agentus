@@ -105,6 +105,7 @@
     "hold-to-talk-sweep": "node scripts/qa/hold-to-talk-sweep.mjs",
     "pane-registry-units": "tsx --tsconfig packages/web/tsconfig.json scripts/qa/pane-registry-units.mts",
     "pane-head-dom": "node scripts/qa/pane-head-dom.mjs",
+    "title-upgrade-sweep": "node scripts/qa/title-upgrade-sweep.mjs",
     "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs",
     "live-speed-sweep": "node scripts/qa/live-speed-sweep.mjs",
     "stream-tokens": "tsx scripts/qa/stream-tokens.mts",
