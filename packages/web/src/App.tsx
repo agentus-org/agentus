@@ -5151,6 +5151,11 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   // 要两次点击。这里给它补指针等价物：按住按钮 or 在输入框里按住左键，松手就是「我说完了」。
   // 短按仍然是原来的点击切换（`pressFired` 那套语义），别让老用法消失。
   const [holdHint, setHoldHint] = useState("");
+  /** 这一次「按住说话」是几点开的口。手机上点一下经常超过 480 ms 的按住阈值：那样按下就开始、
+   *  松手立刻结束，录到的是几十毫秒的空气，操作者看到的是「点了没反应」。所以松手时只有真的按住
+   *  够久才当「说完了」，否则按一次点击对待 —— 继续听。 */
+  const holdAt = useRef(0);
+  const HOLD_MIN_SPEECH_MS = 800;
   /** 第一次真正用上听写时，把「其实可以按住说」这件事说一遍 —— 只一遍（localStorage）。 */
   const hintOnce = (): void => {
     try {
@@ -5176,6 +5181,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
     micHold.current = createHoldToTalk({
       onHold: () => {
         micSwallow.current = true;
+        holdAt.current = Date.now();
         startChatDictation();
       },
     });
@@ -5186,7 +5192,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const areaArmed = useRef(false);
   if (!areaHold.current) {
     areaHold.current = createHoldToTalk({
-      onHold: () => startChatDictation(),
+      onHold: () => { holdAt.current = Date.now(); startChatDictation(); },
     });
   }
   useEffect(() => {
@@ -5527,7 +5533,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               if (!areaArmed.current) return;
               areaArmed.current = false;
               const g = areaHold.current?.up();
-              if (g === "hold") endChatDictation();
+              if (g === "hold" && Date.now() - holdAt.current >= HOLD_MIN_SPEECH_MS) endChatDictation();
             }}
             onPointerCancel={() => {
               areaArmed.current = false;
@@ -5770,7 +5776,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               // 指针没动却"离开"了按钮，按手机的实测经验那会把录音掐断。
               onPointerUp={() => {
                 const g = micHold.current?.up();
-                if (g === "hold") { endChatDictation(); }
+                if (g === "hold") { if (Date.now() - holdAt.current >= HOLD_MIN_SPEECH_MS) endChatDictation(); }
                 else if (g === "tap") { startChatDictation(); }
                 // 这一下手势已经被我们处理过了 —— 紧跟着浏览器还会补发一个 click，如果不管它，
                 // 一次点击就会走两遍 start（cancel + 再 start），于是两次 getUserMedia 同时在途：
