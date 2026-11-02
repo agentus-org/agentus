@@ -247,5 +247,15 @@ check("没有任何帧时给出可读的错误", st().status === "error" && /没
   `${st().status} ${st().error}`);
 check("…并且把麦克风还回去了", micF.stopped === 1, `stopped=${micF.stopped}`);
 
+console.log("\nG · 通话里 agent 在说话（relay 关着）时，看门狗不许报错");
+// 通话页把同一路采集挂一整轮，播放答复时 setRelay(false) —— 那段时间「零帧」是正确状态。
+// 这条钉住看门狗只在 relay 开着的窗口里判红，否则每次朗读都会把通话的麦克风判死。
+await dictation.start(prefs, SID);
+await sleep(30);
+dictation.setRelay(false);
+await sleep(7000);
+check("relay 关着的窗口里没有误报错误", st().status !== "error", `${st().status} ${st().error}`);
+dictation.cancel();
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}  ${pass} passed / ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

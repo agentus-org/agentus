@@ -1525,6 +1525,9 @@ class Dictation {
   #frames = 0;
   #ready = false;
   #watch: number | null = null;
+  /** When the relay gate last opened — the watchdog only judges a window that was actually
+   *  supposed to carry audio (see #watchdog). */
+  #relaySince = 0;
 
   /** Test seam — automation has no microphone, and the call's thresholds (how loud a
    *  barge-in must be, how long a silence ends a sentence, how short an utterance may be)
@@ -1567,6 +1570,7 @@ class Dictation {
    *  also the shape the relay was built on: one socket = one utterance. */
   setRelay(on: boolean): void {
     this.#relay = on;
+    this.#relaySince = on ? Date.now() : 0;
     if (!on) {
       this.#asked = true;
       this.#closeSocket();
@@ -1790,6 +1794,7 @@ class Dictation {
     // Ask for the microphone after saying we are waiting (the prompt is modal, QA R53).
     this.#set({ status: "requesting", engine: "stream", error: "" });
     this.#relay = true;          // a fresh capture always relays until the call says otherwise
+    this.#relaySince = Date.now();
     this.#asked = false;
     this.#tries = 0;
     this.#relayError = "";
@@ -1818,17 +1823,30 @@ class Dictation {
     this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
     // Nothing at all arriving is a failure the operator cannot see (the chip just says "listening"
     // forever), so name the two silences instead of leaving them silent. See #frames / #ready.
-    this.#watch = window.setTimeout(() => {
-      this.#watch = null;
-      if (!this.#streaming || this.#asked) return;
-      if (this.#frames === 0) {
-        this.#fail(`麦克风没有送出任何音频（${this.#captureShape()}）— 换一个入口或重开一次页面试试`);
-        return;
-      }
-      if (!this.#ready) {
-        this.#fail("麦克风在送音频，但识别服务没有回应（/ws/asr 没回 asr-ready）");
-      }
-    }, STREAM_WATCH_MS);
+    this.#watch = window.setTimeout(() => this.#watchdog(), STREAM_WATCH_MS);
+  }
+
+  /** The two silences, told apart — and only while we are actually supposed to be sending.
+   *
+   *  A call parks this same capture across a whole turn and closes the relay gate while the agent
+   *  speaks (`setRelay(false)`): during that window zero frames is the CORRECT state, so the check
+   *  waits for a window in which the gate has been open for a while instead of reporting a false
+   *  failure every time the agent reads a reply out loud. */
+  #watchdog(): void {
+    this.#watch = null;
+    if (!this.#streaming || this.#asked) return;
+    const relaying = this.#relay && Date.now() - this.#relaySince > 2500;
+    if (!relaying) {
+      this.#watch = window.setTimeout(() => this.#watchdog(), STREAM_WATCH_MS);
+      return;
+    }
+    if (this.#frames === 0) {
+      this.#fail(`麦克风没有送出任何音频（${this.#captureShape()}）— 换一个入口或重开一次页面试试`);
+      return;
+    }
+    if (!this.#ready) {
+      this.#fail("麦克风在送音频，但识别服务没有回应（/ws/asr 没回 asr-ready）");
+    }
   }
 
   /** What the capture looks like right now, for an error the operator can act on. */
