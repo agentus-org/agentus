@@ -40,6 +40,13 @@ class FakeCtx {
   sampleRate = 48000;
   destination = {};
   closed = 0;
+  /** A real context is "running" normally and "suspended" on a phone until it is unlocked; the
+   *  capture path now checks this, so the double has to have a value. */
+  state = "running";
+  resume(): Promise<void> {
+    this.state = "running";
+    return Promise.resolve();
+  }
   createMediaStreamSource(): { connect: () => void; disconnect: () => void } {
     return { connect() {}, disconnect() {} };
   }
@@ -212,6 +219,33 @@ check("…但它确实关掉了转写 socket", wsD.readyState === FakeWs.CLOSED,
 dictation.cancel();
 check("cancel() 当场把设备还回去", micD.stopped === 1, `stopped=${micD.stopped}`);
 check("…并且回到 idle（不会再自己回到 listening）", st().status === "idle", st().status);
+
+console.log("\nE · relay 已经死了（socket 不在 OPEN）时按停止");
+// 报上来的形状（手机浏览器）：「stop 之后系统还显示在用麦克风，而且再点也没反应」。
+// 旧代码只在 `#ws.readyState === OPEN` 时交还设备；socket 正在重连 / 已经断了时整段被跳过，
+// 采集图继续跑（录音灯亮），状态停在 listening（下一次 start() 直接返回 false）。
+await dictation.start(prefs, SID);
+await sleep(30);
+const micE = tracks.at(-1)!;
+const wsE = (globalThis as unknown as { __sockets: FakeWs[] }).__sockets.at(-1)!;
+wsE.readyState = FakeWs.CLOSED;            // 句子还没收尾，连接先没了；onclose 还没到
+check("前置：在听，麦克风开着", st().status === "listening" && micE.stopped === 0,
+  `${st().status} stopped=${micE.stopped}`);
+dictation.stop();
+check("socket 不 OPEN 时 stop() 也必须把设备还回去", micE.stopped === 1, `stopped=${micE.stopped}`);
+check("…并且不能把状态卡在 listening / transcribing", st().status === "idle", `${st().status} ${st().error}`);
+await dictation.start(prefs, SID);
+await sleep(30);
+check("…再点一次仍然能开麦（状态没被卡死）", st().status === "listening", `${st().status} ${st().error}`);
+
+console.log("\nF · 麦克风开着但一帧都没送出去（手机上 AudioContext 挂起的那种）");
+// 旧代码在这里什么都不说：界面显示 listening，一直等，永远不出字。现在必须在几秒内说出原因
+// 并把设备还回去 —— 一个「静默失败」比一个错误更难查。
+const micF = tracks.at(-1)!;
+await sleep(6600);
+check("没有任何帧时给出可读的错误", st().status === "error" && /没有送出任何音频/.test(st().error),
+  `${st().status} ${st().error}`);
+check("…并且把麦克风还回去了", micF.stopped === 1, `stopped=${micF.stopped}`);
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}  ${pass} passed / ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

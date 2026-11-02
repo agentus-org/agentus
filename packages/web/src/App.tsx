@@ -5770,10 +5770,17 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
               // 指针没动却"离开"了按钮，按手机的实测经验那会把录音掐断。
               onPointerUp={() => {
                 const g = micHold.current?.up();
-                if (g === "hold") { endChatDictation(); return; }
-                if (g === "tap") startChatDictation();
-                // g === null（这次手势作废）：旗子留给后面那个 click 自己清，别在这里清 ——
-                // 清了之后 pointercapture 派发的 click 会再 start 一次，一次按住听到两次。
+                if (g === "hold") { endChatDictation(); }
+                else if (g === "tap") { startChatDictation(); }
+                // 这一下手势已经被我们处理过了 —— 紧跟着浏览器还会补发一个 click，如果不管它，
+                // 一次点击就会走两遍 start（cancel + 再 start），于是两次 getUserMedia 同时在途：
+                // 第一次拿到的麦克风被 `#stale(gen)` 静默丢弃，第二次在手机上常撞成
+                // NotReadableError / 权限流程卡住，表现为「点了麦克风什么都没发生」。
+                // 所以 pointerup 既然结算了手势，就把紧接着的那一次 click 吞掉。
+                if (g) {
+                  micSwallow.current = true;
+                  window.setTimeout(() => { micSwallow.current = false; }, 600);
+                }
               }}
               onPointerCancel={() => {
                 const wasHolding = micHold.current?.holding() === true;

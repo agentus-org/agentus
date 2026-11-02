@@ -200,6 +200,11 @@ const RELAY_REOPEN_MS = 400;
 /** 100 ms of 16 kHz mono s16le per frame: this is ~6 s of the operator still being heard
  *  across a reconnect that has not completed yet (a stranded frame is a word nobody heard). */
 const RELAY_PENDING_MAX = 60;
+/** How long a streaming dictation may produce nothing before the page says why. Short enough that
+ *  the operator does not sit there waiting, long enough to cover a slow first frame on a phone
+ *  (a Bluetooth headset's SCO link takes a moment to open). Both silences this catches used to be
+ *  completely invisible: the microphone opened, the page showed "listening", and no word ever came. */
+const STREAM_WATCH_MS = 6000;
 
 interface TtsWaiter { priority: number; run: () => void }
 let ttsInFlight = 0;
@@ -1512,6 +1517,14 @@ class Dictation {
   #relayError = "";
   /** true when the END was ours (stop / the call's turn is over): a normal finish, not a failure. */
   #asked = false;
+  /** Frames actually handed to the relay in this streaming session, and whether the recogniser has
+   *  said anything at all (asr-ready / partial / final). Two numbers, two different silences: zero
+   *  frames means our own capture never produced audio (a suspended AudioContext, a dead track, a
+   *  bridge that stopped pushing); frames but no word means the upstream never answered. Both used
+   *  to be invisible — the operator tapped the microphone and the page did nothing at all. */
+  #frames = 0;
+  #ready = false;
+  #watch: number | null = null;
 
   /** Test seam — automation has no microphone, and the call's thresholds (how loud a
    *  barge-in must be, how long a silence ends a sentence, how short an utterance may be)
@@ -1782,6 +1795,8 @@ class Dictation {
     this.#relayError = "";
     this.#sessionId = sessionId;
     this.#streaming = true;
+    this.#frames = 0;
+    this.#ready = false;
     this.#pending.length = 0;
     // The socket comes FIRST, before the source: the source starts pushing frames the moment it is
     // open, and a frame with nowhere to go is a word the operator said that nothing heard.
@@ -1801,6 +1816,37 @@ class Dictation {
     }
     this.#set({ status: "listening", engine: "stream", seconds: 0 });
     this.#timer = window.setInterval(() => this.#set({ seconds: this.#state.seconds + 1 }), 1000);
+    // Nothing at all arriving is a failure the operator cannot see (the chip just says "listening"
+    // forever), so name the two silences instead of leaving them silent. See #frames / #ready.
+    this.#watch = window.setTimeout(() => {
+      this.#watch = null;
+      if (!this.#streaming || this.#asked) return;
+      if (this.#frames === 0) {
+        this.#fail(`麦克风没有送出任何音频（${this.#captureShape()}）— 换一个入口或重开一次页面试试`);
+        return;
+      }
+      if (!this.#ready) {
+        this.#fail("麦克风在送音频，但识别服务没有回应（/ws/asr 没回 asr-ready）");
+      }
+    }, STREAM_WATCH_MS);
+  }
+
+  /** What the capture looks like right now, for an error the operator can act on. */
+  #captureShape(): string {
+    if (this.#bridge) return "原生麦克风在跑但没有送帧";
+    const track = this.#mic?.getAudioTracks?.()[0];
+    const ctx = this.#ctx?.state ?? "no-context";
+    if (!track) return `audio context ${ctx}，没有音轨`;
+    return `audio context ${ctx}，音轨 ${track.readyState}${track.muted ? "(muted)" : ""}`;
+  }
+
+  /** Give up on this utterance: say why, and hand the microphone back — an error that leaves a
+   *  recording badge lit is the defect that started this. */
+  #fail(why: string): void {
+    this.#asked = true;
+    this.#releaseCapture();
+    this.#closeStream();
+    this.#set({ status: "error", error: why, interim: "" });
   }
 
   /** One frame out of the page: straight to the socket when it is open, into the buffer while it
@@ -1808,7 +1854,7 @@ class Dictation {
    *  while the relay gate is on. */
   #sendFrame(frame: ArrayBuffer): void {
     const ws = this.#ws;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+    if (ws && ws.readyState === WebSocket.OPEN) { this.#frames += 1; ws.send(frame); }
     else if (this.#pending.length < RELAY_PENDING_MAX) this.#pending.push(frame);
   }
 
@@ -1827,17 +1873,20 @@ class Dictation {
     ws.onopen = () => {
       this.#tries = 0;
       this.#relayError = "";
+      this.#frames += this.#pending.length;
       for (const buf of this.#pending) ws.send(buf);
       this.#pending.length = 0;
       if (this.#state.status !== "listening") this.#set({ status: "listening", engine: "stream", error: "" });
     };
     ws.onmessage = (ev: MessageEvent) => {
-      let msg: { t?: string; text?: string; error?: string };
+      let msg: { t?: string; text?: string; error?: string; model?: string | null };
       try {
         msg = JSON.parse(String(ev.data)) as typeof msg;
       } catch {
         return;
       }
+      if (msg.t === "asr-ready") { this.#ready = true; return; }
+      this.#ready = true;
       if (msg.t === "asr-partial") this.#set({ interim: String(msg.text ?? "") });
       else if (msg.t === "asr-final") {
         this.#committed = `${this.#committed}${msg.text ?? ""}`.replace(/\s+/g, " ").trim();
@@ -1895,6 +1944,21 @@ class Dictation {
     // honours it) and resample when the browser insists on 44.1/48 kHz (Safari).
     const ctx = new Ctor({ sampleRate: 16000 });
     this.#ctx = ctx;
+    // On a phone the context can come up SUSPENDED: it is created several awaits past the tap
+    // (permission prompt included), and a suspended context runs no ScriptProcessor callbacks at
+    // all — the microphone is open, the page says "listening", and not one frame is ever sent.
+    // Ask it to run; if it will not, hand the device back and say so instead of hanging silently.
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        /* reported by the state check below */
+      }
+    }
+    if (ctx.state !== "running") {
+      this.#releaseCapture();
+      throw new Error(`浏览器的音频上下文没有启动（${ctx.state}）— 点一下页面再试一次，或改用 Agentus app`);
+    }
     const src = ctx.createMediaStreamSource(mic);
     // ScriptProcessor is deprecated but universally available, which matters more here
     // than the AudioWorklet's tidier lifecycle: this runs for one utterance.
@@ -1970,6 +2034,10 @@ class Dictation {
   /** Tears the capture graph + socket down. Idempotent. */
   #closeStream(): void {
     this.#closeSocket();          // the socket may outlive neither the capture nor a re-arm
+    if (this.#watch !== null) {
+      window.clearTimeout(this.#watch);
+      this.#watch = null;
+    }
     this.#streaming = false;
     this.#asked = false;
     this.#tries = 0;
@@ -2137,16 +2205,27 @@ class Dictation {
     // #closeStream, which only runs once the recogniser sends back its last sentence. Before this split
     // the device stayed open for the whole finalisation (and forever when the asr-done never arrived),
     // so the tab kept its recording badge lit after the call was over (#51 leak B).
-    if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+    if (this.#streaming) {
+      // …and the release must NOT depend on the socket being OPEN. A socket that is reconnecting,
+      // connecting, or already dead used to skip the whole branch below: the capture stayed up (the
+      // phone's recording indicator lit, "stop" doing visibly nothing) and the state stayed at
+      // `listening`, which then made every later start() return false without a word. Stop always
+      // means "hand the device back"; the socket only decides whether there is a last sentence worth
+      // waiting for.
+      const open = Boolean(this.#ws && this.#ws.readyState === WebSocket.OPEN);
       this.#releaseCapture();
       if (this.#timer) {
         window.clearInterval(this.#timer);
         this.#timer = null;
       }
       this.#asked = true;
+      if (!open) {
+        this.#finishStream();
+        return;
+      }
       this.#set({ status: "transcribing" });
       try {
-        this.#ws.send(JSON.stringify({ t: "asr-stop" }));
+        this.#ws!.send(JSON.stringify({ t: "asr-stop" }));
       } catch {
         this.#finishStream();
         return;
