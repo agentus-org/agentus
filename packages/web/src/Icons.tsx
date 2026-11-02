@@ -5,7 +5,7 @@
 // label via title/aria-label.
 import type { JSX } from "react";
 
-interface IconProps {
+export interface IconProps {
   size?: number;
   className?: string;
 }
@@ -148,9 +148,12 @@ export const IconTerminal = (p: IconProps = {}): JSX.Element =>
 export const IconSplitRows = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="3" width="18" height="8" rx="2" /><rect x="3" y="13" width="18" height="8" rx="2" /></>, p);
 
-/** an editor window: angle brackets in a frame, to sit next to the terminal's prompt */
+/** The IDE: a titled window (`lucide/app-window`). It used to be angle brackets inside a frame, and at
+ *  the head's 16px those two 2px chevrons collapsed into dots — the operator, looking at a row where
+ *  the terminal's prompt sits next to it: 「ide 的那个图标不明显啊，看不出来是 ide」. A title bar reads as
+ *  "an app" at a glance, which is all a 16px glyph has to do (issue #88). */
 export const IconCode = (p: IconProps = {}): JSX.Element =>
-  svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m9.5 10-2 2 2 2M14.5 10l2 2-2 2" /></>, p);
+  svg(<><rect x="2" y="4" width="20" height="16" rx="2" /><path d="M10 4v4" /><path d="M2 8h20" /><path d="M6 4v4" /></>, p);
 
 export const IconFile = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M6 2h8l4 4v16H6z" /><path d="M14 2v4h4" /></>, p);
