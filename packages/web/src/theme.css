@@ -3548,3 +3548,42 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   animation: bridge-busy 1.1s linear infinite;
 }
 @keyframes bridge-busy { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+
+/* #90 §3: the lower half while the split is still asking which tool goes there. Deliberately not a
+   `.stack-pane`: it is a virtual block in the second row, so "only the pair is on screen" (#79) keeps
+   holding. Same vertical metrics as a pane row — head bar, then a grid of the available tools. */
+.pane-picker {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+.pane-picker-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-content: flex-start;
+  padding: 14px;
+  overflow: auto;
+}
+.pane-picker-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 84px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-elevated, var(--bg-panel));
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pane-picker-item:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pane-picker-item svg { opacity: 0.9; }

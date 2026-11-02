@@ -27,7 +27,7 @@ import { ansi16, ansiExtended } from "./terminalPalette";
 import { resolveDark, themeConfig, useResolvedDark } from "./theme";
 import {
   IconArrowLeft, IconChevronRight, IconClose, IconFile, IconFolder, IconHome,
-  IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwap,
+  IconPanelLeft, IconPanelRight, IconPlus, IconRefresh, IconSplitRows, IconSwapVertical,
 } from "./Icons";
 
 interface Entry {
@@ -70,6 +70,10 @@ const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
 /** The top row's height, PER PAIR (#78 §2: 从「IDE+终端」切到「桌面+IDE」不能沿用上一个组合的高度).
  *  Keyed by the SORTED pair, so swapping which pane is on top keeps the ratio — the heights belong
  *  to the combination, the order is a separate preference. */
+/** #90 §3: the split in three states — a top row, and below it either a chosen pane or the question
+ *  "which tool goes here?". `bottom: null` is the picker; it is never written to localStorage. */
+type Split = { top: PaneId; bottom: PaneId | null };
+
 function readRatio(pair: string[] | null): number | null {
   if (!pair) return null;
   try {
@@ -160,12 +164,24 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   /* The split is a preference, the same in every session (like the widths), and it is only OFFERED
    * when there is something to split with — a phantom toggle is worse than none. */
   const wide = useWide();
-  const [pair, setPair] = useState<PaneId[] | null>(() => readPair());
+  /* #90 §3: the split is THREE cases, not a tuple of two — top row + (bottom row | nothing chosen
+   * yet). A tuple could not say "lower half is still asking", so turning the split on had to guess a
+   * partner for the operator (IDE over terminal, else files over terminal). `bottom: null` is that
+   * third case: a picker, never persisted — every time you open the split it asks, which is the
+   * point. `readPair`/`writePair` keep their existing on-disk shape ([top, bottom]). */
+  const [split, setSplit] = useState<Split | null>(() => {
+    const p = readPair();
+    return p ? { top: p[0] as PaneId, bottom: p[1] as PaneId } : null;
+  });
   /* #78 §4: a pane that stops being available (IDE upstream unset later, or a status that never
    * arrives) is PRUNED from the pair — and a one-pane pair is no split at all. No dead frames,
    * no phantom halves. */
   const avail = (id: string): boolean => PANES.find((x) => x.id === id)?.available(ide0) ?? false;
-  const livePair: PaneId[] | null = pair && pair.every(avail) ? pair : null;
+  /* A stored split whose panes are no longer available is no split at all (#78 §4: no dead frames).
+   * A picker is always "available" — it is the question, not a pane. */
+  const liveSplit: Split | null = split && avail(split.top) && (split.bottom === null || avail(split.bottom)) ? split : null;
+  const picking = Boolean(liveSplit && liveSplit.bottom === null);
+  const livePair: PaneId[] | null = liveSplit && liveSplit.bottom ? [liveSplit.top, liveSplit.bottom] : null;
   /* In split mode both panes are on screen, so the tab buttons mean "which one is on top". `files`
    * takes part like every other pane (2026-10-30: without an IDE it is the only partner a terminal
    * has), so there is no exception to carve out here any more. A phone never splits. */
@@ -174,7 +190,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * LEAVES THE PAIR ALONE (it is still there when you click a pane tab again). Rewriting the pair on
    * every head click instead — the first thing I tried — silently ate it: 📁 turned [terminal, ide]
    * into [files, terminal] and the IDE pair was gone. */
-  const splitActive = wide && Boolean(livePair?.includes(tab));
+  const splitActive = wide && Boolean(liveSplit && (tab === liveSplit.top || tab === liveSplit.bottom));
   /* Reopening the cockpit still lands on the operator's mode — but that decision now happens in the
    * HEAD, when the page loads and the panel's first tab is seeded from the stored pair (#80). Doing
    * it here instead is what made the head's 📁 button useless in a session with a stored split: the
@@ -186,6 +202,9 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
     if (!avail(tab)) setTab("files");
   }, [ide0, tab]);
   const stackRef = useRef<HTMLDivElement | null>(null);
+  /* The ratio belongs to the PAIR (a terminal-over-IDE height is not an IDE-over-terminal one). While
+   * the picker is up there is no pair yet, so it falls back to the global key — the height the operator
+   * dragged last time, which is the best answer available until they choose. */
   const ratioStorage = livePair
     ? `${RATIO_KEY}:${[...livePair].sort().join("+")}`
     : RATIO_KEY;
@@ -221,7 +240,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
    * (no `order`, no height) but was still released by `tab === id`, so it hung below the pair as a
    * THIRD row. Measured on a three-pane beta: pair ["ide","terminal"], three visible rows. */
   const paneShown = (id: PaneId): boolean =>
-    splitActive ? Boolean(livePair?.includes(id)) : tab === id;
+    splitActive ? Boolean(liveSplit && (id === liveSplit.top || id === liveSplit.bottom)) : tab === id;
 
   /* The row shell every pane gets: the section, its hidden flag, its order, its head. A pane's own
    * JSX is the argument — that is the whole extension point (#78 §1). */
@@ -231,62 +250,127 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       className={`stack-pane pane-${pane.id}`}
       data-pane={pane.id}
       hidden={!paneShown(pane.id)}
-      style={splitActive ? rowStyle(livePair?.[0] === pane.id) : { order: 0 }}
+      style={splitActive ? rowStyle(liveSplit?.top === pane.id) : { order: 0 }}
       aria-label={pane.label}
     >
-      {splitActive ? <PaneHead pane={pane} top={livePair?.[0] === pane.id} onSwap={swapPanes} /> : null}
+      {splitActive ? (
+        <PaneHead
+          pane={pane}
+          top={liveSplit?.top === pane.id}
+          canSwap={Boolean(livePair)}
+          onSwap={swapPanes}
+          onClose={() => closeRow(pane.id)}
+        />
+      ) : null}
       {body}
     </section>
   );
 
-  /* Tab click (issue #78 §3): put me on top. Already on top: nothing moves. In the pair below:
-   * swap. Not in the pair: I take the top slot and the old top becomes the bottom. Turning the
-   * split ON with no stored pair seeds [this, the first other available pane]. */
+  /* Tab click (issue #78 §3, revised by #90 §3): in a live split, "put me on top" — already on top is
+   * a no-op, in the bottom row it swaps, and a pane that is not in the split at all takes the top slot
+   * with the old top sliding down. While the PICKER is up (the split is asking which tool goes below),
+   * a click answers that question instead. Turning the split on from a tab no longer pairs it with a
+   * partner of our choosing: the top row is the tab you clicked and the lower half ASKS. */
   const chooseTool = (id: PaneId): void => {
     if (id === "files") { setTab("files"); return; }   // the browser is a view, not a row to swap into
     setTab(id);
-    const seed = splitSeed(ide0);
-    // The companion is the one the split would have seeded with, NOT "the next tab in the bar":
-    // after `files` joined the registry that would pair a terminal with the file browser on a machine
-    // that HAS an IDE, quietly changing what ⇅ and a tab click do.
-    const partner = seed?.find((x) => x !== id) ?? null;
-    if (!splitActive) {
-      // turning the split ON from a pane's tab puts THAT pane on top — the click said what it meant
-      if (wide && partner) { const next: PaneId[] = [id, partner]; setPair(next); writePair(next); }
+    if (!wide) return;
+    if (picking && liveSplit) {
+      if (id === liveSplit.top) return;               // already the top row — pick something else
+      const next: Split = { top: liveSplit.top, bottom: id };
+      setSplit(next);
+      writePair([next.top, id]);
       return;
     }
-    const live = livePair as PaneId[];
-    if (live[0] === id) return;   // already the top row — a no-op, not a shake
-    // #78 §3: in the bottom row it swaps; not in the pair at all it takes the top slot and the old
-    // top slides down. Same result either way — which is why there is no branch here.
-    const next: PaneId[] = [id, live[0]];
-    setPair(next);
-    writePair(next);
+    if (liveSplit && liveSplit.bottom) {
+      if (!splitActive) {
+        /* A split is stored but the panel is showing something else (📁). Clicking one of the split's
+         * panes only brings the split back — that is how the operator returns from the browser to the
+         * two rows she left, without anything being re-paired (#78). Clicking a THIRD pane puts it on
+         * top and the old top slides down. */
+        if (id === liveSplit.top || id === liveSplit.bottom) { setTab(id); return; }
+        const next: Split = { top: id, bottom: liveSplit.top };
+        setSplit(next);
+        writePair([next.top, liveSplit.top]);
+        return;
+      }
+      /* The split is on screen: #78 §3 — already on top is a no-op, the bottom row swaps, anything
+       * else takes the top slot and pushes the old top down. */
+      if (id === liveSplit.top) return;
+      if (id === liveSplit.bottom) {
+        const next: Split = { top: id, bottom: liveSplit.top };
+        setSplit(next);
+        writePair([next.top, liveSplit.top]);
+        return;
+      }
+      const next: Split = { top: id, bottom: liveSplit.top };
+      setSplit(next);
+      writePair([next.top, liveSplit.top]);
+      return;
+    }
+    // No split at all: this click opens one with THIS pane on top and the picker below.
+    startSplit(id);
   };
   const swapPanes = (): void => {
     if (!livePair) return;
-    const next = [livePair[1], livePair[0]];
-    setPair(next);
-    writePair(next);
+    const next: Split = { top: livePair[1], bottom: livePair[0] };
+    setSplit(next);
+    writePair([next.top, next.bottom as PaneId]);
+  };
+  /* #90 §3: opening a split asks what goes below, with the tab you were on staying on top. The
+   * question is NOT persisted — `writePair(null)` keeps a refresh from restoring a half-answered
+   * split, so reopening the cockpit lands on the single pane you were reading. */
+  const startSplit = (top: PaneId): void => {
+    const others = PANES.filter((p) => p.id !== top && p.available(ide0));
+    if (!wide || others.length === 0) return;   // nothing to put below — no phantom picker
+    setSplit({ top, bottom: null });
+    writePair(null);
+    setTab(top);
+  };
+  const pickBottom = (id: PaneId): void => {
+    if (!liveSplit) return;
+    if (id === liveSplit.top) return;
+    const next: Split = { top: liveSplit.top, bottom: id };
+    setSplit(next);
+    writePair([next.top, id]);
+    setTab(next.top);
+  };
+  const cancelPicker = (): void => {
+    setSplit(null);
+    writePair(null);
+  };
+  /* #90 §2: "I don't want THIS row". Whichever × is clicked, the other row takes the whole height and
+   * becomes the tab — there is no "close the top" and "close the bottom", because the operator's
+   * thought is only ever 「我只想看这个」. Local exit, alongside the tab bar's whole-split switch. */
+  const closeRow = (id: PaneId): void => {
+    if (!liveSplit) return;
+    const keep = liveSplit.top === id ? liveSplit.bottom : liveSplit.top;
+    if (!keep) { cancelPicker(); return; }
+    setSplit(null);
+    writePair(null);
+    setTab(keep);
   };
   const toggleSplit = (): void => {
-    if (livePair) {
+    if (liveSplit) {
       // closing the split shows the pane that WAS on top — the row the operator was reading.
-      const top = livePair[0];
-      setPair(null);
+      const top = liveSplit.top;
+      setSplit(null);
       writePair(null);
       setTab(top);
       return;
     }
-    // The seed is DETERMINISTIC, not "whatever tab you happened to be on" (panes.ts::splitSeed):
-    // IDE over terminal when there is an IDE, FILES over terminal when there is not — otherwise a
-    // machine without code-server had no split at all, which is the point of this change.
-    const seed = splitSeed(ide0);
-    if (!wide || !seed) return;   // nothing to split with — no phantom toggle
-    setPair(seed);
-    writePair(seed);
-    setTab(seed[0]);
+    // The top row is the tool the operator is looking at; the lower half asks (never guessed).
+    startSplit(tab);
   };
+  /* Esc answers the picker's question with "nothing" (#90 §3). Bound only while it is up, so the
+   * panel does not swallow Esc the rest of the time. */
+  useEffect(() => {
+    if (!picking) return;
+    const onKey = (e: KeyboardEvent): void => { if (e.key === "Escape") { e.stopPropagation(); cancelPicker(); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [picking, cancelPicker]);
+
   const [treeFolded, setTreeFolded] = useState<boolean>(() => readFlag(FOLD_TREE_KEY, false));
   const [previewFolded, setPreviewFolded] = useState<boolean>(() => readFlag(FOLD_PREVIEW_KEY, false));
 
@@ -493,8 +577,8 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             than no control. */}
         {PANES.map((pane) => {
           if (!pane.available(ide0)) return null;
-          const isTop = splitActive && livePair?.[0] === pane.id;
-          const inPair = splitActive && Boolean(livePair?.includes(pane.id));
+          const isTop = splitActive && liveSplit?.top === pane.id;
+          const inPair = splitActive && Boolean(liveSplit && (liveSplit.top === pane.id || liveSplit.bottom === pane.id));
           const title = splitActive
             ? (isTop ? `${pane.label} 已经在上半屏` : inPair ? `把 ${pane.label} 放到上面` : `用 ${pane.label} 替换上半屏`)
             : pane.id === "ide" && ide0
@@ -512,7 +596,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
             </button>
           );
         })}
-        {wide && splitSeed(ide0) ? (
+        {wide && PANES.some((p) => p.id !== tab && p.available(ide0)) ? (
           <button
             className={`icon-btn ${splitActive ? "on" : ""}`}
             title={splitActive ? "取消分屏（一次只看一个）" : "上下分屏：两块 pane 同时看"}
@@ -572,6 +656,40 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
           with: CSS `order` is <integer>, 1.5 was a discarded declaration, the divider fell back to
           order 0 and painted ABOVE both panes (issue #78; it still dragged, which is the nasty part).
           Top row = 1, divider = 2, bottom row = 3: whole integers, always between. */}
+      {/* #90 §3: the lower half while it is still ASKING. It is a virtual third block — deliberately
+          NOT a `stack-pane` and not in the registry's pane list — so the "only the pair is on screen"
+          rule (#79) keeps holding: the picker takes the bottom row's slot and nothing else. Its
+          height rules are the bottom row's (flex: 1), which is what keeps the divider where it is. */}
+      {splitActive && picking ? (
+        <div className="pane-picker" style={rowStyle(false)} aria-label="choose the lower pane">
+          <div className="split-head">
+            <span>下面放什么</span>
+            <span className="head-spacer" />
+            <button
+              className="icon-btn"
+              title="取消分屏"
+              aria-label="close the picker"
+              onClick={cancelPicker}
+            >
+              <IconClose size={13} />
+            </button>
+          </div>
+          <div className="pane-picker-grid">
+            {PANES.filter((p) => p.id !== liveSplit?.top && p.available(ide0)).map((p) => (
+              <button
+                key={p.id}
+                className="pane-picker-item"
+                aria-label={`put ${p.label} below`}
+                onClick={() => pickBottom(p.id)}
+              >
+                {p.icon({ size: 20 })}
+                <span>{p.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {splitActive ? <div className="row-divider" style={dividerStyle}>{rows.handle}</div> : null}
       </div>
     </aside>
@@ -581,18 +699,35 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
 /** One row's title bar in split mode: the pane's name, and a ⇅ that swaps the two rows. It exists
  *  because a bare divider reads as a border — a label that says what the rows are is the minimum
  *  affordance for "this line between you and the other pane is draggable" (issue #78 §1). */
-function PaneHead({ pane, top, onSwap }: { pane: PaneSpec; top: boolean; onSwap: () => void }): JSX.Element {
+function PaneHead({ pane, top, canSwap, onSwap, onClose }: {
+  pane: PaneSpec; top: boolean; canSwap: boolean; onSwap: () => void; onClose: () => void;
+}): JSX.Element {
   return (
     <div className="split-head">
       {pane.icon({ size: 13 })} <span>{pane.label}</span>
       <span className="head-spacer" />
+      {/* ⇅ — vertical on purpose (#90 §1): these rows are stacked, so "put me above/below the other"
+          must point up and down. While the picker is up there is nothing to swap with, so the button
+          is not offered at all rather than being a no-op. */}
+      {canSwap ? (
+        <button
+          className="icon-btn"
+          title={top ? `把 ${pane.label} 移到下面` : `把 ${pane.label} 移到上面`}
+          aria-label={`move the ${pane.label} pane`}
+          onClick={onSwap}
+        >
+          <IconSwapVertical size={14} />
+        </button>
+      ) : null}
+      {/* × — "I don't want this row" (#90 §2). The other row takes the whole height; which × you
+          pressed does not change the outcome, because the thought is only ever 「我只想看这个」. */}
       <button
         className="icon-btn"
-        title={top ? `把 ${pane.label} 移到下面` : `把 ${pane.label} 移到上面`}
-        aria-label={`move the ${pane.label} pane`}
-        onClick={onSwap}
+        title={`关掉 ${pane.label} 这一行`}
+        aria-label={`close the ${pane.label} pane`}
+        onClick={onClose}
       >
-        <IconSwap size={14} />
+        <IconClose size={13} />
       </button>
     </div>
   );
