@@ -111,7 +111,9 @@
     "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs",
     "live-speed-sweep": "node scripts/qa/live-speed-sweep.mjs",
     "stream-tokens": "tsx scripts/qa/stream-tokens.mts",
-    "main-bot-sweep": "node scripts/qa/main-bot-sweep.mjs"
+    "main-bot-sweep": "node scripts/qa/main-bot-sweep.mjs",
+    "topology-units": "tsx scripts/qa/topology-units.mts",
+    "topology-edges": "tsx scripts/qa/topology-edges.mts"
   },
   "engines": {
     "node": ">=22.5"

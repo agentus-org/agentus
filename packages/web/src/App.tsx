@@ -7,6 +7,7 @@ import { noteModelUse, useModelUsage } from "./modelUsage";
 import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, type SessionView, type SetupPick, type StatusNote } from "./state";
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
+import { TopologyBoard } from "./TopologyBoard";
 import { clockHM, messageTime, relTime, stamp } from "./time";
 import { durationWords, turnPulseState } from "./turn-state";
 import { backendChoices, markOf } from "./agents";
@@ -49,7 +50,7 @@ import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
 import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldToTalk } from "./holdToTalk";
 import {
-  IconActivity, IconArrowDown, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
+  IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
   IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
   IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
   IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar,
@@ -98,6 +99,12 @@ export function App(): JSX.Element {
   // Settings is a view, not a modal: it replaces the chat area (hermes-studio's shape),
   // so a half-read conversation is still there when the operator comes back.
   const [settings, setSettings] = useState(false);
+  // 会话拓扑面板（2026-11-03）：和设置一样是**替换主区的视图**，不是浮层 —— 但会话本身要能
+  // 在它上面浮起来（操作者：「点开打开会话页…这个会话页就是一个弹窗，悬浮的」），所以
+  // `topoWin` 是「浮窗里正在显示哪个会话」。同一时刻只挂一个 `<Main>`：面板占主区时普通会话页
+  // 卸载，浮窗里那份就是唯一的那份（两个 Main 会各自挂一套面板/终端/WSS 订阅）。
+  const [topo, setTopo] = useState(false);
+  const [topoWin, setTopoWin] = useState<string | null>(null);
   // The speaker menu's 「自定义节拍…」 needs to OPEN settings, and it lives four components deep
   // (App → Main → ChatPane → head). An event beats threading a prop through three layers for one
   // global action — and the menu closes itself on click either way.
@@ -105,6 +112,12 @@ export function App(): JSX.Element {
     const open = (): void => { setSettings(true); setDrawer(false); };
     window.addEventListener("agentus:open-settings", open);
     return () => window.removeEventListener("agentus:open-settings", open);
+  }, []);
+  // 同一个模式给拓扑面板用：入口按钮在 chat head 里（它拿不到 App 的 state），一条事件最短。
+  useEffect(() => {
+    const open = (): void => { setTopo(true); setTopoWin(null); setDrawer(false); };
+    window.addEventListener("agentus:open-topology", open);
+    return () => window.removeEventListener("agentus:open-topology", open);
   }, []);
 
   // ---- the two side panes, both resizable and both the operator's to size -----------------
@@ -136,6 +149,9 @@ export function App(): JSX.Element {
   // on a 390px viewport — without this, tapping a dead slot in the drawer looked like nothing happened.
   useEffect(() => { if (snap.blocked) setDrawer(false); }, [snap.blocked]);
   useEscape(drawer, () => setDrawer(false));
+  // Esc 的次序就是离开的次序：先关浮窗（回到拓扑），再按一次才退出拓扑（回到会话页）。
+  useEscape(topoWin !== null, () => setTopoWin(null));
+  useEscape(topo && topoWin === null, () => setTopo(false));
   // The server's palette is the source of truth; the localStorage copy only made the
   // first frame right. Adopted once the operator is in (the endpoint needs a session).
   useEffect(() => {
@@ -164,14 +180,54 @@ export function App(): JSX.Element {
         railWidth={rail.width}
         railHandle={rail.handle}
       />
-      <Main
-        onMenu={onMenu}
-        settingsOpen={settings}
-        onCloseSettings={() => setSettings(false)}
-        onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
-        panelWidth={panel.width}
-        panelHandle={panel.handle}
-      />
+      {topo ? (
+        <TopologyBoard
+          onClose={() => { setTopo(false); setTopoWin(null); }}
+          onOpen={(id) => { cockpit.setActive(id); setTopoWin(id); }}
+          openId={topoWin}
+        />
+      ) : (
+        <Main
+          onMenu={onMenu}
+          settingsOpen={settings}
+          onCloseSettings={() => setSettings(false)}
+          onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
+          panelWidth={panel.width}
+          panelHandle={panel.handle}
+        />
+      )}
+      {/* 会话浮窗：拓扑在上面点开一个会话，真正的会话页浮在画布上 —— 不是只读预览，功能一模一样
+          （composer、工具卡、审批、模型/档位、语音）。它显示的就是 `activeId` 那一条，因为
+          `onOpen` 先 setActive 再开窗：两个视图永远说同一个会话，不会各显示一版。 */}
+      {topo && topoWin ? (
+        <div className="topo-window" role="dialog" aria-label="会话窗口" data-topo-window-frame>
+          <div className="topo-window-head">
+            <button type="button" className="icon-btn" title="回到拓扑（Esc）" aria-label="回到拓扑" data-topo-window-back onClick={() => setTopoWin(null)}>
+              <IconArrowLeft size={14} />
+            </button>
+            <span className="topo-window-title">{cockpit.byId.get(topoWin)?.info.title ?? topoWin.slice(0, 8)}</span>
+            <button
+              type="button"
+              className="topo-window-dock"
+              title="在整页里打开这个会话（关掉拓扑）"
+              onClick={() => { setTopo(false); setTopoWin(null); }}
+            >整页打开</button>
+            <button type="button" className="icon-btn" title="关闭（Esc）" aria-label="关闭会话窗口" onClick={() => setTopoWin(null)}>
+              <IconClose size={15} />
+            </button>
+          </div>
+          <div className="topo-window-body">
+            <Main
+              onMenu={onMenu}
+              settingsOpen={false}
+              onCloseSettings={() => undefined}
+              onPermClick={() => { if (pendingPerm) setPermReopened(pendingPerm.requestId); }}
+              panelWidth={panel.width}
+              panelHandle={panel.handle}
+            />
+          </div>
+        </div>
+      ) : null}
       {modal && <StartPage cwd={modal.cwd} onClose={() => setModal(false)} />}
       {/* Rendered here, not in the rail: the operator may have triggered the resume from the
           phone's bottom sheet and closed it, and this must still be on screen. */}
@@ -1587,7 +1643,9 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
   speak: SessionSpeakState;
 }): JSX.Element {
   const info = v.info;
-  const wsName = (info.workspace || info.cwd).split("/").filter(Boolean).pop() ?? info.cwd;
+  // 会话的 `workspace`/`cwd` 在「还没从服务端拿到这一条」时是空的（点击一个尚未 load 的会话、
+  // 或在断线时恢复），拼字符串会抛 TypeError 把整个 App 打成白屏。兜一个空串就够：显示名回落到 id。
+  const wsName = (info.workspace || info.cwd || "").split("/").filter(Boolean).pop() ?? info.cwd;
   // 通话按钮：短按 = 原来的电话，**长按 480ms** = Tus 模式。长按在触摸上会和滚动/长按选择打架，
   // 所以按住期间只认「没动」：指针移出 8px 就当场取消，宁可什么都没发生，也不能让人按着滚动时
   // 突然弹出一个全屏页面。
@@ -1758,6 +1816,18 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
           tool row — icon buttons that belong together should read as one strip, not
           as separate stops. */}
       <span className="head-actions">
+        {/* 会话拓扑（2026-11-03）：这个按钮问的是「别的会话呢」，不是「这个会话怎么用」——
+            所以它在 head 的簇里排第一，靠左，紧挨着身份。入口走事件：App 才持有那个 view。 */}
+        <button
+          type="button"
+          className="icon-btn topo-entry"
+          title="会话拓扑 —— 每个工作空间有哪些会话、谁把活交给了谁"
+          aria-label="打开会话拓扑"
+          data-topo-entry
+          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-topology"))}
+        >
+          <IconFork size={14} />
+        </button>
         <button
           className={`icon-btn call-entry ${call ? "on" : ""}${armed ? " press-armed" : ""}`}
           title="语音通话 —— 像打电话一样跟这个会话说话（长按 = Tus 模式：一张会动的脸 + 会话记录）"

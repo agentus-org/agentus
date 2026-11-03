@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { BackendId, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
+import type { BackendId, EdgeKind, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 import { normalizeItems } from "../plan/plan.js";
 import { DEFAULT_NATIVE_PLAN_SOURCE } from "../acp/backends.js";
@@ -393,6 +393,16 @@ function rowToPlan(r: RawPlanRow): PlanSnapshot {
   };
 }
 
+/** 一行关系（`edges` 表）。`recordEdge` 写、`listEdges` 读、`/api/topology` 出。 */
+export interface EdgeRow {
+  origin: string;
+  target: string;
+  kind: EdgeKind;
+  n: number;
+  firstAt: number;
+  lastAt: number;
+}
+
 export class Store {
   #db: DatabaseSync;
   /** Kept for the one-time fold's backup file (see #foldStreamedChunks). */
@@ -457,6 +467,27 @@ export class Store {
         items text not null, title text, explanation text, source text not null,
         terminal text, updated_at integer not null
       );
+      -- 会话之间的「谁把活交给了谁」（2026-11-03 会话拓扑面板）。每次从一个会话投递到另一个
+      -- 会话都写一行，按 (origin,target,kind) 聚合成一条边 —— 不是一消息一行，因为面板要的是
+      -- 「他们之间有几条线」而不是「发过几句话」。
+      --
+      -- 为什么单独一张表：关系本来就存在（目标会话的 user 消息 payload 里有 origin），但读它要
+      -- 全表扫 messages（实测 125k 行 / 1.3s）。写侧是 O(1) 的 upsert，读侧是一次索引扫描。
+      --
+      -- kind: 'handoff'  = 输入框 @ 转交（/api/bridge，可能顺手建了新会话）
+      --       'dispatch' = session send --reply-on-done 派活
+      --       'spawn'    = 某个会话用 cockpit create 建了新会话（没有消息，只有这件事）
+      -- 'background' 不是会话，永远不写（后台任务完成回推的 origin 是它）。
+      create table if not exists edges (
+        origin text not null,
+        target text not null,
+        kind text not null,
+        n integer not null default 1,
+        first_at integer not null,
+        last_at integer not null,
+        primary key (origin, target, kind)
+      );
+      create index if not exists idx_edges_last on edges (last_at);
       -- 语音通话模式（issue #48）. The two boundaries must SURVIVE a reload, an idle-reap and a
       -- cold start: if the exit boundary were only in memory, a page refresh after hanging up would
       -- leave the model believing it is still on a call (the transcript's last turns all sound like
@@ -589,6 +620,40 @@ export class Store {
     // when it was last talked to and not when its agent was last resumed.
     this.#dedupeReplayedRows();
     if (!hadActivityClock) this.#backfillActivity();
+    this.#backfillEdges();
+  }
+
+  /**
+   * 一次性把「关系」从转录里抽出来，写进 `edges`（会话拓扑面板的数据源）。
+   *
+   * 关系本来就存在：投递到另一个会话的 user 消息 payload 里带 `origin {sessionId,title}`。
+   * 但读它要全表扫 messages（实测 125k 行 / 1.3 s），所以这里扫一次，之后写入就是 O(1) 的 upsert。
+   *
+   * 历史行分不出 handoff 与 dispatch（`kind` 是这一版才有的），只能用桥接信封的固定开头来判：
+   * `[跨工作空间转交]` 是 `/api/bridge` 拼的那句，别的都是 `send` 派过去的。这是**历史行**的
+   * 最佳解释，不是新写入的规则 —— 新行由调用方显式给 kind。
+   *
+   * 没有 `origin` 的（操作者自己建的会话）不产生边：不猜。
+   */
+  #backfillEdges(): void {
+    if (this.#repairVersion("edges", 0) >= 1) return;
+    const started = Date.now();
+    const info = this.#db.prepare(`
+      insert into edges (origin, target, kind, n, first_at, last_at)
+      select json_extract(payload, '$.origin.sessionId'),
+             session_id,
+             case when json_extract(payload, '$.text') like '[跨工作空间转交]%' then 'handoff' else 'dispatch' end,
+             count(*), min(created_at), max(created_at)
+        from messages
+       where kind = 'user'
+         and json_extract(payload, '$.origin.sessionId') is not null
+         and json_extract(payload, '$.origin.sessionId') != 'background'
+         and json_extract(payload, '$.origin.sessionId') != session_id
+       group by 1, 2, 3
+      on conflict (origin, target, kind) do nothing
+    `).run();
+    this.#setRepairVersion("edges", 1);
+    console.log(`[agentus] edges backfilled: ${Number(info.changes ?? 0)} rows in ${Date.now() - started} ms`);
   }
 
   /**
@@ -1271,6 +1336,33 @@ export class Store {
       .run(seq, m.sessionId, m.kind, JSON.stringify(m.payload), m.toolCallId ?? null, null, m.createdAt);
     return { ...m, seq };
   }
+
+  /**
+   * 记一条会话之间的关系（谁把活交给了谁），按 (origin,target,kind) 累加。
+   *
+   * 幂等、O(1)，可以每条消息调用一次：`n` 是「他们之间来回了多少次」，`last_at` 是最后一次。
+   * `origin` 必须是真实会话 id —— `background`（后台任务回推）不是会话，调用方就不该传进来。
+   */
+  recordEdge(origin: string, target: string, kind: EdgeKind, at = Date.now()): void {
+    if (!origin || !target || origin === target || origin === "background") return;
+    this.#db
+      .prepare(
+        `insert into edges (origin, target, kind, n, first_at, last_at)
+         values (?,?,?,1,?,?)
+         on conflict (origin, target, kind)
+         do update set n = n + 1, last_at = max(last_at, excluded.last_at)`,
+      )
+      .run(origin, target, kind, at, at);
+  }
+
+  /** 时间窗内的边（`since` 按 last_at 过滤：一条 3 天前建、今天还在用的关系仍在窗口里）。 */
+  listEdges(since: number): EdgeRow[] {
+    return (this.#db
+      .prepare("select origin, target, kind, n, first_at, last_at from edges where last_at >= ? order by last_at desc")
+      .all(since) as { origin: string; target: string; kind: string; n: number; first_at: number; last_at: number }[])
+      .map((r) => ({ origin: r.origin, target: r.target, kind: r.kind as EdgeKind, n: r.n, firstAt: r.first_at, lastAt: r.last_at }));
+  }
+
 
   /**
    * 换掉一行已有消息的 payload（seq 与 created_at 不动）。
