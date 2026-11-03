@@ -1825,7 +1825,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
         // Same backend as the session the operator is standing in: they are delegating to the same
         // kind of agent in a different tree, not asking for a different runtime.
-        const info = await mgr.create(fromRow.backend, cwd, bridgeTitle(fromRow.title, fromRow.id));
+        const info = await mgr.create(fromRow.backend, cwd, bridgeTitle(fromRow.title, fromRow.id, userText));
         targetId = info.id;
         targetCwd = cwd;
         created = true;
