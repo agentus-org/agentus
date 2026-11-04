@@ -139,6 +139,57 @@ export interface AvailableCommandView {
   description?: string;
 }
 
+/** 会话之间的关系种类（会话拓扑面板，2026-11-03）。
+ *
+ *  'handoff'  = 输入框 `@` 转交（`/api/bridge`，可能顺手在目标工作空间建了新会话）
+ *  'dispatch' = `session send --reply-on-done` 派活
+ *  'spawn'    = 某个会话用 cockpit create 建了新会话（没有消息，只有这件事）
+ *
+ *  三种都画成边；区别只在悬停说明与「它是不是一次性的」。 */
+export type EdgeKind = "handoff" | "dispatch" | "spawn";
+
+/** 一条边：origin 把活交给了 target，来回 `n` 次。 */
+export interface TopologyEdge {
+  from: string;
+  to: string;
+  kind: EdgeKind;
+  n: number;
+  firstAt: number;
+  lastAt: number;
+  /** 此刻还在等对方的回合结束（来自内存里的 #turnReplies，不落库 ⇒ 结算即消失）。 */
+  live?: boolean;
+}
+
+/** 拓扑面板的一个节点。刻意复用它需要的几个字段，而不是塞一整个 SessionInfo：
+ *  面板画的是「这个会话是谁、在哪个空间、什么状态、还剩几步」，不是一整套 ACP 能力。 */
+export interface TopologyNode {
+  id: string;
+  title: string;
+  backend: BackendId;
+  /** 工作空间（没设 workspace 时就是 cwd）—— 分区就是这么来的。 */
+  workspace: string;
+  role: "main" | null;
+  status: SessionStatus;
+  cold: boolean;
+  archived: boolean;
+  /** 最后一次有动静（消息时间；没有消息时是创建时间）。 */
+  lastAt: number;
+  /** createdAt：窗口内「新出现的会话」按它排。 */
+  createdAt: number;
+  plan?: { done: number; total: number } | null;
+  /** 它正等着谁的回合结束（live-only；来自 `SessionInfo.dispatched` 的反向索引）。 */
+  waitingOn?: string[];
+  /** 它派给谁、还在等（live-only）。 */
+  dispatched?: string[];
+}
+
+export interface TopologyView {
+  /** 服务端实际用的时间窗下界（ms）。 */
+  since: number;
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+}
+
 export interface UsageView {
   used: number;
   size: number;

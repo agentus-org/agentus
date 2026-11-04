@@ -70,9 +70,19 @@ export function buildBridgeEnvelope(input: BridgeEnvelopeInput): string {
  * 不给名字的话，`#autoTitleFrom` 会拿**信封的第一段**当标题，rail 上就变成一整句
  * 「[跨工作空间转交] 这条消息由操作员在另一个会话里用 @ 转过来的…」—— 一封说明书
  * 占了一行。给个 `← 排查问题` 就够了：认识那边在干什么，也知道它是被谁叫来的。
+ *
+ * 有正文时用**正文的第一行**：派活新建的会话，它叫什么该由「这封信让它干什么」决定。
+ * 拿发起方的标题当初生名会撞出两个同名会话，而且那个名字跟它的活没关系
+ * （2026-11-03 实测：一个 tunnel 活儿的子会话叫「← donvito/agent-monitor看下这个项目…」）。
  */
-export function bridgeTitle(fromTitle: string | null | undefined, fromId: string): string {
-  const named = (fromTitle ?? "").trim() || fromId;
+export function bridgeTitle(fromTitle: string | null | undefined, fromId: string, userText?: string | null): string {
+  const brief = (userText ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) ?? "";
+  // 只有一行的信封标题（【派活：…】、# 标题、> 引用）去掉外壳再当名字。
+  const cleaned = brief.replace(/^[【\[#>\-–—\s]+/, "").replace(/[】\]]+$/, "").trim();
+  const named = cleaned || (fromTitle ?? "").trim() || fromId;
   const cut = named.length > 40 ? `${named.slice(0, 39)}…` : named;
   return `← ${cut}`;
 }

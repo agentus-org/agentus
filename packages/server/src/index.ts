@@ -38,7 +38,9 @@ import {
 } from "./session-speak.js";
 import * as auth from "./auth.js";
 import { NotifyCenter } from "./notify/center.js";
-import type { BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo } from "../../shared/src/index.js";
+import type {
+  BackendId, ClientCommand, PermissionDecision, PromptAttachment, ServerEvent, SessionInfo, TopologyEdge, TopologyNode, TopologyView,
+} from "../../shared/src/index.js";
 import {
   COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, MESSAGE_ROLES, capabilities, isMessageRole,
   listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
@@ -272,6 +274,72 @@ const sessionsEvent = (): ServerEvent => ({
   // STATE, and a page that connects or refreshes after the agent last spoke still has to be current.
   background: mgr.backgroundSnapshots(),
 });
+
+const TOPO_WINDOW_DEFAULT = 3 * 86400_000;
+
+/**
+ * 会话拓扑（面板的数据面）：窗口内的会话 + 它们之间的关系。
+ *
+ * 三个刻意的取舍：
+ *
+ *  · **关系只来自库里那张 `edges` 表**，而 edges 只由真实投递与 `cockpit create` 写入 —— 不按
+ *    「时间相近」「同目录」「标题像」推父子。图上一条线就是一个事实。
+ *  · **窗口按「最后一次动静」**（`lastAt`），不是创建时间：一个 5 天前开、今天还在用的会话必须
+ *    留在 3 天窗里，否则面板会在它最活跃的时候把它藏掉。
+ *  · **`system` 会话不出现**（工作播报的观察员是驾驶舱自己的，不是操作者的活），和 rail 一致。
+ */
+function topologyView(since: number, includeArchived: boolean): TopologyView {
+  const rows: SessionInfo[] = includeArchived
+    ? [...mgr.list(), ...mgr.cold(), ...mgr.archived()]
+    : [...mgr.list(), ...mgr.cold()];
+  const nodes: TopologyNode[] = [];
+  const seen = new Set<string>();
+  const waitingOn = new Map<string, string[]>();
+  // 「谁在等我」：dispatched 是 live-only 的（内存登记），反过来正好是节点上的 ↑ 箭头。
+  for (const s of mgr.list()) {
+    for (const target of s.dispatched ?? []) {
+      waitingOn.set(target, [...(waitingOn.get(target) ?? []), s.id]);
+    }
+  }
+  for (const s of rows) {
+    if (s.system || seen.has(s.id)) continue;
+    seen.add(s.id);
+    const lastAt = s.lastAt ?? s.createdAt;
+    if (lastAt < since) continue;
+    const plan = store.getPlan(s.id);
+    const done = plan ? plan.items.filter((i) => i.status === "completed").length : 0;
+    nodes.push({
+      id: s.id,
+      title: s.title,
+      backend: s.backend,
+      workspace: s.workspace || s.cwd,
+      role: s.role === "main" ? "main" : null,
+      status: s.status,
+      cold: Boolean(s.cold),
+      archived: Boolean(s.archivedAt),
+      lastAt,
+      createdAt: s.createdAt,
+      plan: plan && plan.items.length ? { done, total: plan.items.length } : null,
+      ...(waitingOn.has(s.id) ? { waitingOn: waitingOn.get(s.id) } : {}),
+      ...(s.dispatched?.length ? { dispatched: s.dispatched } : {}),
+    });
+  }
+  const ids = new Set(nodes.map((n) => n.id));
+  const edges: TopologyEdge[] = store
+    .listEdges(since)
+    .filter((e) => ids.has(e.origin) && ids.has(e.target))
+    .map((e) => ({
+      from: e.origin,
+      to: e.target,
+      kind: e.kind,
+      n: e.n,
+      firstAt: e.firstAt,
+      lastAt: e.lastAt,
+      // 「此刻还在跑」只认内存里那批登记：这是唯一不会被陈旧数据骗的来源。
+      ...(nodes.some((n) => n.id === e.origin && n.dispatched?.includes(e.target)) ? { live: true } : {}),
+    }));
+  return { since, nodes, edges };
+}
 
 // 工作播报 (issue #16): one long-lived observer per watched session, in its own scratch home under
 // `~/.hermes/agentus/observers/<sid>` — never the observed session's cwd (an observer that can write
@@ -924,6 +992,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const turn = mgr.prompt(to, message, [], {
             interrupt: wantInterrupt,
             origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
+            // 派活落一条边（拓扑面板）；操作者自己从页面发的普通消息 caller 为空，不记。
+            originKind: caller ? "dispatch" : undefined,
             ...(wantReply ? { onTurnStarted: (seq: number) => onTurnStarted?.(seq) } : {}),
           });
           if (wantReply) {
@@ -993,6 +1063,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         try {
           const info = await mgr.create(backend, cwd, body.title ? String(body.title) : undefined);
+          // 谁建的这条会话：拓扑面板靠它把「agent 自己开的子会话」挂到父节点下。操作者用 `+`
+          // 建的走 `/api/sessions`，那里没有 caller，也就没有边 —— 不猜。
+          if (caller) store.recordEdge(caller, info.id, "spawn");
           emit(sessionsEvent());
           // The same row shape `session show` answers with, so a caller can use the new id at once.
           return send(res, 201, { schema_version: COCKPIT_SCHEMA_VERSION, session: summarize(info) });
@@ -1486,6 +1559,17 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       // after the request was raised never saw the event, and would otherwise show nothing.
       return send(res, 200, { live: mgr.list(), cold: mgr.cold(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
     }
+    // 会话拓扑面板（2026-11-03）：窗口内的会话 + 它们之间的派活/转交关系。只读，operator 认证。
+    // `since` 缺省是 3 天（操作者定下的默认窗口）；`archived=1` 才把已归档的会话也画进来。
+    if (url.pathname === "/api/topology" && req.method === "GET") {
+      const raw = Number(url.searchParams.get("since") ?? 0);
+      const since = Number.isFinite(raw) && raw > 0 ? raw : Date.now() - TOPO_WINDOW_DEFAULT;
+      try {
+        return send(res, 200, topologyView(since, url.searchParams.get("archived") === "1"));
+      } catch (e) {
+        return send(res, 500, { error: String((e as Error)?.message ?? e) });
+      }
+    }
     // The session's plan object — what the cockpit's card renders. STATE too, and the one piece of
     // it that cannot be replayed: after the agent process died there are no frames left to read,
     // and this row is the only thing that still knows the plan (design-plan-service.md §1/§8).
@@ -1745,7 +1829,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
         // Same backend as the session the operator is standing in: they are delegating to the same
         // kind of agent in a different tree, not asking for a different runtime.
-        const info = await mgr.create(fromRow.backend, cwd, bridgeTitle(fromRow.title, fromRow.id));
+        const info = await mgr.create(fromRow.backend, cwd, bridgeTitle(fromRow.title, fromRow.id, userText));
         targetId = info.id;
         targetCwd = cwd;
         created = true;
@@ -1812,6 +1896,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const turn = mgr.prompt(targetId, envelope, [], {
           interrupt: true,
           origin: { sessionId: fromRow.id, title: fromRow.title ?? null },
+          originKind: created ? "spawn" : "handoff",
           onTurnStarted: () => markStarted?.(),
         });
         const ok = await Promise.race([

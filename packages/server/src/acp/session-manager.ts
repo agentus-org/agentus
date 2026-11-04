@@ -1611,6 +1611,12 @@ export class SessionManager {
        */
       origin?: { sessionId: string; title?: string | null };
       /**
+       * 这次投递在「会话关系图」上算哪种边。**只有真正的跨会话投递才给**（派活 / @ 转交）：
+       * 完成回推（`#queueOrWakeCompletion`）也是 prompt 带 origin，但它是回报、不是交付，
+       * 记成边会让图上出现一堆来回的环；不传 = 不记。
+       */
+      originKind?: "handoff" | "dispatch" | "spawn";
+      /**
        * Client-generated id of the prompt that is being sent (issue #26). Echoed on the `turn-start`
        * this call causes, so a page can prove its frame landed instead of assuming `ws.send()` did
        * something. Opaque to the server: it comes back unchanged, it is never stored.
@@ -1712,6 +1718,12 @@ export class SessionManager {
       createdAt: Date.now(),
     });
     this.#touch(s, msg.createdAt);
+    // 关系图的数据源（会话拓扑面板）：只有真正的跨会话投递才记边，完成回推不算 —— 见
+    // `originKind` 的说明。写在这里而不是 append 里，是因为 prompt() 是唯一知道「这是投递」的地方。
+    if (opts.origin?.sessionId && opts.originKind) {
+      try { this.#store.recordEdge(opts.origin.sessionId, sessionId, opts.originKind, msg.createdAt); }
+      catch (e) { console.error(`[agentus] recordEdge failed: ${String((e as Error)?.message ?? e)}`); }
+    }
     this.#emit({ t: "message", message: msg });
     // A brand-new slot is called "<backend> @ <dir>" until something better exists, and the
     // moment the operator asks something that placeholder is plainly wrong. Name it now,

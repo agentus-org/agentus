@@ -120,6 +120,15 @@ const HERE = "/Users/liang/Workspace/agent-dev-workspace/";   // trailing slash 
   check("no title yet → fall back to the id, not to an empty arrow", bridgeTitle(null, "aaaaaaaa") === "← aaaaaaaa");
   check("a very long title is cut, so the rail row stays a row", bridgeTitle("x".repeat(80), "aaaaaaaa").length === 42,
     String(bridgeTitle("x".repeat(80), "aaaaaaaa").length));
+  // 派活新建的会话：名字取**这封信让它干什么**的第一行，不是发起方的标题。
+  check("a dispatched child is named after the brief, not the parent",
+    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Agentus dev 实例打通异地访问】\n\n目标…") === "← 派活：给 Agentus dev 实例打通异地访问",
+    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Agentus dev 实例打通异地访问】\n\n目标…"));
+  check("a leading markdown heading is unwrapped too",
+    bridgeTitle("旧标题", "aaaaaaaa", "\n\n# 修一下登录超时\n细节") === "← 修一下登录超时",
+    bridgeTitle("旧标题", "aaaaaaaa", "\n\n# 修一下登录超时\n细节"));
+  check("an empty brief falls back to the parent title",
+    bridgeTitle("旧标题", "aaaaaaaa", "   ") === "← 旧标题");
 }
 
 // 10. 信封里的示例只读**最后一条 agent 回复**，并且把"要更多自己按需取"写清楚。
