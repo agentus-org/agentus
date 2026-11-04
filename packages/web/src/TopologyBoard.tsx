@@ -70,6 +70,23 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [target, setTarget] = useState<DispatchTarget | null>(null);
   const [text, setText] = useState("");
+  /* Esc 在拓扑里是三层的：派活面板 → 会话浮窗 → 拓扑本身。App 的两层已经有了，面板这一层原先
+     漏了 —— 开着面板按 Esc 会连着整个拓扑一起退出去，框里写了一半的活也就跟着没了。
+     `useEscape` 的判据是「`!e.defaultPrevented` 才关」，所以这里 preventDefault 就够，不必把
+     状态提到 App 去。但**必须走捕获阶段**：App 的 useEscape 在拓扑打开那一刻就注册了，比这个
+     （面板打开才注册）早，同一阶段里它会先跑 —— 那样 Esc 还是整个退出拓扑。 */
+  useEffect(() => {
+    if (!target) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      setTarget(null);
+      setText("");
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [target]);
+
   const [ack, setAck] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const [canvasW, setCanvasW] = useState(0);
