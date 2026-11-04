@@ -35,6 +35,8 @@ interface Entry {
   path: string;
   kind: "dir" | "file";
   size?: number;
+  /** A dot-entry — listed, but sorted last within its kind and drawn dimmed. */
+  hidden?: boolean;
 }
 
 interface Listing {
@@ -520,8 +522,8 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
               {listing?.entries.map((e) => (
                 <button
                   key={e.path}
-                  className={`file-row ${target?.path === e.path ? "sel" : ""}`}
-                  title={e.path}
+                  className={`file-row ${target?.path === e.path ? "sel" : ""}${e.hidden ? " hidden-file" : ""}`}
+                  title={e.hidden ? `${e.path}  ·  hidden` : e.path}
                   onClick={() => open(e)}
                 >
                   {e.kind === "dir" ? <IconFolder size={14} /> : <IconFile size={14} />}
