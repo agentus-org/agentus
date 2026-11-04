@@ -16,6 +16,10 @@ export interface DirEntry {
   kind: "dir" | "file";
   /** bytes, files only (the panel prints a human size) */
   size?: number;
+  /** A dot-entry. Listed (the operator asked to see them), but sorted after the ordinary entries
+   *  of the same kind and rendered dimmed, so a normal directory does not open onto a wall of
+   *  `~/.cache`-class noise. */
+  hidden?: boolean;
 }
 
 export interface DirListing {
@@ -70,9 +74,10 @@ export function listDirs(input: string | null | undefined, opts: { includeFiles?
 
   const entries: DirEntry[] = [];
   for (const d of names) {
-    // Hidden directories are the bulk of a home directory and almost never the answer;
-    // the path input still accepts them when someone really wants one.
-    if (d.name.startsWith(".")) continue;
+    // Dot-entries are listed, not skipped: a workspace's real content is often `.claude/`,
+    // `.github/`, `.env.example`, `.gitignore`, and hiding them made the panel lie about what is
+    // in the directory. They sort last within their kind and render dimmed instead.
+    const hidden = d.name.startsWith(".");
     const full = path.join(target, d.name);
     let isDir = d.isDirectory();
     // a symlink to a directory is a normal way to organise work: stat it
@@ -84,7 +89,7 @@ export function listDirs(input: string | null | undefined, opts: { includeFiles?
       }
     }
     if (isDir) {
-      entries.push({ name: d.name, path: full, kind: "dir" });
+      entries.push({ name: d.name, path: full, kind: "dir", ...(hidden ? { hidden: true } : {}) });
       continue;
     }
     // The file panel (head ▤) wants files too; the picker (new slot) must not
@@ -96,14 +101,14 @@ export function listDirs(input: string | null | undefined, opts: { includeFiles?
       } catch {
         /* unreadable: still list it, size unknown */
       }
-      entries.push({ name: d.name, path: full, kind: "file", size });
+      entries.push({ name: d.name, path: full, kind: "file", size, ...(hidden ? { hidden: true } : {}) });
     }
   }
-  entries.sort((a, b) => (
-    a.kind === b.kind
-      ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
-      : a.kind === "dir" ? -1 : 1  // directories first, like every file manager
-  ));
+  entries.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;   // directories first, like a file manager
+    if (Boolean(a.hidden) !== Boolean(b.hidden)) return a.hidden ? 1 : -1;  // then the dot-entries
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  });
 
   const truncated = entries.length > MAX_ENTRIES;
   const trimmed = truncated ? entries.slice(0, MAX_ENTRIES) : entries;

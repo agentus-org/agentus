@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cockpit, rawFileUrl } from "./state";
 import { renderMarkdown } from "./Markdown";
 import { enhanceTables } from "./tableSort";
-import { IconArrowLeft, IconDownload, IconFile } from "./Icons";
+import { IconArrowLeft, IconDownload, IconExternal, IconFile } from "./Icons";
 
 interface StatInfo {
   path: string;
@@ -188,6 +188,11 @@ export function FilePreviewPane({ path, line, onClose }: {
     return <TextBody file={file} line={line} />;
   }, [file, editing, draft, line]);
 
+  // One spelling of "which file" and "what it is called" for the whole head — the download's
+  // filename has to be the file's own name, not the panel's last path segment guess.
+  const filePath = file?.path ?? path;
+  const fileName = file?.name ?? (filePath.split("/").pop() || "download");
+
   return (
     <div className="file-preview">
       <div className="file-preview-head">
@@ -195,8 +200,8 @@ export function FilePreviewPane({ path, line, onClose }: {
           <IconArrowLeft size={14} />
         </button>
         <IconFile size={13} />
-        <span className="file-name" title={file?.path ?? path}>
-          {(file?.name ?? path.split("/").pop() ?? path)}
+        <span className="file-name" title={filePath}>
+          {fileName}
           {dirty ? <span className="file-dirty" title="unsaved changes"> ●</span> : null}
         </span>
         <span className="file-size">
@@ -206,14 +211,32 @@ export function FilePreviewPane({ path, line, onClose }: {
           {loading && file ? " · loading…" : ""}
         </span>
         <span className="head-spacer" />
-        <button
+        {/* Save, not show. This used to be a download ICON wired to `window.open(...)` on the
+            inline route, so clicking it navigated: a PDF opened in the tab, a text file was shown as
+            plain text, and nothing ever reached the download folder — the operator's «好像是直接
+            跳转成一个链接，而不是直接下载». A real <a download> on the same-origin `?download=1`
+            URL lands in the download folder with the file's own name (header carries the RFC 5987
+            `filename*`, so Chinese and spaces survive); the attribute alone would be enough in a
+            browser, the header also covers opening the link some other way. */}
+        <a
           className="icon-btn"
-          title={`open ${file?.name ?? "file"} in a new tab`}
-          aria-label="open raw"
-          onClick={() => window.open(rawFileUrl(file?.path ?? path), "_blank", "noopener")}
+          href={rawFileUrl(filePath, { download: true })}
+          download={fileName}
+          title={`download ${fileName}`}
+          aria-label="download file"
         >
           <IconDownload size={13} />
-        </button>
+        </a>
+        <a
+          className="icon-btn"
+          href={rawFileUrl(filePath)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`open ${fileName} in a new tab`}
+          aria-label="open raw"
+        >
+          <IconExternal size={13} />
+        </a>
         {canEdit ? (
           editing ? (
             <>
@@ -288,12 +311,13 @@ function RichBody({ file }: { file: Loaded }): JSX.Element {
   if (file.kind === "video") {
     return <video className="file-video" src={url} controls preload="metadata" />;
   }
-  // office / archive / anything else: say so plainly instead of pretending, and give the one
-  // action that does work — open it with the tool that CAN read it.
+  // office / archive / anything else: say so plainly instead of pretending, and give both actions
+  // that do work — save it, or let the browser hand it to whatever can read it.
   return (
     <div className="tool-note">
       no preview for this type yet ({file.kind})
       <div className="file-fallback">
+        <a className="icon-btn" href={rawFileUrl(file.path, { download: true })} download={file.name}>download</a>
         <a className="icon-btn" href={url} target="_blank" rel="noopener noreferrer">open in a new tab</a>
       </div>
     </div>

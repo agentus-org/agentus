@@ -1634,11 +1634,15 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const req0 = url.searchParams.get("path");
         if (!req0) return send(res, 400, { error: "path is required", code: "bad_path" });
         const info = statFile(req0);
+        // `?download=1` means "save this, do not show it". Without the mode the route is inline on
+        // purpose: the panel's <img>/<iframe>/<audio> viewers and every `![](shot.png)` in a reply
+        // fetch the same URL and must render, not hand the operator a file dialog.
+        const downloading = url.searchParams.get("download") === "1";
         res.writeHead(200, {
           "content-type": info.contentType,
           "content-length": String(info.size),
           "cache-control": "no-store",
-          "content-disposition": "inline",
+          "content-disposition": downloading ? attachmentOf(info.path) : "inline",
         });
         const stream = fs.createReadStream(info.path);
         stream.on("error", () => res.destroy());
@@ -2401,6 +2405,17 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     return send(res, code, { error: msg });
   }
 };
+
+/** `content-disposition` for a real download. Two `filename`s on purpose: the plain one is what a
+ *  pre-RFC-5987 client reads (non-ASCII folded to `_`, quotes and backslashes neutralised so the
+ *  header cannot be broken open), and `filename*` carries the real name — spaces and Chinese
+ *  included — for every browser in support today. */
+function attachmentOf(filePath: string): string {
+  const name = path.posix.basename(filePath) || "download";
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
 
 const httpServer = createServer(handleRequest);
 

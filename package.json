@@ -1,6 +1,6 @@
 {
   "name": "agentus",
-  "version": "0.18.10",
+  "version": "0.18.11",
   "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
   "license": "Apache-2.0",
   "repository": {
@@ -108,6 +108,8 @@
     "title-upgrade-sweep": "node scripts/qa/title-upgrade-sweep.mjs",
     "split-interactions-dom": "node scripts/qa/split-interactions-dom.mjs",
     "panel-maximize-dom": "node scripts/qa/panel-maximize-dom.mjs",
+    "file-download-dom": "node scripts/qa/file-download-dom.mjs",
+    "fs-hidden-units": "tsx scripts/qa/fs-hidden-units.mts",
     "cockpit-session-verbs-sweep": "node scripts/qa/cockpit-session-verbs-sweep.mjs",
     "live-speed-sweep": "node scripts/qa/live-speed-sweep.mjs",
     "stream-tokens": "tsx scripts/qa/stream-tokens.mts",

@@ -140,7 +140,13 @@ try {
   check("fs/dirs lists files with sizes when asked", listing.entries.some((e) => e.kind === "file" && e.name === "notes.txt" && e.size === 16),
     JSON.stringify(listing.entries.map((e) => e.name)));
   check("fs/dirs keeps directories first", listing.entries[0].kind === "dir", listing.entries[0]?.name);
-  check("fs/dirs skips hidden entries", !listing.entries.some((e) => e.name.startsWith(".")));
+  // The contract changed on purpose (operator: 隐藏文件也要显示出来): dot-entries are LISTED now,
+  // flagged, and sorted after the ordinary entries of their kind rather than skipped.
+  check("fs/dirs lists hidden entries and flags them",
+    listing.entries.some((e) => e.name === ".hidden" && e.hidden === true),
+    JSON.stringify(listing.entries.map((e) => `${e.name}${e.hidden ? "*" : ""}`)));
+  check("fs/dirs puts hidden entries after the ordinary ones",
+    listing.entries.findIndex((e) => e.hidden) > listing.entries.findIndex((e) => !e.hidden));
   const dirsOnly = await j(await fetch(`${base}/api/fs/dirs?path=${encodeURIComponent(root)}`, { headers: H }));
   check("fs/dirs is directories-only by default (the picker must not offer a file)", dirsOnly.entries.every((e) => e.kind === "dir"));
 

@@ -191,9 +191,16 @@ check("重开面板是原来的宽度，不是全宽",
 
 // ---- ⑦ 手机不出现该按钮 --------------------------------------------------------------------
 await viewport(700);
-await sleep(900);
-check("手机宽度下没有「最大化」按钮（那时它已经是全屏 sheet）",
-  (await ev(`document.querySelectorAll('${MAX}').length`)) === 0);
+// Poll rather than sleep a fixed time: the button's presence follows `useWide()`, which updates on
+// the resize event, and one run raced it (the assertion is "it must not be there", not "it must be
+// gone within 900 ms").
+let phoneBtn = -1;
+for (let i = 0; i < 12; i++) {
+  await sleep(250);
+  phoneBtn = await ev(`document.querySelectorAll('${MAX}').length`);
+  if (phoneBtn === 0) break;
+}
+check("手机宽度下没有「最大化」按钮（那时它已经是全屏 sheet）", phoneBtn === 0, String(phoneBtn));
 await viewport(1400);
 
 // ---- 持久化：放大态刷新后仍然放大 ----------------------------------------------------------

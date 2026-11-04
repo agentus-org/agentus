@@ -1915,6 +1915,11 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   flex: 1; min-width: 0; font-size: 10.5px; color: var(--text-dim);
   font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Dot-entries are listed (an operator who asked for them should see them), just not with the same
+   weight as everything else: at the bottom of their group, dimmed, and the name keeps its leading
+   dot so `.env` never reads as `env`. */
+.file-row.hidden-file { opacity: 0.62; }
+.file-row.hidden-file:hover { opacity: 1; }
 .file-list { flex: 1; overflow-y: auto; padding: 4px; }
 .file-row {
   display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;

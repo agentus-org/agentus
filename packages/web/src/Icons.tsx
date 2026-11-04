@@ -47,6 +47,11 @@ export const IconCopy = (p: IconProps = {}): JSX.Element =>
 export const IconDownload = (p: IconProps = {}): JSX.Element =>
   svg(<><path d="M12 3v11" /><path d="M7 10l5 5 5-5" /><path d="M4 20h16" /></>, p);
 
+/** open in a new tab — a box with an arrow leaving its top-right corner. Sits beside the download
+ *  icon, so the two actions must not look alike: an arrow into a tray saves, this one opens. */
+export const IconExternal = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M14 3h7v7" /><path d="M21 3l-9 9" /><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /></>, p);
+
 /** archive — a box with a lid line (the close action's real meaning: keep the record) */
 export const IconArchive = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="3" y="7" width="18" height="13" rx="2" /><path d="M3 11h18" /><path d="M9 3h6" /></>, p);
