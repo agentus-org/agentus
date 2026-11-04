@@ -2808,7 +2808,12 @@ export function busyNow(v: { busy: boolean; info: { status: string } } | null | 
  *  every other /api call). Used by the panel's image/PDF/audio viewers AND by the markdown
  *  renderer, so an `![](/Users/…/shot.png)` an agent wrote actually shows the picture.
  *  Both callers must go through this: one place to change if the route ever moves. */
-export function rawFileUrl(path: string): string {
-  return `/api/fs/raw?path=${encodeURIComponent(path)}`;
+export function rawFileUrl(path: string, opts?: { download?: boolean }): string {
+  const q = `path=${encodeURIComponent(path)}`;
+  // `download=1` makes the server answer `content-disposition: attachment`, so a link without a
+  // `download` attribute (a right-click, a plain navigation) also saves instead of navigating.
+  // Callers that render bytes — every <img>, <iframe>, <audio> and the markdown image rule — must
+  // NOT pass it: an attachment header on an image request shows nothing at all.
+  return `/api/fs/raw?${q}${opts?.download ? "&download=1" : ""}`;
 }
 
