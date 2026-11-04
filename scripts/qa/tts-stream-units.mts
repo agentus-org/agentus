@@ -220,5 +220,107 @@ const stubCtx = { state: "running", currentTime: 0, destination: {}, createBuffe
   await pending.catch(() => {});
 }
 
+
+// ---------------------------------------------------------------- the connection closing AFTER the
+// last frame has been synthesised
+//
+// The shape that cut a 1929-character reply off mid-sentence (issue #92): the upstream finished
+// synthesising in 29 s for 270 s of audio, then its idle socket closed 61 s later. By then the
+// browser was still playing frame ~92 s. The relay treated *any* close as a failure and stopped
+// the player, so the reader heard the sentence stop dead — no error, no note, no fallback, because
+// the run had already been `heard` and settled as success.
+//
+// "Synthesis is complete" and "the connection had nothing more to send" are two different facts.
+// Once `tts-done` has arrived, a close is just the end of the feed; what is buffered must play out.
+
+/** Stand-in AudioContext: the relay's player only needs buffers, sources and a clock we control. */
+class StubSource {
+  buffer: unknown = null;
+  startedAt = -1;
+  stopped = false;
+  onended: (() => void) | null = null;
+  connect(): void { /* to the analyser */ }
+  disconnect(): void { /* ditto */ }
+  start(at: number): void { this.startedAt = at; }
+  stop(): void { this.stopped = true; }
+}
+class StubCtx {
+  state = "running";
+  currentTime = 0;
+  destination = {};
+  sources: StubSource[] = [];
+  createAnalyser() { return { fftSize: 0, connect() {}, disconnect() {} } as unknown as AnalyserNode; }
+  createBuffer(_ch: number, len: number, rate: number) {
+    const data = new Float32Array(len);
+    return { duration: len / rate, getChannelData: () => data } as unknown as AudioBuffer;
+  }
+  createBufferSource() { const s = new StubSource(); this.sources.push(s); return s as unknown as AudioBufferSourceNode; }
+  resume(): Promise<void> { return Promise.resolve(); }
+  close(): Promise<void> { return Promise.resolve(); }
+}
+const oneSecond = (): ArrayBuffer => new ArrayBuffer(24000 * 2);     // 1 s of 24 kHz s16le
+
+{
+  // The bug: `tts-done` already arrived, the audio is still playing — then the socket goes away.
+  const sock = new FakeSocket();
+  const ctx = new StubCtx();
+  const relay = new TtsRelay(ctx as unknown as AudioContext, 24000, () => sock as unknown as WebSocket);
+  const pending = relay.speak("这一段会念得很久。", new AbortController().signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  sock.deliverBytes(oneSecond());
+  sock.deliver({ t: "tts-done", characters: 10 });
+  const src = ctx.sources[0];
+  check("audio was queued for the sentence", Boolean(src), String(ctx.sources.length));
+  // The upstream idle-closes its socket a while after it finished synthesising.
+  sock.closeQuietly();
+  check("a close AFTER tts-done does not stop the audio already queued", src.stopped === false);
+  let settled = "still pending";
+  void pending.then(() => { settled = "resolved"; }, () => { settled = "rejected"; });
+  await new Promise((r) => setTimeout(r, 250));
+  check("…and the run stays open while the buffer plays", settled === "still pending", settled);
+  // Playing out to the end is what settles it.
+  src.stopped = false;
+  src.onended?.();
+  await new Promise((r) => setTimeout(r, 250));
+  check("…and it resolves once the buffered audio has played out", settled === "resolved", settled);
+}
+
+{
+  // The same close delivered as a `tts-closed` frame instead of a socket event — the server sends
+  // one right before it hangs up, so the guard has to live on both paths.
+  const sock = new FakeSocket();
+  const ctx = new StubCtx();
+  const relay = new TtsRelay(ctx as unknown as AudioContext, 24000, () => sock as unknown as WebSocket);
+  const pending = relay.speak("第二个表格的第三行。", new AbortController().signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  sock.deliverBytes(oneSecond());
+  sock.deliver({ t: "tts-done", characters: 9 });
+  const src = ctx.sources[0];
+  sock.deliver({ t: "tts-closed", why: "closed" });
+  check("a tts-closed AFTER tts-done does not stop the audio either", src.stopped === false);
+  let settled = "still pending";
+  void pending.then(() => { settled = "resolved"; }, () => { settled = "rejected"; });
+  await new Promise((r) => setTimeout(r, 250));
+  check("…and it does not settle the run as a failure", settled === "still pending", settled);
+  src.onended?.();
+  await new Promise((r) => setTimeout(r, 250));
+  check("…it resolves when the audio finishes", settled === "resolved", settled);
+}
+
+{
+  // The guard must not swallow the case it exists to protect: a close BEFORE `tts-done` is still a
+  // cut sentence — the buffer we have is all there will be, and the caller has to hear about it.
+  const sock = new FakeSocket();
+  const ctx = new StubCtx();
+  const relay = new TtsRelay(ctx as unknown as AudioContext, 24000, () => sock as unknown as WebSocket);
+  const pending = relay.speak("这一句会被截断。", new AbortController().signal, 1);
+  sock.deliver({ t: "tts-ready", sampleRate: 24000 });
+  sock.deliverBytes(oneSecond());
+  sock.closeQuietly();
+  const outcome = await pending.then(() => "resolved", () => "rejected");
+  check("a close BEFORE tts-done still ends the sentence", outcome === "resolved", outcome);
+  check("…and stops the player, so the cut is not silent", ctx.sources[0].stopped === true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

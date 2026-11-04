@@ -717,6 +717,12 @@ const RELAY_IDLE_MS = 20_000;
 interface RelayRun {
   player: PcmStreamPlayer | null;
   heard: boolean;
+  /** Has the server said `tts-done` for this run? Synthesis is over; from here on the only thing
+   *  left is playing what is already buffered, which can take minutes (a 1929-character reply feeds
+   *  270 s of audio in 29 s). A close arriving after this point means "no more frames", never
+   *  "the sentence failed" — the upstream idle-closes its socket mid-playback, and the server
+   *  forwards that as `tts-closed`. */
+  ended: boolean;
   /** Has the server told us the output format for this task? Frames before that are unusable. */
   ready: boolean;
   resolve: () => void;
@@ -766,6 +772,10 @@ export class TtsRelay {
   #settleOrFail(): void {
     const run = this.#run;
     if (!run) return;
+    // Synthesis already finished: a close now is the end of the feed, not a failure. Leave the run
+    // in place (its `finish()` is what settles it) and let the buffered audio play out — stopping
+    // here is exactly how a reply got cut off mid-sentence with no error and no note.
+    if (run.ended) return;
     this.#run = null;
     if (this.#failure) {
       run.player?.stop();
@@ -827,6 +837,7 @@ export class TtsRelay {
     }
     if (msg.t === "tts-done") {
       if (!run) return;
+      run.ended = true;
       this.#settle(run);
       return;
     }
@@ -850,6 +861,11 @@ export class TtsRelay {
       return;
     }
     if (msg.t === "tts-closed") {
+      // After `tts-done` this frame says only that the feed is over — the audio still queued must
+      // play out, and `close()` is not an option either: it cancels, which stops the player. The
+      // server sends this right before hanging up on an idle upstream socket, so every long reply
+      // used to lose whatever was still playing.
+      if (run?.ended) return;
       // Belt and braces: the close event normally settles this, but a `tts-closed` that arrives
       // without one must not be able to strand a run.
       this.#failure = new Error(msg.why ?? msg.error ?? "streaming TTS closed");
@@ -874,7 +890,7 @@ export class TtsRelay {
     if (!units.length) { this.#armIdle(); return Promise.resolve(); }
 
     let onAbort = (): void => { /* replaced below */ };
-    const run: RelayRun = { player: null, heard: false, ready: false, resolve: () => {}, reject: () => {}, cleanup: () => {} };
+    const run: RelayRun = { player: null, heard: false, ended: false, ready: false, resolve: () => {}, reject: () => {}, cleanup: () => {} };
     const heard = new Promise<void>((resolve, reject) => {
       run.resolve = resolve;
       run.reject = reject;
