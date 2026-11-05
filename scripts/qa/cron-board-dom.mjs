@@ -130,9 +130,9 @@ check("注册临时 backend 行", /^20[01]:/.test(String(reg)), String(reg).slic
 await goto(`${BASE}/?cronBackend=${QA_BACKEND}`);
 
 // ① 入口在 head，点开是替换主区的面板
-const entry = await ev(`(() => { const b = document.querySelector('[data-cron-entry]'); return b ? b.getBoundingClientRect().width > 0 : false; })()`);
-check("chat head 上有定时任务入口", entry === true);
-await ev(`document.querySelector('[data-cron-entry]').click()`);
+const entry = await ev(`(() => { const b = document.querySelector('[data-nav="cron"]'); return b ? b.getBoundingClientRect().width > 0 : false; })()`);
+check("rail 上有定时任务入口（#94 搬过去的）", entry === true);
+await ev(`document.querySelector('[data-nav="cron"]').click()`);
 await sleep(1200);
 const shape = JSON.parse(await ev(`JSON.stringify((() => {
   const p = document.querySelector('[data-cron-panel]');

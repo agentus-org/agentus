@@ -3791,6 +3791,10 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   .topo-dispatch { right: 8px; left: 8px; width: auto; top: auto; bottom: 8px; }
   .topo-card-act { opacity: 1; }
   .topo-group-add { opacity: 1; }
+  /* 组头 44px：折叠开关是手机上最常点的一行，不能比手指小。布局侧由 MOBILE_GROUP_HEAD 同步。 */
+  .topo-group-head { height: 44px; padding: 0 10px; }
+  .topo-group.collapsed .topo-group-head { height: 100%; }
+  .topo-card-main { cursor: pointer; }
 }
 
 /* 线型图例：三条线分别是什么，只说明「画出来的东西」，所以放在画布上而不是说明文档里。 */
@@ -3905,3 +3909,49 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .sidebar.compact .rail-nav-item { justify-content: center; padding: 7px 0; border-radius: 0; }
 .sidebar.compact .rail-nav-item span { display: none; }
 .sidebar.compact .rail-nav-divider { margin: 8px 6px 4px; }
+/* 手机：这两行是抽屉里最常用的一行入口，抬到 40px 的命中区，字号也回到正文大小。 */
+@media (max-width: 720px) {
+  .rail-nav-item { padding: 10px 10px; font-size: 13px; }
+}
+
+/* ── 拓扑：折叠与拖动（issue #95） ─────────────────────────────────────────────
+   卡片多的时候面板的敌人是「一次要看的太多」。两层解法：分组能折叠（默认只展开当前组），
+   卡片能拖动（线交叉是自动排版治不了的，得人自己摆）。 */
+.topo-group-head {
+  cursor: pointer; user-select: none;
+  border-bottom: 1px solid transparent; border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
+}
+/* 折叠态：整行就是一张「目录卡片」——底色更实、hover 亮一点，让人一眼认出这是个开关。 */
+.topo-group.collapsed { background: var(--bg-raised); }
+.topo-group.collapsed .topo-group-head {
+  padding-bottom: 0; height: 100%; align-items: center; border-bottom-color: transparent;
+}
+.topo-group.collapsed .topo-group-head:hover { background: var(--bg-panel); border-radius: 11px; }
+.topo-group-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); width: 12px; flex: none; transition: color .12s;
+}
+.topo-group-head:hover .topo-group-caret { color: var(--accent); }
+.topo-group.collapsed .topo-group-name { max-width: 62%; }
+.topo-group:not(.collapsed) .topo-group-head { border-bottom-color: var(--line); }
+.topo-reset {
+  font: inherit; font-size: 11px; padding: 3px 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+}
+.topo-reset:hover { color: var(--accent); border-color: var(--accent-dim); }
+.topo-card {
+  /* 拖动的卡片永远在最上面。`touch-action` 只在有真指针（鼠标/触控笔）的桌面上关掉滚动，
+     触屏上必须留着 —— 否则手指在卡片上划，页面一动不动。 */
+  touch-action: auto;
+  transition: box-shadow .12s;
+}
+@media (hover: hover) and (pointer: fine) {
+  .topo-card { touch-action: none; }
+}
+.topo-card.dragging {
+  z-index: 5; cursor: grabbing;
+  border-color: var(--accent);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .38), 0 0 0 1px var(--accent-dim);
+}
+.topo-card-main { cursor: grab; }
+.topo-card.dragging .topo-card-main { cursor: grabbing; }
