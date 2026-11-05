@@ -13,7 +13,7 @@ import { Store, textOf } from "./store/store.js";
 import { routeForModel, type SpeechRoute } from "./speech/route.js";
 import { readIncidents, readJobs, readRuns, isCronVerb, runCronVerb, type CronTarget } from "./cron/jobs.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
-import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable } from "./acp/session-manager.js";
+import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable, briefOf } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
@@ -972,7 +972,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         // 忙的目标照旧拒收：带 --reply-on-done 不等于可以插队，抢话头仍然只有 --interrupt 一条路。
         if (wantReply && mgr.isBusy(to) && !wantInterrupt) {
-          return send(res, 409, { error: COCKPIT_ERRORS.targetBusy });
+          return send(res, 409, targetBusyBody(to));
         }
         if (wantReply && caller === to) {
           return send(res, 400, {
@@ -1006,12 +1006,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             ]);
             if (!started) {
               const why = String((promptErr as Error)?.message ?? promptErr ?? "turn did not start");
-              return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
+              return send(res, 409, why.includes("turn already running") ? targetBusyBody(to) : { error: why });
             }
             const replyId = mgr.expectTurnReply(to, {
               origin: caller!,
               originTitle: rows.find((s) => s.id === caller)?.title ?? null,
               turnSeq: turnStartedSeq,
+              // #93-2：**登记时刻**固化「派的是哪一笔活」。投递时刻再取任何会话级元数据都会漂。
+              brief: briefOf(message),
             });
             // 回合结束会由 #settleTurnReplies 投递。这里兜的是「回合开过之后 prompt 才抛错」——
             // 那条路径的 settle 可能早于本次登记（登记是微任务之后才落地的），所以不能靠它：
@@ -1029,7 +1031,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           await turn;
         } catch (e) {
           const why = String((e as Error)?.message ?? e);
-          return send(res, 409, { error: why.includes("turn already running") ? COCKPIT_ERRORS.targetBusy : why });
+          return send(res, 409, why.includes("turn already running") ? targetBusyBody(to) : { error: why });
         }
         return send(res, 200, {
           delivered: true, to, code: "delivered",
@@ -2455,6 +2457,14 @@ function attachmentOf(filePath: string): string {
   const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
+
+/** 忙的出口只有两条（#93-1）：稍后重试，或者确认要抢占话头。只回一个 `target_busy` 码，调用方
+ *  （多数是另一个 agent）只会盲试 —— 实测连试 11 次。文案是给人/给模型读的，所以写全。 */
+const targetBusyBody = (to: string): Record<string, unknown> => ({
+  error: COCKPIT_ERRORS.targetBusy,
+  message: `目标会话 ${to} 正在跑一个回合。要么稍后重试；要么确认要抢占话头，重发这条时加 --interrupt。`,
+  hint: "retry_later | resend with --interrupt to take the floor",
+});
 
 /** 面板操作哪个 hermes 目标：`?backend=<id>` 指定，否则第一个 kind=hermes 的 backend 行。
  *  home/profile 直接取那一行的语义（与 spawn 时给 agent 的完全一致），所以面板显示的作业就是
