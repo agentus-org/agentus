@@ -190,6 +190,94 @@ export interface TopologyView {
   edges: TopologyEdge[];
 }
 
+/** 一条 hermes 定时作业，按面板要的方式摊平。
+ *
+ *  字段全部来自 `<home>/cron/jobs.json` 里的那一行 —— 驾驶舱**不重算**调度、不改写状态，只决定
+ *  展示哪些列。`schedule` 是表达式原文，`scheduleDisplay` 是 Hermes 自己渲染的人话（有就优先显示）。 */
+export interface CronJob {
+  id: string;
+  name: string;
+  /** 调度表达式的**原文**（cron 是 `0 6 * * 2-6`，interval 是 `every 30m` 一类） */
+  schedule: string;
+  /** `cron` / `interval` / `once` —— Hermes 的 `schedule.kind`，面板据此选措辞 */
+  scheduleKind?: string | null;
+  scheduleDisplay?: string | null;
+  /** `active` / `paused` / `completed` …：Hermes 的 job state 原样透出 */
+  state: string;
+  enabled: boolean;
+  pausedReason?: string | null;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
+  lastStatus?: string | null;
+  lastError?: string | null;
+  /** `{times, completed}`：`times === null` 是无限重复（面板画 ∞） */
+  repeat?: { times: number | null; completed: number } | null;
+  script?: string | null;
+  /** no-agent 作业：脚本的 stdout 直接投递，没有模型回合 */
+  noAgent?: boolean;
+  deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  workdir?: string | null;
+  failureStreak?: number;
+  createdAt?: string | null;
+  /** the instruction the job runs; long, so the panel folds it away */
+  prompt?: string | null;
+}
+
+/** 一次执行尝试（`executions` 表；`hermes cron runs` 的同一份数据）。 */
+export interface CronRun {
+  id: string;
+  jobId: string;
+  status: string;
+  source?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  scheduledInstant?: string | null;
+  error?: string | null;
+  deliveryOutcome?: string | null;
+}
+
+/** 失败账本（`cron_incidents` 表）。Hermes 会把同一错误签名聚成一条，所以这里也能看出
+ *  「同一个坑踩了几次」。 */
+export interface CronIncident {
+  id: string;
+  jobId: string;
+  state: string;
+  failureType?: string | null;
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+  ackedAt?: string | null;
+  closedAt?: string | null;
+  error?: string | null;
+}
+
+/** `/api/cron` 的响应：一个 hermes 目标（home + profile）下的全部作业。
+ *
+ *  `available: false` 是**正常结果**，不是错误：hermes 二进制不可达、这个 home 没有 cron 目录、
+ *  或者 jobs.json 坏了 —— 面板据此整块隐藏（issue #92 的「优雅降级」）。 */
+export interface CronView {
+  available: boolean;
+  why?: string;
+  home?: string;
+  cronDir?: string;
+  profile?: string | null;
+  updatedAt?: string | null;
+  jobs: CronJob[];
+}
+
+export interface CronRunsView {
+  available: boolean;
+  why?: string;
+  runs: CronRun[];
+}
+
+export interface CronIncidentsView {
+  available: boolean;
+  why?: string;
+  incidents: CronIncident[];
+}
+
 export interface UsageView {
   used: number;
   size: number;
