@@ -46,6 +46,10 @@ export interface PlacedGroup {
   w: number;
   h: number;
   nodes: PlacedNode[];
+  /** 折叠的分区只留一行组头：`nodes` 为空（不排卡片），会话数在 `nodeCount`。 */
+  collapsed: boolean;
+  /** 这个分区里的会话数 —— 折叠时 `nodes.length` 是 0，组头仍要说得出来。 */
+  nodeCount: number;
   /** 这个分区里「有边连出去」的条数（分区头上的小字）。 */
   links: number;
 }
@@ -70,6 +74,14 @@ export interface LayoutOpts {
   cardH?: number;
   gapX?: number;
   gapY?: number;
+  /** 折叠的分区（workspace 路径）。卡片多的时候把不关心的分区收成一行 —— 面板的第一诉求
+   *  是「看得清」，不是「全都摊开」。 */
+  collapsed?: ReadonlySet<string>;
+  /** 组头高度。手机上要给手指留够命中区（44px），布局必须跟着知道，否则卡片会压住组头。 */
+  headH?: number;
+  /** 操作者拖过的画布坐标（会话 id → {x,y}）。**优先于**自动布局：拖动存在的意义就是让人
+   *  把位置摆到线不相交的地方，所以它必须压过任何自动排版。 */
+  overrides?: Record<string, { x: number; y: number }>;
 }
 
 /** 路径最后一段；`~` 与根目录不该变成空串。 */
@@ -116,6 +128,7 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
   const cardH = opts.cardH ?? CARD_H;
   const gapX = opts.gapX ?? GAP_X;
   const gapY = opts.gapY ?? GAP_Y;
+  const headH = opts.headH ?? GROUP_HEAD;
 
   const byWorkspace = new Map<string, TopologyNode[]>();
   for (const n of nodes) {
@@ -131,13 +144,24 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
 
   const out: PlacedGroup[] = [];
   const pos = new Map<string, PlacedNode>();
+  const collapsed = opts.collapsed ?? new Set<string>();
+  const overrides = opts.overrides ?? {};
+  // 折叠行的宽度要跟「最宽的那个组」齐平 —— 先算出来，别让它按自己的会话数缩成一条窄卡。
+  const widest = groupsInOrder.reduce((m, [, list]) => Math.max(m, Math.min(list.length, cols)), 1);
+  const fullWidth = widest * cardW + (widest - 1) * gapX + GROUP_PAD * 2;
   let y = 0;
   for (const [workspace, list] of groupsInOrder) {
     const ids = list.map((n) => n.id);
     const order = orderWithinGroup(ids, edges, lastAt);
-    const rows = Math.ceil(order.length / cols);
-    const w = Math.min(order.length, cols) * cardW + (Math.min(order.length, cols) - 1) * gapX + GROUP_PAD * 2;
-    const h = GROUP_HEAD + rows * cardH + (rows - 1) * gapY + GROUP_PAD;
+    const isCollapsed = collapsed.has(workspace);
+    const shown = isCollapsed ? 0 : order.length;
+    const rows = Math.ceil(shown / cols);
+    // 折叠行跟展开的组一样宽：它是一条「目录行」，不是一张窄卡片 —— 缩在角落里既不好点，
+    // 也看不出它和上面的组是一层东西。
+    const w = shown
+      ? Math.min(shown, cols) * cardW + (Math.min(shown, cols) - 1) * gapX + GROUP_PAD * 2
+      : fullWidth;
+    const h = isCollapsed ? headH + GROUP_PAD : headH + rows * cardH + (rows - 1) * gapY + GROUP_PAD;
     const group: PlacedGroup = {
       workspace,
       label: workspaceLabel(workspace),
@@ -146,20 +170,25 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
       w,
       h,
       nodes: [],
-      links: edges.filter((e) => ids.includes(e.from) && ids.includes(e.to)).length,
+      collapsed: isCollapsed,
+      // 折叠时也数得出来「里面有多少」；跨出分区的边也要算，那才是组头上「几条关系」的含义。
+      nodeCount: order.length,
+      links: edges.filter((e) => ids.includes(e.from) || ids.includes(e.to)).length,
     };
     // 深度只用于卡片左侧的一条竖线（「它挂在谁下面」），网格本身不按深度分列：分区里通常只有
     // 一两个 depth>0 的节点，按深度分列会让整块版式为一棵树空掉三分之二。
     const depthOf = new Map<string, number>();
     for (const e of edges) if (ids.includes(e.from) && ids.includes(e.to)) depthOf.set(e.to, 1);
-    order.forEach((id, k) => {
+    (isCollapsed ? [] : order).forEach((id, k) => {
       const node = list.find((n) => n.id === id) as TopologyNode;
       const col = k % cols;
       const row = Math.floor(k / cols);
+      // 拖过的坐标压过网格：这是操作者对手工排版的决定，布局不该在下一次刷新时推翻它。
+      const ov = overrides[id];
       const placed: PlacedNode = {
         node,
-        x: GROUP_PAD + col * (cardW + gapX),
-        y: y + GROUP_HEAD + row * (cardH + gapY),
+        x: ov?.x ?? GROUP_PAD + col * (cardW + gapX),
+        y: ov?.y ?? y + headH + row * (cardH + gapY),
         depth: depthOf.get(id) ?? 0,
       };
       group.nodes.push(placed);
@@ -184,8 +213,13 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
     });
   }
 
-  const width = out.reduce((m, g) => Math.max(m, g.w), 0);
-  const height = out.length ? out[out.length - 1].y + out[out.length - 1].h : 0;
+  // 画布要装得下「拖出去」的卡片和组框两者：拖到分区外的卡片不能被裁掉，否则拖动就没意义。
+  let width = out.reduce((m, g) => Math.max(m, g.w), 0);
+  let height = out.length ? out[out.length - 1].y + out[out.length - 1].h : 0;
+  for (const p of pos.values()) {
+    width = Math.max(width, p.x + cardW + GROUP_PAD);
+    height = Math.max(height, p.y + cardH + GROUP_PAD);
+  }
   return { groups: out, edges: placedEdges, width, height };
 }
 

@@ -100,5 +100,45 @@ check(statusLabel({ status: "running", cold: false, archived: false }).tone === 
 check(statusLabel({ status: "running", cold: true, archived: false }).text === "冷", "冷压过 running");
 check(statusLabel({ status: "ready", cold: false, archived: true }).text === "已归档", "归档压过 ready");
 
+// ---- 8. 折叠（issue #95）：收起来的分区只占一行行程 -------------------------
+const two = [
+  node("m1", "/w/alpha"), node("m2", "/w/alpha"),
+  node("b1", "/w/beta"), node("b2", "/w/beta"), node("b3", "/w/beta"),
+];
+const openLayout = layoutTopology(two, [edge("m1", "b1")], { cols: 4 });
+const foldAlpha = layoutTopology(two, [edge("m1", "b1")], { cols: 4, collapsed: new Set(["/w/alpha"]) });
+const alphaOpen = openLayout.groups.find((g) => g.workspace === "/w/alpha")!;
+const alphaFold = foldAlpha.groups.find((g) => g.workspace === "/w/alpha")!;
+check(alphaOpen.collapsed === false && alphaFold.collapsed === true, "折叠标记照实落到分区上");
+check(alphaFold.nodes.length === 0, "折叠的分区不再排卡片", `nodes=${alphaFold.nodes.length}`);
+check(alphaFold.nodeCount === 2, "折叠后仍数得出里面有几个会话", `nodeCount=${alphaFold.nodeCount}`);
+check(alphaFold.h < alphaOpen.h, "折叠的高度真的更矮", `${alphaOpen.h} → ${alphaFold.h}`);
+check(alphaFold.links === 1, "跨分区的边也算进「几条关系」", `links=${alphaFold.links}`);
+// 折叠一个分区不能把别的分区推歪：剩下的仍按顺序堆叠、互不重叠
+const betaFold = foldAlpha.groups.find((g) => g.workspace === "/w/beta")!;
+check(betaFold.y >= alphaFold.y + alphaFold.h, "下一个分区接在折叠行的下面", `${alphaFold.y + alphaFold.h} → ${betaFold.y}`);
+check(foldAlpha.edges.length === 0, "一端收起来的边不画（它连不到空气）", `edges=${foldAlpha.edges.length}`);
+check(foldAlpha.width > 0 && foldAlpha.height > 0, "全折叠时画布仍有尺寸", `${foldAlpha.width}×${foldAlpha.height}`);
+
+// ---- 9. 拖动覆盖：人工坐标压过网格，且画布容得下拖出去的那张 -----------------
+const dragged = layoutTopology(two, [], { cols: 4, overrides: { m1: { x: 900, y: 640 } } });
+const m1 = dragged.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m1")!;
+check(m1.x === 900 && m1.y === 640, "拖过的坐标原样生效", `${m1.x},${m1.y}`);
+check(m1.x !== (openLayout.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m1")!.x), "确实压过了自动排版");
+check(dragged.width >= 900 + CARD_W, "画布向右扩到装得下它", `width=${dragged.width}`);
+check(dragged.height >= 640 + CARD_H, "画布向下也扩", `height=${dragged.height}`);
+// 覆盖只影响被拖的那张：别的卡片还在原来的格子上
+const m2 = dragged.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m2")!;
+const m2open = openLayout.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m2")!;
+check(m2.x === m2open.x && m2.y === m2open.y, "没拖的卡片不动", `${m2.x},${m2.y}`);
+// 线跟着卡片走：拖开之后边的端点落在新位置上
+const linked = layoutTopology(two, [edge("m1", "b1")], { cols: 4, overrides: { m1: { x: 900, y: 640 } } });
+check(linked.edges.length === 1 && linked.edges[0].y1 === 640 + CARD_H, "边的起点跟着卡片走",
+  `y1=${linked.edges[0]?.y1}`);
+// 折叠 + 拖动同时生效：折叠的还是折叠，拖过的那张仍在自己的坐标
+const both = layoutTopology(two, [], { cols: 4, collapsed: new Set(["/w/beta"]), overrides: { m1: { x: 40, y: 300 } } });
+check(both.groups.find((g) => g.workspace === "/w/beta")!.collapsed === true, "两个开关互不打扰");
+check(both.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m1")!.x === 40, "折叠时被拖的卡片坐标不被重置");
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) { for (const f of failures) console.log(`  FAIL ${f}`); process.exit(1); }

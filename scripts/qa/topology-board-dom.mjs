@@ -91,8 +91,9 @@ check("/api/topology 把这条关系作为一条边返回", apiView.mine.include
 await ev(`(() => { const row = [...document.querySelectorAll('.session-item')]
   .find(r => (r.textContent || '').includes(${JSON.stringify(ORIGIN)})); if (row) row.click(); return Boolean(row); })()`);
 await sleep(2200);
-check("chat head 里有拓扑入口", (await ev(`document.querySelectorAll('[data-topo-entry]').length`)) === 1);
-await ev(`document.querySelector('[data-topo-entry]').click(); true`);
+// #94：入口搬到左侧 rail 的全局导航区（head 只留会话级按钮）。
+check("rail 里有拓扑入口", (await ev(`document.querySelectorAll('[data-nav="topology"]').length`)) === 1);
+await ev(`document.querySelector('[data-nav="topology"]').click(); true`);
 await sleep(2500);
 check("点开后是替换主区的板子（不是浮层）",
   (await ev(`!!document.querySelector('[data-topo-board]')`)) === true &&

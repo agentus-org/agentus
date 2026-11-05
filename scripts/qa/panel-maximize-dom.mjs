@@ -82,9 +82,18 @@ const layout = async () => JSON.parse(await ev(`(() => {
 })()`));
 
 // 打开面板（宽窗下的 📁 按钮）
+// 面板是懒加载的：点完不能只数两秒，没挂上来的时候下面会一口气假红十几条。
+const waitPanel = async () => {
+  for (let i = 0; i < 40; i++) {
+    if (await ev(`!!document.querySelector('.tool-panel')`)) return true;
+    await sleep(150);
+  }
+  return false;
+};
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]');
   if (b && !document.querySelector('.tool-panel')) b.click(); return true; })()`);
-await sleep(2000);
+await waitPanel();
+await sleep(400);
 const before = await layout();
 check("宽窗面板 tab 栏有「最大化」按钮", before.pressed !== null, JSON.stringify({ pressed: before.pressed }));
 check("起始不是放大态（pressed=false，聊天列可见）",
@@ -94,7 +103,8 @@ check("起始不是放大态（pressed=false，聊天列可见）",
 await ev(`localStorage.setItem('agentus.panel-width', '620'); true`);
 await goto(BASE);
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
-await sleep(2000);
+await waitPanel();
+await sleep(400);
 const start = await layout();
 check("面板用了操作者自己的宽度（620）", Math.abs((start.panelW ?? 0) - 620) <= 2, String(start.panelW));
 

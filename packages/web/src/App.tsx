@@ -1244,6 +1244,38 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           <button onClick={() => location.reload()}>reload</button>
         </div>
       ) : null}
+      {/* 全局视图入口（issue #94）——「这台机器/这个项目在干什么」，不是「这个会话怎么用」。
+          AionUi / Open WebUI / hermes-webui 三家都把这类入口收在左侧导航固定区：ChatHead 是会话
+          动作的家（通话、朗读、授权），每加一个机器级功能就往那里塞一个图标，最后会变成一条
+          不断变长的工具条（#80 已经因图标拥挤处置过一次）。
+
+          放在 header 与搜索框之间、与下方可滚动的会话列表用一条 divider 隔开 —— 列表滚多远，
+          这两条都在原地。入口仍然只发事件：面板本体、Esc 次序、App 的 state 一概不动。 */}
+      <nav className="rail-nav" aria-label="全局视图">
+        <button
+          type="button"
+          className="rail-nav-item"
+          data-nav="topology"
+          title="会话拓扑 —— 每个工作空间有哪些会话、谁把活交给了谁"
+          aria-label="打开会话拓扑"
+          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-topology"))}
+        >
+          <IconFork size={14} />
+          <span>会话拓扑</span>
+        </button>
+        <button
+          type="button"
+          className="rail-nav-item"
+          data-nav="cron"
+          title="定时任务 —— hermes cron 的作业、执行历史与失败账本"
+          aria-label="打开定时任务"
+          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-cron"))}
+        >
+          <IconClock size={14} />
+          <span>定时任务</span>
+        </button>
+      </nav>
+      <div className="rail-nav-divider" role="presentation" />
       <button className="new-btn" onClick={onNew} title="new session (pick a backend + working directory)">
         <IconPlus size={14} /> <span className="new-label">new session</span>
       </button>
@@ -1823,31 +1855,6 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
           tool row — icon buttons that belong together should read as one strip, not
           as separate stops. */}
       <span className="head-actions">
-        {/* 会话拓扑（2026-11-03）：这个按钮问的是「别的会话呢」，不是「这个会话怎么用」——
-            所以它在 head 的簇里排第一，靠左，紧挨着身份。入口走事件：App 才持有那个 view。 */}
-        <button
-          type="button"
-          className="icon-btn topo-entry"
-          title="会话拓扑 —— 每个工作空间有哪些会话、谁把活交给了谁"
-          aria-label="打开会话拓扑"
-          data-topo-entry
-          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-topology"))}
-        >
-          <IconFork size={14} />
-        </button>
-        {/* 定时作业（issue #92）：跟拓扑同一层「这台机器在干什么」，入口也走事件 —— 面板要读
-            /api/cron，而 head 拿不到 App 的 state。hermes 不可达时面板自己说清原因，所以这里
-            不预先隐藏按钮（否则操作者会以为功能不存在）。 */}
-        <button
-          type="button"
-          className="icon-btn cron-entry"
-          title="定时任务 —— hermes cron 的作业、执行历史与失败账本"
-          aria-label="打开定时任务"
-          data-cron-entry
-          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-cron"))}
-        >
-          <IconClock size={14} />
-        </button>
         <button
           className={`icon-btn call-entry ${call ? "on" : ""}${armed ? " press-armed" : ""}`}
           title="语音通话 —— 像打电话一样跟这个会话说话（长按 = Tus 模式：一张会动的脸 + 会话记录）"

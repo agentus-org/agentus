@@ -433,8 +433,12 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
       if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? "eval failed");
       return r.result.value;
     };
-    // SPA + WS 首帧：给它一点时间把 rail 画完
-    await sleep(3000);
+    // SPA + WS 首帧：等 rail 真的画出来，而不是数三秒 —— 机器忙的时候这三秒会落在
+    // 「正在检查登录状态…」上，然后十条断言一起假红。
+    for (let i = 0; i < 60; i++) {
+      if (await ev(`!!document.querySelector('.rail-main-bot')`)) break;
+      await sleep(250);
+    }
 
     check("页面里主 agent 有一行", await ev(`document.querySelectorAll('.rail-main-bot .session-item').length === 1`));
     check("★ 星标在行上（身份标识，不是收藏）", await ev(`!!document.querySelector('.rail-main-bot .main-star')`));
