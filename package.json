@@ -118,7 +118,8 @@
     "topology-edges": "tsx scripts/qa/topology-edges.mts",
     "topology-board-dom": "node scripts/qa/topology-board-dom.mjs",
     "cron-units": "tsx scripts/qa/cron-units.mts",
-    "cron-board-dom": "node scripts/qa/cron-board-dom.mjs"
+    "cron-board-dom": "node scripts/qa/cron-board-dom.mjs",
+    "turn-reply-units": "tsx scripts/qa/turn-reply-units.mts"
   },
   "engines": {
     "node": ">=22.5"

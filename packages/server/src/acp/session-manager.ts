@@ -194,10 +194,22 @@ export class SessionUnavailable extends Error {
 export interface TurnReply {
   origin: string;
   originTitle: string | null;
+  /** What the job WAS, frozen at registration time (#93-2). The target's title is read at DELIVERY
+   *  time and drifts — an agent that renames itself between dispatch and settle made three
+   *  receipts carry the same words, and none of them the job they were about. */
+  brief: string;
   at: number;
   /** The turn this registration is about. `#settleTurnReplies` only settles entries whose turn is
    *  this one or older, so a second `--interrupt` dispatch cannot be swallowed by the turn it killed. */
   turnSeq: number | null;
+}
+
+/** 一段派活消息 → 回执里那半句话（#93-2）：压成一行、截断。放在这里因为它属于回执的措辞，
+ *  不属于发送路径 —— 发送路径只负责把原话递进去。 */
+export function briefOf(text: string, max = 50): string {
+  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!flat) return "（空消息）";
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 /** A queued "wake this session with a notice" item. Two kinds share the queue but not the rules:
@@ -207,6 +219,11 @@ interface PendingCompletion {
   text: string;
   kind: "background" | "reply";
   origin?: { sessionId: string; title: string | null };
+  /** One line describing this completion, kept apart from `text` so a batch can be re-assembled
+   *  into a single message (#93-4). `text` stays the whole sentence for the single case. */
+  line?: string;
+  /** The session this completion is about — appended to `line` in a batch. */
+  target?: string;
 }
 
 /** What the 主 agent reads about itself, written once into `<data>/main-bot/AGENTS.md` (issue #84).
@@ -325,6 +342,10 @@ interface LiveSession {
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
   turnSeq: number;
+  /** #93-3: who took the floor with `--interrupt`, and WHICH turn it killed. Bound to the turn
+   *  number rather than kept as a bare name: a stale name would exempt the wrong receipt later.
+   *  Consumed (and cleared) only by the settle that reports that exact turn. */
+  cancelledBy?: { origin: string; turnSeq: number } | null;
   /** The spawn-time handshake, while it is still running.
    *
    *  `create()` no longer waits for it (that wait is what made 「新建会话」 feel broken), so the slot
@@ -552,10 +573,15 @@ export class SessionManager {
    *  （投递本身失败、或操作者把它打断成了另一件事）。
    *
    *  Returns the registration id; `dropTurnReply` cancels it. */
-  expectTurnReply(target: string, r: { origin: string; originTitle?: string | null; turnSeq?: number | null }): string {
+  expectTurnReply(
+    target: string,
+    r: { origin: string; originTitle?: string | null; turnSeq?: number | null; brief?: string },
+  ): string {
     const id = `reply-${++this.#replySeq}`;
     const entry: TurnReply = {
-      origin: r.origin, originTitle: r.originTitle ?? null, at: Date.now(), turnSeq: r.turnSeq ?? null,
+      origin: r.origin, originTitle: r.originTitle ?? null,
+      brief: r.brief?.trim() || target.slice(0, 8),
+      at: Date.now(), turnSeq: r.turnSeq ?? null,
     };
     const settled = this.#lastSettledTurn.get(target);
     if (r.turnSeq != null && settled != null && r.turnSeq <= settled) {
@@ -1654,6 +1680,11 @@ export class SessionManager {
       // "still running". (A plain sleep would guess; the per-turn counter knows.)
       const deadline = Date.now() + TURN_SETTLE_TIMEOUT_MS;
       do {
+        // #93-3: remember WHO took the floor and WHICH turn is being killed — the receipt for that
+        // turn is owed to every waiter EXCEPT this one (「我主动打断的，为什么还给我发取消通知」).
+        const victim = s.turnSeq;
+        const by = opts.origin?.sessionId ?? null;
+        if (by) s.cancelledBy = { origin: by, turnSeq: victim };
         await this.cancel(sessionId);
         const mine = s.turnSeq;
         while (s.busy && s.turnSeq === mine && Date.now() < deadline) {
@@ -1808,7 +1839,7 @@ export class SessionManager {
     void this.#wakeWithCompletion(s, item);
   }
 
-  async #wakeWithCompletion(s: LiveSession, item: PendingCompletion): Promise<void> {
+  async #wakeWithCompletion(s: LiveSession, item: PendingCompletion, batch?: PendingCompletion[]): Promise<void> {
     try {
       // `origin` so the page labels the bubble as a notice instead of presenting it as something the
       // operator typed — the same mechanism the cockpit's cross-session `send` uses. A turn reply
@@ -1819,8 +1850,9 @@ export class SessionManager {
       });
     } catch (err) {
       // Lost a race for the floor (an operator prompt landed first): keep it for the next turn end
-      // instead of throwing away the agent's own result.
-      s.pendingCompletions.unshift(item);
+      // instead of throwing away the agent's own result. A merged batch goes back WHOLE (#93-4) —
+      // restoring only the merged text would lose the per-job lines the next merge needs.
+      s.pendingCompletions.unshift(...(batch ?? [item]));
       console.log(`[agentus] completion held for ${s.info.id}: ${errMessage(err)}`);
     }
   }
@@ -1832,46 +1864,59 @@ export class SessionManager {
   async #deliverTurnReplies(
     target: string,
     entries: (TurnReply & { id?: string })[],
-    outcome: { failed?: string; failureKind?: "send" | "turn"; note?: string; durationMs?: number; stopReason?: string | null } = {},
+    outcome: {
+      failed?: string; failureKind?: "send" | "turn"; note?: string; durationMs?: number;
+      stopReason?: string | null; cancelledBy?: string | null;
+    } = {},
   ): Promise<void> {
     if (!entries.length) return;
-    const title = this.#store.getSession(target)?.title ?? target.slice(0, 8);
     const secs = outcome.durationMs ? Math.round(outcome.durationMs / 1000) : null;
     for (const e of entries) {
-      const text = outcome.note
-        ? `【完成回推】「${title}」${outcome.note}。结果以 session messages ${target} 为准。`
-        : outcome.failed
-        ? outcome.failureKind === "turn"
-          ? `【完成回推】「${title}」这一轮跑失败了：${outcome.failed}。消息送到了，别重发。`
-          : `【完成回推】给「${title}」的消息没送进去：${outcome.failed}。它这一轮不会跑，别等了。`
-        : outcome.stopReason === "cancelled"
-          ? `【完成回推】「${title}」这一轮被取消了（${secs ?? "?"} 秒）。结果以 session messages 为准。`
-          : `【完成回推】「${title}」这一轮跑完了${secs != null ? `（${secs} 秒）` : ""}。`
-            + `要看内容用 session messages ${target}；这条只是通知，正文不在这里。`;
       // 自己发给自己的那种派活不回推：那就是一次普通发言，回一条「你跑完了」会变成乒乓。
       if (e.origin === target) continue;
+      // #93-3：取消的回执只送给**没参与这次打断**的等待者。自己抢的话头，自己不必被告知。
+      if (outcome.stopReason === "cancelled" && outcome.cancelledBy && e.origin === outcome.cancelledBy) continue;
+      // #93-2：说清的是「哪一笔活」（登记时刻固化），不是目标此刻叫什么名字。
+      const line = outcome.note
+        ? `『${e.brief}』${outcome.note}`
+        : outcome.failed
+        ? outcome.failureKind === "turn"
+          ? `『${e.brief}』这一轮跑失败了：${outcome.failed}（消息送到了，别重发）`
+          : `给『${e.brief}』的消息没送进去：${outcome.failed}（它这一轮不会跑，别等了）`
+        : outcome.stopReason === "cancelled"
+          ? `『${e.brief}』被取消了（${secs ?? "?"} 秒）`
+          : `『${e.brief}』跑完了${secs != null ? `（${secs} 秒）` : ""}`;
+      const text = `【完成回推】${line}。要看内容用 session messages ${target}；这条只是通知，正文不在这里。`;
+      const item: PendingCompletion = {
+        text, kind: "reply", origin: { sessionId: target, title: e.brief }, line, target,
+      };
       const live = this.#sessions.get(e.origin);
       if (live) {
-        this.#queueOrWakeCompletion(live, { text, kind: "reply", origin: { sessionId: target, title } });
+        this.#queueOrWakeCompletion(live, item);
         continue;
       }
       // 发起方已经冷了：和 `--wake` 同一个动作（起进程），起来以后再投。
       try {
         await this.resume(e.origin);
         const back = this.#sessions.get(e.origin);
-        if (back) this.#queueOrWakeCompletion(back, { text, kind: "reply", origin: { sessionId: target, title } });
+        if (back) this.#queueOrWakeCompletion(back, item);
       } catch (err) {
         console.log(`[agentus] turn reply dropped for ${e.origin}: ${errMessage(err)}`);
       }
     }
   }
 
-  /** 一个回合结束了 —— 有登记就投。只在这里汇总，散落在三处 `busy = false` 的写法会互相漏。 */
   #settleTurnReplies(
     target: string,
     upToTurn: number | null,
     outcome: { failed?: string; failureKind?: "send" | "turn"; durationMs?: number; stopReason?: string | null },
   ): void {
+    // #93-3: the exemption is valid for exactly the turn an interrupt killed, so match on the turn
+    // number and consume it here (a leftover name would silently excuse a later receipt).
+    const live = this.#sessions.get(target);
+    const mark = live?.cancelledBy ?? null;
+    const cancelledBy = mark && upToTurn !== null && mark.turnSeq === upToTurn ? mark.origin : null;
+    if (mark && (upToTurn === null || upToTurn >= mark.turnSeq)) live!.cancelledBy = null;
     if (upToTurn !== null) {
       const before = this.#lastSettledTurn.get(target);
       if (before === undefined || upToTurn > before) this.#lastSettledTurn.set(target, upToTurn);
@@ -1887,18 +1932,51 @@ export class SessionManager {
       entries.push({ id, ...r });
     }
     if (!rows.size) this.#turnReplies.delete(target);
-    void this.#deliverTurnReplies(target, entries, outcome);
+    void this.#deliverTurnReplies(target, entries, { ...outcome, cancelledBy });
     // The 主 agent's rail row draws one dot per outstanding delegation; a settled receipt is exactly
     // the instant that dot must go away, so the frame is emitted HERE rather than waiting for the
     // next unrelated session event (「干完立刻消失，别留残点」 — the operator).
     if (entries.length) this.#emitSessions();
   }
 
+  /** Hand queued completion(s) back to the agent at a turn boundary.
+   *
+   *  #93-4：队首那一串**同 kind** 的条目一次性投出。以前一条一个回合 —— 三张回执就是三次额外
+   *  的完整模型调用，每次只为读一行「跑完了」。合并只发生在**投递打包层**：每条回执在 settle 时
+   *  就已经各自定局，per-turn 绑定一点没动。
+   *
+   *  只取队首那一段：排在同 kind 后面的另一类通知不能被提到它前面（两者生产者不同，操作者看到的
+   *  顺序应当是到达顺序）。
+   */
   #drainHeldCompletion(s: LiveSession): void {
     if (!s.pendingCompletions.length || s.busy) return;
-    const next = s.pendingCompletions.shift();
-    if (!next) return;
-    setTimeout(() => void this.#wakeWithCompletion(s, next), 0).unref?.();
+    const kind = s.pendingCompletions[0].kind;
+    const batch: PendingCompletion[] = [];
+    while (s.pendingCompletions.length && s.pendingCompletions[0].kind === kind) {
+      batch.push(s.pendingCompletions.shift()!);
+    }
+    if (!batch.length) return;
+    const item = batch.length > 1 ? this.#mergeCompletions(batch) : batch[0];
+    setTimeout(() => void this.#wakeWithCompletion(s, item, batch), 0).unref?.();
+  }
+
+  /** `【完成回推 ×N】`＋每个作业一行（各自带目标 id）＋怎么读正文。 */
+  #mergeCompletions(batch: PendingCompletion[]): PendingCompletion {
+    const lines = batch.map((b) => (b.line && b.target ? `${b.line}  — ${b.target}` : b.text));
+    const targets = [...new Set(batch.map((b) => b.target).filter((t): t is string => Boolean(t)))];
+    const head = batch.length > 0 && batch[0].kind === "reply" ? `【完成回推 ×${batch.length}】` : "";
+    const text = [
+      head,
+      ...lines,
+      targets.length ? `要看内容用 session messages ${targets.join(" / ")}；这条只是通知，正文不在这里。` : "",
+    ].filter(Boolean).join("\n");
+    const first = batch[0].origin;
+    const sameOrigin = batch.every((b) => b.origin?.sessionId === first?.sessionId);
+    return {
+      text,
+      kind: batch[0].kind,
+      origin: sameOrigin && first ? first : { sessionId: "multiple", title: `${batch.length} 条完成回推` },
+    };
   }
 
   /** @returns whether a turn was actually interrupted — `false` for an idle/absent slot, so a caller

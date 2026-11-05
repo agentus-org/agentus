@@ -101,6 +101,7 @@ const messages = async (id) => {
   return r.body?.messages ?? [];
 };
 const textOf = (m) => String(m?.payload ?? m?.text ?? m?.content ?? "");
+const startsWithReply = (t) => /^【(完成回推|任务回报)/.test(String(t).trim());
 
 try {
   await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
@@ -125,10 +126,14 @@ try {
     if (hit) { notice = textOf(hit); break; }
   }
   check("when the worker's turn ends the dispatcher gets a 【完成回推】", notice != null, String(notice).slice(0, 120));
-  check("…naming the worker, not just \"something finished\"", notice != null && notice.includes("交付B"), String(notice).slice(0, 120));
+  // #93-2：标题取投递时刻的会话名会漂移（靶会话被自动改名后三张回执顶着同一句话）。
+  // 回执必须说清「是哪一笔活」—— 登记时刻固化的派活摘要。
+  check("…naming the JOB it was dispatched for", notice != null && notice.includes("帮我跑个慢活"), String(notice).slice(0, 140));
+  check("…and it no longer borrows the worker's title (that is what drifts)",
+    notice != null && !notice.includes("交付B"), String(notice).slice(0, 140));
   check("…with how long it took", /（\d+ 秒）/.test(String(notice)), String(notice).slice(0, 120));
   check("…and it does NOT carry the answer body (that is what session messages is for)",
-    notice != null && !/Mock echo|慢活/.test(String(notice)), String(notice).slice(0, 160));
+    notice != null && !/Mock echo/.test(String(notice)) && String(notice).length < 200, String(notice).slice(0, 160));
 
   // ---- 3. 不带标志：行为必须和今天一模一样（照样等回合跑完） --------------------------
   const blocking = cli(asA, ["session", "send", B.id, "[hold:4000] 老写法"]);
@@ -141,6 +146,9 @@ try {
   const refused = cli(asA, ["session", "send", B.id, "抢不了就该拒", "--reply-on-done"]);
   check("a BUSY target still answers target_busy (reply-on-done does not buy a queue slot)",
     refused.code !== 0 && /target_busy/.test(JSON.stringify(refused.doc)), JSON.stringify(refused.doc).slice(0, 160));
+  // #93-1：只说「忙」不够 —— 调用方多半是另一个 agent，它得知道下一步要么等、要么 --interrupt。
+  check("…and the refusal names both ways forward (retry later / --interrupt)",
+    /--interrupt/.test(JSON.stringify(refused.doc)), JSON.stringify(refused.doc).slice(0, 200));
   await sleep(9000);   // 让上面那条慢回合跑完
   const rowsAfter = await messages(A.id);
   // the mock ECHOES whatever it is given, so each notice shows up twice in the transcript (the
@@ -175,7 +183,7 @@ try {
   for (let i = 0; i < 40; i += 1) {
     await sleep(500);
     const rows = await messages(A.id);
-    const fresh = rows.map(textOf).filter((t) => t.startsWith("【完成回推】") && t.includes("被打断C"));
+    const fresh = rows.map(textOf).filter((t) => startsWithReply(t) && (t.includes("抢话头") || t.includes("被打断C")));
     if (fresh.length > 0) { got = fresh[fresh.length - 1]; break; }
   }
   await sleep(2000);
@@ -192,7 +200,8 @@ try {
   let quietNotice = null;
   for (let i = 0; i < 30; i += 1) {
     await sleep(500);
-    const hit = (await messages(A.id)).map(textOf).find((t) => t.startsWith("【完成回推】") && t.includes("静默D"));
+    const hit = (await messages(A.id)).map(textOf).find((t) => startsWithReply(t)
+      && (t.includes("关掉唤醒也要回我") || t.includes("静默D")));
     if (hit) { quietNotice = hit; break; }
   }
   check("…and the receipt still arrives (that switch is about background noise, not about peers waiting)",
@@ -209,11 +218,83 @@ try {
   let closeNotice = null;
   for (let i = 0; i < 30; i += 1) {
     await sleep(500);
-    const hit = (await messages(A.id)).map(textOf).find((t) => t.startsWith("【完成回推】") && t.includes("要关E"));
+    const hit = (await messages(A.id)).map(textOf).find((t) => startsWithReply(t)
+      && (t.includes("[hold:12000] 长活") || t.includes("长活") || t.includes("要关E")));
     if (hit) { closeNotice = hit; break; }
   }
   check("closing a target with a reply outstanding tells the dispatcher instead of leaving it waiting",
     closeNotice != null, String(closeNotice).slice(0, 120));
+  // ---- 9. #93-3：自我打断不出「被取消」回执；第三方打断照发 ---------------------------
+  // 「我主动抢了话头，为什么还给我发一条取消通知」—— 取消的回执只该送给**没参与打断**的等待者。
+  const F = await mkSession("自我打断F");
+  const selfJob = cli(asA, ["session", "send", F.id, "[hold:9000] 我自己派的长活", "--reply-on-done"]);
+  check("#93-3 a dispatch is running on F", selfJob.code === 0 && selfJob.doc?.data?.reply_on_done === true, selfJob.stderr);
+  await sleep(700);
+  const selfInterrupt = cli(asA, ["session", "send", F.id, "[hold:600] 我自己插一句", "--interrupt"]);
+  check("#93-3 …the dispatcher interrupts its own delegated turn", selfInterrupt.code === 0 && selfInterrupt.doc?.data?.interrupted === true,
+    selfInterrupt.stderr || JSON.stringify(selfInterrupt.doc?.data));
+  await sleep(4000);
+  const selfNotices = (await messages(A.id)).map(textOf).filter((t) => startsWithReply(t)
+    && (t.includes("我自己派的长活") || t.includes("自我打断F")));
+  check("#93-3 …and it gets NO 「被取消」 receipt for a turn IT interrupted itself",
+    selfNotices.length === 0, `notices=${JSON.stringify(selfNotices).slice(0, 200)}`);
+
+  // 反例：**别的**会话打断，等活的人有权知道 —— 这条不许被上一条的豁免顺带吞掉。
+  const G = await mkSession("第三方打断G");
+  const asG = identityOf(G.pid);
+  const peerJob = cli(asA, ["session", "send", F.id, "[hold:9000] A派给F的长活", "--reply-on-done"]);
+  check("#93-3 a second dispatch is running on F", peerJob.code === 0, peerJob.stderr);
+  await sleep(700);
+  const peerInterrupt = cli(asG, ["session", "send", F.id, "[hold:600] 第三方插话", "--interrupt"]);
+  check("#93-3 …a THIRD PARTY interrupts it", peerInterrupt.code === 0, peerInterrupt.stderr);
+  let peerNotice = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(400);
+    const hit = (await messages(A.id)).map(textOf).find((t) => startsWithReply(t)
+      && (t.includes("A派给F的长活") || t.includes("自我打断F")));
+    if (hit) { peerNotice = hit; break; }
+  }
+  check("#93-3 …and the WAITING dispatcher still hears about it (someone else took the floor)",
+    peerNotice != null && /取消/.test(peerNotice), String(peerNotice).slice(0, 160));
+
+  // ---- 10. #93-4：同一回合边界上的多条回执合并成一条消息 ------------------------------
+  // 三笔派活的回执各开一个回合 = 三次完整模型调用，正文全是「一条通知」。合并只发生在投递打包层。
+  const W1 = await mkSession("批合并1");
+  const W2 = await mkSession("批合并2");
+  const W3 = await mkSession("批合并3");
+  const H = await mkSession("占住A的H");
+  const asH = identityOf(H.pid);
+  // A 自己也在跑回合（mock 要 echo 前面的注入），先等它闲下来，否则「占住」这一步本身就是 target_busy
+  let holdA = [];
+  for (let i = 0; i < 20; i += 1) {
+    holdA = [cli(asH, ["session", "send", A.id, "[hold:7000] 先把 A 占住", "--reply-on-done"])];
+    if (holdA.every((r) => r.code === 0)) break;
+    await sleep(500);
+  }
+  check("#93-4 the dispatcher is BUSY when the receipts arrive", holdA.every((r) => r.code === 0), holdA.map((r) => r.stderr).join(" | "));
+  await sleep(500);
+  const jobs = [
+    cli(asA, ["session", "send", W1.id, "[hold:900] 批活甲", "--reply-on-done"]),
+    cli(asA, ["session", "send", W2.id, "[hold:900] 批活乙", "--reply-on-done"]),
+    cli(asA, ["session", "send", W3.id, "[hold:900] 批活丙", "--reply-on-done"]),
+  ];
+  check("#93-4 three dispatches are accepted", jobs.every((r) => r.code === 0), jobs.map((r) => r.stderr).join(" | "));
+  let bundled = null;
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(400);
+    const hit = (await messages(A.id)).map(textOf).find((t) => startsWithReply(t) && t.includes("批活丙"));
+    if (hit) { bundled = hit; break; }
+  }
+  check("#93-4 …the three receipts arrive as ONE bundled message",
+    bundled != null && /×\s*3/.test(bundled), String(bundled).slice(0, 200));
+  check("#93-4 …carrying all three jobs",
+    ["批活甲", "批活乙", "批活丙"].every((j) => String(bundled).includes(j)), String(bundled).slice(0, 240));
+  const replyRows = (await messages(A.id)).map(textOf).filter(startsWithReply);
+  const bundledRows = replyRows.filter((t) => /×\s*3/.test(t));
+  check("#93-4 …and not as three separate notices (that would be three extra turns)",
+    bundledRows.length >= 1 && replyRows.filter((t) => t.includes("批活甲")).length === 1,
+    `rows=${replyRows.length} bundled=${bundledRows.length}`);
+
 } finally {
   try { process.kill(-proc.pid, "SIGTERM"); } catch { /* gone */ }
 }
