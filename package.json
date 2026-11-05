@@ -119,7 +119,8 @@
     "topology-board-dom": "node scripts/qa/topology-board-dom.mjs",
     "cron-units": "tsx scripts/qa/cron-units.mts",
     "cron-board-dom": "node scripts/qa/cron-board-dom.mjs",
-    "turn-reply-units": "tsx scripts/qa/turn-reply-units.mts"
+    "turn-reply-units": "tsx scripts/qa/turn-reply-units.mts",
+    "rail-nav-dom": "node scripts/qa/rail-nav-dom.mjs"
   },
   "engines": {
     "node": ">=22.5"

@@ -3887,3 +3887,21 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   .cron-runs li, .cron-incidents li { grid-template-columns: 84px 64px 1fr; }
   .cron-runs li > :nth-child(4), .cron-runs li > :nth-child(5) { display: none; }
 }
+
+/* ── rail 顶部全局导航区（issue #94） ──────────────────────────────────────────────
+   判据：「这台机器/这个项目在干什么」→ 这里；「这个会话怎么用」→ ChatHead。
+   固定区不随会话列表滚动，用一条 divider 与列表分开（AionUi 的 Sider 顶部就是这样收的）。 */
+.rail-nav { display: flex; flex-direction: column; gap: 2px; padding: 2px 8px 0; flex: none; }
+.rail-nav-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-dim); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.rail-nav-item:hover { background: var(--bg-raised); color: var(--text); }
+.rail-nav-item:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.rail-nav-item svg { flex: none; }
+.rail-nav-divider { height: 1px; background: var(--line); margin: 8px 10px 4px; flex: none; }
+.sidebar.compact .rail-nav { padding: 2px 0 0; }
+.sidebar.compact .rail-nav-item { justify-content: center; padding: 7px 0; border-radius: 0; }
+.sidebar.compact .rail-nav-item span { display: none; }
+.sidebar.compact .rail-nav-divider { margin: 8px 6px 4px; }
