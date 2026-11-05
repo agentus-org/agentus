@@ -8,6 +8,7 @@ import { busyNow, cockpit, type BackendView, type BlockedSlot, type MsgView, typ
 import { Markdown } from "./Markdown";
 import { SettingsPage } from "./SettingsPage";
 import { TopologyBoard } from "./TopologyBoard";
+import { CronPanel } from "./CronPanel";
 import { clockHM, messageTime, relTime, stamp } from "./time";
 import { durationWords, turnPulseState } from "./turn-state";
 import { backendChoices, markOf } from "./agents";
@@ -49,12 +50,7 @@ import {
 import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
 import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldToTalk } from "./holdToTalk";
-import {
-  IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile,
-  IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip,
-  IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield,
-  IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar,
-} from "./Icons";
+import { IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile, IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar, IconClock } from "./Icons";
 import { PANES, headPanes, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
@@ -105,6 +101,9 @@ export function App(): JSX.Element {
   // 卸载，浮窗里那份就是唯一的那份（两个 Main 会各自挂一套面板/终端/WSS 订阅）。
   const [topo, setTopo] = useState(false);
   const [topoWin, setTopoWin] = useState<string | null>(null);
+  /** 定时作业面板（issue #92）：同样是替换主区的视图，与拓扑互斥 —— 两个都开时最后一个赢，
+   *  但入口只在会话页的 head 上，所以实际不会同时打开。 */
+  const [cron, setCron] = useState(false);
   // The speaker menu's 「自定义节拍…」 needs to OPEN settings, and it lives four components deep
   // (App → Main → ChatPane → head). An event beats threading a prop through three layers for one
   // global action — and the menu closes itself on click either way.
@@ -118,6 +117,11 @@ export function App(): JSX.Element {
     const open = (): void => { setTopo(true); setTopoWin(null); setDrawer(false); };
     window.addEventListener("agentus:open-topology", open);
     return () => window.removeEventListener("agentus:open-topology", open);
+  }, []);
+  useEffect(() => {
+    const open = (): void => { setCron(true); setTopo(false); setTopoWin(null); setDrawer(false); };
+    window.addEventListener("agentus:open-cron", open);
+    return () => window.removeEventListener("agentus:open-cron", open);
   }, []);
 
   // ---- the two side panes, both resizable and both the operator's to size -----------------
@@ -152,6 +156,7 @@ export function App(): JSX.Element {
   // Esc 的次序就是离开的次序：先关浮窗（回到拓扑），再按一次才退出拓扑（回到会话页）。
   useEscape(topoWin !== null, () => setTopoWin(null));
   useEscape(topo && topoWin === null, () => setTopo(false));
+  useEscape(cron, () => setCron(false));
   // The server's palette is the source of truth; the localStorage copy only made the
   // first frame right. Adopted once the operator is in (the endpoint needs a session).
   useEffect(() => {
@@ -186,6 +191,8 @@ export function App(): JSX.Element {
           onOpen={(id) => { cockpit.setActive(id); setTopoWin(id); }}
           openId={topoWin}
         />
+      ) : cron ? (
+        <CronPanel onClose={() => setCron(false)} />
       ) : (
         <Main
           onMenu={onMenu}
@@ -1827,6 +1834,19 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
           onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-topology"))}
         >
           <IconFork size={14} />
+        </button>
+        {/* 定时作业（issue #92）：跟拓扑同一层「这台机器在干什么」，入口也走事件 —— 面板要读
+            /api/cron，而 head 拿不到 App 的 state。hermes 不可达时面板自己说清原因，所以这里
+            不预先隐藏按钮（否则操作者会以为功能不存在）。 */}
+        <button
+          type="button"
+          className="icon-btn cron-entry"
+          title="定时任务 —— hermes cron 的作业、执行历史与失败账本"
+          aria-label="打开定时任务"
+          data-cron-entry
+          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-cron"))}
+        >
+          <IconClock size={14} />
         </button>
         <button
           className={`icon-btn call-entry ${call ? "on" : ""}${armed ? " press-armed" : ""}`}

@@ -3803,3 +3803,87 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .topo-legend i.sw { display: inline-block; width: 14px; height: 0; border-top: 1.5px solid var(--line); }
 .topo-legend i.sw.handoff { border-top-color: var(--accent-dim); }
 .topo-legend i.sw.spawn { border-top-style: dashed; }
+
+/* ── 定时作业面板（issue #92） ────────────────────────────────────────────────
+   和拓扑板同一个形状：替换主区的整块视图（`.topo` 的兄弟），不是浮层。表格是主要对象 ——
+   作业是「一排等宽的行」，卡片会把「下次几点」挤成两行，反而不好扫。 */
+.cron-panel { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); overflow: hidden; }
+.cron-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--bg-panel); min-height: 46px;
+}
+.cron-head strong { font-size: 13px; font-weight: 600; }
+.cron-sub { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.cron-spacer { flex: 1 1 auto; min-width: 8px; }
+.cron-body { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 16px; }
+.cron-error { margin: 10px 12px; padding: 8px 10px; border: 1px solid var(--err); border-radius: 8px; color: var(--err); font-size: 12px; }
+.cron-ack {
+  margin: 10px 12px 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-panel); font-size: 11px; color: var(--text-dim); font-family: var(--mono);
+  white-space: pre-wrap; word-break: break-word;
+}
+.cron-empty { color: var(--text-dim); font-size: 12px; padding: 14px 2px; }
+.cron-empty .cron-why { font-family: var(--mono); font-size: 11px; opacity: .75; margin-top: 4px; }
+
+.cron-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.cron-table th {
+  text-align: left; font-weight: 500; font-size: 11px; color: var(--text-dim);
+  padding: 0 8px 6px; border-bottom: 1px solid var(--line);
+}
+.cron-table th:nth-child(2) { width: 150px; }
+.cron-table th:nth-child(3) { width: 90px; }
+.cron-table th:nth-child(4), .cron-table th:nth-child(5) { width: 132px; }
+.cron-table th:nth-child(6) { width: 104px; }
+.cron-row td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; text-align: left; }
+.cron-row:hover td { background: var(--bg-panel); }
+.cron-row.open td { background: var(--bg-panel); }
+.cron-name {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font: inherit; color: var(--text); background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cron-name:hover { color: var(--accent-text); }
+.cron-id { display: block; font-family: var(--mono); font-size: 10px; color: var(--text-dim); opacity: .7; margin-top: 2px; }
+.cron-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--text-dim); }
+.cron-dot.ok { background: var(--ok); }
+.cron-dot.idle { background: var(--text-dim); }
+.cron-dot.bad { background: var(--err); }
+.cron-state { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-dim); }
+.cron-state.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.cron-state.bad { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.cron-ago { display: block; font-size: 10px; color: var(--text-dim); opacity: .8; }
+.cron-acts { display: flex; gap: 2px; justify-content: flex-end; }
+.cron-table code { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.cron-detail-row td { padding: 0 8px 12px; background: var(--bg-panel); }
+.cron-detail { display: flex; flex-direction: column; gap: 10px; padding: 10px 4px 2px; }
+.cron-detail dl { display: grid; grid-template-columns: 88px 1fr; gap: 4px 12px; margin: 0; font-size: 11.5px; }
+.cron-detail dt { color: var(--text-dim); }
+.cron-detail dd { margin: 0; word-break: break-word; }
+.cron-detail dd code { font-family: var(--mono); font-size: 11px; }
+.cron-err { color: var(--err); font-family: var(--mono); font-size: 10.5px; word-break: break-word; }
+.cron-prompt summary { cursor: pointer; font-size: 11.5px; color: var(--text-dim); }
+.cron-prompt pre {
+  margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--code-bg); color: var(--code-fg); font-family: var(--mono); font-size: 11px;
+  white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto;
+}
+
+.cron-block h4 { margin: 0 0 6px; font-size: 11.5px; font-weight: 600; color: var(--text-dim); }
+.cron-runs, .cron-incidents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.cron-runs li, .cron-incidents li {
+  display: grid; grid-template-columns: 96px 78px 132px 52px 1fr; gap: 8px; align-items: center;
+  padding: 5px 2px; border-bottom: 1px solid var(--line); font-size: 11.5px;
+}
+.cron-runs li code, .cron-incidents li code { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); }
+.cron-run-status { font-size: 10.5px; }
+.cron-runs li.ok .cron-run-status, .cron-incidents li.ok .cron-run-status { color: var(--ok); }
+.cron-runs li.bad .cron-run-status, .cron-incidents li.bad .cron-run-status { color: var(--err); }
+
+@media (max-width: 720px) {
+  .cron-body { padding: 8px; }
+  .cron-table { table-layout: auto; }
+  .cron-table th:nth-child(4), .cron-row td:nth-child(4) { display: none; }
+  .cron-runs li, .cron-incidents li { grid-template-columns: 84px 64px 1fr; }
+  .cron-runs li > :nth-child(4), .cron-runs li > :nth-child(5) { display: none; }
+}

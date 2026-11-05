@@ -261,3 +261,16 @@ export const IconHistory = (p: IconProps = {}): JSX.Element =>
  *  the agent", and this button shows the TRANSCRIPT, not a new conversation. */
 export const IconSubtitles = (p: IconProps = {}): JSX.Element =>
   svg(<><rect x="2.5" y="5" width="19" height="14" rx="3.5" /><path d="M6.5 10.5h4.5M13.5 10.5h4M6.5 14h7" /></>, p);
+
+/** a plain clock face — the scheduled-jobs panel's entry (a history arrow would read as "past
+ *  runs", and this button opens the whole job list, not a log) */
+export const IconClock = (p: IconProps = {}): JSX.Element =>
+  svg(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 1.9" /></>, p);
+
+/** run now — a filled triangle, distinct from IconStop's square */
+export const IconPlay = (p: IconProps = {}): JSX.Element =>
+  svg(<path d="M8 5.5l10 6.5-10 6.5z" />, p);
+
+/** delete a job — a bin with a lid; the rail's archive icon is a box and would read as "file it" */
+export const IconTrash = (p: IconProps = {}): JSX.Element =>
+  svg(<><path d="M4 7h16" /><path d="M9.5 7V5.2h5V7" /><path d="M6.5 7l.9 12.2h9.2L17.5 7" /><path d="M10.5 11v5M13.5 11v5" /></>, p);

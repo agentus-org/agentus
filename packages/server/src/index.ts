@@ -11,6 +11,7 @@ import fs from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { Store, textOf } from "./store/store.js";
 import { routeForModel, type SpeechRoute } from "./speech/route.js";
+import { readIncidents, readJobs, readRuns, isCronVerb, runCronVerb, type CronTarget } from "./cron/jobs.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
 import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
@@ -1561,6 +1562,44 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     }
     // 会话拓扑面板（2026-11-03）：窗口内的会话 + 它们之间的派活/转交关系。只读，operator 认证。
     // `since` 缺省是 3 天（操作者定下的默认窗口）；`archived=1` 才把已归档的会话也画进来。
+    // ---- 定时作业（issue #92）：读 jobs.json / executions.db，写走 `hermes cron` CLI ----
+    //
+    // 这里**没有调度器**：作业定义、执行历史、失败账本都住在 Hermes 那边，驾驶舱只做展示与转发。
+    // `available:false` 是正常结果（这个 home 没有 cron，或 hermes 不可达），面板据此整块隐藏。
+    if (url.pathname === "/api/cron" && req.method === "GET") {
+      const t = cronTargetOf(url);
+      if (!t) return send(res, 200, { available: false, why: "no hermes backend row is configured", jobs: [] });
+      return send(res, 200, readJobs(t));
+    }
+    if (url.pathname === "/api/cron/runs" && req.method === "GET") {
+      const t = cronTargetOf(url);
+      if (!t) return send(res, 200, { available: false, why: "no hermes backend row is configured", runs: [] });
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      return send(res, 200, readRuns(t, url.searchParams.get("job") || null, limit));
+    }
+    if (url.pathname === "/api/cron/incidents" && req.method === "GET") {
+      const t = cronTargetOf(url);
+      if (!t) return send(res, 200, { available: false, why: "no hermes backend row is configured", incidents: [] });
+      return send(res, 200, readIncidents(t, url.searchParams.get("state") || null));
+    }
+    {
+      const m = url.pathname.match(/^\/api\/cron\/([^/]+)\/([a-z]+)$/);
+      if (m && req.method === "POST") {
+        const verb = m[2];
+        if (!isCronVerb(verb)) {
+          return send(res, 400, { error: `unknown cron verb: ${verb}`, code: "bad_verb",
+            verbs: ["pause", "resume", "run", "remove"] });
+        }
+        const t = cronTargetOf(url);
+        if (!t) return send(res, 400, { error: "no hermes backend row is configured", code: "no_target" });
+        // 作业 id 是 Hermes 自己的短 id（12 位 hex）；先确认它真在这个 home 里，避免把任意字符串
+        // 递给 CLI（`hermes cron remove <任意串>` 的报错与「作业不存在」长得一样，看不出区别）。
+        const known = readJobs(t).jobs.some((j) => j.id === m[1]);
+        if (!known) return send(res, 404, { error: `no such job: ${m[1]}`, code: "not_found", id: m[1] });
+        const out = await runCronVerb(t, verb, m[1]);
+        return send(res, out.ok ? 200 : 502, { ok: out.ok, verb, id: m[1], code: out.ok ? undefined : "cli_failed", out: out.out });
+      }
+    }
     if (url.pathname === "/api/topology" && req.method === "GET") {
       const raw = Number(url.searchParams.get("since") ?? 0);
       const since = Number.isFinite(raw) && raw > 0 ? raw : Date.now() - TOPO_WINDOW_DEFAULT;
@@ -2415,6 +2454,22 @@ function attachmentOf(filePath: string): string {
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
   const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/** 面板操作哪个 hermes 目标：`?backend=<id>` 指定，否则第一个 kind=hermes 的 backend 行。
+ *  home/profile 直接取那一行的语义（与 spawn 时给 agent 的完全一致），所以面板显示的作业就是
+ *  那个后端真会跑的那批。 */
+function cronTargetOf(url: URL): CronTarget | null {
+  const rows = store.listBackends();
+  const want = url.searchParams.get("backend");
+  const row = want ? rows.find((r) => r.id === want) : rows.find((r) => r.kind === "hermes");
+  if (!row || row.kind !== "hermes") return null;
+  return {
+    home: (row.home ?? "").trim() || HERMES_DEFAULT_HOME,
+    profile: (row.profile ?? "").trim() || null,
+    // 行里的 cmd 通常是 `hermes`（PATH 解析）或一个绝对路径；两者 execFile 都认。
+    cmd: (row.cmd ?? "").trim() || "hermes",
+  };
 }
 
 const httpServer = createServer(handleRequest);
