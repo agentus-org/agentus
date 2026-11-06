@@ -1168,7 +1168,17 @@ export class SessionManager {
     // rail flash the slot as cold for the length of a spawn), so the "already live, nothing to do"
     // shortcut has to be skipped and the fresh child takes its place.
     const existing = this.#sessions.get(id);
-    if (existing && !opts.replace) return existing.info;
+    // An ERRORED slot is not a live slot. Its child is gone (crash, external kill, or a cockpit
+    // restart that outlived the agent) and its turn already settled — returning `existing.info`
+    // for it, which is what this did before, answered 「恢复」 with 200 and the SAME dead pid, so
+    // the slot stayed wedged and every later message vanished into it (measured 2026-11-06 against
+    // a 0.23 backend, where the conversation itself survived in the home's gateway).
+    // Drop it and let the respawn below own the id again.
+    if (existing && !opts.replace) {
+      if (existing.info.status !== "error") return existing.info;
+      this.#dropPending(existing);
+      this.#sessions.delete(id);
+    }
 
     const row = this.#store.getSession(id);
     if (!row) throw new Error(`unknown session: ${id}`);
