@@ -78,7 +78,13 @@ try {
 
 // Permission prompts must not hang a session forever (design.md §8-4).
 // Env-tunable so QA can exercise the timeout path in seconds instead of minutes.
-const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTUS_PERM_TIMEOUT_MS || 5 * 60_000);
+//
+// 45 s, not 5 min: a vendor that owns the session may give up on its own first, and Hermes does —
+// its edit approval is answered 「denied」 at 60 s (measured 2026-11-06: `Tool write_file returned
+// error (60.17s)`). A card that outlives the agent's own deadline is worse than no card: the
+// operator clicks 允许 at 70 s, the click looks accepted, and nothing happens. Expiring first means
+// the card always tells the truth.
+const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTUS_PERM_TIMEOUT_MS || 45_000);
 
 // ── What the request is ABOUT ─────────────────────────────────────────────────────────────────
 // An edit approval arrives as a `ToolCallUpdate` whose `content` carries a diff (path + the
@@ -159,6 +165,10 @@ const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTUS_SETTLE_TIMEOUT_MS || 1
  *  answers cannot hold the operator's click open forever: past this, the slot closes with whatever it
  *  has — a broken agent is not made worse by a row we cannot wake. */
 const CLOSE_STARTUP_WAIT_MS = Number(process.env.AGENTUS_CLOSE_WAIT_MS || 30_000);
+/** How long a close waits for `session/cancel` to land on a vendor-owned session before it tears the
+ *  viewer down anyway. Short on purpose: the cancel is a courtesy to the operator's wallet, and a
+ *  close that hangs on an unresponsive agent is worse than a turn that outlives it. */
+const CLOSE_CANCEL_WAIT_MS = Number(process.env.AGENTUS_CLOSE_CANCEL_WAIT_MS || 3_000);
 
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
  *
@@ -337,7 +347,7 @@ interface LiveSession {
   /** What the agent says it can do (initialize.agentCapabilities). `fork` gates title
    *  regeneration, `load` gates resume; `image` is the one a TURN can be refused on — see
    *  `IMAGE_UNSUPPORTED` in `prompt()`. */
-  caps: { fork: boolean; load: boolean; image: boolean };
+  caps: { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean };
   /** Incremented when a turn STARTS. An interrupt waits for the specific turn it cancelled,
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
@@ -1043,7 +1053,7 @@ export class SessionManager {
       // already finished" watermark no longer describes the same numbering — keeping it would make
       // every registration of the new run look older than the last settled turn and be answered with
       // a false 「已经结束了」.
-      caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      caps: { fork: false, load: false, image: false, gatewayOwned: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -1125,6 +1135,9 @@ export class SessionManager {
         return;
       }
       live.info.acpSessionId = res.sessionId;
+      // Whose session is it? A vendor that owns it (0.23+ Hermes answers with
+      // `_meta.hermes.sessionProvenance`) keeps running the turn after our child is gone.
+      live.caps.gatewayOwned = isGatewayOwned(res);
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
       live.info.configOptions = normConfigOptions(res.configOptions);
@@ -1277,7 +1290,7 @@ export class SessionManager {
       // already finished" watermark no longer describes the same numbering — keeping it would make
       // every registration of the new run look older than the last settled turn and be answered with
       // a false 「已经结束了」.
-      caps: { fork: false, load: false, image: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      caps: { fork: false, load: false, image: false, gatewayOwned: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -1321,6 +1334,7 @@ export class SessionManager {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
       live.caps = readCaps(reloadInit?.agentCapabilities);
+      live.caps.gatewayOwned = false; // decided below, from what `session/load` says it adopted
       let loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
@@ -1331,6 +1345,7 @@ export class SessionManager {
       // look alive (it said "ready" and ate every message). An empty answer is the only "no" we
       // get, so it is the one we act on.
       const adopted = Boolean(loaded && typeof loaded === "object" && Object.keys(loaded).length > 0);
+      live.caps.gatewayOwned = adopted && isGatewayOwned(loaded);
       if (!adopted) {
         // Two different things look the same here, and they are not equally bad:
         //  · the slot never had a turn — the agent persists a session when it starts WORKING, so a
@@ -2535,6 +2550,21 @@ export class SessionManager {
    *  all three teaches the operator to distrust the column. */
   async #stop(live: LiveSession, why: "closed" | "archived" | "reaped"): Promise<void> {
     this.#dropPending(live);
+    // 0.23+: our child is a VIEWER of a session the vendor owns. Killing it does not stop the turn —
+    // the gateway keeps working, and the operator's 关闭 becomes 「继续为我付钱，但我看不见」: the plan
+    // card moves with nobody watching and the result lands in a transcript he just closed. So a BUSY
+    // gateway-owned slot is cancelled first, bounded, and only then torn down.
+    if (live.caps.gatewayOwned && live.busy) {
+      await Promise.race([
+        this.cancel(live.info.id).catch(() => {}),
+        new Promise<void>((r) => { setTimeout(r, CLOSE_CANCEL_WAIT_MS).unref?.(); }),
+      ]);
+      // Sending the cancel is not the same as the turn stopping: it travels viewer → gateway → agent,
+      // and a viewer torn down a millisecond later takes the request with it (measured 2026-11-06: the
+      // cancel never reached the agent's turn). Stay alive, bounded, until the turn actually settles.
+      const until = Date.now() + CLOSE_CANCEL_WAIT_MS;
+      while (live.busy && Date.now() < until) await new Promise((r) => { setTimeout(r, 100).unref?.(); });
+    }
     this.#meterStop(live); // 关槽顺手收表：不然这个定时器会绑着一个已经没有进程的会话一直转
     // A slot can be closed while its handshake is still in flight — `create()` no longer waits for it
     // (see there). Killing the child on the spot was WRONG in a way the operator would eventually hit:
@@ -3110,9 +3140,18 @@ export class SessionManager {
     this.#settleTurnReplies(live.info.id, live.turnSeq, { failed: "agent 进程退出了", failureKind: "turn" });
     live.info.status = "error";
     live.info.lastError = `agent process exited (code=${code} sig=${sig})` + stderrTail(live);
+    // A viewer's exit is NOT the agent's death when the vendor owns the session (0.23+ Hermes: the
+    // turn runs in the home's gateway). Saying 「agent 进程退出了」 there is the one thing that makes
+    // the operator restart work that is still running — and `#finalizePlan(failed)` would close a
+    // plan card that is still being executed. Say what actually happened; 恢复 re-attaches and the
+    // whole conversation comes back (measured 2026-11-06).
+    if (live.caps.gatewayOwned) {
+      live.info.lastError =
+        `viewer 断开 (code=${code} sig=${sig})；会话在 agent 自己的服务里继续跑，点「恢复」可以接上` + stderrTail(live);
+    }
     const row = this.#store.getSession(live.info.id);
     if (row) this.#store.upsertSession({ ...row, status: "error", pid: null });
-    this.#finalizePlan(live.info.id, "failed"); // the turn died with the process — close the card honestly
+    if (!live.caps.gatewayOwned) this.#finalizePlan(live.info.id, "failed"); // the turn died with the process — close the card honestly
     this.#emit({ t: "session", session: live.info });
     this.#emit({ t: "turn-end", sessionId: live.info.id, error: live.info.lastError });
   }
@@ -3737,10 +3776,24 @@ export class SessionManager {
 export const IMAGE_UNSUPPORTED =
   "这个后端不支持图片输入（agent 没在 initialize 里声明 promptCapabilities.image）—— 去掉图片再发，或换一个能看图的模型";
 
+/** Does the VENDOR own this session (rather than our child process)?
+ *
+ *  Hermes 0.23+ answers `session/new` / `session/load` with `_meta.hermes.sessionProvenance` because
+ *  the conversation lives in the home's gateway, and `hermes acp` is only a viewer of it. Everything
+ *  downstream depends on knowing which world we are in: a viewer's exit must not be reported as a
+ *  failed turn, and 「恢复」 must re-attach rather than pretend the slot is still live (measured
+ *  2026-11-06: kill -9 the viewer mid-session, the gateway kept working, resume replayed the whole
+ *  conversation). Absent `_meta` means the old in-process world, where the child IS the agent. */
+function isGatewayOwned(res: unknown): boolean {
+  const meta = (res as { _meta?: unknown } | null | undefined)?._meta;
+  if (!meta || typeof meta !== "object") return false;
+  return "hermes" in (meta as Record<string, unknown>);
+}
+
 /** Read the three capabilities this cockpit acts on. Defensive on purpose: `promptCapabilities`
  *  is absent on agents that predate it, and an absent field means "no", not "try anyway" — a
  *  silently dropped image is the failure this whole read exists to prevent. */
-function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image: boolean } {
+function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean } {
   const c = (capabilities ?? {}) as {
     loadSession?: boolean;
     sessionCapabilities?: { fork?: unknown };
@@ -3750,6 +3803,10 @@ function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image:
     fork: Boolean(c.sessionCapabilities?.fork),
     load: Boolean(c.loadSession),
     image: c.promptCapabilities?.image === true,
+    // Set later, from the session's own provenance: a vendor that answers `session/new` with
+    // `_meta.hermes.sessionProvenance` keeps the session in its own service, so our child is a
+    // viewer and its exit does not end the turn (see #onChildExit).
+    gatewayOwned: false,
   };
 }
 
