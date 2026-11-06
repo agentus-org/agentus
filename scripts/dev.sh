@@ -67,6 +67,7 @@ case "${1:-}" in
       AGENTUS_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
       AGENTUS_HERMES_HOME="$DEV_HERMES_HOME" \
       AGENTUS_ACP_V2_PLAN="${DEV_ACP_V2:-0}" \
+      ${AGENTUS_PERM_TIMEOUT_MS:+AGENTUS_PERM_TIMEOUT_MS="$AGENTUS_PERM_TIMEOUT_MS"} \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
@@ -79,6 +80,8 @@ case "${1:-}" in
         // which is everything dev.sh sets — and drop every other identity-shaped key.
         const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
           "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_HERMES_HOME", "AGENTUS_ACP_V2_PLAN",
+          // QA needs to drive the approval timeout in seconds instead of minutes
+          "AGENTUS_PERM_TIMEOUT_MS",
           // the Web IDE bridge (#77): a dev instance proves the proxy against a real code-server
           "AGENTUS_IDE_UPSTREAM",
           "DEV_TREE", "DEV_LOG_PATH"]);
