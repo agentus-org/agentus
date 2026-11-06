@@ -212,5 +212,6 @@ check("#94 session-level buttons stay in the head (call/dictation/settings)",
 check("no JS exceptions", exceptions.length === 0, exceptions.slice(0, 2).join(" | "));
 
 console.log(`\n${fail ? "FAIL" : "ALL"} — ${pass} passed, ${fail} failed`);
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail ? 1 : 0);

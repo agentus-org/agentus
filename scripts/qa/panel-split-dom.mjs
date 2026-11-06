@@ -108,7 +108,8 @@ if (process.env.AGENTUS_NO_IDE === "1") {
   await sleep(2000);
   check("the split switch closes it back to one pane",
     JSON.parse(await panesOf()).length <= 1, await panesOf());
-  ws.close();
+  try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
+ws.close();
   console.log(`\n${pass} passed / ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

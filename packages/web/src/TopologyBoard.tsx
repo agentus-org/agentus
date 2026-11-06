@@ -133,6 +133,13 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
   const [groupPos, setGroupPos] = useState<Record<string, { x: number; y: number }>>(() => readPos(GROUP_POS_KEY));
   const [dragGroup, setDragGroup] = useState<string | null>(null);
   const groupMovedRef = useRef(false);
+  /* 连线派活（issue #96）：发起方由操作者在图上**点出来**，不再默认「当前正在看的会话」。
+     从 A 卡片右缘的箭头拖到 B —— 落到会话就派给 B，落到分区就「在这个工作空间新建一个会话」并派给它。
+     触屏拖不了线（与滚动抢手势），所以在触屏上这套是两段式：先点 A 的箭头，再点 B。 */
+  const [fromId, setFromId] = useState<string | null>(null);
+  const [linkEnd, setLinkEnd] = useState<{ fromX: number; fromY: number; x: number; y: number } | null>(null);
+  const [hoverTarget, setHoverTarget] = useState<DispatchTarget | null>(null);
+  const linkDragRef = useRef<{ from: string; moved: boolean } | null>(null);
   const groupDragRef = useRef<{ ws: string; sx: number; sy: number; ox: number; oy: number; moved: boolean;
     cards: Record<string, { x: number; y: number }> } | null>(null);
   const dragRef = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
@@ -301,9 +308,70 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
     return { out, inn };
   }, [filtered.edges]);
 
-  // 发起方 = 操作者正待着的那个会话。派活的意义就在「从这儿派到那儿」，所以它必须是真的。
-  const sourceId = snap.activeId ?? null;
-  const sourceTitle = (sourceId ? cockpit.byId.get(sourceId)?.info.title : "") ?? "";
+  // 发起方由用户在图上点选（见上面的 fromId）—— 原来那套「当前正在看的会话就是发起方」已经删掉：
+  // 派活是「A → B」的显式动作，A 不该由「谁碰巧开着」决定。
+  const sourceId = fromId;
+  const sourceTitle = (sourceId ? titleOf(sourceId) : "");
+
+  function titleOf(id: string): string {
+    return filtered.nodes.find((n) => n.id === id)?.title ?? id.slice(0, 8);
+  }
+  function workspaceOf(id: string): string {
+    return filtered.nodes.find((n) => n.id === id)?.workspace ?? "";
+  }
+  /** 指针下面是哪张卡 / 哪个分区。拖回自己身上不算目标（自环在服务端也会被拒）。 */
+  function targetAt(cx: number, cy: number, from: string): DispatchTarget | null {
+    const el = document.elementFromPoint(cx, cy);
+    if (!el) return null;
+    const card = (el as HTMLElement).closest("[data-topo-node]") as HTMLElement | null;
+    if (card) {
+      const id = card.getAttribute("data-topo-node");
+      if (!id || id === from) return null;
+      return { kind: "session", id, title: titleOf(id) };
+    }
+    const box = (el as HTMLElement).closest("[data-topo-group]") as HTMLElement | null;
+    if (box) {
+      const label = box.getAttribute("data-topo-group");
+      const ws = layout.groups.find((g) => g.label === label)?.workspace;
+      // 落到**自己原来那个工作空间**也合法：那是「在这个空间里再开一个会话接活」，不是自环。
+      if (!ws) return null;
+      return { kind: "new", workspace: ws };
+    }
+    return null;
+  }
+
+  const startLink = (e: React.PointerEvent<HTMLElement>, id: string): void => {
+    e.stopPropagation();
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    linkDragRef.current = { from: id, moved: false };
+    setFromId(id);
+    setAck("");
+    setLinkEnd({ fromX: r.left + r.width / 2, fromY: r.top + r.height / 2, x: e.clientX, y: e.clientY });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const moveLink = (e: React.PointerEvent<HTMLElement>): void => {
+    const d = linkDragRef.current;
+    if (!d) return;
+    d.moved = true;
+    setLinkEnd((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+    setHoverTarget(targetAt(e.clientX, e.clientY, d.from));
+  };
+  const endLink = (e: React.PointerEvent<HTMLElement>): void => {
+    const d = linkDragRef.current;
+    linkDragRef.current = null;
+    if (!d) return;
+    const t = d.moved ? targetAt(e.clientX, e.clientY, d.from) : null;
+    setLinkEnd(null);
+    setHoverTarget(null);
+    // 落在目标上就开面板；只是在把手上点了一下，就停在「已选源」，等用户点目标。
+    if (t) setTarget(t);
+  };
+  const cancelLink = (): void => {
+    linkDragRef.current = null;
+    setLinkEnd(null);
+    setHoverTarget(null);
+  };
 
   const send = async (): Promise<void> => {
     if (!target || !sourceId || !text.trim()) return;
@@ -327,6 +395,7 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
       setAck(j.created ? "已在这个工作空间建了新会话并派出" : "已派出");
       setText("");
       setTarget(null);
+      setFromId(null);
       await load(win, archived);
     } catch (e) {
       setErr(String((e as Error)?.message ?? e));
@@ -431,10 +500,17 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
             {layout.groups.map((g) => (
               <section
                 key={g.workspace || "(unknown)"}
-                className={`topo-group ${g.collapsed ? "collapsed" : ""} ${dragGroup === g.workspace ? "dragging" : ""}`}
+                className={`topo-group ${g.collapsed ? "collapsed" : ""} ${dragGroup === g.workspace ? "dragging" : ""} ${hoverTarget?.kind === "new" && hoverTarget.workspace === g.workspace ? "link-target" : ""}`}
                 data-topo-group={g.label}
                 data-topo-collapsed={g.collapsed ? "1" : "0"}
                 style={{ left: g.x, top: g.y, width: g.w, height: g.h }}
+                onClick={(e) => {
+                  // 点分区空白处（不是组头）且已经选了发起方 = 在这个工作空间里新建会话并发起。
+                  if (!fromId) return;
+                  if ((e.target as HTMLElement).closest(".topo-group-head")) return;
+                  setAck("");
+                  setTarget({ kind: "new", workspace: g.workspace });
+                }}
               >
                 {/* 组头就是折叠开关：整行可点，不用瞄准一个小三角。折叠后这一行还在，
                     说的仍是「这里有几个会话、几条关系」——收起不是消失。 */}
@@ -482,7 +558,7 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
                 return (
                   <div
                     key={n.id}
-                    className={`topo-card ${openId === n.id ? "open" : ""} ${n.archived ? "archived" : ""} ${dragId === n.id ? "dragging" : ""}`}
+                    className={`topo-card ${openId === n.id ? "open" : ""} ${n.archived ? "archived" : ""} ${dragId === n.id ? "dragging" : ""} ${fromId === n.id ? "link-source" : ""} ${hoverTarget?.kind === "session" && hoverTarget.id === n.id ? "link-target" : ""}`}
                     style={{ left: p.x, top: p.y, width: CARD_W, height: CARD_H }}
                     data-topo-node={n.id}
                     data-status={st.tone}
@@ -496,7 +572,16 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
                        click 的目标改写成被捕获的这个 div，挂在子按钮上的 onClick 收不到（真鼠标点卡片
                        打不开浮窗，而程序化 `.click()` 却能过 —— 所以 sweep 一度是假绿）。
                        位移超过阈值的那次拖动由 movedRef 挡掉；派活按钮自己 stopPropagation。 */
-                    onClick={() => { if (movedRef.current) return; onOpen(n.id); }}
+                    onClick={() => {
+                      if (movedRef.current) return;
+                      // 已经选了发起方（也没在开着面板）时，点哪张卡就是「派给它」；否则是打开会话。
+                      if (fromId && fromId !== n.id && !target) {
+                        setAck("");
+                        setTarget({ kind: "session", id: n.id, title: n.title });
+                        return;
+                      }
+                      onOpen(n.id);
+                    }}
                   >
                     <button
                       type="button"
@@ -521,13 +606,22 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
                         {n.waitingOn?.length ? ` · 等 ${n.waitingOn.length} 个回报` : ""}
                       </span>
                     </button>
+                    {/* 连线把手：从这儿拖出去——落到会话 = 派给它，落到分区 = 在那个工作空间新建一个会话
+                        再派给它。不拖、只点一下，就是「把它当发起方」，然后点目标（触屏走这条）。 */}
                     <button
                       type="button"
                       className="topo-card-act"
-                      title="派活给这个会话"
-                      aria-label={`派活给 ${n.title}`}
+                      title={fromId === n.id
+                        ? "这是发起方：拖到目标，或点目标卡片 / 分区"
+                        : "从这里派活：拖到目标会话，或拖到某个工作空间里新建"}
+                      aria-label={`从 ${n.title} 派活`}
+                      aria-pressed={fromId === n.id}
                       data-topo-dispatch={n.id}
-                      onClick={(e) => { e.stopPropagation(); setAck(""); setTarget({ kind: "session", id: n.id, title: n.title }); }}
+                      onPointerDown={(e) => startLink(e, n.id)}
+                      onPointerMove={moveLink}
+                      onPointerUp={endLink}
+                      onPointerCancel={cancelLink}
+                      onClick={(e) => { e.stopPropagation(); }}
                     ><IconSend size={12} /></button>
                   </div>
                 );
@@ -535,6 +629,13 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
           </div>
         )}
       </div>
+
+      {linkEnd ? (
+        <svg className="topo-link" aria-hidden data-topo-link>
+          <path d={`M${linkEnd.fromX},${linkEnd.fromY} C${linkEnd.fromX + 60},${linkEnd.fromY + 40} ${linkEnd.x - 60},${linkEnd.y - 40} ${linkEnd.x},${linkEnd.y}`} />
+          <circle cx={linkEnd.x} cy={linkEnd.y} r={3.5} />
+        </svg>
+      ) : null}
 
       {target ? (
         <aside className="topo-dispatch" data-topo-dispatch-panel>
@@ -550,9 +651,13 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
             → {target.kind === "session" ? target.title : `新会话 @ ${target.workspace.split("/").filter(Boolean).pop() ?? target.workspace}`}
           </p>
           {sourceId ? (
-            <p className="topo-source" title={sourceCwd(sourceId)}>来自「{sourceTitle || sourceId.slice(0, 8)}」</p>
+            <p className="topo-source" title={sourceCwd(sourceId)}>
+              从「{sourceTitle || sourceId.slice(0, 8)}」→ {target.kind === "session" ? `「${target.title}」` : "新会话"}
+            </p>
           ) : (
-            <p className="topo-source warn">左边先选一个会话当发起方 —— 派活要有一个「从哪儿派出去」。</p>
+            <p className="topo-source warn">
+              先点一张卡片右缘的箭头当发起方，再拖（或点）到目标 —— 派活是「从哪儿派到哪儿」。
+            </p>
           )}
           <textarea
             value={text}

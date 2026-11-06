@@ -100,7 +100,9 @@ for (let i = 0; i < 40; i++) {
   await sleep(200);
 }
 check("rail 里有拓扑入口", (await ev(`document.querySelectorAll('[data-nav="topology"]').length`)) === 1,
-  String(await ev(`document.querySelectorAll('[data-nav="topology"]').length`)));
+  await ev(`JSON.stringify({ url: location.pathname, navs: document.querySelectorAll('[data-nav]').length,
+    rail: document.querySelectorAll('.rail-nav').length, items: document.querySelectorAll('.session-item').length,
+    body: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 70) })`));
 // 折叠/位置存在 localStorage：别的 sweep 会把它们改成「两组都展开」之类，
 // 这一份测的是「打开板子能看到什么」，先回到默认。
 await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
@@ -254,5 +256,6 @@ check("全程没有 JS 异常", exceptions.length === 0, exceptions.slice(0, 2).
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail === 0 ? 0 : 1);

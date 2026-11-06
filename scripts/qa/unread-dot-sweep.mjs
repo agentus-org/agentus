@@ -178,6 +178,7 @@ for (const sid of [here, away]) {
 }
 
 closeTab();
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 console.log(`\n${fail ? "FAIL" : "PASS"} unread-dot-sweep: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

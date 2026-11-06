@@ -338,6 +338,7 @@ check(!b3.live.includes(liveId) && !b3.cold.includes(liveId) && !b3.archived.inc
   "…and the live fixture is gone too", JSON.stringify({ liveId: liveId.slice(0, 8) }));
 
 closeTab();
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 console.log(`\n${fail ? "FAIL" : "PASS"} archive-state-sweep: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
