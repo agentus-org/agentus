@@ -167,10 +167,13 @@ await ev(`document.querySelector('button.menu-btn').click()`);
 await sleep(800);
 const phoneOpen = JSON.parse(await ev(`JSON.stringify((() => {
   const n = document.querySelector('[data-nav="topology"]'); const r = n?.getBoundingClientRect();
-  return { left: r ? Math.round(r.left) : -1, w: r ? Math.round(r.width) : 0, open: document.querySelector('.sidebar').classList.contains('open') };
+  return { left: r ? Math.round(r.left) : -1, w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
+           open: document.querySelector('.sidebar').classList.contains('open') };
 })())`));
 check("#94 phone: the hamburger reveals it, still clickable",
   phoneOpen.open && phoneOpen.left >= 0 && phoneOpen.w > 0, JSON.stringify(phoneOpen));
+check("#94 phone: the entry is a finger-sized row (>=38px)",
+  phoneOpen.h >= 38, JSON.stringify(phoneOpen));
 await ev(`document.querySelector('[data-nav="topology"]').click()`);
 await sleep(900);
 check("#94 phone: tapping it opens the board",
