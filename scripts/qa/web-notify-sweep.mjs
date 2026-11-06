@@ -318,7 +318,8 @@ try {
   try { await fetch(`${BASE}/api/backends/${ROW.id}`, { method: "DELETE", headers: H }); } catch { /* already gone */ }
   try { await fetch(`${BASE}/api/notify/settings`, { method: "POST", headers: { "content-type": "application/json", ...H }, body: JSON.stringify({ rules: { web: { enabled: true, turnStart: false } } }) }); } catch { /* fine */ }
   try { await send("Browser.resetPermissions"); } catch { /* fine */ }
-  ws.close();
+  try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
+ws.close();
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} ok, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }

@@ -192,5 +192,6 @@ check("图片预览的 src 是不带 download=1 的那条（attachment 会渲染
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail === 0 ? 0 : 1);

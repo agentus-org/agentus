@@ -140,7 +140,8 @@ const fixture = JSON.parse(await ev(`(async () => {
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; setTimeout(rej, 8000); });
   ws.send(JSON.stringify({ t: 'prompt', sessionId: c.id, text: 'layout sweep fixture' }));
   await new Promise((r) => setTimeout(r, 2500));
-  try { ws.close(); } catch { /* already gone */ }
+  try { try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
+ws.close(); } catch { /* already gone */ }
   return JSON.stringify({ sid: c.id, made: true });
 })()`));
 const sid = fixture.sid;

@@ -246,6 +246,7 @@ try {
 }
 void browserOk;
 
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 cleanup();
 console.log(`\nlive-speed-sweep: ${pass} passed, ${fail} failed`);

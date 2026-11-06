@@ -123,5 +123,6 @@ check("⋯ 菜单里两个 pane 都在（同一份派生列表，不是第二份
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail === 0 ? 0 : 1);

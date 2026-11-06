@@ -124,4 +124,5 @@ console.log("any bed playing:", samples.some((s) => s.bed && s.bed.playing));
 
 // 收尾：删掉这个探针会话
 console.log("cleanup:", await ev(`fetch('/api/sessions/${sid}', { method: 'DELETE' }).then(r => r.status)`));
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();

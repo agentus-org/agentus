@@ -214,5 +214,6 @@ check(iSecond >= 0 && iEdited > iSecond, 'in the order he wrote them', `#${iSeco
 await send('Page.enable');
 console.log(`\n${pass} ok, ${fail} failed`);
 await ev(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('agentus.queue.')) localStorage.removeItem(k); return true })()`);
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail ? 1 : 0);

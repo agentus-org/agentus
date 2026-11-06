@@ -202,6 +202,7 @@ try {
 
 console.log(`\n${pass} passed, ${fail} failed`);
 try { browser?.cws?.close(); } catch { /* tab gone */ }
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 shutdown();
 process.exit(fail ? 1 : 0);

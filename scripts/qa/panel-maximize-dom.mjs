@@ -226,5 +226,6 @@ await ev(`localStorage.setItem('agentus.panel-maximized', '0'); true`);
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail === 0 ? 0 : 1);

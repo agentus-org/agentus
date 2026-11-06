@@ -3963,3 +3963,28 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 @media (hover: none) and (pointer: coarse) {
   .topo-group-head { cursor: pointer; }
 }
+
+/* ── 连线派活（#96） ─────────────────────────────────────────────────────────
+   发起方由操作者在图上点出来：从 A 卡片右缘的箭头拖到 B，跟手一条线 + 目标高亮。
+   线的坐标是视口坐标（fixed 覆盖层），所以滚动、缩放都不用换算。 */
+.topo-link {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  pointer-events: none; z-index: 60; overflow: visible;
+}
+.topo-link path {
+  fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 5 4;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .45));
+}
+.topo-link circle { fill: var(--accent); }
+.topo-card.link-source { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 0 14px rgba(0, 0, 0, .34); }
+.topo-card.link-source .topo-card-act { opacity: 1; color: var(--accent); }
+.topo-card.link-target {
+  border-color: var(--accent); border-style: dashed;
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+.topo-group.link-target { border-color: var(--accent); border-style: dashed; background: var(--bg-raised); }
+.topo-group.link-target::after {
+  content: "在这里新建会话并派活"; position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  font-size: 10px; color: var(--accent-text); background: var(--accent-dim);
+  padding: 2px 8px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+}

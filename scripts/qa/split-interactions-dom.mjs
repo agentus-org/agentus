@@ -169,5 +169,6 @@ check("…不再是水平换位图标的路径（#90 前的那一个）", !/M4 8
 await closeSplitIfAny();
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});
+try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail === 0 ? 0 : 1);
