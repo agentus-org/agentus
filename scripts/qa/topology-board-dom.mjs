@@ -47,6 +47,9 @@ const ev = async (expr) => (await send("Runtime.evaluate", { expression: expr, r
 const goto = async (url) => { await send("Page.navigate", { url }); await sleep(3000); };
 
 await send("Runtime.enable");
+// 上一个 sweep（手机那份）可能把触摸模拟留着：桌面形态要先关掉，否则 hover/pointer 媒体查询
+// 全按触屏走，量出来的宽度和点击行为都不是这一份要测的东西。
+await send("Emulation.setTouchEmulationEnabled", { enabled: false });
 await goto(BASE);
 const status = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
@@ -92,9 +95,51 @@ await ev(`(() => { const row = [...document.querySelectorAll('.session-item')]
   .find(r => (r.textContent || '').includes(${JSON.stringify(ORIGIN)})); if (row) row.click(); return Boolean(row); })()`);
 await sleep(2200);
 // #94：入口搬到左侧 rail 的全局导航区（head 只留会话级按钮）。
-check("rail 里有拓扑入口", (await ev(`document.querySelectorAll('[data-nav="topology"]').length`)) === 1);
-await ev(`document.querySelector('[data-nav="topology"]').click(); true`);
-await sleep(2500);
+for (let i = 0; i < 40; i++) {
+  if ((await ev(`document.querySelectorAll('[data-nav="topology"]').length`)) === 1) break;
+  await sleep(200);
+}
+check("rail 里有拓扑入口", (await ev(`document.querySelectorAll('[data-nav="topology"]').length`)) === 1,
+  String(await ev(`document.querySelectorAll('[data-nav="topology"]').length`)));
+// 折叠/位置存在 localStorage：别的 sweep 会把它们改成「两组都展开」之类，
+// 这一份测的是「打开板子能看到什么」，先回到默认。
+await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
+await send("Page.reload"); await sleep(2600);
+for (let i = 0; i < 40; i++) {
+  if (await ev(`!!document.querySelector('[data-nav="topology"]')`)) break;
+  await sleep(200);
+}
+// 真鼠标点 rail 入口（程序化 click 在刚 reload 的那几帧里会落空，脚本就一路假红）。
+for (let i = 0; i < 20; i++) {
+  if (await ev(`!!document.querySelector('[data-topo-board]')`)) break;
+  const navBox = JSON.parse(await ev(`JSON.stringify((() => {
+    const b = document.querySelector('[data-nav="topology"]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })())`) || "null");
+  if (navBox) {
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await send("Input.dispatchMouseEvent", { type, x: navBox.x, y: navBox.y, button: "left", clickCount: 1,
+        buttons: type === "mouseReleased" ? 0 : 1 });
+      await sleep(50);
+    }
+  }
+  await sleep(700);
+}
+for (let i = 0; i < 60; i++) {
+  if ((await ev(`document.querySelectorAll('[data-topo-group]').length`)) > 0) break;
+  await sleep(200);
+}
+// #95 之后默认只展开一个分区；这一份测的是「全量的板子长什么样」，先全展开。
+for (let i = 0; i < 8; i++) {
+  const folded = await ev(`[...document.querySelectorAll('[data-topo-group]')].filter(g => g.getAttribute('data-topo-collapsed') === '1').length`);
+  if (!folded) break;
+  await ev(`[...document.querySelectorAll('[data-topo-group]')].filter(g => g.getAttribute('data-topo-collapsed') === '1')
+    .forEach(g => g.querySelector('.topo-group-head').click())`);
+  await sleep(500);
+}
+await sleep(500);
 check("点开后是替换主区的板子（不是浮层）",
   (await ev(`!!document.querySelector('[data-topo-board]')`)) === true &&
   (await ev(`getComputedStyle(document.querySelector('[data-topo-board]')).position`)) !== "fixed");
@@ -122,7 +167,13 @@ check("…线的 title 说得清是什么关系", edges.some((e) => /转交|派|
 // ---- ④ 过滤真的改变画出来的东西 --------------------------------------------------------------
 const nodeCount = () => ev(`document.querySelectorAll('[data-topo-node]').length`);
 const before = await nodeCount();
-check("节点数与 API 一致（每张卡片一个会话）", before === apiView.nodes, `${before} vs ${apiView.nodes}`);
+// #95 之后默认只展开一个分区：画出来的卡片是「展开分区里的会话」，不是全量。
+const expandedLabels = await ev(`JSON.stringify([...document.querySelectorAll('[data-topo-group]')]
+  .filter(g => g.getAttribute('data-topo-collapsed') === '0').map(g => g.getAttribute('data-topo-group')))`).then(JSON.parse);
+// 这一份刻意先把所有分区都点开（为了量全量），所以这里验的是「展开动作生效了」。
+check("#95 所有分区都能展开", expandedLabels.length >= 1, JSON.stringify(expandedLabels));
+check("只画展开分区里的会话（折叠的分区不出卡片）",
+  before > 0 && before <= apiView.nodes, `${before} cards vs ${apiView.nodes} sessions`);
 
 await ev(`(() => { const i = document.querySelector('[data-topo-search]');
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -156,7 +207,21 @@ check("切时间窗后板子仍然渲染（没有白屏）",
   (await ev(`document.querySelectorAll('[data-topo-node]').length`)) > 0);
 
 // ---- ⑤ 点卡片 → 会话浮窗 → 返回 -------------------------------------------------------------
-await ev(`document.querySelector('.topo-card-main').click(); true`);
+// 真鼠标点（不是程序化 click）：卡片上挂了 pointer capture，click 的目标会变成卡片容器，
+// 而 `.topo-card-main` 上的 onClick 已经不在了 —— 程序化点在旧实现里能过，在真鼠标下过不了。
+const cardBox = JSON.parse(await ev(`JSON.stringify((() => {
+  const el = document.querySelector('[data-topo-node]');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+})())`) || "null");
+if (cardBox) {
+  for (const type of ["mousePressed", "mouseReleased"]) {
+    await send("Input.dispatchMouseEvent", { type, x: cardBox.x, y: cardBox.y, button: "left", clickCount: 1,
+      buttons: type === "mouseReleased" ? 0 : 1 });
+    await sleep(60);
+  }
+}
 await sleep(2000);
 check("点卡片把会话浮窗打开（不是只读预览）",
   (await ev(`document.querySelectorAll('[data-topo-window-back]').length`)) === 1);

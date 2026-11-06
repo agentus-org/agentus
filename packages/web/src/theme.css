@@ -3955,3 +3955,11 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 }
 .topo-card-main { cursor: grab; }
 .topo-card.dragging .topo-card-main { cursor: grabbing; }
+
+/* 分区也能拖（#95 追加）：线纠缠时常常该挪的是整组，而不是一张张卡。 */
+.topo-group-head { cursor: grab; }
+.topo-group.dragging { z-index: 4; box-shadow: 0 10px 28px rgba(0, 0, 0, .34); border-color: var(--accent-dim); }
+.topo-group.dragging .topo-group-head { cursor: grabbing; }
+@media (hover: none) and (pointer: coarse) {
+  .topo-group-head { cursor: pointer; }
+}
