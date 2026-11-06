@@ -52,13 +52,23 @@ const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
 check("logged in", login === 200, `status ${login}`);
 // 上一轮 sweep 可能把折叠/位置存进了同一 origin 的 localStorage：清掉，让「默认」这条真的被测到。
-await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); true`);
+await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
 await send("Page.reload");
 await sleep(2800);
 
 // ---- ① 入口在手指能够到的地方：抽屉里的 rail -----------------------------------
+// reload 之后 shell 要重新挂：先等 rail 出现，否则下面量到的全是 null。
+for (let i = 0; i < 50; i++) {
+  if (await ev(`!!document.querySelector('.sidebar')`)) break;
+  await sleep(200);
+}
 const drawerBefore = await ev(`document.querySelector('.sidebar')?.classList.contains('open')`);
 check("#94 phone: the rail starts off-canvas", drawerBefore === false, String(drawerBefore));
+// reload 之后 shell 要重新挂：等菜单按钮出现，别在「加载中」上量 null。
+for (let i = 0; i < 50; i++) {
+  if (await ev(`!!document.querySelector('button.menu-btn')`)) break;
+  await sleep(200);
+}
 const menu = await ev(`JSON.stringify((() => {
   const b = document.querySelector('button.menu-btn');
   if (!b) return null;

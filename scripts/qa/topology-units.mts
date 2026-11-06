@@ -140,5 +140,21 @@ const both = layoutTopology(two, [], { cols: 4, collapsed: new Set(["/w/beta"]),
 check(both.groups.find((g) => g.workspace === "/w/beta")!.collapsed === true, "两个开关互不打扰");
 check(both.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "m1")!.x === 40, "折叠时被拖的卡片坐标不被重置");
 
+// ---- 10. 分区拖动（#95 追加）：组的位置压过顺序堆叠，卡片跟着组走 ---------------
+const moved = layoutTopology(two, [], { cols: 4, groupOverrides: { "/w/beta": { x: 300, y: 40 } } });
+const betaMoved = moved.groups.find((g) => g.workspace === "/w/beta")!;
+const betaBefore = openLayout.groups.find((g) => g.workspace === "/w/beta")!;
+check(betaMoved.x === 300 && betaMoved.y === 40, "拖过的分区按操作者坐标摆", `${betaMoved.x},${betaMoved.y}`);
+check(betaMoved.x !== betaBefore.x || betaMoved.y !== betaBefore.y, "确实压过了顺序堆叠");
+const b1Moved = moved.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "b1")!;
+const b1Before = openLayout.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "b1")!;
+check(b1Moved.y - betaMoved.y === b1Before.y - betaBefore.y, "组里的卡片跟着组平移（相对位置不变）",
+  `${b1Before.y - betaBefore.y} vs ${b1Moved.y - betaMoved.y}`);
+check(moved.width >= 300 + betaMoved.w, "画布向右扩到装得下挪走的组", `width=${moved.width}`);
+// 组拖动和单卡拖动可以同时存在：卡的绝对坐标压过一切
+const bothMoved = layoutTopology(two, [], { cols: 4, groupOverrides: { "/w/beta": { x: 300, y: 40 } }, overrides: { b2: { x: 10, y: 600 } } });
+check(bothMoved.groups.flatMap((g) => g.nodes).find((p) => p.node.id === "b2")!.y === 600,
+  "单卡坐标仍压过组的位置");
+
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) { for (const f of failures) console.log(`  FAIL ${f}`); process.exit(1); }

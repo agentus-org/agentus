@@ -53,6 +53,9 @@ const freeze = () => ev(`(() => { if (document.getElementById('qa-no-anim')) ret
   document.head.appendChild(st); return true; })()`);
 
 await send("Runtime.enable");
+// 上一个 sweep（手机那份）可能把触摸模拟留着：桌面形态要先关掉，否则 hover/pointer 媒体查询
+// 全按触屏走，量出来的宽度和点击行为都不是这一份要测的东西。
+await send("Emulation.setTouchEmulationEnabled", { enabled: false });
 await size(1200);
 await send("Page.navigate", { url: BASE });
 await sleep(2600);
@@ -65,12 +68,19 @@ check("fixture session exists", Boolean(await ev(`fetch('/api/sessions',{method:
 const reload = async (mode) => {
   await ev(`localStorage.setItem('agentus.rail-mode','${mode}')`);
   await send("Page.reload"); await sleep(2600); await freeze();
+  // reload 之后 shell 是重新挂的：等 rail 真的画出来，别在「正在检查登录状态…」上量 null。
+  for (let i = 0; i < 40; i++) {
+    if (await ev(`!!document.querySelector('[data-nav="topology"]')`)) break;
+    await sleep(200);
+  }
 };
 const ESC = `document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`;
 
 // ---- ① 宽屏：head 干净，rail 顶部有固定导航区 ---------------------------------------------
-await reload("expanded");
+// 先切尺寸再 reload：反过来的话页面会按上一轮的（可能是手机的）宽度渲染一次，
+// rail 在手机形态下是抽屉，量出来的东西全不对。
 await size(1400);
+await reload("expanded");
 
 const headLeftovers = JSON.parse(await ev(`JSON.stringify({
   topo: !!document.querySelector('.head-actions [data-topo-entry], .chat-head [data-topo-entry]'),
@@ -129,20 +139,21 @@ check("#94 Esc returns from the cron panel too",
   Boolean(await ev(`!document.querySelector('[data-cron-panel]') && !!document.querySelector('.chat-col')`)));
 
 // ---- ③ collapsed（60px）：图标态仍可用 ----------------------------------------------------
-await reload("compact");
 await size(1400);
-const compact = JSON.parse(await ev(`JSON.stringify((() => {
+await reload("compact");
+const compactRaw = await ev(`JSON.stringify((() => {
   const topo = document.querySelector('[data-nav="topology"]');
   const label = topo?.querySelector('span');
   const r = topo?.getBoundingClientRect();
   return {
-    cls: document.querySelector('.sidebar').className,
+    cls: document.querySelector('.sidebar')?.className ?? '',
     textHidden: label ? (label.offsetWidth === 0 || getComputedStyle(label).display === 'none') : null,
     w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
     title: topo?.getAttribute('title') ?? '',
     aria: topo?.getAttribute('aria-label') ?? '',
   };
-})())`));
+})())`);
+const compact = compactRaw ? JSON.parse(compactRaw) : { cls: "", textHidden: null, w: 0, h: 0, title: "", aria: "" };
 check("#94 compact rail: the label is folded away", compact.textHidden === true, JSON.stringify(compact));
 check("#94 compact rail: the entry is still a real target (icon box)",
   compact.w >= 24 && compact.h >= 24, JSON.stringify(compact));
@@ -155,9 +166,10 @@ check("#94 compact rail: clicking the icon still opens the panel",
 await ev(ESC); await sleep(600);
 
 // ---- ④ 手机：入口跟着 drawer 走 -----------------------------------------------------------
-await reload("expanded");
+// 先切到手机尺寸再 reload（并等 rail 挂上来）：反过来的话页面按桌面渲染，
+// 再被压成 390 时抽屉的 open 状态和几何都还停在桌面那一帧。
 await size(390, 780, true);
-await send("Page.reload"); await sleep(2600); await freeze();
+await reload("expanded");
 const phoneClosed = await ev(`(() => { const n = document.querySelector('[data-nav="topology"]');
   const s = document.querySelector('.sidebar'); const r = n?.getBoundingClientRect();
   return { left: r ? Math.round(r.left) : null, open: s?.classList.contains('open'), display: s ? getComputedStyle(s).display : null }; })()`);
@@ -165,11 +177,12 @@ check("#94 phone: the entry is inside the drawer (off-canvas while closed)",
   phoneClosed.open === false, JSON.stringify(phoneClosed));
 await ev(`document.querySelector('button.menu-btn').click()`);
 await sleep(800);
-const phoneOpen = JSON.parse(await ev(`JSON.stringify((() => {
+const phoneOpenRaw = await ev(`JSON.stringify((() => {
   const n = document.querySelector('[data-nav="topology"]'); const r = n?.getBoundingClientRect();
   return { left: r ? Math.round(r.left) : -1, w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
-           open: document.querySelector('.sidebar').classList.contains('open') };
-})())`));
+           open: !!document.querySelector('.sidebar')?.classList.contains('open') };
+})())`);
+const phoneOpen = phoneOpenRaw ? JSON.parse(phoneOpenRaw) : { left: -1, w: 0, h: 0, open: false };
 check("#94 phone: the hamburger reveals it, still clickable",
   phoneOpen.open && phoneOpen.left >= 0 && phoneOpen.w > 0, JSON.stringify(phoneOpen));
 check("#94 phone: the entry is a finger-sized row (>=38px)",
@@ -183,6 +196,11 @@ await ev(ESC); await sleep(600);
 // ---- ⑤ 会话级按钮不回退 -------------------------------------------------------------------
 await size(1400);
 await send("Page.reload"); await sleep(2600); await freeze();
+// head 只在「有活动会话」时渲染：等它挂上来，别把「加载中」当成「按钮没了」。
+for (let i = 0; i < 40; i++) {
+  if (await ev(`!!document.querySelector('.head-actions')`)) break;
+  await sleep(200);
+}
 const headStill = JSON.parse(await ev(`JSON.stringify((() => {
   const head = document.querySelector('.head-actions');
   if (!head) return { ok: false };

@@ -41,12 +41,14 @@ const WINDOWS: { key: TopoWindow; label: string }[] = [
 
 /** 拖动摆位：会话 id → 画布坐标。存在本机 —— 位置是这个人看图的手感，不是团队数据。 */
 const POS_KEY = "agentus.topo.pos";
+/** 拖动分区（workspace → 画布坐标）。组也是可以摆的盒子：线纠缠时常常该挪的是整组。 */
+const GROUP_POS_KEY = "agentus.topo.groupPos";
 /** 折叠分区：workspace 路径数组。null = 从没动过，走「只展开当前会话那一组」的默认。 */
 const COLLAPSE_KEY = "agentus.topo.collapsed";
 
-function readPos(): Record<string, { x: number; y: number }> {
+function readPos(key = POS_KEY): Record<string, { x: number; y: number }> {
   try {
-    const v = JSON.parse(localStorage.getItem(POS_KEY) || "{}") as unknown;
+    const v = JSON.parse(localStorage.getItem(key) || "{}") as unknown;
     if (!v || typeof v !== "object" || Array.isArray(v)) return {};
     const out: Record<string, { x: number; y: number }> = {};
     for (const [k, p] of Object.entries(v as Record<string, unknown>)) {
@@ -128,11 +130,19 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
      拖开是唯一能治这个的办法，坐标压过网格布局（见 topology-layout 的 overrides）。 */
   const [pos, setPos] = useState<Record<string, { x: number; y: number }>>(readPos);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [groupPos, setGroupPos] = useState<Record<string, { x: number; y: number }>>(() => readPos(GROUP_POS_KEY));
+  const [dragGroup, setDragGroup] = useState<string | null>(null);
+  const groupMovedRef = useRef(false);
+  const groupDragRef = useRef<{ ws: string; sx: number; sy: number; ox: number; oy: number; moved: boolean;
+    cards: Record<string, { x: number; y: number }> } | null>(null);
   const dragRef = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
   const movedRef = useRef(false);
   useEffect(() => {
     try { localStorage.setItem(POS_KEY, JSON.stringify(pos)); } catch { /* 隐私模式：位置只在本次会话生效 */ }
   }, [pos]);
+  useEffect(() => {
+    try { localStorage.setItem(GROUP_POS_KEY, JSON.stringify(groupPos)); } catch { /* ignore */ }
+  }, [groupPos]);
   const scroller = useRef<HTMLDivElement>(null);
   const [canvasW, setCanvasW] = useState(0);
   useEffect(() => {
@@ -190,9 +200,10 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
   const layout = useMemo(
     // 手机上组头抬到 44px：手指点卡片区之前先要能点中「展开/收起」这一行。
     () => layoutTopology(filtered.nodes, filtered.edges, {
-      cols, collapsed, overrides: pos, headH: narrow ? MOBILE_GROUP_HEAD : undefined,
+      cols, collapsed, overrides: pos, groupOverrides: groupPos,
+      headH: narrow ? MOBILE_GROUP_HEAD : undefined,
     }),
-    [filtered, cols, collapsed, pos, narrow],
+    [filtered, cols, collapsed, pos, groupPos, narrow],
   );
   const placedNodes = useMemo(() => layout.groups.flatMap((g) => g.nodes), [layout]);
 
@@ -202,6 +213,55 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
     const arr = [...next];
     setCollapsedRaw(arr);
     try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(arr)); } catch { /* 同上 */ }
+  };
+
+  /* 拖整组：位移超过 4px 才算拖动，没超过就当成「点组头 = 折叠/展开」。
+     组里的卡片分两种 —— 没被单独拖过的跟着组走（布局用组的 y 重算），被拖过的要一起平移，
+     否则它们会留在原地、眼看就要脱离自己的框。 */
+  const groupDragStart = (e: React.PointerEvent<HTMLElement>, ws: string): void => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest(".topo-group-add")) return;
+    const box = (e.currentTarget as HTMLElement).closest(".topo-group") as HTMLElement | null;
+    if (!box) return;
+    const cards: Record<string, { x: number; y: number }> = {};
+    for (const n of filtered.nodes) {
+      if (n.workspace === ws && pos[n.id]) cards[n.id] = { ...pos[n.id] };
+    }
+    groupDragRef.current = {
+      ws, sx: e.clientX, sy: e.clientY,
+      ox: box.offsetLeft, oy: box.offsetTop, moved: false, cards,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const groupDragMove = (e: React.PointerEvent<HTMLElement>): void => {
+    const d = groupDragRef.current;
+    if (!d) return;
+    if (e.pointerType !== "mouse") return;
+    const dx = e.clientX - d.sx;
+    const dy = e.clientY - d.sy;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    if (!d.moved) { d.moved = true; setDragGroup(d.ws); }
+    const nx = Math.max(0, d.ox + dx);
+    const ny = Math.max(0, d.oy + dy);
+    setGroupPos((prev) => ({ ...prev, [d.ws]: { x: nx, y: ny } }));
+    if (Object.keys(d.cards).length) {
+      setPos((prev) => {
+        const next = { ...prev };
+        for (const [id, base] of Object.entries(d.cards)) {
+          next[id] = { x: Math.max(0, base.x + (nx - d.ox)), y: Math.max(0, base.y + (ny - d.oy)) };
+        }
+        return next;
+      });
+    }
+  };
+  /* 松手之后，浏览器还会补一次 click（pointer capture 把它送到 header 上）。折叠由 click 处理，
+     所以这里只负责把「这一次是拖动」标出来，让紧随其后的那次 click 吞掉自己 —— 否则拖完组会顺手
+     把它折叠起来。分成两步还有个好处：程序化 `.click()`（键盘/无障碍/测试）走的也是同一条路。 */
+  const groupDragEnd = (): void => {
+    const d = groupDragRef.current;
+    groupDragRef.current = null;
+    setDragGroup(null);
+    if (d?.moved) groupMovedRef.current = true;
   };
 
   // 拖动 = 指针位移 > 4px 才算（阈值内仍是点击，卡片该正常打开会话）。
@@ -321,14 +381,17 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
             data-topo-search
           />
         </label>
-        {Object.keys(pos).length ? (
+        {Object.keys(pos).length || Object.keys(groupPos).length ? (
           <button
             type="button"
             className="topo-reset"
             title="把所有卡片放回自动排版的位置"
             aria-label="重置卡片位置"
             data-topo-reset-pos
-            onClick={() => { setPos({}); try { localStorage.removeItem(POS_KEY); } catch { /* ignore */ } }}
+            onClick={() => {
+              setPos({}); setGroupPos({});
+              try { localStorage.removeItem(POS_KEY); localStorage.removeItem(GROUP_POS_KEY); } catch { /* ignore */ }
+            }}
           >重置布局</button>
         ) : null}
         <button type="button" className="icon-btn" title="刷新" aria-label="刷新拓扑" onClick={() => void load(win, archived)}>
@@ -368,7 +431,7 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
             {layout.groups.map((g) => (
               <section
                 key={g.workspace || "(unknown)"}
-                className={`topo-group ${g.collapsed ? "collapsed" : ""}`}
+                className={`topo-group ${g.collapsed ? "collapsed" : ""} ${dragGroup === g.workspace ? "dragging" : ""}`}
                 data-topo-group={g.label}
                 data-topo-collapsed={g.collapsed ? "1" : "0"}
                 style={{ left: g.x, top: g.y, width: g.w, height: g.h }}
@@ -382,7 +445,15 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
                   aria-expanded={!g.collapsed}
                   title={g.collapsed ? `展开 ${g.label}` : `收起 ${g.label}`}
                   data-topo-group-toggle={g.label}
-                  onClick={() => toggleGroup(g.workspace)}
+                  data-topo-group-drag={dragGroup === g.workspace ? "1" : "0"}
+                  onPointerDown={(e) => groupDragStart(e, g.workspace)}
+                  onPointerMove={groupDragMove}
+                  onPointerUp={() => groupDragEnd()}
+                  onClick={() => {
+                    if (groupMovedRef.current) { groupMovedRef.current = false; return; }
+                    toggleGroup(g.workspace);
+                  }}
+                  onPointerCancel={() => { groupDragRef.current = null; setDragGroup(null); }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleGroup(g.workspace); }
                   }}
@@ -421,12 +492,17 @@ export function TopologyBoard({ onClose, onOpen, openId }: Props): JSX.Element {
                     onPointerMove={dragMove}
                     onPointerUp={dragEnd}
                     onPointerCancel={dragEnd}
+                    /* 打开会话的判据在卡片上，不在内部的 <button> 上：`setPointerCapture` 会把随后的
+                       click 的目标改写成被捕获的这个 div，挂在子按钮上的 onClick 收不到（真鼠标点卡片
+                       打不开浮窗，而程序化 `.click()` 却能过 —— 所以 sweep 一度是假绿）。
+                       位移超过阈值的那次拖动由 movedRef 挡掉；派活按钮自己 stopPropagation。 */
+                    onClick={() => { if (movedRef.current) return; onOpen(n.id); }}
                   >
                     <button
                       type="button"
                       className="topo-card-main"
                       title={`${n.title}\n${n.workspace}\n${st.text} · ${shortAgo(n.lastAt)}`}
-                      onClick={() => { if (movedRef.current) return; onOpen(n.id); }}
+                      onClick={(e) => { e.stopPropagation(); }}
                     >
                       <span className={`topo-dot ${st.tone}`} aria-hidden />
                       <span className="topo-title">

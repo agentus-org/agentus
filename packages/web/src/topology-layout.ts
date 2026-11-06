@@ -79,6 +79,9 @@ export interface LayoutOpts {
   collapsed?: ReadonlySet<string>;
   /** 组头高度。手机上要给手指留够命中区（44px），布局必须跟着知道，否则卡片会压住组头。 */
   headH?: number;
+  /** 操作者拖过的**分区**坐标（workspace 路径 → {x,y}）。组也是一个可以摆的盒子：
+   *  线纠缠的时候常常是「这两组该并排/该换个上下」，挪组比挪一张张卡快得多。 */
+  groupOverrides?: Record<string, { x: number; y: number }>;
   /** 操作者拖过的画布坐标（会话 id → {x,y}）。**优先于**自动布局：拖动存在的意义就是让人
    *  把位置摆到线不相交的地方，所以它必须压过任何自动排版。 */
   overrides?: Record<string, { x: number; y: number }>;
@@ -146,6 +149,7 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
   const pos = new Map<string, PlacedNode>();
   const collapsed = opts.collapsed ?? new Set<string>();
   const overrides = opts.overrides ?? {};
+  const groupOverrides = opts.groupOverrides ?? {};
   // 折叠行的宽度要跟「最宽的那个组」齐平 —— 先算出来，别让它按自己的会话数缩成一条窄卡。
   const widest = groupsInOrder.reduce((m, [, list]) => Math.max(m, Math.min(list.length, cols)), 1);
   const fullWidth = widest * cardW + (widest - 1) * gapX + GROUP_PAD * 2;
@@ -162,11 +166,14 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
       ? Math.min(shown, cols) * cardW + (Math.min(shown, cols) - 1) * gapX + GROUP_PAD * 2
       : fullWidth;
     const h = isCollapsed ? headH + GROUP_PAD : headH + rows * cardH + (rows - 1) * gapY + GROUP_PAD;
+    // 组的位置默认按顺序往下堆；被拖过就以操作者的坐标为准（卡片跟着这个 y 走）。
+    const gov = groupOverrides[workspace];
+    const gy = gov?.y ?? y;
     const group: PlacedGroup = {
       workspace,
       label: workspaceLabel(workspace),
-      x: 0,
-      y,
+      x: gov?.x ?? 0,
+      y: gy,
       w,
       h,
       nodes: [],
@@ -188,7 +195,7 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
       const placed: PlacedNode = {
         node,
         x: ov?.x ?? GROUP_PAD + col * (cardW + gapX),
-        y: ov?.y ?? y + headH + row * (cardH + gapY),
+        y: ov?.y ?? gy + headH + row * (cardH + gapY),
         depth: depthOf.get(id) ?? 0,
       };
       group.nodes.push(placed);
@@ -219,6 +226,10 @@ export function layoutTopology(nodes: TopologyNode[], edges: TopologyEdge[], opt
   for (const p of pos.values()) {
     width = Math.max(width, p.x + cardW + GROUP_PAD);
     height = Math.max(height, p.y + cardH + GROUP_PAD);
+  }
+  for (const g of out) {
+    width = Math.max(width, g.x + g.w + GROUP_PAD);
+    height = Math.max(height, g.y + g.h + GROUP_PAD);
   }
   return { groups: out, edges: placedEdges, width, height };
 }
