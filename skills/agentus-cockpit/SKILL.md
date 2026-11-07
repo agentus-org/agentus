@@ -49,7 +49,10 @@ commands that are *not* about a session sit at the top level.
 "$AGENTUS_COCKPIT_BIN" session show <id>                     # one session in detail, plus any approval it waits on
 "$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20       # recent transcript, each message cut to the documented size
 "$AGENTUS_COCKPIT_BIN" session plan <id>                     # the plan object the operator's card renders
-"$AGENTUS_COCKPIT_BIN" session send <id> "…the message…"     # hand a message to another session
+"$AGENTUS_COCKPIT_BIN" session send <id> "…message…" [--reply-on-done] [--wake] [--interrupt]
+"$AGENTUS_COCKPIT_BIN" session create <cwd> --title "…" [--backend <id>]  # new slot in the operator's rail
+"$AGENTUS_COCKPIT_BIN" session wake <id>                     # start a cold slot's process
+"$AGENTUS_COCKPIT_BIN" session stop <id> [--close]           # interrupt the turn / stop the process
 ```
 
 `session list` is the cheap one: one call, one row per session, enough to answer "what is the
@@ -123,7 +126,75 @@ clean stdout is not an accident.
 | `out_of_scope` | not a session you may see (archived / unknown) | stop; do not probe ids |
 | `bad_request` | missing/empty `to` or `message`, or bad JSON | fix the call |
 
+## Handing off a whole task to a parallel session
+
+The operator says「另开一个会话来干这件事」when he wants his own session free. `session create`
+builds a slot he can see and click into — that is the right shape, not a subagent you cannot show him.
+
+1. **Create it in the SAME cwd as the work.** The new session inherits that workspace's `AGENTS.md`,
+   so your standing rules (red lines, git discipline, file layout) arrive with it and you do not
+   have to restate them. `session create <cwd> --title "<short name>"` answers with the row id.
+2. **Write the brief to a file and pipe it** (`"$AGENTUS_COCKPIT_BIN" session send <id> --wake < brief.txt`).
+   A multi-paragraph brief inlined as an argument gets mangled by quoting and shell history.
+   **Wait for `ready` before that first send.** A fresh slot sits at `status: starting` for a few seconds
+   and `send` refuses with `session not ready` — nothing was delivered, so do not rewrite the brief or
+   resend blindly. Poll `session show <id>` a handful of times (~8 s apart) until `status` is `ready`,
+   then send. `--wake` does not fix this: the slot already has a process, it is still booting.
+3. **The brief must carry everything**: the child shares nothing with your conversation. Findings you
+   already established (so it does not redo them), the exact deliverables, the hard exclusions
+   (what NOT to build), and how to report back. Anything you leave out, it invents.
+4. **Tell it to build its own plan card** (`update_plan` / `todo_list`) and to mark steps as it goes;
+   the operator watches that list, not yours.
+5. **Expect the auto-title to overwrite your `--title`.** The title generator reads the *first line
+   of the delivered message*, so a brief starting「【任务：…】」renames the slot to that. Either make that
+   first line a good name, or `session rename <id> "…"` once after the send.
+
+**Never `session send` a long brief without `--reply-on-done`.** The default blocks the caller until
+the target's turn finishes, so a handoff that makes the child do ten minutes of work hangs your shell
+until it times out and looks like a failure even though the message was delivered. With
+`--reply-on-done` the call returns at once and the cockpit drops a 【完成回推】 into your session when
+That turn ends. Then read the result with `session messages <id>` — the notice carries the duration
+and id, never the answer body. **Each message in that transcript is cut to the documented size**, so a
+long final report arrives truncated mid-sentence: treat what you get as a pointer and verify the claim
+against the artifact — the files on disk, the tests it claims to have run, the service actually
+answering on its port — before repeating any of it to the operator.
+
+A delivered task can also leave a **service running under the child's shell**. A port that answers
+right after the handoff is not proof it survives: check `lsof -nP -iTCP:<port> -sTCP:LISTEN` for the
+process and its parent, and tell the operator it needs a supervisor (launchd / systemd) before they
+rely on it.
+
+If you forget `--reply-on-done` and the call hangs past your timeout: **the message was still
+delivered and the child has started working**. Do not re-send — that would queue a second turn of
+the same brief. Confirm with `session show <id>` (`status: running`, `plan.total` > 0) and read
+progress with `session messages <id> --tail 5`.
+
+## Clearing the plan card (you cannot)
+
+`update_plan` **refuses an empty `items` array**:「an empty list is not a plan — send the steps as they
+stand, or leave the plan alone」. There is no delete verb, and empty is deliberately not treated as
+"clear" — a malformed snapshot must never wipe a real plan.
+
+So when the operator says「把这个计划清一下 / 现在不是这个计划了」, the honest move is to push every step to
+a TERMINAL status in one call: one `cancelled` row carrying the reason, or one `completed` row summing
+up the outcome (plus a neutral `title` such as `已结项`). Then say plainly that empty is refused, so
+the card shows **a closed item, not nothing** — never report the panel as empty when it is not.
+
 ## Discipline (this is the part that matters)
+
+- **In the 主 agent (Main Bot) session the job is to DIRECT, not to edit.** The operator's standing
+  rule: hand code changes to the session he names, keep your own hands off the repo, and report what
+  that session actually delivered — verified against the artifact (the served asset, the CSS it
+  claims to have shipped, the DB row), not against its self-report. Do not do the edit yourself just
+  because the wait looks long; that is exactly the colliding-writes failure the rule prevents.
+- **`target_busy` is not a queue.** A `send` to a mid-turn session is refused outright — nothing was
+  delivered, so retrying immediately fails the same way. Wait for its 【完成回推】 and send then, or
+  ask the operator before interrupting a turn that is already doing work; an interrupt throws away
+  the work in flight, and the operator pays for it.
+- **Follow up a UI complaint with geometry, not adjectives.** "不对齐/没阴影/太挤" is measured
+  (`getBoundingClientRect().left/right` against the element the operator named), and the number goes
+  into the ticket; both edges of a row are separate assertions — an aligned left margin says nothing
+  about the right one.
 
 - **`delivered` is not `read`.** It means the target agent received your message and started a
   turn. It has not agreed, answered, or even seen it in its own words yet. Only the operator sees
