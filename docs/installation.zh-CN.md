@@ -52,7 +52,7 @@ agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.23.0`、`v0.23.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.23.0/merge-20261107-1229`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`agentus/v0.23.0/merge-20261107-2148`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.23.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 
@@ -113,6 +113,22 @@ hermes sessions adopt              # 把 home 里前 gateway 时代的会话绑�
 
 收尾和全新安装同一个自检 —— `PYTHONPATH=~/Project/hermes-agent hermes acp --check` —— 然后重启驾驶舱，
 让槽位按新构建重新起。
+
+#### 可选，和上面两条无关：检索索引
+
+0.23 还改了 `state.db` 全文索引的布局。`hermes sessions optimize-storage` 会原地重建它（external-content，
+不再给每条消息存副本、不再索引工具输出），最后 VACUUM，所以跑得久一点的 home 能收回这个文件很大一块。
+它不改任何 transcript，可以中断、可以续跑，而且**驾驶舱完全不依赖它**：跑不跑都能新建、都能 resume。
+文件大了、机器闲着的时候再做：
+
+```bash
+cp ~/.hermes/state.db ~/.hermes/state.db.bak-$(date +%Y%m%d-%H%M)   # 它不会替你备份
+hermes gateway stop            # 0.23 的 gateway 持有 state.db，不停它会直接拒绝
+hermes sessions optimize-storage
+hermes gateway start
+```
+
+值不值得跑问 `hermes doctor`（那条提示默认只提示、从不自动执行）。
 
 ## 安装
 

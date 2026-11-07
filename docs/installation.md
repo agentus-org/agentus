@@ -60,7 +60,7 @@ ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/`
 ours apart from upstream's own tags (`v0.23.0`, `v0.23.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.23.0/merge-20261107-1229`** — the newest tag on the fork,
+**Current integration build: `agentus/v0.23.0/merge-20261107-2148`** — the newest tag on the fork,
 built on Hermes `v0.23.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
@@ -129,6 +129,23 @@ specific old chat still refuses to open.
 
 Finish with the same check as a fresh install — `PYTHONPATH=~/Project/hermes-agent hermes acp
 --check` — and then restart the cockpit so its slots spawn against the new build.
+
+#### Optional, and separate from the two steps above: the search index
+
+0.23 also changed the layout of `state.db`'s full-text index. `hermes sessions optimize-storage`
+rebuilds it in place — external-content, no per-message copy, no tool output — and then VACUUMs, so
+a long-lived home can get a large part of that file back. It rewrites no transcripts, it is
+interruptible and resumable, and **nothing about the cockpit needs it**: sessions start and resume
+either way. Run it when the file is big and the box is idle:
+
+```bash
+cp ~/.hermes/state.db ~/.hermes/state.db.bak-$(date +%Y%m%d-%H%M)   # it does not back up for you
+hermes gateway stop            # 0.23's gateway holds state.db; the command refuses otherwise
+hermes sessions optimize-storage
+hermes gateway start
+```
+
+`hermes doctor` says when it is worth doing (the notice defaults to advising, never running).
 
 ## Install
 
