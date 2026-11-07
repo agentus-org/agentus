@@ -52,7 +52,7 @@ agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.23.0`、`v0.23.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.23.0/merge-20261107-1012`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`agentus/v0.23.0/merge-20261107-1229`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.23.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 
@@ -95,6 +95,24 @@ PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check 
 
 换到更新的构建只是在那棵树里 fetch + checkout（`git fetch --depth=1 origin tag <tag> && git checkout <tag>`），
 不用重装；正在跑的槽位会在下次重启时用上。
+
+### 从跑过 Hermes 0.22 或更早的构建升上来
+
+0.23 把 agent 搬进了 home 的 gateway，所以已经跑过旧构建的 home，除了 checkout 新 tag 还要做两件事。
+两条都幂等，都不碰你的会话记录：
+
+```bash
+hermes gateway install --force     # 服务定义必须是「这一份构建」描述的
+hermes sessions adopt              # 把 home 里前 gateway 时代的会话绑定到 gateway
+```
+
+第一件的理由：装好的服务文件是「写下它的那一版构建」的快照。留着旧形状的定义，起来的 gateway 认不出
+这个 home 的会话身份，于是每个槽位都拿身份错误顶回来，而不是 resume。第二件的理由：一个 home 的会话归属
+随构建变化 —— 不做这一步，gateway 之前就存在的那些会话在库里还在，但不属于任何人，驾驶舱的目录会把它们
+直接略掉。历史很长、压缩过很多次的话，某个旧会话始终打不开时也是重跑这一条。
+
+收尾和全新安装同一个自检 —— `PYTHONPATH=~/Project/hermes-agent hermes acp --check` —— 然后重启驾驶舱，
+让槽位按新构建重新起。
 
 ## 安装
 

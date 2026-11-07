@@ -60,7 +60,7 @@ ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/`
 ours apart from upstream's own tags (`v0.23.0`, `v0.23.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.23.0/merge-20261107-1012`** — the newest tag on the fork,
+**Current integration build: `agentus/v0.23.0/merge-20261107-1229`** — the newest tag on the fork,
 built on Hermes `v0.23.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
@@ -108,6 +108,27 @@ the fork is an upgrade, never a requirement.
 Moving to a newer build is a fetch + checkout in that same tree — `git fetch --depth=1 origin tag
 <tag> && git checkout <tag>` — not a reinstall; a running slot picks it up the next time it
 restarts.
+
+### Coming from a build that ran on Hermes 0.22 or older
+
+0.23 moved the agent into the home's gateway, so a home that already ran an older build needs two
+steps beyond checking out the new tag. Both are idempotent and neither touches your transcripts:
+
+```bash
+hermes gateway install --force     # the service definition must describe THIS build
+hermes sessions adopt              # binds the home's pre-gateway chats to the gateway
+```
+
+The first one matters because the installed service file is a snapshot of the build that wrote it:
+a definition left over from the old shape starts a gateway that cannot verify the home's session
+identity, and every slot then fails with an identity error instead of resuming. The second one
+matters because ownership of a home's sessions changes with the build: without it the chats that
+predate the gateway exist in the database but belong to nobody, so the cockpit's catalog leaves
+them out. On a large or heavily compacted history, `sessions adopt` is also the step to rerun if a
+specific old chat still refuses to open.
+
+Finish with the same check as a fresh install — `PYTHONPATH=~/Project/hermes-agent hermes acp
+--check` — and then restart the cockpit so its slots spawn against the new build.
 
 ## Install
 
