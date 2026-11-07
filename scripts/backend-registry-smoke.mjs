@@ -379,6 +379,31 @@ async function main() {
       `mode=${rLive?.modes?.currentModeId} status=${rLive?.status} ${rLive?.lastError ?? ""}`);
     await api("DELETE", `/api/sessions/${s1.live?.id}`);
 
+    // NO RECORDED MODE = the slot has no answer of its own, and the row default is the right one. This
+    // is the Hermes 0.23 cutover shape: the agent reports "ask" for "this conversation never had a
+    // policy", which is indistinguishable from an operator who picked Default — so without this an
+    // upgraded slot asks on every edit although the row says 不要问.
+    await api("PATCH", "/api/backends/qa-mode", { defaultMode: "" });
+    const s3 = await mkSession("qa-mode", "no recorded mode");
+    check("...with no row default it stays in the agent's own mode",
+      s3.live?.modes?.currentModeId === "default",
+      `mode=${s3.live?.modes?.currentModeId} status=${s3.live?.status} ${s3.live?.lastError ?? ""}`);
+    await api("PATCH", "/api/backends/qa-mode", { defaultMode: "dont_ask" });
+    await api("DELETE", `/api/sessions/${s3.live?.id}`);
+    await sleep(800);
+    const rs3 = await api("POST", `/api/sessions/${s3.live?.id}/resume`);
+    check("a slot with NO recorded mode resumes", rs3.status === 200, `status=${rs3.status} ${rs3.text.slice(0, 120)}`);
+    let s3Live = null;
+    for (let i = 0; i < 90 && !s3Live; i++) {
+      await sleep(1000);
+      s3Live = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === s3.live?.id) ?? null;
+      if (s3Live && s3Live.status !== "starting") break;
+    }
+    check("...and comes back in the row default (the upgrade shape: it had no pick of its own)",
+      s3Live?.modes?.currentModeId === "dont_ask",
+      `mode=${s3Live?.modes?.currentModeId} status=${s3Live?.status} ${s3Live?.lastError ?? ""}`);
+    await api("DELETE", `/api/sessions/${s3.live?.id}`);
+
     // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
     // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".
     await api("PATCH", "/api/backends/qa-mode", { defaultMode: "no_such_mode" });
