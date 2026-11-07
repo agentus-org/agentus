@@ -29,6 +29,11 @@ DEV_DATA="${DEV_DATA:-/tmp/agentus-qa-account}"
 DEV_USER="${DEV_USER:-scratch}"
 DEV_PASS="${DEV_PASS:-scratch-pass-1}"
 DEV_LOG="${DEV_LOG:-/tmp/agentus-dev.log}"
+# DEV'S OWN HERMES HOME — never the operator's ~/.hermes. Two reasons: (1) dev spawns real hermes
+# slots against whatever home the row names, and pointing them at the live home means dev turns
+# land in the operator's state.db next to real work; (2) on 0.23+ a home owns its gateway, so a
+# shared home means dev experiments can stop the operator's gateway. This home is disposable.
+DEV_HERMES_HOME="${DEV_HERMES_HOME:-$HOME/.agentslot-test/home}"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # the worktree this script lives in (the DEV tree)
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"   # the tree the operator's cockpit runs
@@ -60,7 +65,9 @@ case "${1:-}" in
       AGENTUS_PORT="$DEV_PORT" AGENTUS_DATA="$DEV_DATA" \
       AGENTUS_USERNAME="$DEV_USER" AGENTUS_PASSWORD="$DEV_PASS" \
       AGENTUS_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
+      AGENTUS_HERMES_HOME="$DEV_HERMES_HOME" \
       AGENTUS_ACP_V2_PLAN="${DEV_ACP_V2:-0}" \
+      ${AGENTUS_PERM_TIMEOUT_MS:+AGENTUS_PERM_TIMEOUT_MS="$AGENTUS_PERM_TIMEOUT_MS"} \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
@@ -72,7 +79,9 @@ case "${1:-}" in
         // reap 9 live agent processes (its own session included). Keep exactly the keys below —
         // which is everything dev.sh sets — and drop every other identity-shaped key.
         const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
-          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_ACP_V2_PLAN",
+          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_HERMES_HOME", "AGENTUS_ACP_V2_PLAN",
+          // QA needs to drive the approval timeout in seconds instead of minutes
+          "AGENTUS_PERM_TIMEOUT_MS",
           // the Web IDE bridge (#77): a dev instance proves the proxy against a real code-server
           "AGENTUS_IDE_UPSTREAM",
           "DEV_TREE", "DEV_LOG_PATH"]);
