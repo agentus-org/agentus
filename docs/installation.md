@@ -57,13 +57,19 @@ agentus/<hermes version>/merge-<YYYYMMDD-HHMM>
 
 A tag and not a branch, on purpose: the branch of the same name (under `yl-dev/`) is the working
 ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/` prefix also keeps
-ours apart from upstream's own tags (`v0.22.0`, `v0.22.0+canary.*`), and the timestamp in the
+ours apart from upstream's own tags (`v0.23.0`, `v0.23.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.22.0/merge-20261029-2149`** — the newest tag on the fork,
-built on Hermes `v0.22.0`. This line is for orientation only, not the source of truth: the
+**Current integration build: `agentus/v0.23.0/merge-20261107-1012`** — the newest tag on the fork,
+built on Hermes `v0.23.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
+
+On Hermes 0.23 a session's agent lives in that home's **gateway**, and the ACP process is a
+viewer attached to it — so killing a viewer no longer ends the turn, and a cockpit that assumed
+the two were one process would either strand sessions or report them dead while they keep
+working. This build carries that lifecycle, and still runs unchanged on a 0.22 backend
+(the ACP host tells us which world it is by whether a frame carries `_meta.hermes`).
 
 Install Hermes normally first — its installer brings the Python/Node runtime and puts `hermes` on
 your PATH — then run that build on top of that runtime:
