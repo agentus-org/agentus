@@ -59,6 +59,15 @@ extract on the model key) — come from the fork's integration build instead. Th
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
 `agentus/v0.23.0/merge-20261107-1229`, on Hermes `v0.23.0`.
 
+**Already running a build from before 0.23? Do these two steps, or the cockpit comes up with every session failing.** Hermes 0.23 moved the agent into the home's gateway, which moves both the service definition and the ownership of the home's sessions:
+
+```bash
+hermes gateway install --force --start-now   # without it: no session starts (new ones included)
+hermes sessions adopt                        # without it: old chats vanish from the cockpit
+```
+
+Skipping the first fails every slot with `Gateway inaccessible: service_identity_unverified` (Agentus only shows `Internal error`); skipping the second leaves your conversations in the database owned by nobody, so the catalog leaves them out. Neither touches transcripts, and both are idempotent — [§ Coming from a build that ran on Hermes 0.22 or older](docs/installation.md#coming-from-a-build-that-ran-on-hermes-022-or-older).
+
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
 

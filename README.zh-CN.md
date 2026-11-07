@@ -53,6 +53,18 @@ web bundle、配套 APK —— 然后直接退出，不启动任何东西）。
 [§ 该跑哪份 Hermes](docs/installation.zh-CN.md#该跑哪份-hermes) —— 当前是 tag
 `agentus/v0.23.0/merge-20261107-1229`，基座 Hermes `v0.23.0`。
 
+**已经在跑 0.23 之前的构建？先做这两步，否则驾驶舱起来时所有会话都是坏的。** Hermes 0.23 把 agent 搬进了 home 的
+gateway，随之搬家的是「服务定义」和「这个 home 里会话的归属」：
+
+```bash
+hermes gateway install --force --start-now   # 不做：任何会话都起不来（新的也一样）
+hermes sessions adopt                        # 不做：老会话在驾驶舱里消失
+```
+
+不做第一条，每个槽位都顶 `Gateway inaccessible: service_identity_unverified`（Agentus 只显示 `Internal error`）；
+不做第二条，你之前的对话还躺在库里但没有 owner，目录会直接略掉它们。两条都不碰 transcript，且都可重复执行 ——
+详见 [§ 从跑过 Hermes 0.22 或更早的构建升上来](docs/installation.zh-CN.md#从跑过-hermes-022-或更早的构建升上来)。
+
 你启动的第一个 slot 会使用**你自己的 agent 已经在用的**那个 Hermes home（`~/.hermes`），除非后端那一行
 指定了另一个 —— 见下面的「HERMES_HOME」。
 
