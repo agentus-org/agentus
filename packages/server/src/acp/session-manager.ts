@@ -1392,16 +1392,50 @@ export class SessionManager {
           storedPicks.has(o.id) ? { ...o, currentValue: storedPicks.get(o.id) } : o
         ));
       }
-      // same for the mode: the archived mode wins over a backend default
-      if (row.modes && live.info.modes && (row.modes as SessionModeState).currentModeId) {
-        live.info.modes = { ...live.info.modes, currentModeId: (row.modes as SessionModeState).currentModeId };
+      // WHICH MODE THIS SESSION COMES BACK IN, in this order:
+      //   ① the pick recorded for this slot — the operator's, or the row default applied once;
+      //   ② the row's default — the slot has NO answer of its own. That is every session that predates
+      //      the column AND every session carried over a Hermes 0.23 cutover: 0.23 reports "ask" for
+      //      "this conversation has no policy at all", which is indistinguishable from an operator who
+      //      picked Default, so without this the slot asks on every edit although the row says 不要问;
+      //   ③ the snapshot stored with the row (an agent whose first resume had no list of its own).
+      const recordedMode = this.#store.getModePick(id);
+      let unrecordedMode: string | null = null;
+      if (live.info.modes) {
+        const advertised = (live.info.modes.availableModes ?? []).map((m) => m.id);
+        const known = (value: string | null): value is string =>
+          Boolean(value) && (advertised.length === 0 || advertised.includes(value as string));
+        const rowDefault = (this.#store.getBackend(String(live.info.backend))?.defaultMode ?? "").trim();
+        const stored = (row.modes as SessionModeState | null)?.currentModeId ?? null;
+        const target = known(recordedMode) ? recordedMode : known(rowDefault) ? rowDefault : known(stored) ? stored : null;
+        if (target) {
+          if (live.info.modes.currentModeId !== target) {
+            live.info.modes = { ...live.info.modes, currentModeId: target };
+          }
+          // A default applied here is a decision from now on (a later change to the row must not move a
+          // conversation that is already running in it). Not recorded yet — the send below decides that.
+          unrecordedMode = recordedMode ? null : target;
+        } else if (recordedMode) {
+          // The recorded pick is gone from what the agent advertises (a mode the new build dropped):
+          // forget it, so the next resume does not keep replaying a refusal.
+          this.#store.setModePick(id, null);
+        }
       }
       this.#updateSession(live);
       // …against the session the agent is actually serving NOW (a re-minted one, if the slot had no
       // state to restore): asking about the old id would be the same silent no-op all over again.
       const acpId = live.info.acpSessionId as string;
       const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
-      if (modeId) await conn.setSessionMode({ sessionId: acpId, modeId }).catch(() => {});
+      if (modeId) {
+        await conn
+          .setSessionMode({ sessionId: acpId, modeId })
+          .then(() => {
+            // The row default is only remembered once the agent accepted it; a slot that never comes up
+            // must not look like it already has an answer of its own.
+            if (unrecordedMode) this.#store.setModePick(id, unrecordedMode);
+          })
+          .catch(() => {});
+      }
       for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
         // "" is a legitimate "unset / follow default" — replaying it can be rejected as an
         // invalid option value, so only re-apply real picks.
@@ -2055,10 +2089,17 @@ export class SessionManager {
       );
       return;
     }
-    if (modes.currentModeId === wanted) return;
+    if (modes.currentModeId === wanted) {
+      // Already there (the agent came up in the row default by itself): record it, so a LATER resume
+      // does not treat this session as one that never had an answer and re-apply a default that has
+      // moved on since.
+      this.#store.setModePick(live.info.id, wanted);
+      return;
+    }
     try {
       await live.conn.setSessionMode({ sessionId: acpSessionId, modeId: wanted });
       live.info.modes = { ...modes, currentModeId: wanted };
+      this.#store.setModePick(live.info.id, wanted);
       console.log(`[agentus] session ${live.info.id}: default permission mode -> ${wanted}`);
     } catch (e) {
       // qodercli advertises modes but answered -32601 in the design probe, so "advertised but not
@@ -2080,6 +2121,10 @@ export class SessionManager {
       if (!/not found|Unsupported/i.test(errMessage(err))) throw err;
     }
     if (s.info.modes) s.info.modes = { ...s.info.modes, currentModeId: modeId };
+    // Recorded even when the agent answered "not implemented": the cockpit then replays the same pick
+    // on the next resume instead of falling back to the row default, which would look like the
+    // operator's choice being undone by a restart.
+    this.#store.setModePick(sessionId, modeId);
     this.#updateSession(s);
   }
 

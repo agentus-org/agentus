@@ -530,6 +530,14 @@ export class Store {
     // #62-2: a cold slot has no agent to send session/set_model to, so the operator's pick is
     // PARKED here and replayed on the next resume. text, so it rides the loop above.
     if (!cols.has("pending_model_id")) this.#db.exec("alter table sessions add column pending_model_id text");
+    // WHICH PERMISSION MODE THIS SESSION WAS PUT IN, by whoever put it there (the operator's pick, or
+    // the row's default applied on creation). NULL = "nobody ever chose for this session", which is
+    // the state every row predating this column is in — and the state a resume reads as "this
+    // conversation has no answer of its own, the row default is the right one". Without the column
+    // there is nothing to tell an operator's 「Default」 apart from an agent that never had a policy,
+    // so a session that came over a Hermes upgrade asking on every edit could never be told apart
+    // from one the operator deliberately left on ask.
+    if (!cols.has("mode_id")) this.#db.exec("alter table sessions add column mode_id text");
     // WHICH SESSIONS THE COCKPIT OWNS (issue #16): 1 = the 工作播报 observer, 0 = the operator's work.
     // Its own column rather than a title convention, because this flag decides whether a row is
     // allowed into the rail, the warm-slot ranking and the cockpit CLI's scope — a rename must not be
@@ -1688,6 +1696,25 @@ export class Store {
   close(): void {
     this.#db.close();
   }
+  /** The permission mode this slot was put in, or null when nobody ever chose one for it.
+   *  Read by `resume()` to decide whether the conversation has an answer of its own. */
+  getModePick(id: string): string | null {
+    const row = this.#db.prepare("select mode_id from sessions where id = ?").get(id) as
+      | { mode_id?: string | null }
+      | undefined;
+    const value = row?.mode_id;
+    return typeof value === "string" && value.length ? value : null;
+  }
+
+  /** Remember the mode a slot is in: an operator pick, or the row default applied on creation.
+   *  `null` forgets it (used when a session is re-created in place with no pick). */
+  setModePick(id: string, modeId: string | null): boolean {
+    const info = this.#db
+      .prepare("update sessions set mode_id = ? where id = ?")
+      .run(modeId && modeId.length ? modeId : null, id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
   /** Re-point a slot's workspace. Not part of upsertSession: a live-status write
    *  must never clobber a choice the operator made in the panel. */
   setWorkspace(id: string, workspace: string | null): boolean {
