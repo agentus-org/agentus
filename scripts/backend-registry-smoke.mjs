@@ -475,6 +475,50 @@ async function main() {
       `mode_id=${await modePickOf(dataDir, s5.live?.id)}`);
     await api("DELETE", `/api/sessions/${s5.live?.id}`);
 
+    // #234 A) The owner refuses `session/load` for a moment after the turn its dead viewer started —
+    // a promote/restart of the cockpit — answering `-32603` with nothing but "Internal error". The
+    // cockpit has to retry that: measured on live, the slot sat `offline / acp_init_failed` at 23:32:29
+    // and the SAME click worked at 23:36:09, which read as "the cockpit broke again".
+    const cfgLog = path.join(dataDir, "config-writes-234.log");
+    await api("POST", "/api/backends", {
+      id: "qa-resume-retry", label: "QA resume refused once", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      env: {
+        MOCK_LOAD_FAIL_FILE: path.join(dataDir, "load-refused-234.once"), MOCK_LOAD_FAIL_DATA: "1",
+        MOCK_CONFIG_LOG: cfgLog,
+      },
+      defaultMode: "dont_ask",
+    });
+    const s6 = await mkSession("qa-resume-retry", "resume refused once");
+    await api("DELETE", `/api/sessions/${s6.live?.id}`);
+    await sleep(800);
+    const retried = await api("POST", `/api/sessions/${s6.live?.id}/resume`);
+    check("a resume refused with a transient 'Internal error' is retried, not reported as broken",
+      retried.status === 200, `status=${retried.status} ${retried.text.slice(0, 160)}`);
+    check("...the retry line carries the refusal's own data (not just the two words)",
+      /previous_turn_releasing/.test(log()),
+      log().split("\n").filter((l) => l.includes("resume refused")).slice(-1)[0] || "(no retry line)");
+    let s6Live = null;
+    for (let i = 0; i < 60 && !s6Live; i++) {
+      await sleep(1000);
+      s6Live = ((await api("GET", "/api/sessions")).json?.live ?? []).find((s) => s.id === s6.live?.id) ?? null;
+      if (s6Live && s6Live.status !== "starting") break;
+    }
+    check("...and the slot comes back ready in the mode the row asks for",
+      s6Live?.status === "ready" && s6Live?.modes?.currentModeId === "dont_ask",
+      `status=${s6Live?.status} mode=${s6Live?.modes?.currentModeId} ${s6Live?.lastError ?? ""}`);
+    // #234 B) One channel owns the decision. The stored `edit_approval_policy` option is a policy
+    // snapshot in a different vocabulary (`ask` / `workspace_session` / `session`) than the mode ids,
+    // and replaying it after the mode landed is exactly how a resume put 「不要问」 back to `ask` on
+    // live 0.22.2 (`mode_id=dont_ask` in the row, `currentValue:"ask"` in the options).
+    const cfgWrites = fs.existsSync(cfgLog)
+      ? fs.readFileSync(cfgLog, "utf8").split("\n").filter(Boolean) : [];
+    check("a resume does NOT replay the stored edit_approval_policy over the mode it just applied",
+      !cfgWrites.some((line) => line.startsWith("edit_approval_policy=")),
+      cfgWrites.join(", ") || "(no config writes)");
+    await api("DELETE", `/api/sessions/${s6.live?.id}`);
+    await api("DELETE", "/api/backends/qa-resume-retry");
+
     // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
     // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".
     await api("PATCH", "/api/backends/qa-mode", { defaultMode: "no_such_mode" });

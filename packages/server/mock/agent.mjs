@@ -230,6 +230,18 @@ const agent = () => ({
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
   async loadSession({ sessionId, cwd, mcpServers }) {
+    // MOCK_LOAD_FAIL_FILE=<path>: the owner keeps a session for a while after the turn its dead viewer
+    // started — a promote restart — and refuses `session/load` for it with `-32603` and NO data. That is
+    // the refusal the cockpit now retries (#234). The marker is a FILE, not a counter: every resume is a
+    // FRESH agent process, so an in-memory count would fail every attempt instead of the first.
+    // MOCK_LOAD_FAIL_DATA=1 adds the `data` a refusal usually carries, so the message passthrough
+    // (instead of a bare "Internal error") can be pinned too.
+    if (process.env.MOCK_LOAD_FAIL_FILE && !fs.existsSync(process.env.MOCK_LOAD_FAIL_FILE)) {
+      fs.writeFileSync(process.env.MOCK_LOAD_FAIL_FILE, "served\n");
+      throw new RequestError(-32603, "Internal error",
+        process.env.MOCK_LOAD_FAIL_DATA === "1"
+          ? { reason: "previous_turn_releasing", retry_after_ms: 10 } : undefined);
+    }
     // MOCK_FORGET=1 answers like a REAL agent that has never seen this session: hermes returns an
     // EMPTY load result for an unknown id, and `refusal` on every prompt after (measured with
     // scripts/probe-load-missing.mjs). Without it, the mock's job is the friendly case — "a cold
@@ -328,6 +340,13 @@ const agent = () => ({
   async setSessionConfigOption({ sessionId, configId, value }) {
     if (!sessions.has(sessionId)) throw new Error("no such session");
     const s = sessions.get(sessionId);
+    // MOCK_CONFIG_LOG=<path>: every write this agent is asked to make, one per line. The cockpit must
+    // NOT replay `edit_approval_policy` on a resume (that snapshot is the stale policy vocabulary, and
+    // replaying it silently undid the mode the same resume had just applied — #234); the smoke reads
+    // this file to prove it.
+    if (process.env.MOCK_CONFIG_LOG) {
+      try { fs.appendFileSync(process.env.MOCK_CONFIG_LOG, `${configId}=${value}\n`); } catch { /* QA only */ }
+    }
     // Shape for shape with the real adapter: the response carries the session's WHOLE rebuilt
     // option list (not just the one that changed), and a value the option does not offer comes
     // back with the OLD currentValue instead of being snapped to something else. The cockpit

@@ -186,6 +186,30 @@ const MODE_SETTLE_MS = Number(process.env.AGENTUS_MODE_SETTLE_MS || 5_000);
  *  promise — is what counts as "applied". */
 const MODE_READBACK_MS = Number(process.env.AGENTUS_MODE_READBACK_MS || 900);
 
+/** How many times a resume may be retried, and how long between attempts (#234).
+ *
+ *  The owner refuses a resume while the turn its dead viewer started is still being released —
+ *  `-32603 Internal error` with `data:null` — and the same click works a minute later. Three
+ *  attempts over ten seconds covers that window without turning a real failure into a hang. */
+const RESUME_ATTEMPTS = 3;
+const RESUME_RETRY_MS = Number(process.env.AGENTUS_RESUME_RETRY_MS || 5000);
+
+/** The agent's config option that carries the same decision as the mode selector (#234). Its own
+ *  value vocabulary (`ask` / `workspace_session` / `session`) is the POLICY; the selector speaks mode
+ *  ids (`default` / `accept_edits` / `dont_ask`). One channel owns the decision — the mode — so this
+ *  one is never replayed from a stored snapshot. */
+const EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy";
+
+function isTransientResumeFailure(err: unknown): boolean {
+  // A slot the agent genuinely cannot adopt is a verdict, not a timing artefact: retrying it three
+  // times only makes the operator wait before the same refusal.
+  if (err instanceof SessionUnavailable) return false;
+  const msg = errMessage(err);
+  // The measured shape: the ACP refusal carries no data at all, so all that is left is the generic
+  // text. Transport teardown during a handshake reads the same way from here.
+  return /\bInternal error\b/i.test(msg) || /connection closed|ECONNRESET|socket hang up|timed? ?out/i.test(msg);
+}
+
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
  *
  *  Resuming has to *ask* the agent: `session/load` is "do you still have this session?", and the
@@ -1192,7 +1216,34 @@ export class SessionManager {
    *  a deliberate close): spawn a fresh child and ask the agent to load the old
    *  ACP session, then re-apply the stored mode/effort. AC5's "restart and keep
    *  going" half — no intelligence here, the agent owns the transcript. */
+  /**
+   * Resume a cold slot, retrying the refusals that are only a timing artefact.
+   *
+   * The owner (0.23) keeps a session for a moment after the turn that was running when its viewer
+   * died — a promote/restart of the cockpit, exactly — and refuses a resume in that window with
+   * `-32603 Internal error` and `data:null`. Measured on live 2026-11-08: 23:32:29 the slot was
+   * recorded `offline / acp_init_failed` with nothing but "Internal error" to show for it, and the
+   * same click at 23:36:09 brought it back in 5.76 s. The operator read that as "the cockpit broke
+   * again" (#234), so the retry belongs here rather than in their patience.
+   */
   async resume(id: string, opts: { replace?: boolean } = {}): Promise<SessionInfo> {
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await this.#resumeOnce(id, opts);
+      } catch (err) {
+        if (attempt >= RESUME_ATTEMPTS || !isTransientResumeFailure(err)) throw err;
+        console.log(
+          `[agentus] session ${id}: resume refused by the agent (${errMessage(err)}) — ` +
+            `retrying in ${Math.round(RESUME_RETRY_MS / 1000)}s (attempt ${attempt}/${RESUME_ATTEMPTS})`,
+        );
+        await new Promise((r) => setTimeout(r, RESUME_RETRY_MS));
+      }
+    }
+  }
+
+  async #resumeOnce(id: string, opts: { replace?: boolean } = {}): Promise<SessionInfo> {
     // `replace` is restart()'s path: the slot is still in the map on purpose (dropping it made the
     // rail flash the slot as cold for the length of a spawn), so the "already live, nothing to do"
     // shortcut has to be skipped and the fresh child takes its place.
@@ -1451,6 +1502,14 @@ export class SessionManager {
         await this.#settleMode(live, acpId, modeTarget, unrecordedMode !== null);
       }
       for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
+        // "the edit policy is its own channel": the mode just settled above through `setSessionMode`,
+        // and this stored value is a SNAPSHOT of what the agent announced at some earlier attach. On
+        // Hermes 0.23 it is the policy value (`ask` / `workspace_session` / `session`) while the mode
+        // selector speaks mode ids (`default` / `accept_edits` / `dont_ask`) — two vocabularies. Replaying
+        // it after the mode landed is how a resume put 「不要问」 back to `ask`: measured on live 0.22.2,
+        // `b73f1467` came back with `mode_id=dont_ask` in the row and `currentValue:"ask"` here, and the
+        // next resume replayed the stale `ask` over it (#234).
+        if (cfg?.id === EDIT_APPROVAL_POLICY_CONFIG_ID) continue;
         // "" is a legitimate "unset / follow default" — replaying it can be rejected as an
         // invalid option value, so only re-apply real picks.
         if (cfg?.id && cfg.currentValue) {
@@ -4332,8 +4391,23 @@ export function turnUsageOf(
 }
 
 function errMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
-  return String(e);
+  if (!e || typeof e !== "object") return String(e);
+  const err = e as { message?: unknown; code?: unknown; data?: unknown; cause?: unknown };
+  let text = "message" in e ? String(err.message) : String(e);
+  // ACP refusals carry the reason in `data` (the SDK's `RequestError`). Only `-32603` with
+  // `data:null` truly has nothing more to say; every other refusal used to reach the operator as a
+  // bare "Internal error" — which is what made a retryable hiccup look like a broken cockpit (#234).
+  const data = err.data ?? (err.cause as { data?: unknown } | undefined)?.data;
+  if (data !== null && data !== undefined) {
+    let shown: string;
+    try {
+      shown = typeof data === "string" ? data : JSON.stringify(data) ?? String(data);
+    } catch {
+      shown = String(data);
+    }
+    if (shown && shown !== "{}" && shown !== "null") text += ` — ${shown.slice(0, 400)}`;
+  }
+  return text;
 }
 
 function stderrTail(s: LiveSession): string {
