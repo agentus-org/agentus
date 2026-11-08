@@ -46,6 +46,44 @@ export interface BgNotice {
 
 const MARK = "[IMPORTANT: Background process ";
 
+/** The gateway's BATCHED wake (two completions or more while the session was busy).
+ *
+ *  `gateway/session_automation.py::_fold_completion` rewrites the prompt to
+ *
+ *      [IMPORTANT: 7 background process results arrived while this session was busy. Treat them as
+ *      one batch …]
+ *
+ *      <one `[IMPORTANT: Background process …]` block per task>
+ *
+ *  so a parser that only knew the single-notice shape left the whole batch unfolded — nine lines of
+ *  shell noise per task, in the operator's own conversation. Measured 2026-11-08 on a session with
+ *  seven finished processes: the count above the composer said 7, and the transcript said nothing
+ *  readable. */
+export interface BgNoticeBatch {
+  /** How many the header claims — kept even if fewer blocks parse, so the fold never under-reports. */
+  count: number;
+  notices: BgNotice[];
+}
+
+const FOLD_HEAD = /^\[IMPORTANT:\s*(\d+)\s+background process results arrived[^\]]*\]\s*/i;
+
+/** Parse a batched completion wake, or null when this is not one (or nothing inside it parses). */
+export function parseBgNoticeBatch(text: string): BgNoticeBatch | null {
+  const head = FOLD_HEAD.exec(text.trim());
+  if (!head) return null;
+  const rest = text.trim().slice(head[0].length);
+  const notices: BgNotice[] = [];
+  // Split on the block marker, keeping it: every block starts with it, and the prose between blocks
+  // belongs to the next one.
+  for (const chunk of rest.split(/(?=\[IMPORTANT: Background process )/)) {
+    const one = parseBgNotice(chunk);
+    if (one) notices.push(one);
+  }
+  if (!notices.length) return null;
+  return { count: Math.max(Number(head[1]) || 0, notices.length), notices };
+}
+
+
 /** Parse the agent's completion sentence, or null when this is not one. */
 export function parseBgNotice(text: string): BgNotice | null {
   const all = text.trim();

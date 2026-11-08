@@ -33,7 +33,7 @@ import {
   tokenIntact, tokenText, type MentionChoice, type MentionToken,
 } from "./mention";
 import { fitPlanSteps } from "./plan-fit";
-import { delegSummary, parseBgNotice, parseDelegNotice, shortCommand, type DelegNotice } from "./bgNotice";
+import { delegSummary, parseBgNotice, parseBgNoticeBatch, parseDelegNotice, shortCommand, type BgNoticeBatch, type DelegNotice } from "./bgNotice";
 import { copyText } from "./clipboard";
 import { fmtTokens, turnUsageText } from "./tokens";
 import {
@@ -2171,41 +2171,43 @@ const TurnLine = memo(function TurnLine({ busy, since, tps }: { busy: boolean; s
 function BackgroundRow({ v }: { v: SessionView }): JSX.Element | null {
   const tasks = v.background ?? [];
   const [open, setOpen] = useState(false);
+  // RUNNING ONLY (2026-11-08). This row answers one question — 「这个会话还在干活吗」 — so a finished
+  // process has no business here; it is history, and it is reported once as a folded row in the
+  // transcript (`BgNoticeBatchBlock`). Before this the gateway's 30-minute registry retention
+  // (`tools/process_registry.FINISHED_TTL_SECONDS`) left 「7 个后台任务已结束」 hanging above the
+  // composer for half an hour, which is neither current state nor a notice.
+  const running = tasks.filter((t) => t.status === "running");
   // Shown whenever the agent has background work — during a turn too. Hiding it while busy made the row
   // flash out of existence exactly when a completion wakes a new turn (measured: it was never visible for
   // a full second), and the operator's question 「这个会话还在干活吗」 does not pause while the agent talks.
-  if (!tasks.length) return null;
-  const running = tasks.filter((t) => t.status === "running");
-  const exited = tasks.filter((t) => t.status !== "running");
+  if (!running.length) return null;
   // #39: a subagent is not a process — it has no pid and no command line, it has a GOAL. Counted
   // separately so the head line can say 「其中 2 个子任务」 instead of pretending they are shell jobs.
   const subs = running.reduce((n, t) => n + (t.kind === "delegation" ? (t.taskCount ?? 1) : 0), 0);
   // Every row that survives the server's filter is a WAKE-UP process (#35): the agent is not done,
   // it is waiting for this result to continue. Said in words because a number alone reads like
   // 「有个后台程序在跑，跟我没关系」.
-  const head = running.length
-    ? `后台任务 ${running.length} 个运行中${subs ? `（含 ${subs} 个子任务）` : ""} · 完成后会唤醒会话`
-    : `${exited.length} 个后台任务已结束`;
+  const head = `后台任务 ${running.length} 个运行中${subs ? `（含 ${subs} 个子任务）` : ""} · 完成后会唤醒会话`;
   return (
-    <div className={`bg-row ${open ? "open" : ""}`} data-count={tasks.length}>
+    <div className={`bg-row ${open ? "open" : ""}`} data-count={running.length}>
       <button type="button" className="bg-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span
           className="bg-dot"
           aria-hidden="true"
-          data-state={running.length ? "running" : "exited"}
-          data-wake={running.length ? "1" : undefined}
+          data-state="running"
+          data-wake="1"
         />
         <span className="bg-text">{head}</span>
         {/* The turn is over, so nothing else on screen says work continues — this hint is the whole
             reason the row exists. */}
         {/* Only when the turn is over: during a turn the tail line already says the agent is working, and
             the point of this sentence is that the conversation looks finished while the work does not. */}
-        {running.length && !v.busy ? <span className="bg-hint">会话已空闲，后台仍在跑</span> : null}
+        {!v.busy ? <span className="bg-hint">会话已空闲，后台仍在跑</span> : null}
         <span className="bg-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
       {open && (
         <ul className="bg-list">
-          {tasks.map((t) => (
+          {running.map((t) => (
             <li key={t.id} className="bg-item" data-state={t.status} data-kind={t.kind ?? "process"}>
               {t.kind === "delegation" ? <span className="bg-tag">子任务</span> : null}
               {/* Wrapped, not ellipsised. The command IS what the operator opens this row to read
@@ -2748,6 +2750,55 @@ const MemoPlanCard = memo(PlanCard, samePlan);
  * thing the operator needs — 「跑完了，成功，跑了什么」 — is a single line; the output is one click away,
  * and the copy button still yields the original text verbatim (the roster keeps it untouched).
  */
+/** A finished background process says so HERE, once, as a folded row — never as a count above the
+ *  composer. The row up there is reserved for 「会话还在干活吗」 (see `BackgroundRow`); a completion is
+ *  history, and history belongs in the transcript where it can be scrolled back to.
+ *
+ *  Two shapes arrive on this channel: one notice, or the gateway's batch header followed by one block
+ *  per task (`parseBgNoticeBatch`). Both fold to a single line with the per-process detail one click
+ *  away; the roster keeps the carrier's text untouched, so copy still yields it verbatim.
+ */
+function BgNoticeBatchBlock({ batch }: { batch: BgNoticeBatch }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const bad = batch.notices.filter((n) => !n.ok).length;
+  const one = batch.notices.length === 1 ? batch.notices[0] : null;
+  const title = one ? (one.kind === "watch" ? "后台任务命中" : "后台任务完成") : "后台任务完成";
+  return (
+    <div className={`bg-notice ${open ? "open" : ""}`} data-ok={bad ? "fail" : "ok"}
+         data-batch={one ? undefined : batch.count}>
+      <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-notice-dot" aria-hidden="true" />
+        <span className="bg-notice-title">{title}</span>
+        <code className="bg-notice-cmd" title={batch.notices.map((n) => n.command).join("\n")}>
+          {one
+            ? shortCommand(one.command)
+            : `${batch.count} 个任务${batch.notices.length === batch.count ? "" : `（${batch.notices.length} 条可读）`}`}
+        </code>
+        <span className="bg-notice-code">
+          {bad ? `${bad} 个失败` : one && one.exitCode !== null ? `exit ${one.exitCode}` : "全部成功"}
+        </span>
+        <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="bg-notice-body">
+          {batch.notices.map((notice) => (
+            <div key={`${notice.id}-${notice.kind}`} className="bg-notice-item" data-ok={notice.ok ? "ok" : "fail"}>
+              <div className="bg-notice-label">
+                <span aria-hidden="true">{notice.ok ? "✓" : "✗"}</span>{" "}
+                <code>{shortCommand(notice.command, 96)}</code>
+                {notice.kind === "watch"
+                  ? ` · 命中「${shortCommand(notice.pattern, 28)}」`
+                  : notice.exitCode === null ? " · 已结束" : ` · exit ${notice.exitCode}`}
+              </div>
+              {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function BgNoticeBlock({ text }: { text: string }): JSX.Element {
   const notice = parseBgNotice(text);
   const [open, setOpen] = useState(false);
@@ -2831,6 +2882,10 @@ function DelegNoticeBlock({ d, base }: { d: DelegNotice; base?: string }): JSX.E
 function NoticeBlock({ text, base }: { text: string; base?: string }): JSX.Element {
   const deleg = parseDelegNotice(text);
   if (deleg) return <DelegNoticeBlock d={deleg} base={base} />;
+  // The batched shape has to be tried before the single one: its body is a run of single notices, so
+  // the single-notice parser refuses the whole prompt and the transcript keeps the raw block.
+  const batch = parseBgNoticeBatch(text);
+  if (batch) return <BgNoticeBatchBlock batch={batch} />;
   return <BgNoticeBlock text={text} />;
 }
 

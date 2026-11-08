@@ -4078,7 +4078,15 @@ export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] 
  *  silent process invisible to the reaper too, i.e. a slot could be reaped while it still had a
  *  live child (the exact orphan #22 removed). So: store everything, hide at the wire. */
 export function visibleBackgroundTasks(tasks: BackgroundTask[]): BackgroundTask[] {
-  return agentSettings().showSilentBackground ? tasks : tasks.filter((t) => t.notifyOnComplete === true);
+  // RUNNING ONLY (2026-11-08). Hermes 0.23 hands us its process registry, which keeps a FINISHED
+  // process for 30 minutes (`tools/process_registry.FINISHED_TTL_SECONDS = 1800`), so forwarding the
+  // list as-is left 「7 个后台任务已结束」 pinned above the composer until the gateway restarted. That
+  // row exists to answer 「这个会话还在干活吗」; a completion is history, and it is delivered ONCE as
+  // the wake prompt the transcript folds into a card (`web/src/bgNotice.ts::parseBgNoticeBatch`).
+  // The 0.22 fork relay did the same thing in its own way ("an exit is reported once before the row
+  // disappears"); this keeps that contract on the side that can enforce it.
+  const live = tasks.filter((t) => t.status === "running");
+  return agentSettings().showSilentBackground ? live : live.filter((t) => t.notifyOnComplete === true);
 }
 
 /** 一帧状态自带的条目（`_meta.hermes.items`），只有 memory 行用得上 —— issue #37。
