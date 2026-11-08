@@ -5,7 +5,7 @@
 // live (2026-10-18), plus the shapes that must degrade to plain text rather than a broken card.
 //
 // Usage: npx tsx scripts/qa/bg-notice-parse.mts
-import { delegSummary, parseBgNotice, parseDelegNotice, shortCommand } from "../../packages/web/src/bgNotice.ts";
+import { delegSummary, parseBgNotice, parseBgNoticeBatch, parseDelegNotice, shortCommand } from "../../packages/web/src/bgNotice.ts";
 
 let pass = 0, fail = 0;
 const check = (ok: boolean, what: string, detail = "") => {
@@ -123,6 +123,37 @@ check(w?.exitCode === null, "no invented exit code", String(w?.exitCode));
 check(w?.ok === true, "a matched pattern is not a failure");
 check(w?.output === "INFO:     Application startup complete.", "matched output, carrier bracket dropped", JSON.stringify(w?.output));
 check(parseBgNotice(REAL)?.kind === "exit", "an exit notice is still an exit notice");
+
+// 11. The BATCHED wake — `gateway/session_automation.py::_fold_completion`. Two or more completions
+//     that land while the session is busy are folded into ONE prompt behind a header, so the single
+//     parser refuses it (`[IMPORTANT: 7 background …` is not `[IMPORTANT: Background process …`) and
+//     the transcript kept every block raw. Measured 2026-11-08: 「7 个后台任务已结束」 sat above the
+//     composer while the conversation showed nine lines of shell noise per task.
+const BATCH = `[IMPORTANT: 7 background process results arrived while this session was busy. Treat them as one batch and give one consolidated response; preserve failures and actionable results.]
+
+[IMPORTANT: Background process proc_6c43b270e87e completed normally (exit code 0).
+Command: cd ~/Workspace/agent-dev-workspace/worktrees/agentus && npm run backend-smoke 2>&1 | tail -45
+Output:
+61 checks, 2 skipped
+]
+
+[IMPORTANT: Background process proc_814648aaf21f exited with errors (exit code 1).
+Command: cd ~/Workspace/x && npm run backend-smoke > /tmp/smoke2.log
+Output:
+6 check(s) FAILED
+]`;
+check(parseBgNotice(BATCH) === null, "a batched wake is NOT a single notice (this is why it rendered raw)");
+const b = parseBgNoticeBatch(BATCH);
+check(!!b, "a batched wake parses");
+check(b?.count === 7, "the header's count is kept even when fewer blocks parse", String(b?.count));
+check(b?.notices.length === 2, "one entry per block", String(b?.notices.length));
+check(b?.notices[0]?.id === "proc_6c43b270e87e" && b?.notices[0]?.ok === true, "first block: id + ok");
+check(b?.notices[1]?.ok === false && b?.notices[1]?.exitCode === 1, "second block: a failure stays a failure");
+check(b?.notices[1]?.output === "6 check(s) FAILED", "output stops at the carrier bracket", JSON.stringify(b?.notices[1]?.output));
+check(parseBgNoticeBatch("hello") === null, "plain text is not a batch");
+check(parseBgNoticeBatch("[IMPORTANT: 3 background process results arrived while this session was busy.]\\n\\nno blocks here") === null,
+  "a header with nothing parseable is not a batch (caller renders the raw text)");
+check(parseBgNoticeBatch(REAL) === null, "a single notice is not a batch");
 
 console.log(fail ? `\n RED — ${pass} passed, ${fail} failed` : `\n GREEN — ${pass} passed, 0 failed`);
 process.exit(fail ? 1 : 0);

@@ -578,6 +578,46 @@ const agent = () => ({
       }, runMs + 1200);
     }
 
+    // `[bg-exited]` — the shape Hermes 0.23 hands a viewer all the time: a snapshot whose rows are
+    // ALREADY finished (its registry keeps them 30 minutes). The row above the composer must stay gone;
+    // the completion was reported once, as a transcript card, when it happened.
+    // `[bg-batch]` — the BATCHED completion (`gateway/session_automation.py::_fold_completion`): two or
+    // more results folded behind one header, which the single-notice parser refuses. That is the card
+    // `web/src/bgNotice.ts::parseBgNoticeBatch` + `BgNoticeBatchBlock` exist for.
+    if (/\[bg-exited\]|\[bg-batch\]/.test(text)) {
+      const shot = (rows) => ({
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermes: { kind: "background", tasks: rows } },
+        content: { type: "text", text: "" },
+      });
+      void send(agent._conn, sessionId, shot([
+        { id: "bg-old-1", command: "npm run typecheck", pid: 41, status: "running", uptimeSeconds: 4, notifyOnComplete: true },
+      ])).catch(() => undefined);
+      setTimeout(() => {
+        void send(agent._conn, sessionId, shot([
+          { id: "bg-old-1", command: "npm run typecheck", pid: 41, status: "exited", exitCode: 0, uptimeSeconds: 6, notifyOnComplete: true },
+          { id: "bg-old-2", command: "npm run backend-smoke", pid: 42, status: "exited", exitCode: 1, uptimeSeconds: 30, notifyOnComplete: true },
+        ])).catch(() => undefined);
+      }, 500);
+      const batch = /\[bg-batch\]/.test(text) ? [
+        "[IMPORTANT: 3 background process results arrived while this session was busy. Treat them as one batch and give one consolidated response; preserve failures and actionable results.]",
+        "",
+        "[IMPORTANT: Background process proc_aaa1 completed normally (exit code 0).\nCommand: npm run typecheck\nOutput:\nTC=0\n]",
+        "",
+        "[IMPORTANT: Background process proc_aaa2 exited with errors (exit code 1).\nCommand: npm run backend-smoke\nOutput:\n6 check(s) FAILED\n]",
+        "",
+        "[IMPORTANT: Background process proc_aaa3 completed normally (exit code 0).\nCommand: npm run build\nOutput:\nbuilt in 1.69s\n]",
+      ].join("\n") : "后台进程已结束（exit 0）：npm run typecheck";
+      setTimeout(() => {
+        void send(agent._conn, sessionId, {
+          sessionUpdate: "agent_thought_chunk",
+          _meta: { hermes: { kind: "completion", text: batch, exitCode: 0, processId: "bg-old-1",
+                             command: "npm run typecheck" } },
+          content: { type: "text", text: "" },
+        }).catch(() => undefined);
+      }, 1400);
+    }
+
     // `[bg-delegation]` — the OTHER producer of background frames (issue #39): a live
     // `delegate_task(background=true)`. Same carrier as `[bg]`, but the row is a subagent: no pid, no
     // command line, a GOAL, and `taskCount` children behind one row. This is what the fork's relay now
