@@ -169,6 +169,22 @@ const CLOSE_STARTUP_WAIT_MS = Number(process.env.AGENTUS_CLOSE_WAIT_MS || 30_000
  *  viewer down anyway. Short on purpose: the cancel is a courtesy to the operator's wallet, and a
  *  close that hangs on an unresponsive agent is worse than a turn that outlives it. */
 const CLOSE_CANCEL_WAIT_MS = Number(process.env.AGENTUS_CLOSE_CANCEL_WAIT_MS || 3_000);
+/** How long a permission-mode send keeps being retried before we admit it did not land.
+ *
+ *  Hermes 0.23 moved session ownership into its gateway, and `session/set_mode` is a revision-fenced
+ *  mutation the owner only accepts while the session is IDLE — otherwise the adapter turns the refusal
+ *  into a transcript note ("apply when the session is idle") and the request still looks successful on
+ *  the wire. A resume lands in the worst possible window for that: `session/load` has just returned and
+ *  the owner has not settled yet. Measured on a 190-session library: 226 of 227 runtime policy receipts
+ *  still said `ask` while every cockpit row said `dont_ask` (issue #95). */
+const MODE_SETTLE_MS = Number(process.env.AGENTUS_MODE_SETTLE_MS || 5_000);
+/** How long ONE send gets to show up as the owner's echo before it is retried.
+ *
+ *  `SetSessionModeResponse` carries no state, so the only read-back ACP offers is the notification: the
+ *  gateway republishes the changed policy as `session.info`, the adapter projects that to
+ *  `current_mode_update`, and `handleUpdate` moves `live.info.modes.currentModeId`. That echo — not the
+ *  promise — is what counts as "applied". */
+const MODE_READBACK_MS = Number(process.env.AGENTUS_MODE_READBACK_MS || 900);
 
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
  *
@@ -1401,6 +1417,7 @@ export class SessionManager {
       //   ③ the snapshot stored with the row (an agent whose first resume had no list of its own).
       const recordedMode = this.#store.getModePick(id);
       let unrecordedMode: string | null = null;
+      let modeTarget: string | null = null;
       if (live.info.modes) {
         const advertised = (live.info.modes.availableModes ?? []).map((m) => m.id);
         const known = (value: string | null): value is string =>
@@ -1409,9 +1426,11 @@ export class SessionManager {
         const stored = (row.modes as SessionModeState | null)?.currentModeId ?? null;
         const target = known(recordedMode) ? recordedMode : known(rowDefault) ? rowDefault : known(stored) ? stored : null;
         if (target) {
-          if (live.info.modes.currentModeId !== target) {
-            live.info.modes = { ...live.info.modes, currentModeId: target };
-          }
+          // NOT written into `live.info.modes` here: that field is what the cockpit DRAWS, so faking it
+          // is how a session came to display 不要问 while the runtime still asked on every edit (#95).
+          // The send below lands it for real — the gateway echoes the new policy back as
+          // `current_mode_update`, and only that echo is allowed to move the displayed mode.
+          modeTarget = target;
           // A default applied here is a decision from now on (a later change to the row must not move a
           // conversation that is already running in it). Not recorded yet — the send below decides that.
           unrecordedMode = recordedMode ? null : target;
@@ -1425,16 +1444,11 @@ export class SessionManager {
       // …against the session the agent is actually serving NOW (a re-minted one, if the slot had no
       // state to restore): asking about the old id would be the same silent no-op all over again.
       const acpId = live.info.acpSessionId as string;
-      const modeId = (live.info.modes as SessionModeState | null)?.currentModeId;
-      if (modeId) {
-        await conn
-          .setSessionMode({ sessionId: acpId, modeId })
-          .then(() => {
-            // The row default is only remembered once the agent accepted it; a slot that never comes up
-            // must not look like it already has an answer of its own.
-            if (unrecordedMode) this.#store.setModePick(id, unrecordedMode);
-          })
-          .catch(() => {});
+      if (modeTarget) {
+        // Waits for idle, sends, reads the echo back and retries — see `#settleMode`. Returns false when
+        // the runtime never confirmed, in which case the pick stays unrecorded so the next resume tries
+        // again instead of the slot claiming a permission it does not have (#95).
+        await this.#settleMode(live, acpId, modeTarget, unrecordedMode !== null);
       }
       for (const cfg of (live.info.configOptions ?? []) as ConfigOptionView[]) {
         // "" is a legitimate "unset / follow default" — replaying it can be rejected as an
@@ -1442,7 +1456,13 @@ export class SessionManager {
         if (cfg?.id && cfg.currentValue) {
           await conn
             .setSessionConfigOption({ sessionId: acpId, configId: cfg.id, value: String(cfg.currentValue) })
-            .catch(() => {});
+            .catch((e) => {
+              // Worth a line: the same "the agent was not idle yet, the write was dropped" shape that
+              // ate the mode applies here, and a thinking depth that silently resets is #48 all over.
+              console.log(
+                `[agentus] session ${id}: config "${cfg.id}" not replayed: ${errMessage(e)}`,
+              );
+            });
         }
       }
       // 通话中 resume（页面刷新、空闲回收后再唤起）：把通话档位重新压下去，否则「恢复的会话」会带着
@@ -2063,6 +2083,84 @@ export class SessionManager {
   }
 
   /**
+   * Land a permission mode on the session the agent is actually serving, and PROVE it landed.
+   *
+   * Three things this exists for, all measured against Hermes 0.23 (issue #95):
+   *  · the send can be refused because the owner is not idle yet — a resume lands right there — and the
+   *    adapter turns that refusal into a transcript note while still answering the request, so
+   *    `await setSessionMode()` proves nothing;
+   *  · the only read-back ACP has is the owner's own echo (`current_mode_update`), so "applied" means
+   *    the mode the cockpit DRAWS has actually moved;
+   *  · a pick recorded on the strength of a promise is worse than no pick at all: the UI then shows a
+   *    permission the runtime never granted, and no later resume re-tries it.
+   *
+   * Retries are bounded (MODE_SETTLE_MS) and only the timing-shaped refusals are retried — a mode the
+   * agent does not implement will not start working on the third attempt.
+   */
+  async #settleMode(
+    live: LiveSession,
+    acpSessionId: string,
+    wanted: string,
+    record: boolean,
+  ): Promise<boolean> {
+    const deadline = Date.now() + MODE_SETTLE_MS;
+    const gapBefore = [0, 150, 400, 1_000];
+    const sleep = (ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); });
+    const settled = (): boolean => (live.info.modes?.currentModeId ?? null) === wanted;
+    const done = (): boolean => {
+      if (record) this.#store.setModePick(live.info.id, wanted);
+      return true;
+    };
+    if (settled()) return done();
+    let lastErr: unknown = null;
+    for (const [attempt, gap] of gapBefore.entries()) {
+      if (gap) await sleep(gap);
+      // A turn in flight blocks the mutation outright; waiting for it beats burning an attempt.
+      while (live.busy && Date.now() < deadline) await sleep(100);
+      if (settled()) return done();
+      if (!live.conn) return false;
+      try {
+        await live.conn.setSessionMode({ sessionId: acpSessionId, modeId: wanted });
+      } catch (e) {
+        lastErr = e;
+        const msg = errMessage(e);
+        // qodercli advertises modes but answered -32601 in the design probe, so "advertised but not
+        // implemented" is a real case: keep the pick (replaying it on the next resume beats silently
+        // reverting to the row default, which looks like the operator's choice being undone).
+        if (/not found|Unsupported/i.test(msg)) {
+          console.log(`[agentus] session ${live.info.id}: mode "${wanted}" is advertised but not implemented: ${msg}`);
+          return done();
+        }
+        // Only the not-idle-yet refusals deserve another attempt (`unknown_execution`: the owner lost the
+        // turn's fence and takes no control message until it settles either).
+        if (/idle|busy|unknown_execution|already running/i.test(msg)) continue;
+        console.log(`[agentus] session ${live.info.id}: mode "${wanted}" refused: ${msg}`);
+        return false;
+      }
+      // The promise resolved — now wait for the echo. That, and only that, is the evidence.
+      const until = Date.now() + MODE_READBACK_MS;
+      while (Date.now() < until) {
+        if (settled()) return done();
+        await sleep(60);
+      }
+      // A vendor that owns the session always republishes a landed policy change, so silence there means
+      // it did not land. An older in-process agent never echoes at all — its resolved promise is the only
+      // signal that exists, so keep the previous behaviour instead of never recording anything.
+      if (!live.caps.gatewayOwned) return done();
+      console.log(
+        `[agentus] session ${live.info.id}: mode "${wanted}" accepted by the agent but never echoed back ` +
+          `(attempt ${attempt + 1}/${gapBefore.length})`,
+      );
+    }
+    console.log(
+      `[agentus] session ${live.info.id}: mode "${wanted}" NOT applied after ${gapBefore.length} attempts ` +
+        `(the runtime still reports "${live.info.modes?.currentModeId ?? "unknown"}"): ` +
+        `${lastErr ? errMessage(lastErr) : "no error"} — pick left unrecorded so the next resume retries`,
+    );
+    return false;
+  }
+
+  /**
    * Put a NEW session into its backend row's default permission mode (BackendRow.defaultMode).
    * Called from `create()` only — see the call site for why a resume must never do this.
    *
@@ -2096,16 +2194,17 @@ export class SessionManager {
       this.#store.setModePick(live.info.id, wanted);
       return;
     }
-    try {
-      await live.conn.setSessionMode({ sessionId: acpSessionId, modeId: wanted });
-      live.info.modes = { ...modes, currentModeId: wanted };
-      this.#store.setModePick(live.info.id, wanted);
+    // Send + read the echo back + retry; the pick is recorded ONLY once the runtime echoes it. A slot
+    // that could not be moved stays unrecorded and in the agent's own mode, which is the truth.
+    const landed = await this.#settleMode(live, acpSessionId, wanted, true);
+    if (landed) {
       console.log(`[agentus] session ${live.info.id}: default permission mode -> ${wanted}`);
-    } catch (e) {
+    } else {
       // qodercli advertises modes but answered -32601 in the design probe, so "advertised but not
       // implemented" is a real case — same tolerance as setMode(), and never a failed spawn.
       console.log(
-        `[agentus] session ${live.info.id}: default permission mode "${wanted}" not applied: ${errMessage(e)}`,
+        `[agentus] session ${live.info.id}: default permission mode "${wanted}" not applied ` +
+          `(the agent keeps "${live.info.modes?.currentModeId ?? "unknown"}") — the slot is still usable`,
       );
     }
   }
@@ -2113,18 +2212,16 @@ export class SessionManager {
   async setMode(sessionId: string, modeId: string): Promise<void> {
     const s = this.#need(sessionId);
     if (!s.conn || !s.info.acpSessionId) throw new Error("session not ready");
-    try {
-      await s.conn.setSessionMode({ sessionId: s.info.acpSessionId, modeId });
-    } catch (err) {
-      // qodercli advertises modes but setSessionMode returned -32601 "not found" in
-      // design.md probe => mode may be advertised-but-unimplemented; degrade gracefully.
-      if (!/not found|Unsupported/i.test(errMessage(err))) throw err;
+    // Same evidence rule as a resume (issue #95): the promise is NOT the proof. A click the agent
+    // silently dropped used to be drawn as if it had taken effect — the operator only found out by
+    // being asked to approve the next edit.
+    const landed = await this.#settleMode(s, s.info.acpSessionId, modeId, true);
+    if (!landed) {
+      throw new Error(
+        `the agent did not apply mode "${modeId}" (it still reports ` +
+          `"${s.info.modes?.currentModeId ?? "unknown"}")`,
+      );
     }
-    if (s.info.modes) s.info.modes = { ...s.info.modes, currentModeId: modeId };
-    // Recorded even when the agent answered "not implemented": the cockpit then replays the same pick
-    // on the next resume instead of falling back to the row default, which would look like the
-    // operator's choice being undone by a restart.
-    this.#store.setModePick(sessionId, modeId);
     this.#updateSession(s);
   }
 

@@ -129,6 +129,22 @@ function commandResolves(cmd) {
   return false;
 }
 
+/** The cockpit's own record of a slot's permission pick (`sessions.mode_id`).
+ *
+ *  Read straight from the throwaway DB on purpose: the question these assertions ask is whether the
+ *  COLUMN stayed empty when the runtime never confirmed, and no HTTP field exposes it. */
+async function modePickOf(dataDir, sessionId) {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(dataDir, "agentus.sqlite"), { readOnly: true });
+    const row = db.prepare("select mode_id from sessions where id = ?").get(String(sessionId));
+    db.close();
+    return row?.mode_id ?? null;
+  } catch (e) {
+    return `unavailable: ${e.message}`;
+  }
+}
+
 const LOCAL = {
   hermes: commandResolves(HERMES_CMD),
   fork: fs.existsSync(path.join(FORK, "acp_adapter/server.py")),
@@ -340,6 +356,24 @@ async function main() {
       return { r, live };
     };
 
+    /** Wait for the slot's MODE to settle, not merely for `ready`.
+     *
+     *  The default-mode send runs AFTER the handshake and after the row is already `ready` (a create
+     *  must not be held for it), so a test that reads the mode the moment the row turns ready is
+     *  reading the agent's own pre-send state — and would then tear the slot down under a retry loop
+     *  that is still running, which is exactly how "ACP connection closed" got into a passing suite. */
+    const waitMode = async (id, wanted, ms = 15_000) => {
+      const until = Date.now() + ms;
+      let seen = null;
+      while (Date.now() < until) {
+        const row = await settledRow(id);
+        seen = (row?.modes ?? {}).currentModeId ?? null;
+        if (seen === wanted) break;
+        await sleep(250);
+      }
+      return seen;
+    };
+
     const created2 = await api("POST", "/api/backends", {
       id: "qa-mode", label: "QA default mode", kind: "mock", cmd: process.execPath,
       args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
@@ -403,6 +437,43 @@ async function main() {
       s3Live?.modes?.currentModeId === "dont_ask",
       `mode=${s3Live?.modes?.currentModeId} status=${s3Live?.status} ${s3Live?.lastError ?? ""}`);
     await api("DELETE", `/api/sessions/${s3.live?.id}`);
+
+    // #95: the mode send used to be recorded on the strength of a resolved promise, and on Hermes 0.23
+    // that promise resolves even when the mutation never landed — 226 of 227 runtime receipts still said
+    // `ask` while every cockpit row said `dont_ask`. Both halves are pinned here.
+    //  A) answered, never applied, no echo: the pick must stay UNRECORDED so the next resume retries.
+    await api("POST", "/api/backends", {
+      id: "qa-mode-drop", label: "QA mode never lands", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      env: { MOCK_MODE_DROP: "1", MOCK_GATEWAY_OWNED: "1" }, defaultMode: "dont_ask",
+    });
+    const s4 = await mkSession("qa-mode-drop", "mode that never lands");
+    // Give the (bounded) settle loop the full window before judging: 4 attempts, the last one at
+    // ~1.5 s plus a 0.9 s read-back each.
+    await sleep(6_500);
+    check("a mode the agent answered but never echoed is NOT shown as applied",
+      (await settledRow(s4.live?.id))?.modes?.currentModeId === "default",
+      `mode=${(await settledRow(s4.live?.id))?.modes?.currentModeId} status=${(await settledRow(s4.live?.id))?.status}`);
+    check("...and the pick is NOT recorded (the next resume retries instead of lying)",
+      (await modePickOf(dataDir, s4.live?.id)) === null,
+      `mode_id=${await modePickOf(dataDir, s4.live?.id)}`);
+    await api("DELETE", `/api/sessions/${s4.live?.id}`);
+
+    //  B) refused while the session is not idle yet — the window every resume lands in. A bounded retry
+    //     has to get through it with no operator action.
+    await api("POST", "/api/backends", {
+      id: "qa-mode-busy", label: "QA mode not-idle window", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      env: { MOCK_MODE_BUSY_MS: "1200", MOCK_GATEWAY_OWNED: "1" }, defaultMode: "dont_ask",
+    });
+    const s5 = await mkSession("qa-mode-busy", "mode refused while not idle");
+    check("a refusal from the not-idle-yet window is retried until it lands",
+      (await waitMode(s5.live?.id, "dont_ask")) === "dont_ask",
+      `mode=${(await settledRow(s5.live?.id))?.modes?.currentModeId} status=${(await settledRow(s5.live?.id))?.status} ${(await settledRow(s5.live?.id))?.lastError ?? ""}`);
+    check("...and only a landed mode is recorded",
+      (await modePickOf(dataDir, s5.live?.id)) === "dont_ask",
+      `mode_id=${await modePickOf(dataDir, s5.live?.id)}`);
+    await api("DELETE", `/api/sessions/${s5.live?.id}`);
 
     // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
     // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".

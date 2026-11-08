@@ -218,6 +218,11 @@ const agent = () => ({
       modes: { currentModeId: "default", availableModes: MODES },
       configOptions: configOptionsFor({}),
       models: modelsFor({}),
+      // MOCK_GATEWAY_OWNED=1: answer the way Hermes 0.23 does — `_meta.hermes` is what tells the
+      // cockpit the session is owned by a vendor daemon (so a control RPC is a fenced mutation that
+      // only lands while idle, and a landed change is echoed back). Without the flag the mock stays an
+      // in-process agent, which is the shape every OTHER assertion in the suite was written against.
+      ...(process.env.MOCK_GATEWAY_OWNED === "1" ? { _meta: { hermes: { sessionProvenance: "gateway" } } } : {}),
     };
   },
 
@@ -299,7 +304,24 @@ const agent = () => ({
   async setSessionMode({ sessionId, modeId }) {
     if (!sessions.has(sessionId)) throw new Error("no such session");
     const s = sessions.get(sessionId);
+    // Hermes 0.23 keeps session ownership in its gateway and takes this mutation ONLY while the session
+    // is idle; when it is not, the refusal is demoted to a transcript note and the request still answers
+    // — so "the promise resolved" proves nothing (issue #95). MOCK_MODE_BUSY_MS reproduces that window
+    // (a resume lands in it), MOCK_MODE_DROP reproduces the worse shape: answered, nothing applied, and
+    // no echo ever comes back.
+    s.modeFirstTry ??= Date.now();
+    if (Number(process.env.MOCK_MODE_BUSY_MS || 0) > Date.now() - s.modeFirstTry) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Mode changes apply when the session is idle; try again after this turn.\n" },
+      });
+      throw new RequestError(-32603, "session_busy: mode changes apply when the session is idle");
+    }
+    if (process.env.MOCK_MODE_DROP === "1") return {};
     s.currentModeId = modeId;
+    // Shape for shape with the real adapter: a landed policy change is republished as
+    // `current_mode_update`, and that echo is the only read-back ACP offers.
+    await send(agent._conn, sessionId, { sessionUpdate: "current_mode_update", currentModeId: modeId });
     return {};
   },
 
