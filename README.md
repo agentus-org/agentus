@@ -57,7 +57,7 @@ background process comes back as a turn of its own), an **ACP session that write
 cockpit-side failure is diagnosable afterwards), and a **DeepSeek web backend** (search +
 extract on the model key) — come from the fork's integration build instead. That is a five-line install:
 [§ Which Hermes to run](docs/installation.md#which-hermes-to-run) — currently the tag
-`agentus/v0.23.0/merge-20261107-2148`, on Hermes `v0.23.0`.
+`agentus/v0.23.0/merge-20261108-2354`, on Hermes `v0.23.0`.
 
 **Already running a build from before 0.23? Do these two steps, or the cockpit comes up with every session failing.** Hermes 0.23 moved the agent into the home's gateway, which moves both the service definition and the ownership of the home's sessions:
 
