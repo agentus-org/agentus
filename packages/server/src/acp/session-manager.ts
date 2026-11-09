@@ -198,9 +198,12 @@ const RESUME_RETRY_MS = Number(process.env.AGENTUS_RESUME_RETRY_MS || 5000);
 /** A `session_busy` whose lease says it will clear this soon is just a timing artefact — retry in
  *  the ordinary loop. Anything longer is a WAIT the operator deserves to be told about (#238). */
 const RESUME_BUSY_INLINE_MS = Number(process.env.AGENTUS_RESUME_BUSY_INLINE_MS || 20000);
-/** The longest "retry by yourself" delay one `session_busy` answer may schedule. Beyond this the
- *  wait is not a recovery, it is a stuck turn: report it instead of parking a timer overnight. */
-const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETRY_MS || 20 * 60 * 1000);
+/** The longest "retry by yourself" delay one `session_busy` answer may schedule. The row can go
+ *  away long before it expires — the agent deletes its own lease on SIGTERM (fork 0.23 build), and
+ *  a dead holder's row is reclaimed by the next acquire — so a timer parked for the whole remaining
+ *  TTL would keep the cockpit waiting for a lease that is already gone. Re-check every half minute:
+ *  an answer that is still busy returns without spawning anything. */
+const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETRY_MS || 30 * 1000);
 
 /** The agent's config option that carries the same decision as the mode selector (#234). Its own
  *  value vocabulary (`ask` / `workspace_session` / `session`) is the POLICY; the selector speaks mode
