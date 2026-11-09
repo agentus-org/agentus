@@ -694,7 +694,10 @@ const agent = () => ({
         }).catch(() => undefined);
       }, 1600);
       setTimeout(() => {
-        void send(agent._conn, sessionId, snapshot([])).catch(() => undefined);
+        // The fork reports the child's END as a row too (issue #97): same delegation shape, `status`
+        // exited, an exitCode. Sending `[]` here would be the old lie — a run that ends silently.
+        void send(agent._conn, sessionId, snapshot([{ ...row, status: "exited", phase: "completed",
+          exitCode: 0, uptimeSeconds: 137 }])).catch(() => undefined);
       }, 2800);
     }
 

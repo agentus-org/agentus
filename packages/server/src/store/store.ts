@@ -1400,6 +1400,30 @@ export class Store {
   }
 
 
+  /** 一条后台任务「结束了」的记录（issue #97）。它和 appendNote 共用 `note` 行，但**不折叠**：两个
+   *  不同的进程先后结束是两条事实，折成「hits 2」等于把其中一个的退出码抹掉。结构化字段（command /
+   *  exitCode / 秒数 / kind）随 payload 落库，前端据此画「成功 / 失败」而不是靠文本猜。 */
+  appendBackgroundDone(sessionId: string, task: Record<string, unknown>, text: string): StoredMessage {
+    return this.appendMessage({
+      sessionId,
+      kind: "note",
+      payload: { category: "bg-done", text, task },
+      createdAt: Date.now(),
+    });
+  }
+
+  /** 这个会话里已经记过的后台任务 id —— 让「同一个进程结束一次」只落一行，重启后也不重复。 */
+  backgroundDoneIds(sessionId: string): Set<string> {
+    const rows = this.#db
+      .prepare(
+        "select json_extract(payload, '$.task.id') as id from messages where session_id = ? and kind = 'note' and json_extract(payload, '$.category') = 'bg-done'",
+      )
+      .all(sessionId) as { id: string | null }[];
+    const ids = new Set<string>();
+    for (const r of rows) if (r.id) ids.add(r.id);
+    return ids;
+  }
+
   /**
    * 一条「状态行」落库（操作者 2026-10-18）：回忆了几条记忆、上下文压缩了、有警告。
    *

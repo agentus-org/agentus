@@ -394,6 +394,9 @@ interface LiveSession {
   /** repo root → the `project-skills` row this session already shows, with its payload, so a
    *  second "untrusted" notice never stacks and a decision can rewrite the row in place. */
   skillNoticeSeq: Map<string, { seq: number; payload: Record<string, unknown> }>;
+  /** 已经落过「结束了」卡片的 background 任务 id（issue #97）。首次用到时从库里回填，所以重启/重开不会
+   *  把同一个退出码再画一遍；也只画一次 —— 它是一条历史事实，不是状态。 */
+  bgDoneIds?: Set<string>;
   stderrBuf: string[];
   /** What the agent says it can do (initialize.agentCapabilities). `fork` gates title
    *  regeneration, `load` gates resume; `image` is the one a TURN can be refused on — see
@@ -2013,6 +2016,38 @@ export class SessionManager {
     }
   }
 
+  /** 把「已经结束」的后台任务落成一条历史卡片（issue #97）。
+   *
+   *  退出码、命令、跑了多久都是 Hermes 给的（`background.tasks` 行），这里一个字都不猜：客户端要显示
+   *  「成功 / 失败」就该有真值可读。写进库里而不是只推一次状态，是因为**结束是一次性事件**——它会被
+   *  重启、刷新、换设备重放，而状态帧早就撤了。同一个 id 只落一次（`bgDoneIds`，首次从库里回填）。 */
+  #recordFinishedBackground(s: LiveSession, tasks: BackgroundTask[]): void {
+    const done = tasks.filter((t) => t.status === "exited");
+    if (!done.length) return;
+    const noted = (s.bgDoneIds ??= this.#store.backgroundDoneIds(s.info.id));
+    for (const t of done) {
+      if (!t.id || noted.has(t.id)) continue;
+      noted.add(t.id);
+      const label = t.kind === "delegation" ? "子代理" : "后台任务";
+      const ok = t.exitCode === 0;
+      const secs = typeof t.uptimeSeconds === "number" ? ` · ${Math.round(t.uptimeSeconds)}s` : "";
+      const head = t.exitCode === null || t.exitCode === undefined
+        ? `${label}已结束`
+        : `${label}${ok ? "成功" : "失败"} · exit ${t.exitCode}`;
+      const row = this.#store.appendBackgroundDone(
+        s.info.id,
+        {
+          id: t.id, kind: t.kind ?? "process", command: t.command,
+          status: t.status, exitCode: t.exitCode ?? null,
+          uptimeSeconds: t.uptimeSeconds ?? null, phase: t.phase ?? null,
+          taskCount: t.taskCount ?? null,
+        },
+        `${head}${secs}\n${t.command}`,
+      );
+      this.#emit({ t: "message", message: row });
+    }
+  }
+
   /** Wake the agent for one finished background process, or hold it until the turn ends.
    *
    *  The gateway does exactly this (``_inject_watch_notification``): the completion is *for the agent* —
@@ -3126,6 +3161,10 @@ export class SessionManager {
     const bgTasks = backgroundTasksOf(u);
     if (bgTasks) {
       live.background = bgTasks;
+      // 结束了的那几行：Hermes 自己带着退出码，操作者要看的是「成功还是失败」。这里把它落成一条
+      // **历史**（note 行，不折叠、不重复），于是刷新页面、换设备、历史回放都还在 —— 而顶上的
+      // 运行行仍然只是状态，撤了就撤了。这是 issue #97：显示不能靠客户端猜，也不能只活在一个页签里。
+      this.#recordFinishedBackground(live, bgTasks);
       this.#emit({ t: "background", sessionId: live.info.id, tasks: visibleBackgroundTasks(bgTasks) });
       return;
     }
@@ -4196,15 +4235,16 @@ export function backgroundTasksOf(u: Record<string, unknown>): BackgroundTask[] 
  *  silent process invisible to the reaper too, i.e. a slot could be reaped while it still had a
  *  live child (the exact orphan #22 removed). So: store everything, hide at the wire. */
 export function visibleBackgroundTasks(tasks: BackgroundTask[]): BackgroundTask[] {
-  // RUNNING ONLY (2026-11-08). Hermes 0.23 hands us its process registry, which keeps a FINISHED
-  // process for 30 minutes (`tools/process_registry.FINISHED_TTL_SECONDS = 1800`), so forwarding the
-  // list as-is left 「7 个后台任务已结束」 pinned above the composer until the gateway restarted. That
-  // row exists to answer 「这个会话还在干活吗」; a completion is history, and it is delivered ONCE as
-  // the wake prompt the transcript folds into a card (`web/src/bgNotice.ts::parseBgNoticeBatch`).
-  // The 0.22 fork relay did the same thing in its own way ("an exit is reported once before the row
-  // disappears"); this keeps that contract on the side that can enforce it.
-  const live = tasks.filter((t) => t.status === "running");
-  return agentSettings().showSilentBackground ? live : live.filter((t) => t.notifyOnComplete === true);
+  // ALL ROWS, and the split is the client's job (2026-11-09, issue #97). 0.22.2 filtered `exited`
+  // here to stop 「7 个后台任务已结束」 from pinning itself above the composer — right symptom, wrong
+  // layer: the filter threw away the exit code Hermes had just handed us, and the transcript card
+  // could only be faked from text. The two halves belong to two different surfaces:
+  //   running → the composer row (state, replaced wholesale, gone when it is over)
+  //   exited  → one row in the transcript (`#recordFinishedBackground` writes it once, with exitCode)
+  // The silent switch still belongs to the composer row: an operator who hid 「agent 自己在轮询」
+  // does not want it back as a card either.
+  const showSilent = agentSettings().showSilentBackground;
+  return tasks.filter((t) => t.status === "exited" || showSilent || t.notifyOnComplete === true);
 }
 
 /** 一帧状态自带的条目（`_meta.hermes.items`），只有 memory 行用得上 —— issue #37。

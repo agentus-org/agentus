@@ -540,6 +540,23 @@ export interface BackgroundTask {
   notifyOnComplete?: boolean;
 }
 
+/** 一条**已经结束**的后台任务，落库那一行的结构化字段（issue #97）。
+ *
+ *  它来自 agent 发给服务端的那一行 `BackgroundTask`，不是从唤醒文本里解析出来的 —— 「成功还是失败」
+ *  因此是一个可以核对的判定（`exitCode`），而不是形容词。`exitCode` 为 null 表示 agent 没报（watch
+ *  命中这类没有退出码的形状），界面必须说「已结束」而不是「失败」。 */
+export interface BgDoneTask {
+  id: string;
+  kind?: "process" | "delegation";
+  command?: string;
+  status?: string;
+  exitCode?: number | null;
+  uptimeSeconds?: number | null;
+  /** Delegations only: 这一行代表几个子代理（批量的 N 就数 N）。 */
+  taskCount?: number | null;
+  phase?: string | null;
+}
+
 export interface WebNotice {
   /** `upsert` = show (or replace) the card for `noticeId`; `dismiss` = take it away. */
   op: "upsert" | "dismiss";

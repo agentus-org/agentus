@@ -3,6 +3,7 @@
 // it just mirrors server events and aggregates ACP chunks into bubbles.
 import type {
   BackgroundTask,
+  BgDoneTask,
   ClientCommand,
   PermissionDecision,
   PermissionRequestView,
@@ -85,6 +86,9 @@ export type MsgView =
       /** memory 行的条目（issue #37）：`recalled N memories` 说的是哪几条。server 只对 memory
        *  行带它，压缩/警告行没有。`truncated` 说明 agent 那边已经把后面的截掉了。 */
       items?: StatusNoteItem[]; truncated?: boolean;
+      /** 一条「后台任务结束了」（`category = "bg-done"`, issue #97）。字段是 Hermes 发给服务端那一行的
+       *  原值 —— 退出码、命令、跑了多久 —— 不是从文本里猜出来的，所以「成功 / 失败」是判定，不是形容。 */
+      bgTask?: BgDoneTask;
     }
   /** 审批请求落库的那一行（`messages.kind = "approval"`）。请求到达时写入，决定随后补进同一行 ——
    *  于是「问过什么、我答了什么、还是超时作废了」在聊天记录里留得住，而不是只活在那张弹窗里。
@@ -2562,6 +2566,7 @@ export class Cockpit {
             ? (p.items as StatusNoteItem[]).filter((i) => i && typeof i.text === "string" && i.text.trim())
             : undefined,
           truncated: p.truncated === true,
+          bgTask: p.task && typeof p.task === "object" ? (p.task as BgDoneTask) : undefined,
         };
         const at0 = index.get(key);
         if (at0 !== undefined && list[at0]?.kind === "note") list[at0] = row;

@@ -2396,6 +2396,11 @@ function TranscriptRows({ msgs, sid, backend, busy, base, notes = [], speaking =
     } else if (row.m.kind === "note") {
       // 落库的状态行：它本来就是一条消息行（kind `note`），位置由 seq 定，所以直接画在这一行上，
       // 不需要 `afterKey` 锚点那套（那套是给内存里、没有 seq 的临时状态行用的）。
+      // 后台任务「结束了」（issue #97）不走状态行那张小字条：它带着退出码，要有自己的折叠卡。
+      if (row.m.category === "bg-done" && row.m.bgTask) {
+        out.push(<BgDoneCard key={row.m.key} n={row.m} />);
+        continue;
+      }
       out.push(
         <StatusNoteRow
           key={row.m.key}
@@ -2819,6 +2824,47 @@ function BgNoticeBatchBlock({ batch }: { batch: BgNoticeBatch }): JSX.Element {
               {notice.output ? <pre className="bg-notice-pre">{notice.output}</pre> : null}
             </div>
           ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BgDoneCard({ n }: { n: MsgView & { kind: "note" } }): JSX.Element {
+  const task = n.bgTask!;
+  const [open, setOpen] = useState(false);
+  const isSub = task.kind === "delegation";
+  const code = task.exitCode ?? null;
+  // 三种结果，不是两种：报过退出码才能判成功/失败，没报（watch 命中那类形状）只能说「已结束」。
+  const state = code === null ? "已结束" : code === 0 ? "成功" : "失败";
+  const secs = typeof task.uptimeSeconds === "number" ? durationWords(task.uptimeSeconds * 1000) : "";
+  return (
+    <div
+      className={`bg-notice ${open ? "open" : ""}`}
+      data-ok={code === null || code === 0 ? "ok" : "fail"}
+      data-source="bg-done"
+      title={n.at ? new Date(n.at).toLocaleString() : undefined}
+    >
+      <button type="button" className="bg-notice-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="bg-notice-dot" aria-hidden="true" />
+        <span className="bg-notice-title">{isSub ? "子代理完成" : "后台任务完成"}</span>
+        <code className="bg-notice-cmd" title={task.command ?? ""}>{shortCommand(task.command ?? task.id)}</code>
+        <span className="bg-notice-code">{code === null ? state : `exit ${code}`}</span>
+        <span className="bg-notice-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="bg-notice-body">
+          <div className="bg-notice-label">{isSub ? "目标" : "命令"}</div>
+          <pre className="bg-notice-pre">{task.command || "(未报告)"}</pre>
+          <div className="bg-notice-label">结果</div>
+          <pre className="bg-notice-pre">
+            {[
+              isSub ? `${task.taskCount ?? 1} 个子代理` : task.id,
+              state + (code === null ? "" : ` · exit ${code}`),
+              secs ? `用时 ${secs}` : "",
+              task.phase ? `相位 ${task.phase}` : "",
+            ].filter(Boolean).join(" · ")}
+          </pre>
         </div>
       ) : null}
     </div>
