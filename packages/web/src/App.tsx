@@ -306,6 +306,36 @@ function StaleBanner(): JSX.Element | null {
  *  refuses up front (409 + code); this is where the operator sees why and what can be done. */
 function BlockedSlotDialog({ slot }: { slot: BlockedSlot }): JSX.Element {
   useEscape(true, () => cockpit.dismissBlocked());
+  // A turn still running in the agent (#238) is the third kind: the session is healthy and nothing is
+  // lost — it is just occupied. The agent's own lease says how long, the server retries when it
+  // expires, so this card explains the wait instead of offering to throw the session away.
+  if (slot.code === "busy_turn") {
+    const wait = slot.retryAfterMs != null ? durationWords(slot.retryAfterMs) : "";
+    return (
+      <div className="modal-bg" onClick={() => cockpit.dismissBlocked()}>
+        <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+          <h3>上一轮还在 agent 里跑</h3>
+          <div className="hint">
+            「{slot.title}」在 agent 侧还有一轮没结束{wait ? `（约 ${wait}）` : ""} —— 重启时被打断的那一轮
+            正占着这条会话，所以现在恢复不进来。这不是坏了。
+          </div>
+          <div className="hint">
+            到点会自动再试一次恢复，不用守着；想现在就看一眼也可以点下面的按钮。
+          </div>
+          {slot.message ? <div className="hint muted">{slot.message}</div> : null}
+          <div className="row">
+            <button className="cancel" onClick={() => cockpit.dismissBlocked()}>知道了</button>
+            <button
+              className="go"
+              onClick={() => { cockpit.dismissBlocked(); void cockpit.resume(slot.id); }}
+            >
+              现在再试一次
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   // A lost turn is the other kind of refusal: the session is fine, but the restart interrupted a
   // turn and the agent (Hermes 0.23's durable admission) will not let this conversation continue
   // until someone says what to do with it. There is exactly one useful answer here, and it is not

@@ -56,6 +56,7 @@ import { estimateStreamTokens } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
+import { busyTurnEta, waitWords } from "./turn-busy.js";
 
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
@@ -194,6 +195,13 @@ const MODE_READBACK_MS = Number(process.env.AGENTUS_MODE_READBACK_MS || 900);
 const RESUME_ATTEMPTS = 3;
 const RESUME_RETRY_MS = Number(process.env.AGENTUS_RESUME_RETRY_MS || 5000);
 
+/** A `session_busy` whose lease says it will clear this soon is just a timing artefact — retry in
+ *  the ordinary loop. Anything longer is a WAIT the operator deserves to be told about (#238). */
+const RESUME_BUSY_INLINE_MS = Number(process.env.AGENTUS_RESUME_BUSY_INLINE_MS || 20000);
+/** The longest "retry by yourself" delay one `session_busy` answer may schedule. Beyond this the
+ *  wait is not a recovery, it is a stuck turn: report it instead of parking a timer overnight. */
+const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETRY_MS || 20 * 60 * 1000);
+
 /** The agent's config option that carries the same decision as the mode selector (#234). Its own
  *  value vocabulary (`ask` / `workspace_session` / `session`) is the POLICY; the selector speaks mode
  *  ids (`default` / `accept_edits` / `dont_ask`). One channel owns the decision — the mode — so this
@@ -215,10 +223,23 @@ function isTransientResumeFailure(err: unknown): boolean {
   if (err instanceof SessionUnavailable) return false;
   // …and so is a lost turn: the agent is not slow, it is waiting for a person to decide.
   if (isLostTurn(err)) return false;
+  // …and so is a turn that is genuinely still running in the gateway (#238): the agent said WHY it
+  // refuses, and the lease in its own state.db says for how long. That answer goes to the operator
+  // (and to the retry timer), not into three blind five-second attempts.
+  if (isBusyTurn(err)) return false;
   const msg = errMessage(err);
   // The measured shape: the ACP refusal carries no data at all, so all that is left is the generic
   // text. Transport teardown during a handshake reads the same way from here.
   return /\bInternal error\b/i.test(msg) || /connection closed|ECONNRESET|socket hang up|timed? ?out/i.test(msg);
+}
+
+/** The agent's own name for 「这一轮还在跑，别进来」 (`{"details":"session_busy"}`, #238).
+ *
+ *  Unlike the lost turn this one is not a decision — it is a wait, and the wait has a known end
+ *  (`session_turn_leases.expires_at`). Naming it separately is what lets the cockpit say 「还要
+ *  N 秒」 and retry by itself instead of showing 「起不来」 for however long the turn takes. */
+function isBusyTurn(err: unknown): boolean {
+  return /\bsession_busy\b/i.test(errMessage(err));
 }
 
 /** A cold slot the agent cannot adopt, and why — the only two answers there are.
@@ -232,22 +253,26 @@ function isTransientResumeFailure(err: unknown): boolean {
  *  Both cases are refusals the operator must SEE — with the two homes named — and the only useful
  *  action for a slot that can never come back is to delete it. */
 export class SessionUnavailable extends Error {
-  readonly code: "home_mismatch" | "context_missing" | "lost_turn";
+  readonly code: "home_mismatch" | "context_missing" | "lost_turn" | "busy_turn";
   /** the home the session was created under (null for a row written before this was recorded) */
   readonly sessionHome: string | null;
   /** the home the backend row hands out today */
   readonly rowHome: string | null;
+  /** `busy_turn` only: how long the agent says its turn still needs (null = it did not say). The
+   *  cockpit retries on its own after this, instead of asking the operator to keep clicking. */
+  readonly retryAfterMs: number | null;
 
   constructor(
     code: SessionUnavailable["code"],
     message: string,
-    homes: { sessionHome?: string | null; rowHome?: string | null } = {},
+    homes: { sessionHome?: string | null; rowHome?: string | null; retryAfterMs?: number | null } = {},
   ) {
     super(message);
     this.name = "SessionUnavailable";
     this.code = code;
     this.sessionHome = homes.sessionHome ?? null;
     this.rowHome = homes.rowHome ?? null;
+    this.retryAfterMs = homes.retryAfterMs ?? null;
   }
 }
 
@@ -474,6 +499,8 @@ type Emitter = (evt: ServerEvent) => void;
 
 export class SessionManager {
   #sessions = new Map<string, LiveSession>();
+  /** 会话 id → 等「agent 里那一轮」跑完再自己重试的定时器（issue #238）。一次性、可被新的 resume 覆盖。 */
+  #busyRetries = new Map<string, NodeJS.Timeout>();
   #store: Store;
   #emit: Emitter;
   /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
@@ -1226,10 +1253,38 @@ export class SessionManager {
     }
   }
 
-  /** Re-attach to a session that outlived its process (server restart, crash, or
-   *  a deliberate close): spawn a fresh child and ask the agent to load the old
-   *  ACP session, then re-apply the stored mode/effort. AC5's "restart and keep
-   *  going" half — no intelligence here, the agent owns the transcript. */
+  /** 这个会话在 agent 侧那一轮还剩多久（issue #238）。读不到就说不知道。 */
+  #busyEta(id: string) {
+    const row = this.#store.getSession(id);
+    if (!row) return null;
+    const shape = this.#spawnShape(row.backend);
+    if (!shape) return null;
+    const home = buildSpawnEnv(shape.spec).home;
+    // 租约键是谱系（conversation）根；本地会话通常就是 ACP id 本身，行 id 兜底。
+    return busyTurnEta(home, [row.acpSessionId, id]);
+  }
+
+  /** 等那一轮跑完再自己再试一次（issue #238）。
+   *
+   *  操作者不该因为「上一次发布把自己那一轮掐了」而盯着一个起不来的槽位十几分钟 —— 租约自己说了
+   *  什么时候结束，那就到点自己再试。一次只排一个定时器；再试的结果若仍是等待，它会自己排下一次。 */
+  #scheduleBusyRetry(id: string, opts: { replace?: boolean }, retryAfterMs: number): void {
+    if (this.#busyRetries.has(id)) return;
+    const delay = Math.min(Math.max(retryAfterMs + 2000, 5000), RESUME_BUSY_MAX_RETRY_MS);
+    const timer = setTimeout(() => {
+      this.#busyRetries.delete(id);
+      if (this.#sessions.has(id)) return; // 已经活过来了（或有人先点了恢复）
+      console.log(`[agentus] session ${id}: retrying the resume after the agent's turn (waited ${Math.round(delay / 1000)}s)`);
+      this.resume(id, opts).catch((err) => {
+        if (err instanceof SessionUnavailable && err.code === "busy_turn") return; // 它已经排了下一次
+        console.log(`[agentus] session ${id}: the scheduled resume still fails (${errMessage(err)})`);
+        this.#emit({ t: "sessions", sessions: this.list() });
+      });
+    }, delay);
+    timer.unref?.();
+    this.#busyRetries.set(id, timer);
+  }
+
   /**
    * Resume a cold slot, retrying the refusals that are only a timing artefact.
    *
@@ -1244,6 +1299,32 @@ export class SessionManager {
     let attempt = 0;
     for (;;) {
       attempt += 1;
+      // 先问租约，再问 agent（#238）：只要这条会话在 agent 侧还占着一轮，resume 注定被拒 —— 何苦
+      // spawn 一个进程、等它说完 "Internal error" 再猜。租约自己写了什么时候结束，照它说就行。
+      // 只在槽位是冷的时候判：活着的槽位本来就在跑，不该被自己的租约拦下。
+      const eta = this.#sessions.has(id) ? null : this.#busyEta(id);
+      // holder 的进程已经没了（重启掐断的那一轮）→ 不要等它自然到期：gateway 自己会按同一条 pid
+      // 判据回收这行租约，我们直接去 resume 就是在请它回收。这次卡 13 分钟就是这个形状。
+      const holderGone = eta?.holderAlive === false;
+      if (holderGone) {
+        console.log(
+          `[agentus] session ${id}: the turn lease is held by a dead process (${eta?.holder}) — ` +
+            `resuming now so the agent reclaims it instead of waiting out the lease`,
+        );
+      }
+      if (eta && eta.remainingMs > RESUME_BUSY_INLINE_MS && !holderGone) {
+        const words = waitWords(eta.remainingMs);
+        console.log(
+          `[agentus] session ${id}: the agent still holds a turn (${eta.holder || "unknown holder"}), ` +
+            `${words} left — not resuming yet`,
+        );
+        this.#scheduleBusyRetry(id, opts, eta.remainingMs);
+        throw new SessionUnavailable(
+          "busy_turn",
+          `该会话在 agent 里还有一轮没跑完（${words}后结束）。到时会自动重试恢复，不用管。`,
+          { retryAfterMs: eta.remainingMs },
+        );
+      }
       try {
         return await this.#resumeOnce(id, opts);
       } catch (err) {
@@ -1252,6 +1333,20 @@ export class SessionManager {
         // clears it (#96). Before this it fell through to the transient branch below — the refusal
         // text contains "Internal error" — and became three identical log lines plus a 500.
         if (isLostTurn(err)) throw new SessionUnavailable("lost_turn", errMessage(err));
+        // The agent said `session_busy` for a reason the lease did not show (another host, a worker,
+        // a stale row we cannot read): still a wait, not a fault — same answer, less precision.
+        if (isBusyTurn(err)) {
+          const late = this.#busyEta(id);
+          // …unless the holder is provably gone: then it is a reclaim transient, not a wait.
+          if (late && late.remainingMs > RESUME_BUSY_INLINE_MS && late.holderAlive !== false) {
+            this.#scheduleBusyRetry(id, opts, late.remainingMs);
+            throw new SessionUnavailable(
+              "busy_turn",
+              `该会话在 agent 里还有一轮没跑完（${waitWords(late.remainingMs)}后结束）。到时会自动重试恢复，不用管。`,
+              { retryAfterMs: late.remainingMs },
+            );
+          }
+        }
         if (attempt >= RESUME_ATTEMPTS || !isTransientResumeFailure(err)) throw err;
         console.log(
           `[agentus] session ${id}: resume refused by the agent (${errMessage(err)}) — ` +

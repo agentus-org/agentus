@@ -352,11 +352,14 @@ export interface SessionView {
 export interface BlockedSlot {
   id: string;
   title: string;
-  code: "home_mismatch" | "context_missing" | "lost_turn";
+  code: "home_mismatch" | "context_missing" | "lost_turn" | "busy_turn";
   sessionHome: string | null;
   rowHome: string | null;
   /** the agent's own words for the refusal (#96 carries the recovery hint in them) */
   message?: string;
+  /** `busy_turn` only (#238): the agent says its turn still needs this long. The server already
+   *  retries by itself when it expires; this is here so the card can count down honestly. */
+  retryAfterMs?: number | null;
 }
 
 /** The body of a 409 from POST /api/sessions/:id/resume. */
@@ -365,6 +368,7 @@ interface ResumeRefusal {
   code?: BlockedSlot["code"];
   sessionHome?: string | null;
   rowHome?: string | null;
+  retryAfterMs?: number | null;
 }
 
 /** Snapshot shape handed to useSyncExternalStore. */
@@ -1830,7 +1834,7 @@ export class Cockpit {
       // slot's agent-side state is somewhere this backend row cannot reach. Say why, name both
       // homes, and offer the only action that helps — delete it (the transcript is the operator's;
       // the dead handoff is not).
-      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn")) {
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn" || body?.code === "busy_turn")) {
         const info = this.sessions.find((s) => s.id === id) ?? this.cold.find((s) => s.id === id)
           ?? this.archived.find((s) => s.id === id);
         this.blocked = {
@@ -1840,6 +1844,7 @@ export class Cockpit {
           sessionHome: body.sessionHome ?? null,
           rowHome: body.rowHome ?? null,
           message: body.error,
+          retryAfterMs: body.retryAfterMs ?? null,
         };
         this.bump();
         return;
@@ -1870,7 +1875,7 @@ export class Cockpit {
       const body = (e as { httpBody?: ResumeRefusal }).httpBody;
       // A refused restart is the same dead handoff a refused resume is: the agent cannot adopt this
       // session in this home. Same dialog, same only-useful-action (delete it).
-      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn")) {
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn" || body?.code === "busy_turn")) {
         const info = this.sessions.find((s) => s.id === id);
         this.blocked = {
           id,
@@ -1879,6 +1884,7 @@ export class Cockpit {
           sessionHome: body.sessionHome ?? null,
           rowHome: body.rowHome ?? null,
           message: body.error,
+          retryAfterMs: body.retryAfterMs ?? null,
         };
         this.bump();
         return;

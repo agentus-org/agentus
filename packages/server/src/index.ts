@@ -2082,6 +2082,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
               code: e.code,
               sessionHome: e.sessionHome,
               rowHome: e.rowHome,
+              // `busy_turn` only: how long the agent says its own turn still needs (#238), so the
+              // client can show a countdown instead of asking the operator to click again.
+              retryAfterMs: e.retryAfterMs,
             });
           }
           throw e;
@@ -2106,6 +2109,9 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
               code: e.code,
               sessionHome: e.sessionHome,
               rowHome: e.rowHome,
+              // `busy_turn` only: how long the agent says its own turn still needs (#238), so the
+              // client can show a countdown instead of asking the operator to click again.
+              retryAfterMs: e.retryAfterMs,
             });
           }
           throw e;
