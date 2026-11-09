@@ -519,6 +519,44 @@ async function main() {
     await api("DELETE", `/api/sessions/${s6.live?.id}`);
     await api("DELETE", "/api/backends/qa-resume-retry");
 
+    // #96 — a turn the last restart lost is a DECISION, not a fault: Hermes fences the admission
+    // `unknown`, refuses every idle-only control (so the resume's mode push is answered
+    // -32603 + details `unknown_execution`), and only `sessions discard` clears it. The cockpit used
+    // to read "Internal error" as transient, wait 3 × 5 s and then report 500 with no action at all.
+    const lostMarker = path.join(dataDir, "lost-turn-96.marker");
+    await api("POST", "/api/backends", {
+      id: "qa-lost-turn", label: "QA lost turn", kind: "mock", cmd: process.execPath,
+      args: [path.join(ROOT, "packages/server/mock/agent.mjs")],
+      env: { MOCK_LOST_TURN_FILE: lostMarker },
+      defaultMode: "dont_ask",
+    });
+    const s7 = await mkSession("qa-lost-turn", "lost turn");
+    await sleep(1200);
+    await api("DELETE", `/api/sessions/${s7.live?.id}`);
+    await sleep(800);
+    fs.writeFileSync(lostMarker, "unknown\n");
+    const before = log().length;
+    const t0 = Date.now();
+    const lost = await api("POST", `/api/sessions/${s7.live?.id}/resume`);
+    const elapsed = Date.now() - t0;
+    check("#96 a lost turn is answered 409 lost_turn, not 500 Internal error",
+      lost.status === 409 && lost.json?.code === "lost_turn",
+      `status=${lost.status} body=${lost.text.slice(0, 160)}`);
+    check("#96 …in ONE attempt — a decision is not retried (no 3 × 5 s wait)",
+      elapsed < 4000 && !log().slice(before).includes("resume refused by the agent"),
+      `${elapsed} ms; ${log().slice(before).split("\n").filter(Boolean).slice(-2).join(" | ")}`);
+    const disc = await api("POST", `/api/sessions/${s7.live?.id}/discard-lost-turn`);
+    check("#96 the discard endpoint acknowledges it through the agent's own CLI",
+      disc.status === 200 && disc.json?.discarded === 1 && !fs.existsSync(lostMarker),
+      `status=${disc.status} body=${disc.text.slice(0, 160)}`);
+    const back = await api("POST", `/api/sessions/${s7.live?.id}/resume`);
+    check("#96 …and the same resume then succeeds", back.status === 200, `status=${back.status} ${back.text.slice(0, 120)}`);
+    const again = await api("POST", `/api/sessions/${s7.live?.id}/discard-lost-turn`);
+    check("#96 discarding when nothing is lost is a no-op answer, not an error",
+      again.status === 200 && again.json?.discarded === 0, `status=${again.status} body=${again.text.slice(0, 120)}`);
+    await api("DELETE", `/api/sessions/${s7.live?.id}`);
+    await api("DELETE", "/api/backends/qa-lost-turn");
+
     // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
     // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".
     await api("PATCH", "/api/backends/qa-mode", { defaultMode: "no_such_mode" });

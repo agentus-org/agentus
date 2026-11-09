@@ -348,13 +348,16 @@ export interface SessionView {
 export interface BlockedSlot {
   id: string;
   title: string;
-  code: "home_mismatch" | "context_missing";
+  code: "home_mismatch" | "context_missing" | "lost_turn";
   sessionHome: string | null;
   rowHome: string | null;
+  /** the agent's own words for the refusal (#96 carries the recovery hint in them) */
+  message?: string;
 }
 
 /** The body of a 409 from POST /api/sessions/:id/resume. */
 interface ResumeRefusal {
+  error?: string;
   code?: BlockedSlot["code"];
   sessionHome?: string | null;
   rowHome?: string | null;
@@ -1823,7 +1826,7 @@ export class Cockpit {
       // slot's agent-side state is somewhere this backend row cannot reach. Say why, name both
       // homes, and offer the only action that helps — delete it (the transcript is the operator's;
       // the dead handoff is not).
-      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing")) {
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn")) {
         const info = this.sessions.find((s) => s.id === id) ?? this.cold.find((s) => s.id === id)
           ?? this.archived.find((s) => s.id === id);
         this.blocked = {
@@ -1832,6 +1835,7 @@ export class Cockpit {
           code: body.code,
           sessionHome: body.sessionHome ?? null,
           rowHome: body.rowHome ?? null,
+          message: body.error,
         };
         this.bump();
         return;
@@ -1862,7 +1866,7 @@ export class Cockpit {
       const body = (e as { httpBody?: ResumeRefusal }).httpBody;
       // A refused restart is the same dead handoff a refused resume is: the agent cannot adopt this
       // session in this home. Same dialog, same only-useful-action (delete it).
-      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing")) {
+      if (status === 409 && (body?.code === "home_mismatch" || body?.code === "context_missing" || body?.code === "lost_turn")) {
         const info = this.sessions.find((s) => s.id === id);
         this.blocked = {
           id,
@@ -1870,6 +1874,7 @@ export class Cockpit {
           code: body.code,
           sessionHome: body.sessionHome ?? null,
           rowHome: body.rowHome ?? null,
+          message: body.error,
         };
         this.bump();
         return;
@@ -1890,6 +1895,26 @@ export class Cockpit {
     this.blocked = null;
     if (b) this.purgeCold(b.id);
     this.bump();
+  }
+
+  /** #96's one button: acknowledge the turn the last restart lost, then bring the slot back.
+   *
+   *  Not folded into `resume()` because the acknowledgement is destructive — the agent keeps the
+   *  input fenced but never replays it — so the operator decides. The server runs the agent's own
+   *  control (`hermes sessions discard`), and only then is the same resume tried again. */
+  async discardLostTurn(): Promise<void> {
+    const b = this.blocked;
+    if (!b) return;
+    this.blocked = null;
+    this.#setNet(true, "");
+    this.bump();
+    try {
+      await this.#req<{ discarded: number }>(`/api/sessions/${b.id}/discard-lost-turn`, { method: "POST" }, { retry: false });
+    } catch (e) {
+      this.#setNet(false, `丢弃上一轮失败：${String((e as Error).message ?? e)}`);
+      return;
+    }
+    await this.resume(b.id);
   }
 
   /** Delete a cold slot for good (row + transcript). The rail only ever grows

@@ -200,10 +200,21 @@ const RESUME_RETRY_MS = Number(process.env.AGENTUS_RESUME_RETRY_MS || 5000);
  *  one is never replayed from a stored snapshot. */
 const EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy";
 
+/** The agent's name for "this session's FIFO is blocked by a turn the last restart lost"
+ *  (`session_admissions.status = 'unknown'`). It is a DECISION, not a timing artefact: the only
+ *  thing that clears it is acknowledging the lost turn (`session/prompt` `/discard <admission>`,
+ *  or `hermes sessions discard <session>`), so retrying the same resume three times only makes the
+ *  operator wait ten seconds for the same refusal (#96). */
+function isLostTurn(err: unknown): boolean {
+  return /\bunknown_execution\b/i.test(errMessage(err));
+}
+
 function isTransientResumeFailure(err: unknown): boolean {
   // A slot the agent genuinely cannot adopt is a verdict, not a timing artefact: retrying it three
   // times only makes the operator wait before the same refusal.
   if (err instanceof SessionUnavailable) return false;
+  // …and so is a lost turn: the agent is not slow, it is waiting for a person to decide.
+  if (isLostTurn(err)) return false;
   const msg = errMessage(err);
   // The measured shape: the ACP refusal carries no data at all, so all that is left is the generic
   // text. Transport teardown during a handshake reads the same way from here.
@@ -221,7 +232,7 @@ function isTransientResumeFailure(err: unknown): boolean {
  *  Both cases are refusals the operator must SEE — with the two homes named — and the only useful
  *  action for a slot that can never come back is to delete it. */
 export class SessionUnavailable extends Error {
-  readonly code: "home_mismatch" | "context_missing";
+  readonly code: "home_mismatch" | "context_missing" | "lost_turn";
   /** the home the session was created under (null for a row written before this was recorded) */
   readonly sessionHome: string | null;
   /** the home the backend row hands out today */
@@ -1233,6 +1244,11 @@ export class SessionManager {
       try {
         return await this.#resumeOnce(id, opts);
       } catch (err) {
+        // A turn the last restart lost is the operator's call to make, not a fault to retry: say
+        // which decision it needs (409 `lost_turn`) so the cockpit can offer the one button that
+        // clears it (#96). Before this it fell through to the transient branch below — the refusal
+        // text contains "Internal error" — and became three identical log lines plus a 500.
+        if (isLostTurn(err)) throw new SessionUnavailable("lost_turn", errMessage(err));
         if (attempt >= RESUME_ATTEMPTS || !isTransientResumeFailure(err)) throw err;
         console.log(
           `[agentus] session ${id}: resume refused by the agent (${errMessage(err)}) — ` +
@@ -1241,6 +1257,49 @@ export class SessionManager {
         await new Promise((r) => setTimeout(r, RESUME_RETRY_MS));
       }
     }
+  }
+
+  /** Acknowledge the turn the last restart lost, so this session can load again (#96).
+   *
+   *  Deliberately NOT folded into `resume()`: discarding throws away input the operator already
+   *  sent — the agent keeps it fenced but never replays it — so it only runs when they press the
+   *  button. The work itself is the agent's own, non-interactive control (`hermes sessions
+   *  discard` → gateway `prompt.resolve_unknown`, the same fenced mutation `/discard` and
+   *  Desktop's Discard use); nothing about the policy or the transcript is reimplemented here. */
+  async discardLostTurn(id: string): Promise<{ discarded: number; detail: string }> {
+    const row = this.#store.getSession(id);
+    if (!row) throw new Error(`unknown session: ${id}`);
+    if (!row.acpSessionId) throw new Error(`session ${id} was never handed to an agent`);
+    const shape = this.#spawnShape(row.backend);
+    if (!shape) throw new Error(`unknown backend: ${row.backend}`);
+    const plan = buildSpawnEnv(shape.spec);
+    plan.env = this.#skillsEnv(shape.spec, plan.env);
+    // The backend's own argv minus its ACP subcommand: `hermes … sessions discard <id> --yes` is the
+    // documented non-interactive form (`hermes_cli/sessions_discard.py`), and a mock/swapped command
+    // gets the same verb appended after its own arguments.
+    const baseArgs = shape.args.filter((a) => a !== "acp");
+    const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(shape.spec.cmd, [...baseArgs, "sessions", "discard", row.acpSessionId as string, "--yes"], {
+        cwd: row.workspace || row.cwd,
+        env: plan.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+      child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+    });
+    const discarded = run.stdout.split("\n").filter((line) => /^Discarded\b/.test(line.trim())).length;
+    if (run.code !== 0) {
+      throw new Error(
+        `the agent would not discard the lost turn (exit ${run.code}): ${(run.stderr || run.stdout).trim().slice(0, 400)}`,
+      );
+    }
+    const detail = (run.stdout || run.stderr).trim().slice(0, 400);
+    console.log(`[agentus] session ${id}: discarded ${discarded} lost turn(s) — ${detail || "no output"}`);
+    return { discarded, detail };
   }
 
   async #resumeOnce(id: string, opts: { replace?: boolean } = {}): Promise<SessionInfo> {

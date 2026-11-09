@@ -2052,6 +2052,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           return send(res, 404, { error: String((e as Error)?.message ?? e) });
         }
       }
+      if (req.method === "POST" && sub === "/discard-lost-turn") {
+        // #96's action half: a turn the last restart lost blocks this session until someone
+        // acknowledges it, and the acknowledgement is destructive (the input is never replayed), so
+        // it is its own button and its own endpoint — never a side effect of resume.
+        try {
+          const out = await mgr.discardLostTurn(id);
+          emit(sessionsEvent());
+          return send(res, 200, out);
+        } catch (e) {
+          return send(res, 400, { error: String((e as Error)?.message ?? e) });
+        }
+      }
       if (req.method === "POST" && sub === "/resume") {
         // AC5's other half: bring a cold slot back to life (respawn + loadSession)
         try {
