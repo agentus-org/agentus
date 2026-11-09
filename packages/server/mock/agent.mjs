@@ -19,6 +19,23 @@ import fs from "node:fs";
 import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
+// MOCK_LOST_TURN_FILE: `<cmd> sessions discard <id> --yes` support, shape for shape with
+// `hermes sessions discard` — the cockpit's discard endpoint spawns the backend's own CLI, so the
+// mock has to answer on that verb too. The marker file IS the fenced lost turn: deleting it is the
+// acknowledgement, and the next resume's mode push then lands.
+if (process.argv[2] === "sessions" && process.argv[3] === "discard") {
+  const marker = process.env.MOCK_LOST_TURN_FILE;
+  const id = process.argv[4] || "(no id)";
+  if (marker && fs.existsSync(marker)) {
+    fs.rmSync(marker, { force: true });
+    process.stdout.write(`Discarded mock-lost-turn-${Date.now()} (${id})\n`);
+  } else {
+    process.stdout.write(`Nothing to discard: session ${id} has no unknown admission.\n`);
+  }
+  process.exit(0);
+}
+
+
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
 // MOCK_IGNORE_TERM=1 -> 不理会 SIGTERM（只有 SIGKILL 能停它）。用来复刻「关闭时它还在握手、而且
 // 关不掉」的窗口：有界等待超时后槽被删掉，握手随后落地，正好能验证"关闭中回魂"那道守卫。
@@ -230,6 +247,16 @@ const agent = () => ({
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
   async loadSession({ sessionId, cwd, mcpServers }) {
+    // A turn the last restart lost leaves `session_admissions.status='unknown'` and Hermes 0.23
+    // refuses every idle-only control until someone acknowledges it — the adapter runs one of those
+    // under `session/load`, so the editor sees a bare -32603 with `details: unknown_execution` and
+    // used to turn that into a 500 (#96). The marker file is the fenced turn: `sessions discard`
+    // deletes it, and the next resume loads normally (every resume is a NEW agent process).
+    if (process.env.MOCK_LOST_TURN_FILE && fs.existsSync(process.env.MOCK_LOST_TURN_FILE)) {
+      const err = new RequestError(-32603, "Internal error");
+      err.data = { details: "unknown_execution" };
+      throw err;
+    }
     // MOCK_LOAD_FAIL_FILE=<path>: the owner keeps a session for a while after the turn its dead viewer
     // started — a promote restart — and refuses `session/load` for it with `-32603` and NO data. That is
     // the refusal the cockpit now retries (#234). The marker is a FILE, not a counter: every resume is a

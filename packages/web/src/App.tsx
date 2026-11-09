@@ -306,6 +306,32 @@ function StaleBanner(): JSX.Element | null {
  *  refuses up front (409 + code); this is where the operator sees why and what can be done. */
 function BlockedSlotDialog({ slot }: { slot: BlockedSlot }): JSX.Element {
   useEscape(true, () => cockpit.dismissBlocked());
+  // A lost turn is the other kind of refusal: the session is fine, but the restart interrupted a
+  // turn and the agent (Hermes 0.23's durable admission) will not let this conversation continue
+  // until someone says what to do with it. There is exactly one useful answer here, and it is not
+  // "delete the conversation" (#96).
+  if (slot.code === "lost_turn") {
+    return (
+      <div className="modal-bg" onClick={() => cockpit.dismissBlocked()}>
+        <div className="modal narrow" onClick={(e) => e.stopPropagation()}>
+          <h3>上一轮在重启时丢了</h3>
+          <div className="hint">
+            「{slot.title}」当时正在跑的那一轮被重启打断了，agent 不知道它有没有跑完，于是把这条会话挡住，
+            不让新消息插进去 —— 这就是刚才恢复失败的原因。
+          </div>
+          <div className="hint">
+            选择只有一个：告诉 agent 放弃那一轮。它的输入不会重放（记录还在，想重发可以自己再发一次），
+            之后这条会话立刻能继续。
+          </div>
+          {slot.message ? <div className="hint muted">{slot.message}</div> : null}
+          <div className="row">
+            <button className="cancel" onClick={() => cockpit.dismissBlocked()}>取消</button>
+            <button className="go" onClick={() => void cockpit.discardLostTurn()}>丢弃上一轮并继续</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const mismatch = slot.code === "home_mismatch";
   return (
     <div className="modal-bg" onClick={() => cockpit.dismissBlocked()}>
