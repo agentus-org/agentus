@@ -557,6 +557,47 @@ async function main() {
     await api("DELETE", `/api/sessions/${s7.live?.id}`);
     await api("DELETE", "/api/backends/qa-lost-turn");
 
+    // #97: a finished background task is read from the agent, not guessed by the client. The agent
+    // hands its registry over on `background.tasks` — including rows that are ALREADY finished and
+    // their exit codes — and the server turns each one into a transcript row exactly once. 0.22.2
+    // filtered those rows out (to stop the 30-minute zombie above the composer) and threw the exit
+    // code away with them, so the transcript had nothing to draw.
+    {
+      const s8 = await mkSession("qa-mock", "bg done rows");
+      const id8 = s8.live?.id;
+      check("#97 a mock slot for the background rows", Boolean(id8), `status=${s8.r?.status}`);
+      if (id8) {
+        await api("POST", `/api/sessions/${id8}/prompt`, { text: "[bg-exited]" });
+        let notes = [];
+        for (let i = 0; i < 40; i++) {
+          await sleep(500);
+          const msgs = (await api("GET", `/api/sessions/${id8}/messages`)).json?.messages ?? [];
+          notes = msgs.filter((m) => m.kind === "note"
+            && (m.payload?.category ?? m.payload?.Category) === "bg-done");
+          if (notes.length >= 2) break;
+        }
+        const rows = notes.map((m) => m.payload?.task ?? {});
+        check("#97 a finished process becomes ONE transcript row", notes.length === 2,
+          `rows=${notes.length} ${JSON.stringify(rows.map((r) => r.id))}`);
+        check("#97 the row carries the agent's exit code (success and failure told apart)",
+          rows.some((r) => r.exitCode === 0) && rows.some((r) => r.exitCode === 1),
+          JSON.stringify(rows.map((r) => `${r.id}:${r.exitCode}`)));
+        check("#97 …with the command and duration the agent reported",
+          rows.every((r) => typeof r.command === "string" && r.command.length > 0)
+          && rows.some((r) => typeof r.uptimeSeconds === "number"),
+          JSON.stringify(rows.map((r) => `${r.command}@${r.uptimeSeconds}s`)));
+        // The same rows arriving again (Hermes keeps a finished process 30 minutes, so every later
+        // snapshot repeats them) must not grow the transcript: one process = one row, for good.
+        await api("POST", `/api/sessions/${id8}/prompt`, { text: "[bg-exited]" });
+        await sleep(2500);
+        const again = ((await api("GET", `/api/sessions/${id8}/messages`)).json?.messages ?? [])
+          .filter((m) => m.kind === "note" && (m.payload?.category ?? m.payload?.Category) === "bg-done");
+        check("#97 the same rows arriving again do not stack (one process = one row)", again.length === 2,
+          `rows=${again.length}`);
+        await api("DELETE", `/api/sessions/${id8}`);
+      }
+    }
+
     // A pick this agent never advertised must not be sent (that would be a refusal nobody can see) —
     // and the row has to SAY so, which is the whole difference between "inert" and "silently broken".
     await api("PATCH", "/api/backends/qa-mode", { defaultMode: "no_such_mode" });
