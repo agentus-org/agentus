@@ -1104,16 +1104,32 @@ export class Store {
   upsertSession(s: SessionRow): void {
     const exist = this.#db.prepare("select id from sessions where id = ?").get(s.id);
     if (exist) {
-      // `home` is deliberately NOT in this SET: which data directory a session's agent-side
-      // state lives in is decided once, at creation, and every later write happens while the
-      // session still lives there. Letting this update rewrite it would silently "re-home" a
+      // `home` and `role` are deliberately NOT in this SET: which data directory a session's
+      // agent-side state lives in is decided once, at creation, and every later write happens while
+      // the session still lives there. Letting this update rewrite it would silently "re-home" a
       // session whose agent has never seen it — the exact confusion the resume check exists to
       // catch. (Same shape as `created_at`: written on insert only.)
+      // `cwd` (#98) is the same kind of fact and was the one column left in: `sessionRow(live.info)`
+      // carries the cwd the agent process was SPAWNED with, so any live-status write (close, idle
+      // reap, boot sync, resume, error) pushed that snapshot back over the row. An operator who
+      // moved a session's directory in the DB — migration, backup restore, fixing a dirty row — had
+      // it rolled back silently on the next reap, and the next resume then started the agent in the
+      // old (possibly deleted) directory. Nothing legitimately rewrites cwd after creation; moving
+      // a session out of its directory is `sessions.workspace` (setWorkspace) — and note the
+      // precedence that comes with it: spawn and `session/new` use `row.workspace || row.cwd`
+      // (session-manager.ts's resumeCwd), so while a workspace is set a cwd edit is invisible to
+      // them; `session/load` goes further and passes `row.cwd` alone.
+      // Two columns that LOOK like they belong here and do not: `title` has real online writers
+      // (renameSession, setAutoTitle — an agent renames a session every round), and `backend` is
+      // paired with `acp_session_id` and `home`, so a hand edit that moved a row to another backend
+      // would leave it claiming an ACP session and a home it no longer names. Both stay in the SET
+      // on purpose; the known residual for `title` is that a hand edit is written back while
+      // `title_src` does not follow it.
       this.#db
         .prepare(
-          `update sessions set backend=?, acp_session_id=?, cwd=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=?, auto_title=coalesce(auto_title, ?) where id=?`,
+          `update sessions set backend=?, acp_session_id=?, title=?, status=?, pid=?, closed_at=?, modes=?, config_options=?, usage=?, commands=?, models=?, auto_title=coalesce(auto_title, ?) where id=?`,
         )
-        .run(s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.closedAt,
+        .run(s.backend, s.acpSessionId, s.title, s.status, s.pid, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
           JSON.stringify(s.models ?? null), s.title, s.id);
