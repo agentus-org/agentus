@@ -11,6 +11,8 @@
 //   ⑤ 放大态下上下分屏照常（两行都变宽，divider 还在两行之间）。
 //   ⑥ 放大态点 × 关面板 → 标记清掉，重开是原宽度而不是全宽。
 //   ⑦ <721px 不出现该按钮（手机上它本来就是全屏 sheet）。
+//   ⑧ #99 标记是持久化的、面板开关不是 —— 刷新那一刻面板必然是关着的：标记还在，但聊天区不许
+//      被藏掉（否则右侧整片空白），重开同一个 pane 还得回到放大态（偏好不丢）。
 //
 //   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/panel-maximize-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
@@ -51,7 +53,9 @@ const status = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'conten
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
 check("logged in", status === 200, `status ${status}`);
 await viewport(1400);
-await ev(`(() => { localStorage.removeItem('agentus.panel-maximized'); localStorage.removeItem('agentus.panel-width'); return true; })()`);
+// 按前缀清：per-pair 的 `agentus.panel-split-ratio:<a+b>` 与 `agentus.panel-split-ide-top` 也是
+// 这一族，逐个点名会漏（键名见 panes.ts 的 PAIR_KEY / RATIO_KEY / SPLIT_KEY）。
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (/^agentus\\.panel-/.test(k)) localStorage.removeItem(k); return true; })()`);
 await goto(BASE);
 await ev(`(() => { const row = document.querySelector('.session-item'); if (row) row.click(); return Boolean(row); })()`);
 await sleep(2000);
@@ -154,15 +158,33 @@ await viewport(1400);
 // ---- ⑤ 放大态下分屏照常 --------------------------------------------------------------------
 await ev(`[...document.querySelectorAll('.tool-tab')].find(t=>/^terminal/.test(t.textContent.trim())).click(); true`);
 await sleep(1000);
-await ev(`(() => { const b = document.querySelector('.pane-picker [aria-label="put ide below"]'); if (b) b.click(); return Boolean(b); })()`);
+// The pane-picker's 「put ide below」 only exists when code-server is actually up on this box; without
+// it the picker offers 「put files below」 instead (splitSeed()'s no-IDE pair is files+terminal), so
+// take whichever door is there. A bare click on 「toggle the vertical split」 is NOT equivalent: it
+// only sets `top` (bottom: null), so the row count stays at 1 and the divider never appears — read as
+// a layout bug when it was just an unfilled pair.
+const splitStarted = await ev(`(() => { const b = document.querySelector('.pane-picker [aria-label="put ide below"]'); if (b) { b.click(); return true; } const f = document.querySelector('.pane-picker [aria-label="put files below"]'); if (f) { f.click(); return true; } return false; })()`);
 await sleep(1800);
+// Not an assertion: which door existed depends on whether this run inherited an already-paired
+// split from localStorage (the picker closes itself once the pair is set). The contract is the two
+// rows below; this line is only here so a red row count says which door was taken.
+console.log(`  note 分屏入口: ${splitStarted ? "picker door" : "pair already set"}`);
 const rows = JSON.parse(await ev(`JSON.stringify([...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
   .map(p => ({ pane: p.dataset.pane, w: Math.round(p.getBoundingClientRect().width), top: Math.round(p.getBoundingClientRect().top) }))
   .sort((a,b)=>a.top-b.top))`));
 check("放大态下上下分屏照常（两行都在，且都变宽到面板宽度）",
   rows.length === 2 && rows.every((r) => Math.abs(r.w - (max.panelW ?? 0)) <= 2),
   JSON.stringify(rows.map((r) => `${r.pane}:${r.w}`)));
-check("…divider 仍在两行之间", (await ev(`Boolean(document.querySelector('.row-divider'))`)) === true);
+// 量位置，不是「它存在」：分屏开着时 divider 恒被渲染，只断存在的话它画到两行之上也照样绿。
+const divGap = JSON.parse(await ev(`(() => {
+  const panes = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')]
+    .map(p => p.getBoundingClientRect()).sort((a,b) => a.top - b.top);
+  const d = document.querySelector('.row-divider')?.getBoundingClientRect();
+  if (panes.length !== 2 || !d) return JSON.stringify({ ok: false, detail: JSON.stringify({ panes: panes.length, divider: Boolean(d) }) });
+  const ok = d.top >= panes[0].bottom - 1 && d.bottom <= panes[1].top + 1;
+  return JSON.stringify({ ok, detail: \`upper.bottom=\${Math.round(panes[0].bottom)} divider=\${Math.round(d.top)}..\${Math.round(d.bottom)} lower.top=\${Math.round(panes[1].top)}\` });
+})()`));
+check("…divider 落在两行之间", divGap.ok, divGap.detail);
 // 收起分屏，回到单 pane，避免影响后面的宽度断言
 await ev(`(() => { const b = document.querySelector('[aria-label="toggle the vertical split"]'); if (b) b.click(); return Boolean(b); })()`);
 await sleep(800);
@@ -199,6 +221,24 @@ check("重开面板是原来的宽度，不是全宽",
   Math.abs((reopened.panelW ?? 0) - 620) <= 2 && reopened.pressed === "false",
   JSON.stringify({ w: reopened.panelW, pressed: reopened.pressed }));
 
+// ---- ⑥b head 上那个开关关掉面板，也得清掉放大标记（与 × 同一条语义） --------------------------
+// #91 §5 判过：关闭之后标记还留着，下一次打开直接全宽，观感是「面板坏了」。× 已经这么做，head 的
+// 二次点击是同一个「把面板放回去」的动作，两条路不许给出两种结果（#99 review 抓到的不对称）。
+await ev(`document.querySelector('${MAX}').click(); true`);
+await sleep(1000);
+check("再次放大（为 ⑥b 造状态）", (await layout()).pressed === "true");
+await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
+await sleep(1200);
+check("head 开关关面板同样清掉放大标记",
+  (await ev(`localStorage.getItem('agentus.panel-maximized')`)) === "0",
+  String(await ev(`localStorage.getItem('agentus.panel-maximized')`)));
+await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
+await sleep(1500);
+const reopenedByHead = await layout();
+check("…重开仍是原宽度（不是全宽）",
+  Math.abs((reopenedByHead.panelW ?? 0) - 620) <= 2 && reopenedByHead.pressed === "false",
+  JSON.stringify({ w: reopenedByHead.panelW, pressed: reopenedByHead.pressed }));
+
 // ---- ⑦ 手机不出现该按钮 --------------------------------------------------------------------
 await viewport(700);
 // Poll rather than sleep a fixed time: the button's presence follows `useWide()`, which updates on
@@ -216,6 +256,24 @@ await viewport(1400);
 // ---- 持久化：放大态刷新后仍然放大 ----------------------------------------------------------
 await ev(`localStorage.setItem('agentus.panel-maximized', '1'); true`);
 await goto(BASE);
+// #99: 刷新后面板是关着的（panelOpen 是内存态），标记却还在 localStorage 里 —— 旧代码里
+// `panelMax = flag && wide` 不看面板开没开，于是聊天列被 visibility:hidden 藏掉、本该占位的
+// .tool-panel 又没挂载，右侧整片空白。先量这个「不可能状态」，再去点按钮。
+const closedReload = await layout();
+const bodyClass = await ev(`document.querySelector('.main-body').className`);
+const paneCount = await ev(`document.querySelectorAll('[data-pane]').length`);
+// The condition is the BEHAVIOUR (「右侧不空白」= 聊天列可见，或有面板在占位), not this fix's
+// implementation: a future fix that keeps the panel mounted would satisfy it too. `panel-maximized`
+// on `.main-body` is reported as detail — under the current CSS it is what hides the chat column,
+// so on the old build both halves of the condition are false at once.
+check("#99 刷新后面板关着：聊天区没有被藏掉，右侧不空白",
+  closedReload.chatVisibility === "visible" || paneCount > 0,
+  JSON.stringify({ chatVisibility: closedReload.chatVisibility, bodyClass, panes: paneCount }));
+// Anti-over-correction guard, NOT a #99 red: on the previous build this also printed `1`, because
+// nothing on load ever cleared the flag (the only `setPanelMax(false)` was the panel's ×). It goes
+// red only if a fix "solves" the blank screen by forgetting the operator's preference.
+check("#99 …放大标记本身没被清掉（偏好保留，重开面板即回到放大）",
+  closedReload.maxFlag === "1", String(closedReload.maxFlag));
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
 await sleep(1800);
 const afterReload = await layout();

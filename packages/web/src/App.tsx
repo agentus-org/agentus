@@ -1537,8 +1537,14 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
    * decides whether the ide row is available. Asked once per session/workspace (panes.ts). */
   const wide = useWide();
   /* The flag only applies on a wide window; narrowing past 721px suspends it (the panel there is a
-   * full-screen sheet already) without forgetting the operator's choice. */
-  const panelMax = panelMaxFlag && wide;
+   * full-screen sheet already) without forgetting the operator's choice. It ALSO only applies while
+   * the panel is open (#99): the flag is persisted but `panelOpen` is memory state, so a reload lands
+   * on "maximized + panel unmounted" — `.chat-col` gets `visibility: hidden` while nothing is left to
+   * take its place, and the whole right-hand area renders blank (the pane button looks like the fix,
+   * because it remounts the panel). Maximizing is a layout mode for a panel that is open; with no
+   * panel the mode means nothing. The preference itself stays in localStorage, so opening a pane
+   * again comes back to the maximized layout (#91's intent). */
+  const panelMax = panelMaxFlag && wide && panelOpen;
   const setPanelMax = (on: boolean): void => { setPanelMaxFlag(on); writeFlag(PANEL_MAX_KEY, on); };
   // `active` can be undefined here (the empty-state return sits further down), so the hook takes the
   // empty key rather than throwing on a cockpit with no session selected.
@@ -1550,7 +1556,10 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
    * pane, the same click CLOSES it (the operator, 2026-10-30: 「按钮二次点击时应该关闭啊」 — a toggle
    * that only ever opens makes the head's own × the only way back). */
   const openPane = (t: ViewTab): void => {
-    if (panelOpen && panelTab === t) { setPanelOpen(false); return; }
+    // Closing is closing, whatever closed it: the panel's × drops the maximized flag (#91 §5) so the
+    // next open doesn't spring to full width and read as 「面板坏了」 — the head's own toggle has to
+    // do the same, or the two ways of putting the panel away disagree (#99's review).
+    if (panelOpen && panelTab === t) { setPanelMax(false); setPanelOpen(false); return; }
     setPanelTab(t);
     setPanelOpen(true);
   };
