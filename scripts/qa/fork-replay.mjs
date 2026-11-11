@@ -151,11 +151,43 @@ if (silentFork.id) {
     String(silentFork.error ?? "no id"));
 }
 
+// ---- a branch the AGENT has forgotten still opens (our copy is the transcript) ----------------
+// `session/fork` hands us an id the agent holds in ITS process. A resume spawns a fresh child, and
+// an in-process agent has never heard of that id — `MOCK_FORGET=1` is exactly that shape. A branch
+// whose transcript lives in our store must survive it: losing the agent's context is recoverable,
+// losing the conversation is not (#104). Without `forkedFrom`, `resume` answers `context_missing`
+// here and the fork can never be opened again.
+await register(backend("qa-forget", { MOCK_FORGET: "1" }));
+const forgot = await newSession("qa-forget", "fork · agent forgot");
+check("a MOCK_FORGET session created", Boolean(forgot), `id=${forgot}`);
+await waitReady(forgot);
+await fetch(`${BASE}/api/sessions/${forgot}/prompt`, {
+  method: "POST", headers: { "content-type": "application/json", ...H },
+  body: JSON.stringify({ text: "原始回合 on a forgetful agent" }),
+});
+await settle(forgot);
+const forgotParent = await shape(forgot);
+const forgotFork = await j(await fetch(`${BASE}/api/sessions/${forgot}/fork`, { method: "POST", headers: H }));
+check("a branch of a session the agent will forget still opens", Boolean(forgotFork.id),
+  String(forgotFork.error ?? "ok"));
+if (forgotFork.id) {
+  await settle(forgotFork.id);
+  const st = await statusOf(forgotFork.id);
+  const got = await shape(forgotFork.id);
+  check("…as a live slot, not an error", st !== "error" && st !== "?", `status=${st}`);
+  check("…carrying the parent's transcript, because it is OUR copy",
+    got.length === forgotParent.length && got.every((r, i) => r.at === forgotParent[i].at),
+    `parent=${forgotParent.length} branch=${got.length}`);
+  await fetch(`${BASE}/api/sessions/${forgotFork.id}`, { method: "DELETE", headers: H });
+}
+
 // ---- clean up --------------------------------------------------------------------------------
 await fetch(`${BASE}/api/sessions/${sid}`, { method: "DELETE", headers: H });
 await fetch(`${BASE}/api/sessions/${silent}`, { method: "DELETE", headers: H });
 await fetch(`${BASE}/api/backends/qa-fork`, { method: "DELETE", headers: H });
 await fetch(`${BASE}/api/backends/qa-noreplay`, { method: "DELETE", headers: H });
+await fetch(`${BASE}/api/sessions/${forgot}`, { method: "DELETE", headers: H });
+await fetch(`${BASE}/api/backends/qa-forget`, { method: "DELETE", headers: H });
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} ok, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

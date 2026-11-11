@@ -468,10 +468,12 @@ interface LiveSession {
    *  really is answering. */
   replaying?: boolean;
   /** Whether this slot ALREADY held a transcript when the window opened — read once, at spawn/resume
-   *  (#103). The replay is dropped only then: it is a re-send of rows we have. A FORK is the opposite
-   *  case — its store starts empty and that replay is the only copy of the parent's history — so
-   *  asking `maxSeq()` per frame made the first persisted frame lock the rest out, and every fork
-   *  showed one message. */
+   *  (#103). The replay is dropped only then: it is a re-send of rows we have. Asking `maxSeq()` per
+   *  frame instead made the first persisted frame answer "yes" for the rest of the replay.
+   *
+   *  A FORK now always answers yes, because it opens with a COPY of the parent's rows (#104) — the
+   *  replay is then the agent catching up with a conversation we already hold, which is exactly the
+   *  case this rule was written for. */
   replayHadTranscript?: boolean;
   /** The plan hand-over is owed on the NEXT prompt: a freshly (re)started agent has no memory of
    *  the plan it was working on, while the cockpit still has it (design-plan-service.md §7).
@@ -1143,7 +1145,11 @@ export class SessionManager {
       // already finished" watermark no longer describes the same numbering — keeping it would make
       // every registration of the new run look older than the last settled turn and be answered with
       // a false 「已经结束了」.
-      caps: { fork: false, load: false, image: false, gatewayOwned: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      // Seeded from the transcript, not from 0: the fold rules pair "same kind, same turn, newest
+      // row", so a counter that restarted at 0 would let the first answer of a resumed (or forked)
+      // session fold itself into a row written hours ago in turn 1 (#104).
+      caps: { fork: false, load: false, image: false, gatewayOwned: false },
+      turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -1526,7 +1532,11 @@ export class SessionManager {
       // already finished" watermark no longer describes the same numbering — keeping it would make
       // every registration of the new run look older than the last settled turn and be answered with
       // a false 「已经结束了」.
-      caps: { fork: false, load: false, image: false, gatewayOwned: false }, turnSeq: 0, collectors: new Map(), planReminderPending: true,
+      // Seeded from the transcript, not from 0: the fold rules pair "same kind, same turn, newest
+      // row", so a counter that restarted at 0 would let the first answer of a resumed (or forked)
+      // session fold itself into a row written hours ago in turn 1 (#104).
+      caps: { fork: false, load: false, image: false, gatewayOwned: false },
+      turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
       planToken: randomUUID(),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
@@ -1593,7 +1603,14 @@ export class SessionManager {
         //    is exactly what reopening it means;
         //  · there IS a transcript — the operator's conversation is the thing that is gone, and
         //    that must be said out loud rather than papered over with a session that starts blank.
-        if (this.#store.maxSeq(id) === 0) {
+        // A BRANCH is the third case, and it resolves the same way as the empty slot: the fork has
+        // just been created through `session/fork`, so an agent that does not know that id has lost
+        // its CONTEXT, not our history — the branch's transcript is a copy living in this store
+        // (#104). Throwing `context_missing` here would leave a fork that can never be opened again;
+        // opening a fresh agent session keeps the conversation and loses only what the agent never
+        // had. An ordinary session with rows keeps the loud failure: there the missing context IS the
+        // operator's conversation.
+        if (this.#store.maxSeq(id) === 0 || Boolean(row.forkedFrom)) {
           loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live) })) as typeof loaded;
           const freshId = loaded?.sessionId;
           if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
@@ -3249,11 +3266,13 @@ export class SessionManager {
     // live DB on one restart and pushed every session's clock to 「刚刚」.
     //
     // Dropped only when we DO hold a transcript: a slot whose rows are gone has nothing else to
-    // rebuild from, so that replay is the only copy and it is kept.
+    // rebuild from, so that replay is the only copy and it is kept. (An emptied parent is the one
+    // case where a fork still relies on it — the fork's own copy had nothing to copy.)
     const isTextFrame = st === "agent_message_chunk" || st === "agent_thought_chunk";
     const isToolFrame = st === "tool_call" || st === "tool_call_update";
-    // The operator's own words come back the same way on a re-attach (`user_message_chunk`), and for
-    // a fork they are the ONLY copy — the parent's transcript is not copied into our store (#103).
+    // The operator's own words come back the same way on a re-attach (`user_message_chunk`). A fork
+    // normally gets them from the copied transcript (#104), so this branch is what keeps a fork of an
+    // EMPTY parent — and any agent that replays into a slot we know nothing about — from losing them.
     const isUserFrame = st === "user_message_chunk";
     // Dropped only when we DO hold a transcript — decided ONCE per window, not per frame: asking the
     // store every frame made the first kept frame answer "yes" for all the rest, so a fork (empty
@@ -3350,9 +3369,9 @@ export class SessionManager {
         msg = { sessionId: live.info.id, kind: "thought", payload: u, createdAt: Date.now() };
         break;
       case "user_message_chunk": {
-        // #103: an agent re-sends the operator's own turns when it replays a session (a fork gets its
-        // entire history this way). Only the replay window has any use for it — a live prompt is
-        // written by `prompt()` itself, so persisting these would double every message.
+        // An agent re-sends the operator's own turns when it replays a session. Only the replay window
+        // has any use for it — a live prompt is written by `prompt()` itself, so persisting these
+        // would double every message. Kept for the fork-of-an-empty-parent case (#103/#104).
         if (!live.replaying) return;
         const said = chunkTextOf(u);
         if (!said.trim()) return;
@@ -4181,14 +4200,19 @@ export class SessionManager {
       usage: null,
       commands: source.info.commands ?? [],
       workspace: source.info.workspace ?? null,
+      // Where this conversation branched from. Read back by `resume` (a branch may stand up a fresh
+      // agent session if the agent lost the forked id — our copy is still the transcript) and by the
+      // rail, which draws the lineage (#104).
+      forkedFrom: id,
     });
-    this.#emitSessions();
-    // A fork is a branch of the conversation the operator is reading — not of the agent's own
-    // context. Copy the parent's rows FIRST, so the transcript the branch opens with is the same
-    // one (same times, same cards, same status lines), and then let `resume` replay as usual: the
-    // replay is dropped by the window rule because the store already holds a transcript (#103/#104).
+    // A fork is a branch of the CONVERSATION the operator is reading, not of the agent's own context.
+    // Copy the parent's rows BEFORE the rail hears about the new session, so nobody can open a
+    // branch that is still empty (same times, same cards, same status lines). The agent's
+    // `session/fork` still runs, so its context is a true fork; the replay that `resume` then
+    // triggers is dropped by the window rule because the store already holds a transcript (#103).
     // A parent with no rows copies nothing and keeps the old replay-only behaviour.
     const branched = this.#store.copyTranscript(id, newId);
+    this.#emitSessions();
     // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
     const info = await this.resume(newId);
     // With an empty parent AND an agent that replays nothing, the branch opens blank. Say it out

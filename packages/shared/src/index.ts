@@ -90,6 +90,10 @@ export interface SessionInfo {
    *  same string, but the operator's rename lives only in `title`, so a hand-written name
    *  is never overwritten by a later automatic one and can always be cleared back. */
   autoTitle?: string | null;
+  /** The session this one was FORKED from (null = not a branch). A branch opens with a COPY of the
+   *  parent's transcript, and is allowed to stand up a fresh agent session if the agent no longer has
+   *  the forked id — its history lives in our store, not in the agent's memory (#104). */
+  forkedFrom?: string | null;
   createdAt: number;
   modes: SessionModeState | null;
   configOptions: ConfigOptionView[];
