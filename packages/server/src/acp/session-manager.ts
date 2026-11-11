@@ -4183,13 +4183,19 @@ export class SessionManager {
       workspace: source.info.workspace ?? null,
     });
     this.#emitSessions();
+    // A fork is a branch of the conversation the operator is reading — not of the agent's own
+    // context. Copy the parent's rows FIRST, so the transcript the branch opens with is the same
+    // one (same times, same cards, same status lines), and then let `resume` replay as usual: the
+    // replay is dropped by the window rule because the store already holds a transcript (#103/#104).
+    // A parent with no rows copies nothing and keeps the old replay-only behaviour.
+    const branched = this.#store.copyTranscript(id, newId);
     // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
     const info = await this.resume(newId);
-    // The fork's whole transcript comes from that replay, so an agent that replays nothing leaves a
-    // conversation that starts blank. Say it out loud rather than letting it read as a new session
-    // (#103). Deferred: a long transcript can still be arriving when `resume` hands back.
+    // With an empty parent AND an agent that replays nothing, the branch opens blank. Say it out
+    // loud rather than letting it read as a brand-new conversation. Deferred: a long replay can
+    // still be arriving when `resume` hands back.
     const hint = setTimeout(() => {
-      if (this.#store.maxSeq(newId) > 0) return;
+      if (branched > 0 || this.#store.maxSeq(newId) > 0) return;
       try {
         const row = this.#store.appendNote(newId, {
           category: "warn",
