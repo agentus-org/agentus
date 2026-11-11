@@ -60,7 +60,7 @@ ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/`
 ours apart from upstream's own tags (`v0.23.0`, `v0.23.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.23.0/merge-20261111-2046`** — the newest tag on the fork,
+**Current integration build: `agentus/v0.23.0/merge-20261111-2209`** — the newest tag on the fork,
 built on Hermes `v0.23.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
