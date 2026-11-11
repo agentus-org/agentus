@@ -62,6 +62,18 @@ const lastAtOf = async () => {
   return [...(d.live ?? []), ...(d.archived ?? [])].find((s) => s.id === sid)?.lastAt ?? 0;
 };
 
+/** A just-created slot is still handshaking; a prompt sent before that is refused, and a fixture
+ *  with no transcript silently turns this file into a test of nothing (measured 2026-11-11: rows=0). */
+const waitReady = async (tries = 240) => {
+  for (let i = 0; i < tries; i++) {
+    const st = await statusOf();
+    if (st === "ready" || st === "running") return st;
+    await sleep(250);
+  }
+  return statusOf();
+};
+
+await waitReady();
 await fetch(`${BASE}/api/sessions/${sid}/prompt`, {
   method: "POST", headers: { "content-type": "application/json", ...H },
   body: JSON.stringify({ text: "原始回合 original turn" }),

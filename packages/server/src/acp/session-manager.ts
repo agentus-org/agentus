@@ -467,6 +467,12 @@ interface LiveSession {
    *  conversation. Cleared the moment the operator actually says something — from then on the agent
    *  really is answering. */
   replaying?: boolean;
+  /** Whether this slot ALREADY held a transcript when the window opened — read once, at spawn/resume
+   *  (#103). The replay is dropped only then: it is a re-send of rows we have. A FORK is the opposite
+   *  case — its store starts empty and that replay is the only copy of the parent's history — so
+   *  asking `maxSeq()` per frame made the first persisted frame lock the rest out, and every fork
+   *  showed one message. */
+  replayHadTranscript?: boolean;
   /** The plan hand-over is owed on the NEXT prompt: a freshly (re)started agent has no memory of
    *  the plan it was working on, while the cockpit still has it (design-plan-service.md §7).
    *  Cleared after the first prompt, because after that the agent maintains the plan itself —
@@ -1149,6 +1155,9 @@ export class SessionManager {
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
       // into the live DB on one restart and pushed every session's clock to「刚刚」.
       replaying: true,
+      // #103: what this window must decide is "do we already hold a transcript?", and that answer
+      // cannot change halfway through the replay — read it here, once.
+      replayHadTranscript: this.#store.maxSeq(id) > 0,
     };
     this.#sessions.set(id, live);
     this.#lastSettledTurn.delete(id);   // the counter just went back to 0 — see the comment above
@@ -1529,6 +1538,9 @@ export class SessionManager {
       // `session/load` — full-length blocks, no messageId — and persisting those wrote 1240 rows
       // into the live DB on one restart and pushed every session's clock to「刚刚」.
       replaying: true,
+      // #103: what this window must decide is "do we already hold a transcript?", and that answer
+      // cannot change halfway through the replay — read it here, once.
+      replayHadTranscript: this.#store.maxSeq(id) > 0,
     };
     this.#sessions.set(id, live);
     this.#lastSettledTurn.delete(id);
@@ -3240,7 +3252,13 @@ export class SessionManager {
     // rebuild from, so that replay is the only copy and it is kept.
     const isTextFrame = st === "agent_message_chunk" || st === "agent_thought_chunk";
     const isToolFrame = st === "tool_call" || st === "tool_call_update";
-    if (live.replaying && (isTextFrame || isToolFrame) && this.#store.maxSeq(live.info.id) > 0) {
+    // The operator's own words come back the same way on a re-attach (`user_message_chunk`), and for
+    // a fork they are the ONLY copy — the parent's transcript is not copied into our store (#103).
+    const isUserFrame = st === "user_message_chunk";
+    // Dropped only when we DO hold a transcript — decided ONCE per window, not per frame: asking the
+    // store every frame made the first kept frame answer "yes" for all the rest, so a fork (empty
+    // store) persisted one row and dropped its entire history.
+    if (live.replaying && (isTextFrame || isToolFrame || isUserFrame) && live.replayHadTranscript === true) {
       return;
     }
     // Issue #70 step 1: 只有真正在流的正文算速度。重放帧在上面就返回了（会二次算一遍历史），
@@ -3331,6 +3349,18 @@ export class SessionManager {
         if (!textOf(u).trim()) return;
         msg = { sessionId: live.info.id, kind: "thought", payload: u, createdAt: Date.now() };
         break;
+      case "user_message_chunk": {
+        // #103: an agent re-sends the operator's own turns when it replays a session (a fork gets its
+        // entire history this way). Only the replay window has any use for it — a live prompt is
+        // written by `prompt()` itself, so persisting these would double every message.
+        if (!live.replaying) return;
+        const said = chunkTextOf(u);
+        if (!said.trim()) return;
+        // Stored in the shape a `user` row carries everywhere else (`{text}`), which is what the
+        // bubble reads; the raw ACP blocks are a transport detail.
+        msg = { sessionId: live.info.id, kind: "user", payload: { text: said }, createdAt: Date.now() };
+        break;
+      }
       case "tool_call": {
         // ONE call = ONE row, wherever the frame came from. The agent re-sends every call it holds
         // whenever it re-attaches (`session/load` on a resume / a restart), and appending those was
@@ -3438,7 +3468,7 @@ export class SessionManager {
       // The streaming kinds accumulate into one row per message (see Store.appendTextChunk): a reply
       // is ONE row, not 1259. The client gets the row plus the part that is genuinely new, so a live
       // turn stays a small delta on the wire while the store stays the source of truth.
-      if (msg.kind === "agent" || msg.kind === "thought") {
+      if (msg.kind === "agent" || msg.kind === "thought" || msg.kind === "user") {
         const r = this.#store.appendTextChunk({ ...msg, kind: msg.kind }, live.turnSeq);
         if (r.delta || r.isNew) {
           // A row that did NOT move is not activity. Neither is one that DID move — a long reply arrives
@@ -4154,7 +4184,22 @@ export class SessionManager {
     });
     this.#emitSessions();
     // bring it up exactly like a cold slot (spawn + loadSession of the forked id)
-    return await this.resume(newId);
+    const info = await this.resume(newId);
+    // The fork's whole transcript comes from that replay, so an agent that replays nothing leaves a
+    // conversation that starts blank. Say it out loud rather than letting it read as a new session
+    // (#103). Deferred: a long transcript can still be arriving when `resume` hands back.
+    const hint = setTimeout(() => {
+      if (this.#store.maxSeq(newId) > 0) return;
+      try {
+        const row = this.#store.appendNote(newId, {
+          category: "warn",
+          text: "这个 fork 的历史没能载入（agent 没有回放父会话）—— 父会话的内容还在，可以再 fork 一次",
+        });
+        this.#emit({ t: "message", message: row });
+      } catch { /* a hint must never break the fork */ }
+    }, 3000);
+    hint.unref?.();
+    return info;
   }
 
   hasSession(id: string): boolean {
@@ -4393,6 +4438,19 @@ export function statusItemsOf(u: Record<string, unknown>): { items: StatusNoteIt
   }
   if (!items.length) return undefined;
   return { items, truncated: cut || hermesPayload(u).truncated === true || raw.length > items.length };
+}
+
+/** The text an ACP content frame carries — `content` as one block (`{type,text}`) or a list of
+ *  them, which is how `user_message_chunk` arrives on a re-attach (#103). */
+function chunkTextOf(u: Record<string, unknown>): string {
+  const one = (b: unknown): string => {
+    const o = b as { type?: unknown; text?: unknown } | null;
+    return o && typeof o.text === "string" ? o.text : "";
+  };
+  const c = u.content;
+  if (Array.isArray(c)) return c.map(one).join("");
+  if (c && typeof c === "object") return one(c);
+  return typeof u.text === "string" ? u.text : "";
 }
 
 function statusKindOf(u: Record<string, unknown>): string | undefined {

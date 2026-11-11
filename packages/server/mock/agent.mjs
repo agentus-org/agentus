@@ -301,6 +301,12 @@ const agent = () => ({
         // the outside, and only one of them is a passing test.
         process.stderr.write(`[mock-agent] replaying ${n} blocks onto ${sessionId} (session/load)\n`);
         for (let i = 0; i < n; i++) {
+          // A re-attach re-sends the operator's own turns too (`user_message_chunk`) — that is how a
+          // FORK gets its history at all, since the cockpit never copies rows into the new session.
+          await send(agent._conn, sessionId, {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: `replayed ask ${i}: ` + "the operator's earlier question, restated. ".repeat(2) },
+          });
           await send(agent._conn, sessionId, {
             sessionUpdate: "agent_thought_chunk",
             content: {
