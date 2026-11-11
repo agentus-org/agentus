@@ -51,7 +51,7 @@ web bundle、配套 APK —— 然后直接退出，不启动任何东西）。
 以及 **DeepSeek 的 web 后端**（搜索 + 正文抓取，共用模型 key）—— 来自 fork 的集成构建（tag）。
 装法就五行：
 [§ 该跑哪份 Hermes](docs/installation.zh-CN.md#该跑哪份-hermes) —— 当前是 tag
-`agentus/v0.23.0/merge-20261109-2334`，基座 Hermes `v0.23.0`。
+`agentus/v0.23.0/merge-20261111-2046`，基座 Hermes `v0.23.0`。
 
 **已经在跑 0.23 之前的构建？先做这两步，否则驾驶舱起来时所有会话都是坏的。** Hermes 0.23 把 agent 搬进了 home 的
 gateway，随之搬家的是「服务定义」和「这个 home 里会话的归属」：
