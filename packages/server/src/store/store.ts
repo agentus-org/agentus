@@ -1353,6 +1353,60 @@ export class Store {
     return rows.map((r) => this.getVoiceMode(r.session_id));
   }
 
+  /**
+   * Copy a session's whole transcript into another session — what a FORK starts from.
+   *
+   * Why copy instead of letting the agent's replay rebuild it (measured on an 882-row parent,
+   * 2026-11-11): a replay is the AGENT's context, not the conversation the operator read.
+   *   · it carries no timestamps — 189 replayed rows all landed in one two-second burst, so the
+   *     whole transcript read as if it had been said at one moment;
+   *   · it carries internal context we never displayed — Hermes's context-compaction handoff came
+   *     back as a 31 KB `user_message_chunk`, i.e. a giant bubble the parent never showed;
+   *   · it cannot reproduce rows the agent never sent over ACP — 26 status lines, 11 per-turn token
+   *     accounts and 1 approval card were simply gone (882 rows became 189).
+   * A fork is a branch of the SAME conversation, so the branch starts from the same transcript:
+   * `created_at` / `block_key` / `turn_id` come along, seq is renumbered after whatever the target
+   * already holds. The agent's replay still arrives on the first load and is dropped by the window
+   * rule (`replayHadTranscript`), exactly like a resume.
+   */
+  copyTranscript(fromId: string, toId: string): number {
+    if (fromId === toId) return 0;
+    const rows = this.#db
+      .prepare(
+        `select kind, payload, tool_call_id, block_key, created_at, turn_id
+           from messages where session_id = ? order by seq`,
+      )
+      .all(fromId) as {
+        kind: string;
+        payload: string;
+        tool_call_id: string | null;
+        block_key: string | null;
+        created_at: number;
+        turn_id: number | null;
+      }[];
+    if (rows.length === 0) return 0; // nothing to branch from — the replay is all there is
+    const insert = this.#db.prepare(
+      `insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id)
+       values (?,?,?,?,?,?,?,?)`,
+    );
+    const base = this.nextSeq(toId) - 1;
+    let tx = false;
+    try {
+      this.#db.exec("begin"); // a caller already inside one owns it (node:sqlite has no nesting)
+      tx = true;
+    } catch { /* keep going: the caller's transaction is the boundary */ }
+    try {
+      rows.forEach((r, i) => {
+        insert.run(base + i + 1, toId, r.kind, r.payload, r.tool_call_id, r.block_key, r.created_at, r.turn_id);
+      });
+      if (tx) this.#db.exec("commit");
+    } catch (err) {
+      if (tx) this.#db.exec("rollback");
+      throw err;
+    }
+    return rows.length;
+  }
+
   appendMessage(m: Omit<StoredMessage, "seq">): StoredMessage {
     const seq = this.nextSeq(m.sessionId);
     this.#db

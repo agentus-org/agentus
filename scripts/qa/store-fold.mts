@@ -637,6 +637,67 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
   fs.rmSync(dir7, { recursive: true, force: true });
 }
 
+// ---- 18. copyTranscript: a branch keeps the parent's rows exactly (#104) ----------------------
+// The fork path used to let the agent's replay rebuild the transcript, which carries the AGENT's
+// context: no timestamps (189 rows in one 2-second burst), a 31 KB compaction handoff the parent
+// never displayed, and none of the rows the agent never sent over ACP (status lines, per-turn token
+// accounts, approval cards). A branch of a conversation is a copy of it, so the store copies.
+{
+  const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-branch-"));
+  const db8 = path.join(dir8, "agentus.sqlite");
+  const store = new Store(db8);
+  const put = (sid: string, rows: [string, number, number | null, string | null][]) => {
+    rows.forEach(([kind, at, turn, block]) => {
+      const raw = new DatabaseSync(db8);
+      raw.prepare(
+        "insert into messages (seq, session_id, kind, payload, tool_call_id, block_key, created_at, turn_id) values (?,?,?,?,?,?,?,?)",
+      ).run(store.maxSeq(sid) + 1, sid, kind, JSON.stringify({ text: `${kind} @${at}` }), null, block, at, turn);
+      raw.close();
+    });
+  };
+  const parentRows: [string, number, number | null, string | null][] = [
+    ["user", 1_700_000_000_000, 0, null],
+    ["thought", 1_700_000_001_000, 0, "thought:1"],
+    ["agent", 1_700_000_002_000, 0, "agent:1"],
+    ["note", 1_700_000_003_000, null, null],
+    ["turn-usage", 1_700_000_004_000, 0, null],
+    ["user", 1_700_000_005_000, 1, null],
+  ];
+  put("s-parent", parentRows);
+  // a branch always starts empty, but the copy must also APPEND after rows the target already has
+  put("s-branch", [["note", 1_699_999_000_000, null, null]]);
+  const copied = store.copyTranscript("s-parent", "s-branch");
+  const got = store.messagesTail("s-branch", 100).messages;
+  check("copyTranscript copies every row", copied === parentRows.length && got.length === parentRows.length + 1,
+    `copied=${copied} rows=${got.length}`);
+  check("…keeping each row's own moment, not the copy's",
+    got.slice(1).every((r, i) => r.createdAt === parentRows[i][1]),
+    got.slice(1).map((r) => r.createdAt).join(","));
+  check("…keeping kind order (a branch renders what the parent rendered)",
+    got.slice(1).map((r) => r.kind).join(",") === parentRows.map((r) => r[0]).join(","),
+    got.slice(1).map((r) => r.kind).join(","));
+  check("…and the fold anchors (`block_key`, `turn_id`), so the branch does not re-split messages",
+    (() => {
+      const raw = new DatabaseSync(db8, { readOnly: true });
+      const rows = raw.prepare(
+        "select block_key, turn_id from messages where session_id='s-branch' order by seq",
+      ).all() as unknown as { block_key: string | null; turn_id: number | null }[];
+      raw.close();
+      const tail = rows.slice(1);
+      return tail[1].block_key === "thought:1" && tail[2].block_key === "agent:1" && tail[5].turn_id === 1;
+    })(),
+    "block_key/turn_id lost in the copy");
+  check("…renumbered seq (the target's own rows are not overwritten)",
+    got[0].seq === 1 && got[1].seq === 2, `seq ${got[0]?.seq},${got[1]?.seq}`);
+  check("an empty parent copies nothing (the replay is then all there is)",
+    store.copyTranscript("s-nobody", "s-branch") === 0);
+  check("copying a session onto itself is refused, not doubled",
+    store.copyTranscript("s-parent", "s-parent") === 0
+      && store.messagesTail("s-parent", 100).messages.length === parentRows.length);
+  store.close();
+  fs.rmSync(dir8, { recursive: true, force: true });
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${ok} ok, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
