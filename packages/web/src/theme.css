@@ -758,6 +758,13 @@ button { font: inherit; }
   outline: none; border-color: var(--accent-dim); background: rgba(var(--accent-rgb), 0.055);
 }
 .work-run.active .work-run-head { border-color: var(--accent-dim); }
+/* A card row is still a ROW and owns the transcript's rhythm. `.msg` carries 14px of it; a folded
+   run and a background-completion notice carried 0, so they butted straight into whatever followed
+   — two 1px borders landed on one line, and the notice's 7px collar had nowhere to sit, which reads
+   as 「这条卡片没有下边缘，还跟上面那条粘住了」 (operator, 2026-11-11, measured: 0px between every
+   pair of these three rows). Scoped to the transcript-row shape: a notice folded INSIDE a bubble
+   (`BgNoticeBlock`) must not start pushing the bubble's own text around. */
+.work-run, .bg-notice[data-source="bg-done"] { margin-bottom: 14px; }
 .work-chev { flex: 0 0 auto; color: var(--text-dim); transition: transform 0.15s ease; }
 .work-chev.open { transform: rotate(90deg); }
 .work-run-icon { flex: 0 0 auto; color: var(--accent-text); }
