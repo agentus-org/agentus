@@ -86,6 +86,7 @@
     "resume-tail": "tsx scripts/qa/resume-tail.mts",
     "render-lag-sweep": "node scripts/qa/render-lag-sweep.mjs",
     "replay-window": "node scripts/qa/replay-window.mjs",
+    "fork-replay": "node scripts/qa/fork-replay.mjs",
     "think-cadence": "node scripts/qa/think-cadence.mjs",
     "vad": "tsx scripts/qa/vad.mts",
     "vad-silero": "tsx scripts/qa/vad-silero.mts",

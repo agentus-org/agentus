@@ -250,6 +250,9 @@ export function withText(payload: unknown, text: string): unknown {
   const p = (payload ?? {}) as Record<string, unknown>;
   const c = p.content;
   if (c && typeof c === "object") return { ...p, content: { ...(c as object), text } };
+  // A row that keeps its text at the top level (an operator turn: `{text}`) must stay in sync —
+  // writing `content` instead would leave the bubble reading the stale `text` (#103).
+  if (typeof p.text === "string") return { ...p, text };
   return { ...p, content: { type: "text", text } };
 }
 
@@ -1517,7 +1520,7 @@ export class Store {
    * the frame was a pure re-emission (nothing to emit); an existing row with a non-empty delta means
    * "this row grew" — the client appends instead of inserting a second bubble.
    */
-  appendTextChunk(m: Omit<StoredMessage, "seq"> & { kind: "agent" | "thought" }, turnId?: number): {
+  appendTextChunk(m: Omit<StoredMessage, "seq"> & { kind: "agent" | "thought" | "user" }, turnId?: number): {
     message: StoredMessage;
     delta: string;
     isNew: boolean;
