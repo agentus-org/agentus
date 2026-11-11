@@ -164,6 +164,13 @@ export interface SessionRow {
   system?: boolean;
   /** 'main' = the 主 agent (issue #84). See the sessions.role column. */
   role?: string | null;
+  /** The session this one was FORKED from (null = not a branch). Written on insert only: where a
+   *  conversation branched from is a fact about how it was born, not something a later write may
+   *  change. Two readers: the rail's lineage note, and `resume`'s rule that a BRANCH may stand up a
+   *  fresh agent session when the agent no longer has the forked id — the transcript is ours (a
+   *  copy), so losing the agent's context is recoverable, while for an ordinary session it means the
+   *  operator's conversation is gone and must be said out loud instead (#104). */
+  forkedFrom?: string | null;
   /** JSON round-trip of the ACP mode state + config options, so a resumed
    *  session (M4-lite) comes back with the operator's mode/effort intact. */
   modes?: unknown;
@@ -205,6 +212,7 @@ interface RawSessionRow {
   pending_model_id?: string | null;
   system?: number | null;
   role?: string | null;
+  forked_from?: string | null;
 }
 
 function parseJson(v: string | null | undefined): unknown {
@@ -278,6 +286,7 @@ function rowToSession(r: RawSessionRow): SessionRow {
     models: parseJson(r.models),
     contextLimit: r.context_limit ?? null,
     pendingModelId: r.pending_model_id ?? null,
+    forkedFrom: r.forked_from ?? null,
   };
 }
 
@@ -522,7 +531,7 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title", "home"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title", "home", "forked_from"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
     // `title` is the DISPLAY title (the operator's name once they rename it);
@@ -1139,13 +1148,14 @@ export class Store {
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system, role)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system, role, forked_from)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
-          JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0, s.role ?? null);
+          JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0, s.role ?? null,
+          s.forkedFrom ?? null);
     }
   }
 
@@ -1236,6 +1246,17 @@ export class Store {
   maxSeq(sessionId: string): number {
     const row = this.#db
       .prepare("select max(seq) as m from messages where session_id = ?")
+      .get(sessionId) as { m: number | null };
+    return row.m ?? 0;
+  }
+
+  /** Highest `turn_id` this session's rows carry (0 when none). A rebuilt slot restarts its turn
+   *  counter from this, so turn N+1 of the transcript is never mistaken for an old turn N — the fold
+   *  rules pair "same kind, same turn, newest row", and a counter that restarts at 0 makes the first
+   *  answer of a resumed session fold itself into a row from hours ago. */
+  maxTurnId(sessionId: string): number {
+    const row = this.#db
+      .prepare("select max(turn_id) as m from messages where session_id = ?")
       .get(sessionId) as { m: number | null };
     return row.m ?? 0;
   }
