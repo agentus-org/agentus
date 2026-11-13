@@ -20,6 +20,7 @@ import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRo
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { acquireInstanceLock, humanAge } from "./instance-lock.js";
 import { repairMisTieredTitles } from "./title-repair.js";
+import { sweepStaleIdentities } from "./cockpit/identity-file.js";
 import { createFrameGate } from "./ws-order.js";
 import * as ide from "./ide/proxy.js";
 import { terms } from "./term.js";
@@ -196,6 +197,10 @@ try {
 } catch (e) {
   console.warn(`[agentus] title repair skipped: ${e instanceof Error ? e.message : e}`);
 }
+// #106: identity files are only valid while the slot that minted them is in the live map, so anything
+// this process did not write is already worthless — a cheap sweep keeps a home from filling up with
+// credentials that only ever answer 401.
+sweepStaleIdentities();
 // Boot sweep (M6.1): one cheap, side-effect-free pass (does the command resolve?) behind the
 // first tick, so the list never opens with every row "unchecked". It deliberately does NOT
 // spawn anything: a real check belongs to 探测 (kind=manual) and, for proof, to a session

@@ -27,6 +27,7 @@ import {
   type ColdPage,
 } from "./cold-page.js";
 import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.js";
+import { cockpitEndpoint, publishIdentity, unpublishIdentity } from "../cockpit/identity-file.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
@@ -1237,6 +1238,9 @@ export class SessionManager {
       // Whose session is it? A vendor that owns it (0.23+ Hermes answers with
       // `_meta.hermes.sessionProvenance`) keeps running the turn after our child is gone.
       live.caps.gatewayOwned = isGatewayOwned(res);
+      // #106: a gateway-owned runtime runs the turn somewhere our child's environment cannot reach,
+      // so the identity has to be published where the tool process can find it too.
+      this.#publishIdentity(live);
       live.info.status = "ready";
       live.info.modes = (res.modes ?? null) as SessionModeState | null;
       live.info.configOptions = normConfigOptions(res.configOptions);
@@ -1615,6 +1619,9 @@ export class SessionManager {
           const freshId = loaded?.sessionId;
           if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
           live.info.acpSessionId = freshId;
+          // A fresh session can be vendor-owned too (#106): re-read the provenance from THAT answer
+          // rather than inheriting the `false` above, or the identity never gets published for it.
+          live.caps.gatewayOwned = isGatewayOwned(loaded);
         } else {
           throw new SessionUnavailable(
             "context_missing",
@@ -1623,6 +1630,9 @@ export class SessionManager {
           );
         }
       }
+      // #106: the identity this slot's tool processes need, published where they can find it. After
+      // the adoption branch above, because that is what settles WHICH agent-side id the file is named by.
+      this.#publishIdentity(live);
       // The agent has this session (or just opened one in the same slot), so THIS home is where the
       // state lives: a row that predates the home column stops being ambiguous.
       if (!row.home && plan.home) {
@@ -2602,7 +2612,7 @@ export class SessionManager {
     const agent = agentSettings();
     return {
       ...env,
-      AGENTUS_COCKPIT_ENDPOINT: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}`,
+      AGENTUS_COCKPIT_ENDPOINT: cockpitEndpoint(),
       AGENTUS_COCKPIT_TOKEN: token,
       AGENTUS_COCKPIT_SESSION: sessionId,
       AGENTUS_COCKPIT_BIN: COCKPIT_BIN,
@@ -2647,6 +2657,26 @@ export class SessionManager {
     } catch (err) {
       console.warn(`[agentus] could not install skills into ${spec.skillsDir} (${home}): ${errMessage(err)}`);
     }
+  }
+
+  /** Publish this live slot's identity where a GATEWAY-OWNED runtime's tools can reach it (#106).
+   *
+   *  Only for `gatewayOwned` slots, on purpose: an in-process backend still runs the turn inside the
+   * child we spawned, where `#cockpitEnv()` already works, and a second copy of a secret buys nothing.
+   * Best effort by construction — a HOME we cannot write leaves the agent without a cockpit channel,
+   * which is the pre-#106 state, not a failed slot. */
+  #publishIdentity(live: LiveSession): void {
+    if (!live.caps.gatewayOwned) return;
+    const agentSessionId = live.info.acpSessionId;
+    if (!agentSessionId || !live.cockpitToken) return;
+    publishIdentity({
+      endpoint: cockpitEndpoint(),
+      token: live.cockpitToken,
+      session: live.info.id,
+      bin: COCKPIT_BIN,
+      agentSessionId,
+      at: Date.now(),
+    });
   }
 
   /** Resolve a cockpit-channel token to the session it was minted for (issue #15). One token, one
@@ -2875,7 +2905,9 @@ export class SessionManager {
     // self-describing), so nothing here needs to be kept in sync with the CLI.
     body.push(
       "",
-      "本驾驶舱可用 `$AGENTUS_COCKPIT_BIN session list`（其它会话状态/消息/计划；先 capabilities，全文 skill）。",
+      `本驾驶舱可用 \`"${COCKPIT_BIN}" session list\`（其它会话状态/消息/计划；先 capabilities，全文 skill）。` +
+        "`$AGENTUS_COCKPIT_BIN` 与它同值；共享 gateway 里跑的运行时（0.23+）环境是 gateway 的、不是这个会话的，" +
+        "那里拿不到这个变量，就直接用上面这个绝对路径 —— 身份从 ~/.agentus/cockpit 下按会话号取。",
     );
 
     return {
@@ -3022,6 +3054,10 @@ export class SessionManager {
         ...row, status: live.info.status, closedAt: Date.now(), pid: null,
       });
     }
+    // #106: the token dies with this slot (it lives in the map we are about to drop), so the file that
+    // carried it must not outlive it — an agent reading it later would get a 401 and think the cockpit
+    // is down.
+    unpublishIdentity(live.info.acpSessionId);
     this.#sessions.delete(live.info.id);
   }
 

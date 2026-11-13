@@ -49,10 +49,18 @@ const check = (name, ok, detail = "") => {
 };
 
 /** Run the CLI with a copy of the environment that has NO cockpit identity — i.e. as the operator at a
- *  shell — and return the raw stdout (that mode can legitimately print a table instead of JSON). */
+ *  shell — and return the raw stdout (that mode can legitimately print a table instead of JSON).
+ *
+ *  The runtime's OWN session markers have to go too (#106): this harness runs inside the agent that is
+ *  driving the QA, so `HERMES_SESSION_CHAT_ID` would make the CLI read the process as one of ITS turns —
+ *  which is the fail-closed rule working, not an operator at a terminal. A real human shell has neither
+ *  the cockpit variables nor the runtime's. */
 const rawCli = (env, args) => {
   const clean = { ...process.env };
-  for (const k of ["AGENTUS_COCKPIT_ENDPOINT", "AGENTUS_COCKPIT_TOKEN", "AGENTUS_COCKPIT_SESSION", "AGENTUS_COCKPIT_BIN"]) delete clean[k];
+  for (const k of [
+    "AGENTUS_COCKPIT_ENDPOINT", "AGENTUS_COCKPIT_TOKEN", "AGENTUS_COCKPIT_SESSION", "AGENTUS_COCKPIT_BIN",
+    "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE",
+  ]) delete clean[k];
   try {
     const out = execFileSync(process.execPath, [BIN, ...args], {
       cwd: REPO, env: { ...clean, ...env }, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
@@ -112,8 +120,12 @@ const purge = async (id) => {
   check("the cockpit bin is executable on disk (issue #40)", onDisk, `mode=${(fs.statSync(BIN).mode & 0o777).toString(8)}`);
   const blob = execFileSync("git", ["ls-files", "-s", "bin/agentus.mjs"], { cwd: REPO, encoding: "utf8" }).split(/\s+/)[0];
   check("…and the git blob carries the exec bit, so a fresh clone runs", blob === "100755", blob);
-  // Executed DIRECTLY (no `node` in front) — the shape the agent actually uses.
-  const direct = execFileSync(BIN, ["capabilities"], { cwd: REPO, encoding: "utf8", env: { ...process.env, AGENTUS_ENDPOINT: BASE, AGENTUS_TOKEN: token } });
+  // Executed DIRECTLY (no `node` in front) — the shape the agent actually uses. The runtime markers go
+  // first (#106): this harness runs inside an agent's turn, and 「missing identity is an agent」 is the
+  // rule now, so what this call needs is a plain shell's environment, not the harness's.
+  const directEnv = { ...process.env, AGENTUS_DATA: DATA, AGENTUS_ENDPOINT: BASE };
+  for (const k of ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE"]) delete directEnv[k];
+  const direct = execFileSync(BIN, ["capabilities"], { cwd: REPO, encoding: "utf8", env: directEnv });
   check("…`$AGENTUS_COCKPIT_BIN capabilities` runs as a command, not via `node`", /schema_version/.test(direct), direct.slice(0, 60));
 }
 
