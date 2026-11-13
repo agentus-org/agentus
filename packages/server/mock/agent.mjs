@@ -464,8 +464,19 @@ const agent = () => ({
     // seconds later the model's title (`title_source=llm`). Both arrive as `session_info_update`, and
     // the frame carries no provenance — which is exactly what made the client drop the second one.
     if (process.env.MOCK_TITLE_STAGE === "1" && !/^\[/.test(text)) {
-      const slice = (text.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("```")) || "")
-        .replace(/^[#>*\-\d.\s]+/u, "").replace(/\s+/g, " ").trim().slice(0, 50);
+      const line = (text.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("```")) || "")
+        .replace(/^[#>*\-\d.\s]+/u, "").replace(/\s+/g, " ").trim();
+      // QA (#105): the producer's cut rule is NOT ours, and that is the whole bug. `hermes` mirrors
+      // the real agent (48 chars, word boundary, `…`); `drift` deliberately cuts like neither side
+      // (40, hard, no marker) so the prefix test — not string equality — is what has to save it.
+      const cut = (n, ellipsis) => {
+        if (line.length <= n) return line;
+        const head = line.slice(0, n);
+        const space = head.lastIndexOf(" ");
+        return (space > n / 2 ? head.slice(0, space) : head).replace(/[ ,.;:—-]+$/u, "") + (ellipsis ? "…" : "");
+      };
+      const mode = process.env.MOCK_TITLE_SLICE || "";
+      const slice = mode === "hermes" ? cut(48, true) : mode === "drift" ? cut(40, false) : line.slice(0, 50);
       if (slice) {
         await send(agent._conn, sessionId, { sessionUpdate: "session_info_update", title: slice });
       }

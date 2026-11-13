@@ -30,7 +30,7 @@ import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
-  cleanAgentTitle, deriveTitle, titleFromFirstPrompt, titleFromLatestPrompt, TITLE_INSTRUCTION,
+  cleanAgentTitle, deriveTitle, isPromptSliceTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
 import type { Store, SessionRow, TitleSrc } from "../store/store.js";
 import { textOf, withText } from "../store/store.js";
@@ -3831,13 +3831,13 @@ export class SessionManager {
    */
   #applyAgentFrameTitle(live: LiveSession, title: string): void {
     const msgs = this.#store.messagesTail(live.info.id, Number.MAX_SAFE_INTEGER).messages;
-    // BOTH ends of the transcript, not just the first message: the placeholder tier is "the opening
-    // words of a user prompt", and hermes writes that slice at the START of each turn — a session
-    // resumed days later announces a slice of the LATEST prompt. Checking only the first one would
-    // rank every later slice as a model title and let it overwrite the name (which is precisely the
-    // churn the equal-rank rule exists to prevent).
-    const tiers = [titleFromFirstPrompt(msgs), titleFromLatestPrompt(msgs)];
-    const src: TitleSrc = tiers.some((t) => t && t === title) ? "agent" : "llm";
+    // Issue #105: the discriminator used to be `titleFromFirstPrompt(msgs) === title` (or the latest
+    // prompt's), which quietly required OUR truncation rule to be byte-identical to the agent's.
+    // It was not (50 hard-cut here, 48 + word boundary + `…` there), so every prompt with a first
+    // line longer than the cap was ranked as a model title — and the real title, arriving later at
+    // the same rank, never overwrote it. `isPromptSliceTitle` keeps the "reproduce it here" idea and
+    // adds the prefix test that survives either side changing its cut.
+    const src: TitleSrc = isPromptSliceTitle(title, msgs) ? "agent" : "llm";
     this.#applyAutoTitle(live.info.id, title, false, src);
   }
 
