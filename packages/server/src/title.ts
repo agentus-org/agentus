@@ -21,11 +21,16 @@ import type { StoredMessage } from "../../shared/src/index.js";
  *  Deliberately EQUAL to the agent's own derived-title rule (`MAX_DERIVED_TITLE_CHARS = 48` in
  *  hermes' `agent/title_generator.py`, cut at a word boundary and marked with `…`). The two numbers
  *  are not independent: telling "a slice of the operator's own words" from "a name the model wrote"
- *  is done by REPRODUCING that slice here (see `isPromptSliceTitle`) — issue #105. They sat at 50 vs
+ *  is done by REPRODUCING that slice here (see `isPromptSliceText`) — issue #105. They sat at 50 vs
  *  48 with different cut rules, so every prompt whose first line was longer than 48 characters made
  *  the two strings disagree, the agent's slice frame was ranked as a model title, and the session
  *  wore its own truncated opening words for the rest of its life. */
 export const TITLE_MAX = 48;
+
+/** Row-level cap for a name the MODEL answered with. Deliberately independent of `TITLE_MAX`: one is
+ *  a rule the agent and we must share, the other is how much text a rail row will wear. Kept in step
+ *  with the store's own 120-character write cap. */
+export const TITLE_ROW_MAX = 120;
 
 /** Cut one normalized line down to `TITLE_MAX`, at a word boundary when there is one worth using,
  *  trailing punctuation dropped, and `…` marking the truncation — the agent's rule, mirrored. */
@@ -61,16 +66,6 @@ export function deriveTitle(raw: string | null | undefined): string | null {
       .trim(),
   );
   return normalized || null;
-}
-
-/** Title from the FIRST user prompt we stored for a session (the AionUi trigger point). */
-export function titleFromFirstPrompt(msgs: StoredMessage[]): string | null {
-  for (const m of msgs) {
-    if (m.kind !== "user") continue;
-    const t = deriveTitle(userText(m));
-    if (t) return t;
-  }
-  return null;
 }
 
 /** Title from the LATEST user prompt — the cheap reading of "regenerate from the context":
@@ -119,19 +114,10 @@ const SLICE_MIN_PREFIX = 12;
  *  after dropping the truncation marker, a slice of a prompt is a PREFIX of that prompt, no matter
  *  how either side chose to cut it. A model's title is not a prefix of the operator's message.
  *
- *  Both ends of the transcript are checked: the placeholder tier is written at the START of every
- *  turn, so a session resumed days later announces a slice of its LATEST prompt. */
-export function isPromptSliceTitle(title: string, msgs: StoredMessage[]): boolean {
-  const users: string[] = [];
-  for (const m of msgs) if (m.kind === "user") users.push(userText(m));
-  if (!users.length) return false;
-  // The frame is one of the two the agent derives at turn boundaries; older prompts are not
-  // candidates (a title that happens to quote the first message would otherwise be demoted forever).
-  return isPromptSliceText(title, users.length > 1 ? [users[0], users[users.length - 1]] : [users[0]]);
-}
-
-/** The same test over prompt TEXTS, for callers that hold the first/latest prompt without a full
- *  `StoredMessage[]` (the title repair pass reads two rows, not a transcript). */
+ *  The candidates are the prompts the agent could have sliced: the FIRST (it slices it at turn 1)
+ *  and the recent ones (a resumed session announces a slice of its LATEST prompt), read straight out
+ *  of the store instead of walking the transcript — this runs on every title frame.
+ *  Callers pass TEXTS, so the live path and the one-time repair share exactly one implementation. */
 export function isPromptSliceText(title: string, prompts: Array<string | null | undefined>): boolean {
   const cand = title.replace(/\s+/g, " ").trim();
   if (!cand) return false;
@@ -184,5 +170,7 @@ export function cleanAgentTitle(raw: string | null | undefined): string | null {
     .replace(/\s+/g, " ")
     .trim();
   if (!t) return null;
-  return t.slice(0, TITLE_MAX).trim() || null;
+  // A model asked for a short name that answers with a paragraph still gets a readable row; the
+  // truncation window above belongs to the SLICE rule (it must mirror the agent), not to this.
+  return t.slice(0, TITLE_ROW_MAX).trim() || null;
 }

@@ -30,7 +30,7 @@ import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
-  cleanAgentTitle, deriveTitle, isPromptSliceTitle, titleFromLatestPrompt, TITLE_INSTRUCTION,
+  cleanAgentTitle, deriveTitle, isPromptSliceText, titleFromLatestPrompt, TITLE_INSTRUCTION,
 } from "../title.js";
 import type { Store, SessionRow, TitleSrc } from "../store/store.js";
 import { textOf, withText } from "../store/store.js";
@@ -3830,14 +3830,16 @@ export class SessionManager {
    * 标题就变了」 stays fixed.
    */
   #applyAgentFrameTitle(live: LiveSession, title: string): void {
-    const msgs = this.#store.messagesTail(live.info.id, Number.MAX_SAFE_INTEGER).messages;
+    // Two targeted reads (first prompt + the recent ones), not a full transcript walk: this runs on
+    // every title frame, and the proof only ever needs prompt TEXT.
+    const prompts = this.#store.userPromptSamples(live.info.id);
     // Issue #105: the discriminator used to be `titleFromFirstPrompt(msgs) === title` (or the latest
     // prompt's), which quietly required OUR truncation rule to be byte-identical to the agent's.
     // It was not (50 hard-cut here, 48 + word boundary + `…` there), so every prompt with a first
     // line longer than the cap was ranked as a model title — and the real title, arriving later at
-    // the same rank, never overwrote it. `isPromptSliceTitle` keeps the "reproduce it here" idea and
+    // the same rank, never overwrote it. `isPromptSliceText` keeps the "reproduce it here" idea and
     // adds the prefix test that survives either side changing its cut.
-    const src: TitleSrc = isPromptSliceTitle(title, msgs) ? "agent" : "llm";
+    const src: TitleSrc = isPromptSliceText(title, prompts) ? "agent" : "llm";
     this.#applyAutoTitle(live.info.id, title, false, src);
   }
 
