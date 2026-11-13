@@ -19,6 +19,7 @@ import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
 import { acquireInstanceLock, humanAge } from "./instance-lock.js";
+import { repairMisTieredTitles } from "./title-repair.js";
 import { createFrameGate } from "./ws-order.js";
 import * as ide from "./ide/proxy.js";
 import { terms } from "./term.js";
@@ -178,6 +179,21 @@ const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 {
   const seeded = store.seedBackendsIfEmpty(seedRows());
   if (seeded) console.log(`[agentus] backend registry seeded with ${seeded} row(s)`);
+}
+
+// Issue #105: rows whose name was LOCKED to a slice of the operator's own message get one shot at
+// the model title the agent still holds, before any slot is resumed and can write the row back.
+// One-time (its own `repairs` row), never touches a manual rename, never invents a name.
+try {
+  const rep = repairMisTieredTitles(store, { log: (line) => console.log(`[agentus] ${line}`) });
+  if (rep.checked) {
+    console.log(
+      `[agentus] title repair: ${rep.checked} suspect row(s) → ${rep.repaired} renamed,`
+      + ` ${rep.refiled} re-filed, ${rep.skipped} left alone`,
+    );
+  }
+} catch (e) {
+  console.warn(`[agentus] title repair skipped: ${e instanceof Error ? e.message : e}`);
 }
 // Boot sweep (M6.1): one cheap, side-effect-free pass (does the command resolve?) behind the
 // first tick, so the list never opens with every row "unchecked". It deliberately does NOT

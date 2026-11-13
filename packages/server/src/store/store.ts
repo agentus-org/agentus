@@ -1899,6 +1899,57 @@ export class Store {
     return this.getSession(id) ?? null;
   }
 
+  /** Every row the MODEL is credited with naming — the candidate list for the #105 repair.
+   *
+   *  Deliberately not filtered on a truncation marker: the mis-tiered slices the repair hunts look
+   *  like 「首行前 49 字…」, but a producer that cuts without marking (or a future agent that stops
+   *  adding `…`) produces the same defect, and proving each row with `isPromptSliceTitle` is two
+   *  indexed reads. Manual renames (`operator`) are never candidates. */
+  modelTitledRows(): { id: string; title: string; acpSessionId: string | null; home: string | null }[] {
+    const rows = this.#db
+      .prepare("select id, title, acp_session_id, home from sessions where title_src = 'llm'")
+      .all() as unknown as { id: string; title: string; acp_session_id: string | null; home: string | null }[];
+    return rows.map((r) => ({ id: r.id, title: r.title, acpSessionId: r.acp_session_id, home: r.home }));
+  }
+
+  /** The FIRST and the LATEST user prompt text — two targeted reads, never a transcript walk
+   *  (a repair pass runs over rows that may hold thousands of tool rows). */
+  userPromptTexts(id: string): { first: string | null; latest: string | null } {
+    const pick = (dir: "asc" | "desc"): string | null => {
+      const row = this.#db
+        .prepare(`select payload from messages where session_id = ? and kind = 'user' order by seq ${dir}, rowid ${dir}`)
+        .get(id) as { payload?: string } | undefined;
+      if (!row?.payload) return null;
+      try {
+        const t = textOf(JSON.parse(row.payload));
+        return t.trim() ? t : null;
+      } catch {
+        return null;
+      }
+    };
+    return { first: pick("asc"), latest: pick("desc") };
+  }
+
+  /** Re-file a row's provenance WITHOUT touching the name — used when a name turned out to be a
+   *  slice of the operator's message rather than a model title, so a later model title may still
+   *  win it. Returns false when there is nothing to change. */
+  setTitleSrc(id: string, src: TitleSrc): boolean {
+    const info = this.#db
+      .prepare("update sessions set title_src = ? where id = ? and coalesce(title_src,'') <> ?")
+      .run(src, id, src);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  /** Has this one-time repair already run at (at least) `version`? */
+  repairRan(name: string, version: number): boolean {
+    return this.#repairVersion(name, 0) >= version;
+  }
+
+  /** Record a one-time repair as done (per-pass row, not the shared `user_version`). */
+  markRepair(name: string, version: number): void {
+    this.#setRepairVersion(name, version);
+  }
+
   /** Window declared for a model (null = nothing remembered). */
   getModelLimit(modelId: string | null | undefined): number | null {
     if (!modelId) return null;
