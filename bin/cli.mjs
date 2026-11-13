@@ -32,9 +32,30 @@ import { fileURLToPath } from "node:url";
  *  run from inside an agent's session, whose cwd is the operator's project. */
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const ENDPOINT = (process.env.AGENTUS_COCKPIT_ENDPOINT ?? "").replace(/\/+$/, "");
-const TOKEN = process.env.AGENTUS_COCKPIT_TOKEN ?? "";
-const SELF = process.env.AGENTUS_COCKPIT_SESSION ?? "";
+/** The identity channels, in order of authority (#15, #106).
+ *
+ *  ① the environment — what the cockpit puts in the child it spawns. Still the correct channel for an
+ *    in-process backend, and the ONLY one an agent could ever see before this file existed;
+ *  ② `~/.agentus/cockpit/<agent-session-id>.json` — for a runtime that owns the session in a shared
+ *    gateway (Hermes 0.23+), where the turn's tool processes inherit the GATEWAY's environment and a
+ *    per-session secret cannot travel that way. The file is named by the agent-side session id, which
+ *    is the one per-session fact such a process does carry (`HERMES_SESSION_CHAT_ID` is byte-identical
+ *    to the cockpit's `acp_session_id`), so the lookup needs nothing but what the runtime says about
+ *    itself;
+ *  ③ the operator credential — a HUMAN at a shell, never an agent (see `inAgentTurn()`).
+ *
+ *  Both ① and ② are a SESSION identity: they read and dispatch, and they may not touch history (#73). */
+const AGENT_SESSION_MARKERS = ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE"];
+
+const ENV_ENDPOINT = (process.env.AGENTUS_COCKPIT_ENDPOINT ?? "").replace(/\/+$/, "");
+const ENV_TOKEN = process.env.AGENTUS_COCKPIT_TOKEN ?? "";
+const ENV_SELF = process.env.AGENTUS_COCKPIT_SESSION ?? "";
+const FILE_IDENTITY = ENV_TOKEN && ENV_SELF ? null : resolveIdentityFile();
+const ENDPOINT = ENV_ENDPOINT || FILE_IDENTITY?.endpoint || "";
+const TOKEN = ENV_TOKEN || FILE_IDENTITY?.token || "";
+const SELF = ENV_SELF || FILE_IDENTITY?.session || "";
+/** A session identity is in hand (from either channel) — narrow scope, and NOT the operator. */
+const AGENT = Boolean(TOKEN && SELF);
 
 const USAGE = `agentus — read the cockpit from inside a session, and (if the operator allowed it) talk to
 another one
@@ -94,6 +115,68 @@ function fail(code, message, extra = {}) {
   process.exit(1);
 }
 
+/** The environment variables a runtime stamps its tool processes with — the agent-side session ids.
+ *
+ *  Hermes: `HERMES_SESSION_CHAT_ID` is the session (measured byte-identical to our `acp_session_id`);
+ *  `HERMES_SESSION_ID` is its chat-row id and is only used as a second chance. `AGENTUS_SESSION_ROLE`
+ *  is ours (a 工作播报 observer). Names are matched EXACTLY and read only — nothing here is trusted for
+ *  authorisation; the token in the file is what the server verifies. */
+
+/** Session ids this process could be running as, most specific first. */
+function agentSessionIds() {
+  const ids = [];
+  for (const k of AGENT_SESSION_MARKERS) {
+    const v = String(process.env[k] ?? "").trim();
+    if (v && !ids.includes(v)) ids.push(v);
+  }
+  return ids;
+}
+
+/** Is this process a TOOL SUBPROCESS of an agent's turn, rather than a human's shell?
+ *
+ *  This is the #106 fail-closed switch. It is not a security boundary on its own — the machine token in
+ *  `<data>/auth.token` is readable by anything running as the operator, so a determined same-uid process
+ *  can always bypass a client-side check. What it does stop is the case that actually happened: the
+ *  cockpit lost its channel, the CLI quietly fell back to the OPERATOR credential, and an agent inside a
+ *  session got to purge another session's transcript (`session delete` → `purged`) while every line of
+ *  its own documentation said it had no such right. Missing identity must mean AGENT, never operator. */
+function inAgentTurn() {
+  return agentSessionIds().length > 0;
+}
+
+/** Which destructive verb this invocation is, or null.
+ *
+ *  Read straight from argv because the refusal has to be raisable BEFORE any credential branch: the
+ *  operator-only door is a property of the VERB, so an agent that ran out of identity must hear
+ *  `agents_may_not_delete` rather than the generic `no_identity` — a model branches on the code. */
+function destructiveVerb() {
+  const argv = process.argv.slice(2);
+  if (argv[0] !== "session") return null;
+  const verb = String(argv[1] ?? "");
+  return verb === "delete" || verb === "archive" || verb === "unarchive" ? verb : null;
+}
+
+/** One wording for the refusal, wherever it is raised from (pre-auth or in the verb's own branch). */
+function destructiveRefusal(verb) {
+  return `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。usage: agentus session ${verb} <id>`;
+}
+
+/** The rendezvous the cockpit publishes for gateway-owned runtimes — see `AGENT_SESSION_MARKERS`. */
+function resolveIdentityFile() {
+  const dir = path.join(process.env.HOME ?? "", ".agentus", "cockpit");
+  for (const id of agentSessionIds()) {
+    const file = path.join(dir, `${id}.json`);
+    if (!existsSync(file)) continue;
+    try {
+      const j = JSON.parse(readFileSync(file, "utf8"));
+      if (typeof j?.endpoint === "string" && typeof j?.token === "string" && typeof j?.session === "string") {
+        return { endpoint: j.endpoint.replace(/\/+$/, ""), token: j.token, session: j.session };
+      }
+    } catch { /* half-written or hand-edited: fall through to the next marker */ }
+  }
+  return null;
+}
+
 /** Operator mode — a human at a shell, not an agent inside a session.
  *
  *  The cockpit already trusts `<DATA_DIR>/auth.token` as the operator credential (it is what scripts
@@ -101,7 +184,11 @@ function fail(code, message, extra = {}) {
  *  FILE, never from argv: the token identifies the operator. Returns null when this is an agent (its
  *  own variables win) or when there is nothing to authenticate with. */
 function resolveOperator() {
-  if (ENDPOINT && TOKEN && SELF) return null; // an agent: its identity is the cockpit's to give
+  if (AGENT) return null; // an agent: its identity is the cockpit's to give, or nothing at all
+  // #106: a tool subprocess of a turn is NOT a human's shell. Without this line the operator fallback
+  // below makes "the cockpit lost its channel" indistinguishable from "the operator is at the terminal"
+  // — and hands an agent the delete/archive verbs it is documented not to have.
+  if (inAgentTurn()) return null;
   const dataDir = process.env.AGENTUS_DATA || path.join(process.env.HOME ?? "", ".agentus");
   const file = path.join(dataDir, "auth.token");
   if (!existsSync(file)) return null;
@@ -124,9 +211,16 @@ function headers(json = false) {
 
 function needAuth() {
   if (!EP || (!TOKEN && !OPERATOR)) {
+    // #106: an agent that lost its identity asking for a destructive verb must hear the REAL reason.
+    // "no credentials" is not "you are the operator at a terminal", and the operator-only door is a
+    // property of the verb — see `destructiveVerb()`.
+    const verb = destructiveVerb();
+    if (verb && (AGENT || inAgentTurn())) {
+      fail(verb === "delete" ? "agents_may_not_delete" : "agents_may_not_archive", destructiveRefusal(verb));
+    }
     fail(
       "no_identity",
-      "no cockpit to talk to: either run this inside an Agentus session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
+      "no cockpit to talk to: either run this inside an Agentus session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION, or — on a gateway-owned runtime — publishes them in ~/.agentus/cockpit/<agent-session-id>.json), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
     );
   }
 }
@@ -507,11 +601,8 @@ if (cmd === "capabilities") {
     if (!id) fail("bad_request", usage);
     const leftover = args.slice(1);
     if (leftover.length) fail("bad_request", `unexpected argument "${leftover[0]}" (${usage})`);
-    if (TOKEN && SELF) {
-      fail(
-        verb === "delete" ? "agents_may_not_delete" : "agents_may_not_archive",
-        `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。${usage}`,
-      );
+    if (AGENT || inAgentTurn()) {
+      fail(verb === "delete" ? "agents_may_not_delete" : "agents_may_not_archive", destructiveRefusal(verb));
     }
     if (!OPERATOR) {
       fail("no_identity", `this needs the operator credential: set AGENTUS_DATA to the cockpit's data dir so ${verb} can read auth.token. ${usage}`);

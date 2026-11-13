@@ -211,7 +211,10 @@ const agent = () => ({
   },
 
   async newSession({ cwd, mcpServers }) {
-    const sessionId = `mock-${++seq}`;
+    // `process.pid` in the id, not just a counter: the cockpit names the per-session identity file by
+    // the AGENT-side session id (#106), and two slots of this mock are two processes that both used to
+    // start at `mock-1` — so the second one's identity silently replaced the first one's file.
+    const sessionId = `mock-${process.pid}-${++seq}`;
     sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [], mcp: mcpServers ?? [] });
     notePlanTool(mcpServers);
     // Announce slash commands the way a real agent does (available_commands_update),
