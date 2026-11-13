@@ -188,8 +188,9 @@ try {
   const rep = repairMisTieredTitles(store, { log: (line) => console.log(`[agentus] ${line}`) });
   if (rep.checked) {
     console.log(
-      `[agentus] title repair: ${rep.checked} suspect row(s) → ${rep.repaired} renamed,`
-      + ` ${rep.refiled} re-filed, ${rep.skipped} left alone`,
+      `[agentus] title repair: ${rep.checked} candidate(s) → ${rep.repaired} renamed,`
+      + ` ${rep.refiled} re-filed, ${rep.skipped} left alone, ${rep.unreadable} unreadable`
+      + (rep.complete ? "" : " (not recorded, will retry)"),
     );
   }
 } catch (e) {

@@ -1906,28 +1906,43 @@ export class Store {
    *  adding `…`) produces the same defect, and proving each row with `isPromptSliceTitle` is two
    *  indexed reads. Manual renames (`operator`) are never candidates. */
   modelTitledRows(): { id: string; title: string; acpSessionId: string | null; home: string | null }[] {
+    // The 主 agent (role='main') and cockpit-owned rows (system=1) wear PRODUCT names: their name
+    // is written back at operator rank by every title door, and a repair that bypasses that door
+    // would rename the main bot to a summary. Excluded here, not just guarded at the call site.
     const rows = this.#db
-      .prepare("select id, title, acp_session_id, home from sessions where title_src = 'llm'")
+      .prepare(
+        `select id, title, acp_session_id, home from sessions
+          where title_src = 'llm' and coalesce(role,'') <> 'main' and ifnull(system, 0) = 0`,
+      )
       .all() as unknown as { id: string; title: string; acp_session_id: string | null; home: string | null }[];
     return rows.map((r) => ({ id: r.id, title: r.title, acpSessionId: r.acp_session_id, home: r.home }));
   }
 
-  /** The FIRST and the LATEST user prompt text — two targeted reads, never a transcript walk
-   *  (a repair pass runs over rows that may hold thousands of tool rows). */
-  userPromptTexts(id: string): { first: string | null; latest: string | null } {
-    const pick = (dir: "asc" | "desc"): string | null => {
-      const row = this.#db
-        .prepare(`select payload from messages where session_id = ? and kind = 'user' order by seq ${dir}, rowid ${dir}`)
-        .get(id) as { payload?: string } | undefined;
-      if (!row?.payload) return null;
+  /** A few user prompt texts to compare a name against: the FIRST, the LATEST, and up to
+   *  `limit - 2` more recent ones. Both ends alone are not enough — a name can be locked in the
+   *  4th turn, where it is neither. Targeted reads only, never a transcript walk: this is called on
+   *  every title frame and by the repair pass, over rows that may hold thousands of tool rows. */
+  userPromptSamples(id: string, limit = 8): string[] {
+    const decode = (payload?: string): string | null => {
+      if (!payload) return null;
       try {
-        const t = textOf(JSON.parse(row.payload));
+        const t = textOf(JSON.parse(payload));
         return t.trim() ? t : null;
       } catch {
         return null;
       }
     };
-    return { first: pick("asc"), latest: pick("desc") };
+    const first = this.#db
+      .prepare("select payload from messages where session_id = ? and kind = 'user' order by seq asc limit 1")
+      .get(id) as { payload?: string } | undefined;
+    const recent = this.#db
+      .prepare("select payload from messages where session_id = ? and kind = 'user' order by seq desc limit ?")
+      .all(id, Math.max(2, limit)) as unknown as { payload?: string }[];
+    const out: string[] = [];
+    for (const t of [decode(first?.payload), ...recent.map((r) => decode(r.payload))]) {
+      if (t && !out.includes(t)) out.push(t);   // the same prompt twice must not double the work
+    }
+    return out;
   }
 
   /** Re-file a row's provenance WITHOUT touching the name — used when a name turned out to be a

@@ -475,8 +475,11 @@ const agent = () => ({
         const space = head.lastIndexOf(" ");
         return (space > n / 2 ? head.slice(0, space) : head).replace(/[ ,.;:—-]+$/u, "") + (ellipsis ? "…" : "");
       };
-      const mode = process.env.MOCK_TITLE_SLICE || "";
-      const slice = mode === "hermes" ? cut(48, true) : mode === "drift" ? cut(40, false) : line.slice(0, 50);
+      // Default = what hermes actually does. `legacy50` is the OLD client rule, kept because a
+      // producer that cuts differently is the bug this sweep exists for (#105) — it must be opt-in,
+      // never the default, or the sweeps test our own past instead of the agent.
+      const mode = process.env.MOCK_TITLE_SLICE || "hermes";
+      const slice = mode === "legacy50" ? line.slice(0, 50) : mode === "drift" ? cut(40, false) : cut(48, true);
       if (slice) {
         await send(agent._conn, sessionId, { sessionUpdate: "session_info_update", title: slice });
       }
