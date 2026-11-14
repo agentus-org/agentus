@@ -14,7 +14,7 @@
 // 「实际发生了什么」是否一致。MOCK_IGNORE_CANCEL=1 的第二具实例专门复刻「agent 不认这一停」。
 //
 //   node scripts/qa/operator-stop-sweep.mjs
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs, { mkdtempSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -86,7 +86,8 @@ async function boot(extra = {}) {
   });
   // `send`/`stop` 共用同一个「驾驶舱能不能动手」开关，默认关；这里只是测试期间打开。
   await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
-  return { base, home, dataDir, agentHome, api, proc, kill: () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone */ } } };
+  return { base, port, home, dataDir, agentHome, api, proc,
+    kill: () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone */ } } };
 }
 
 const rowOf = async (inst, id) => {
@@ -127,6 +128,11 @@ const plantForeignLease = (inst, conversationId) => withLeaseDb(inst, (db) =>
     conversationId, `sweep:pid=${process.pid}`, Date.now() / 1000, (Date.now() + 600_000) / 1000));
 const leaseOf = (inst, conversationId) => withLeaseDb(inst, (db) =>
   db.prepare("SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?").get(conversationId) ?? null);
+/** A lease whose TTL has run out: the gateway's row is still there (it deletes on turn end, not on expiry),
+ *  so the turn is genuinely still running — the real shape of any turn longer than the 540 s TTL. */
+const plantExpiredLease = (inst, conversationId) => withLeaseDb(inst, (db) =>
+  db.prepare("INSERT OR REPLACE INTO session_turn_leases VALUES (?,?,?,?)").run(
+    conversationId, `sweep:pid=${process.pid}`, (Date.now() - 900_000) / 1000, (Date.now() - 30_000) / 1000));
 
 const stopCockpit = (inst, id, extra = {}) =>
   inst.api("/api/cockpit/stop", { method: "POST", body: JSON.stringify({ id, ...extra }) });
@@ -178,6 +184,78 @@ check("…and the lease is gone afterwards", !(await leaseOf(A, coldSlot.acpSess
 const resumed = await A.api(`/api/sessions/${coldSlot.id}/resume`, { method: "POST" });
 check("…so the slot can be resumed at last (「停不了也恢复不了」 is over)", resumed.status === 200,
   `${resumed.status} ${JSON.stringify(resumed.body)}`);
+
+// ---- ②b 过期租约（TTL 540s、回合中途不续期）：那一轮仍在跑，不许说「没有回合」 ----------
+// review D1：判据若用 `remainingMs > 0`，任何超过 9 分钟的回合都会被读成「没有回合」，冷槽位的停
+// 又变回一句谎。
+const staleSlot = await createSession(A, "过期的租约");
+await stopCockpit(A, staleSlot.id, { close: true });
+for (let i = 0; i < 60; i++) {
+  const row = await rowOf(A, staleSlot.id);
+  if (!row || row.cold === true || row.status !== "ready") break;
+  await sleep(150);
+}
+await plantExpiredLease(A, staleSlot.acpSessionId);
+const staleEta = await leaseOf(A, staleSlot.acpSessionId);
+const staleStop = await stopCockpit(A, staleSlot.id);
+check("an EXPIRED lease row still counts as a running turn (the TTL is a forecast, not the truth)",
+  staleStop.body?.stopped === true, `${JSON.stringify(staleStop.body)} lease=${JSON.stringify(staleEta)}`);
+check("…and it is gone afterwards", !(await leaseOf(A, staleSlot.acpSessionId)),
+  JSON.stringify(await leaseOf(A, staleSlot.acpSessionId)));
+
+// ---- ②c /takeover：一个请求做完「打断 + 接管」------------------------------------
+const takeSlot = await createSession(A, "接管路由");
+await stopCockpit(A, takeSlot.id, { close: true });
+for (let i = 0; i < 60; i++) {
+  const row = await rowOf(A, takeSlot.id);
+  if (!row || row.cold === true || row.status !== "ready") break;
+  await sleep(150);
+}
+await plantForeignLease(A, takeSlot.acpSessionId);
+const took = await A.api(`/api/sessions/${takeSlot.id}/takeover`, { method: "POST" });
+check("POST /api/sessions/:id/takeover stops the foreign turn AND brings the slot up (one request)",
+  took.status === 200 && took.body?.status === "ready", `${took.status} ${JSON.stringify(took.body)?.slice(0, 120)}`);
+check("…and the lease is gone", !(await leaseOf(A, takeSlot.acpSessionId)),
+  JSON.stringify(await leaseOf(A, takeSlot.acpSessionId)));
+
+// ---- ②d 干净退出：SIGTERM 之前先打断自己那一轮 -----------------------------------
+// review D6：这一块以前零覆盖（整段删掉 sweep 仍全绿）。这里起一具独立实例，跑一轮长回合，然后只给
+// **服务器进程**发 SIGTERM（不是整个进程组 —— mock 要活着才能响应 cancel），看租约有没有跟着清。
+const C = await boot();
+const exitSlot = await createSession(C, "退出时的一轮");
+await C.api(`/api/sessions/${exitSlot.id}/prompt`, { method: "POST", body: JSON.stringify({ text: "[hold:30000] 退出前还在跑" }) });
+for (let i = 0; i < 40; i++) {
+  if (await leaseOf(C, exitSlot.acpSessionId)) break;
+  await sleep(150);
+}
+const heldBeforeExit = Boolean(await leaseOf(C, exitSlot.acpSessionId));
+let serverPid = 0;
+try {
+  serverPid = Number(execFileSync("lsof", ["-nP", `-iTCP:${C.port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" })
+    .trim().split("\n")[0]);
+} catch { /* reported below */ }
+if (heldBeforeExit && serverPid) process.kill(serverPid, "SIGTERM");
+let goneAfterExit = false;
+for (let i = 0; i < 60; i++) {
+  goneAfterExit = !(await leaseOf(C, exitSlot.acpSessionId));
+  if (goneAfterExit) break;
+  await sleep(200);
+}
+check("the turn was actually running before the SIGTERM", heldBeforeExit, heldBeforeExit ? "" : "no lease was planted");
+check("a clean exit interrupts this cockpit's own turn instead of leaving it in the gateway (#108)",
+  goneAfterExit, goneAfterExit ? "" : "the lease outlived the process — the turn kept running for nobody");
+C.kill();
+
+// ---- ②e #104 的 web 半边：drain 出去的帧里不许有 interrupt ----------------------
+// review §六-6：删掉 state.ts 里那一行改动，14 条断言照样全过。这条读源码，断言的是「交棒不是抢麦」
+// 这半边唯一能被机器判的东西 —— 真正的行为面在浏览器里，靠 sweep ④ 的服务器契约兜住。
+const drainSrc = fs.readFileSync(path.join(ROOT, "packages/web/src/state.ts"), "utf8");
+const drainBlock = (drainSrc.match(/drainQueue\(sessionId: string\): void \{[\s\S]*?\n  \}/) ?? [""])[0];
+// 注释里写着「以前带 interrupt:true」，所以先剥掉行注释再判 —— 断言的是发出去的帧。
+const drainCode = drainBlock.split("\n").map((line) => line.replace(/\/\/.*$/, "")).join("\n");
+check("#104 web: the auto-drain hands over WITHOUT `interrupt: true` (it would cancel its own turn)",
+  Boolean(drainBlock) && !/interrupt:\s*true/.test(drainCode),
+  drainBlock ? (drainCode.match(/interrupt:\s*true/) ? "still sends interrupt" : "plain hand-off") : "drainQueue not found");
 
 // ---- ③ #104：同一条队列行只跑一次 --------------------------------------------------
 const dedupeSlot = await createSession(A, "队列行幂等");

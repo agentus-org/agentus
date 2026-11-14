@@ -1301,7 +1301,9 @@ export class Cockpit {
     this.#setQueue(sessionId, rows.map((r) => (r.id === id ? { ...r, inflight: true, unsure: false } : r)));
     // Acknowledged like any other send (#26): a retry can hit the same dead socket, and then the row
     // has to come back rather than sit in "sending…" forever.
-    this.#sendAcked(sessionId, { text: item.text, attachments: item.attachments, interrupt: true, rowId: id });
+    // NO `rowId`: ↑ / ⌘Enter 是操作者**亲手**再发一次（他刚在一行 unsure 上按了按钮）。带上行号会让
+    // 服务器的幂等（#104）把这一次当成「同一行的第二份副本」吞掉 —— 幂等只属于自动 drain，不属于人。
+    this.#sendAcked(sessionId, { text: item.text, attachments: item.attachments, interrupt: true });
   }
 
   /** ⌘/Ctrl+Enter — 插话: put what is in the box on the floor NOW, interrupting the running turn.
@@ -1362,6 +1364,23 @@ export class Cockpit {
     const rows = this.#queues.get(sessionId) ?? [];
     if (!rows.some((r) => r.inflight)) return;
     this.#setQueue(sessionId, rows.filter((r) => !r.inflight));
+  }
+
+  /** `prompt-duplicate`（#104）：这一行已经在 transcript 里，只退休这一行 —— 别的在途消息一个字都不动。
+   *  `#confirmSent` 的前提是「有回合起来了」，而这条帧恰恰说自己**没有**起回合；走它会把同会话另一条
+   *  还没落地的消息的看门狗一起清掉（review D4）。 */
+  #retireDelivered(sessionId: string, rowId: string | undefined, pid: string | undefined): void {
+    if (pid) {
+      const hit = this.#pendingSends.get(pid);
+      if (hit) {
+        clearTimeout(hit.timer);
+        this.#pendingSends.delete(pid);
+      }
+    }
+    const rows = this.#queues.get(sessionId) ?? [];
+    // 有行号就认行号（自动 drain 的那一行）；没有就只退休「这一发、且还在飞」的那一行。
+    const kept = rows.filter((r) => (rowId ? r.id !== rowId : !(r.inflight && r.pid === pid)));
+    if (kept.length !== rows.length) this.#setQueue(sessionId, kept);
   }
 
   /** A turn ended in FAILURE with a prompt still inflight: it never landed, so put it back in line
@@ -2419,9 +2438,11 @@ export class Cockpit {
       }
       case "prompt-duplicate": {
         // #104: same session + same queue row already ran (two drains in one frame storm, a retry after a
-        // dead socket). The words ARE in the transcript — confirming is honest, and re-filing the row
-        // would invite the operator to send them a second time.
-        this.#confirmSent(e.sessionId, e.pid);
+        // dead socket). The words ARE in the transcript, so retiring the row is honest —— but only THAT
+        // row: `#confirmSent` is written around 「一个回合起来了」, and it retires every pending prompt of
+        // the session (review D4). This frame says the opposite: no turn started. Another message the
+        // operator just typed would lose its watchdog and vanish silently.
+        this.#retireDelivered(e.sessionId, e.rowId, e.pid);
         break;
       }
       case "prompt-held": {

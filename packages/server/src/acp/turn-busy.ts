@@ -22,6 +22,11 @@ export interface BusyTurnEta {
    *  或不在本机的 PID 命名空间里）。`false` 才允许「不等它、直接去试」—— gateway 自己会用同一条
    *  判据回收这行，我们去试就是让它回收；`null` 只能老老实实等，和 agent 的判断保持一致。 */
   holderAlive: boolean | null;
+  /** 这一行租约**还在**。判「agent 侧有没有一轮在跑」只认这个布尔，不认 `remainingMs`：
+   *  TTL 只是一句预告（实测 540s、回合中途不续期），超过 9 分钟的回合会读到 `remainingMs === 0`
+   *  而**那一轮仍在跑**。用剩余时间当判据，冷槽位的「停」就会对任何长回合说「没有回合在跑」——
+   *  正是 #107 要消灭的那句谎。 */
+  held: true;
 }
 
 /** holder 里的 `pid=<n>`（gateway 与 agent 的约定，`hermes_state._compression_lock_holder_process_is_dead`）。 */
@@ -40,7 +45,8 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** 会话在 agent 侧还有一轮没跑完时，它最多还剩多久（毫秒），读不到就是 null。
+/** 会话在 agent 侧有没有一轮（以及还剩多久）。**读到行就返回**（哪怕已经过期，`held` 说明它还在）；
+ *  没有行、读不到（库不在 / 没表 / 被锁）才返回 null —— 后者是「不知道」，调用方不许把它当成「没有」。
  *
  *  `home` 是该后端自己的 HERMES_HOME；`conversationIds` 按「最可能命中」的顺序给（ACP 会话 id、
  *  它的压缩链根、行 id）。租约键是 conversation（= 谱系根），本地会话通常就是 ACP id 本身。 */
@@ -52,7 +58,9 @@ export function busyTurnEta(home: string | null, conversationIds: (string | null
   let db: DatabaseSync | null = null;
   try {
     // 只读：另开一个写者会和 gateway 抢 SQLite（WAL 下读是安全的）。
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    // `timeout` 而不是默认的 0：默认值下一个瞬时 SQLITE_BUSY 就抛，而这里的 catch 会把它变成
+    // 「没有租约」——那正是停/恢复会误判的方向。250ms 足够让一次 checkpoint 走开。
+    db = new DatabaseSync(dbPath, { readOnly: true, timeout: 250 });
     const placeholders = ids.map(() => "?").join(",");
     const row = db
       .prepare(`SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id IN (${placeholders})`)
@@ -62,6 +70,7 @@ export function busyTurnEta(home: string | null, conversationIds: (string | null
     const pid = holderPid(holder);
     return {
       remainingMs: Math.max(0, Math.round(row.expires_at * 1000 - Date.now())),
+      held: true,
       holder,
       expiresAt: Math.round(row.expires_at * 1000),
       // pid 是我们自己（同一个进程里另一轮的租约）时不算死 —— 与 gateway 的判据一致。

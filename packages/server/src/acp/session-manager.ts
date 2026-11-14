@@ -1033,16 +1033,29 @@ export class SessionManager {
     }
     this.#turnReplies.clear();
     // #108: 干净退出不许把自己起的回合留在 gateway 里。gateway-owned 的回合活在 agent home 里，我们
-    // 的进程没了它照跑 —— 那个会话就对谁都不干活了，而且在 0.22.18 之前驾驶舱连停都停不掉。SIGTERM 是
-    // 我们自己的决定，就把自己那一轮一起带走；崩溃做不到，也不要求它做到。有界等待：关机不许被拖住。
+    // 的进程没了它照跑 —— 那个会话就对谁都不干活了，而且在 0.23.0 之前驾驶舱连停都停不掉。SIGTERM 是
+    // 我们自己的决定，就把自己那一轮一起带走；崩溃做不到，也不要求它做到。
+    //
+    // 顺序有讲究（review D6）：① 先把挂着的审批卡答掉（`#dropPending`）—— 卡在审批上的回合是「等一个
+    // 没人会按的按钮」，不先答它，后面那 1.2s 一定白等满；② 再发 cancel，**并且给写帧本身加超时**（半死
+    // socket 会让 `await` 永久挂住，SIGTERM handler 就再也退不出去，关机会变得更不可靠）；③ 结果进日志，
+    // 否则「我们知道它没停却照样杀了」这件事在事后毫无痕迹。`starting` 阶段的槽位没有回合，不在覆盖内。
     const running = [...this.#sessions.values()].filter(
       (s) => s.busy && s.conn && s.info.acpSessionId && s.caps?.gatewayOwned,
     );
     if (running.length) {
       console.log(`[agentus] shutdown: interrupting ${running.length} running turn(s) first`);
+      for (const s of running) this.#dropPending(s);
       await Promise.allSettled(running.map(async (s) => {
-        await s.conn?.cancel({ sessionId: s.info.acpSessionId as string }).catch(() => {});
-        await this.#awaitTurnGone(s.info.id, SHUTDOWN_CANCEL_WAIT_MS);
+        const id = s.info.acpSessionId as string;
+        await Promise.race([
+          s.conn!.cancel({ sessionId: id }).catch((err: unknown) => {
+            console.log(`[agentus] shutdown: cancel for ${s.info.id} failed (${errMessage(err)})`);
+          }),
+          new Promise((r) => setTimeout(r, SHUTDOWN_CANCEL_WAIT_MS)),
+        ]);
+        const gone = await this.#awaitTurnGone(s.info.id, SHUTDOWN_CANCEL_WAIT_MS);
+        console.log(`[agentus] shutdown: ${s.info.id}: the turn ${gone ? "ended" : "is STILL running in the agent's gateway"}`);
       }));
     }
     const kills = [...this.#sessions.values()].map(async (s) => {
@@ -1398,7 +1411,9 @@ export class SessionManager {
           const late = this.#busyEta(id);
           // …unless the holder is provably gone: then it is a reclaim transient, not a wait.
           if (late && late.remainingMs > RESUME_BUSY_INLINE_MS && late.holderAlive !== false) {
-            this.#scheduleBusyRetry(id, opts, late.remainingMs);
+            // takeover 只属于「操作者此刻按下的那一次」：跟着后台重试走下去，每次到点都会带着
+            // 「跳过租约闸门」再 spawn 一个 agent 去撞仍在跑的那一轮，无上限（review D2）。
+            this.#scheduleBusyRetry(id, { replace: opts.replace }, late.remainingMs);
             throw new SessionUnavailable(
               "busy_turn",
               `该会话在 agent 里还有一轮没跑完（${waitWords(late.remainingMs)}后结束），到时会自动重试恢复。` +
@@ -2433,8 +2448,10 @@ export class SessionManager {
       return { status: "unconfirmed", woke: false };
     }
     const eta = this.#busyEta(id);
-    const leaseLive = Boolean(eta && eta.remainingMs > 0);
-    if (!leaseLive) {
+    // 判据是「租约行还在」，不是「还没到期」：TTL 只是预告（实测 540s、回合中途不续期），
+    // 超过它的回合仍在跑，而 `remainingMs === 0` 会被读成「没有回合」—— 那句谎又回来了（#107）。
+    const leaseHeld = eta !== null;
+    if (!leaseHeld) {
       // 活槽位没在跑，或者根本没有槽位：两种都是「没有回合可停」，不值得区分。
       console.log(`[agentus] stop ${id}: nothing is running`);
       return { status: "nothing_running", woke: false };
@@ -2452,8 +2469,10 @@ export class SessionManager {
     const s = this.#sessions.get(id);
     if (!s?.conn || !s.info.acpSessionId) return { status: "unconfirmed", woke };
     // 这里刻意不走 `cancel()`：它拒绝「自己不在忙」的会话，因为 cancel 打到空闲会话上会给**下一轮**
-    // 埋一个硬中断。可这条路径上租约明说有一轮在跑（`leaseLive`），而 fork 侧现在只对「确实在跑的
-    // 那一代」动手，所以这里正是那个守卫不该拦的情况。
+    // 埋一个硬中断。这条路径上租约行明说有一轮在跑（`leaseHeld`），而且我们依赖 fork 侧 0.23 适配器
+    // 的语义：`session/cancel` 只中断「正在跑的那一代」，对已结束的 generation 回 stale 且不置旗标
+    // （`acp_adapter/gateway_server.py::_cancel_foreign_turn`，pin 在 release notes 里）。对端若还是旧
+    // 适配器，结果只是 `unconfirmed`（诚实），不会误杀——驾驶舱判断不了对端版本，所以这里写清这个前提。
     console.log(
       `[agentus] stop ${id}: interrupting a turn this cockpit did not start ` +
         `(${eta?.holder || "unknown holder"})${woke ? ", after waking the slot" : ""}`,
@@ -2465,13 +2484,15 @@ export class SessionManager {
     return { status: gone ? "stopped" : "unconfirmed", woke };
   }
 
-  /** 停完之后只认租约：那一轮可能不是我们起的，`turn-end` 帧不一定到我们这里，租约一定会清。 */
+  /** 停完之后只认租约：那一轮可能不是我们起的，`turn-end` 帧不一定到我们这里，租约一定会清。
+   *
+   *  判「还在」看**行在不在**（`busyTurnEta` 只在这一行真的没有时才返回 null）；`remainingMs` 不作判据，
+   *  否则超过 TTL 的长回合会被当成「已经停了」，报出一个假 `stopped:true`。 */
   async #awaitTurnGone(id: string, ms: number): Promise<boolean> {
     const until = Date.now() + ms;
     for (;;) {
-      const eta = this.#busyEta(id);
       const busy = Boolean(this.#sessions.get(id)?.busy);
-      if (!busy && !(eta && eta.remainingMs > 0)) return true;
+      if (!busy && this.#busyEta(id) === null) return true;
       if (Date.now() >= until) return false;
       await new Promise((r) => setTimeout(r, 120));
     }

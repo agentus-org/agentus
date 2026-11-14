@@ -662,7 +662,11 @@ function runPrompt(
     // cannot take the picture the operator just attached (issue #17) — there the sentence is still
     // worth keeping, it is the image that has to go.
     const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED;
-    if (lost) forgetPromptRow(sessionId, rowId);
+    // 幂等键只在「这句话真的递交了」时才该留着（review D3）。runPrompt 的 catch 就是「没递交」的全集：
+    // 槽位刚好冷掉、spawn 失败、conn 断了、unknown session、home_mismatch……任何一条都意味着那句话还在
+    // 操作者手里，重排队那一份必须能跑；留着一个烧掉的键，重投会被回 `prompt-duplicate` 并被当成已送达，
+    // 那句话就永久消失了。所以这里**所有**失败都注销，不只那两条。
+    forgetPromptRow(sessionId, rowId);
     emit({ t: "message", message: {
       seq: -1, sessionId, kind: "meta",
       // `pid` rides along (issue #26) so the page can pair this refusal with the prompt it is still
@@ -1150,7 +1154,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // manager 会先把 viewer 叫起来再停；停完只认租约，没清就回答 unconfirmed —— 这一层不许把
         // 「发出去了」说成「停了」。
         const outcome = await mgr.stopTurn(id);
-        if (outcome.status === "stopped") emit(sessionsEvent());
+        // 叫起来过就该广播：rail 要靠它知道多了一个 live 槽位，哪怕这一停没确认（review D8）。
+        if (outcome.status === "stopped" || outcome.woke) emit(sessionsEvent());
         if (outcome.status !== "stopped") {
           console.log(`[agentus] cockpit stop ${id}: ${outcome.status}${outcome.woke ? " (woke the slot first)" : ""}`);
         }
