@@ -434,6 +434,10 @@ export type ServerEvent =
    *  (issue #74 review): the message is in the server's hands, and reporting it as lost invites a
    *  retry that sends it twice. */
   | { t: "prompt-held"; sessionId: string; pid: string }
+  /** The server recognises this prompt as a SECOND delivery of one it already ran (#104): same session,
+   *  same queue row (`rowId`), inside the duplicate window. The words are in the transcript — the frame
+   *  is a confirmation, not a refusal, so the page retires the row instead of asking for a resend. */
+  | { t: "prompt-duplicate"; sessionId: string; pid: string; rowId: string }
   /** Issue #70 step 1: the live speed meter. 1Hz while a turn is streaming, and ONLY while the
    *  operator's 「显示流式速度」 switch is on — otherwise the timer never starts and no frame is
    *  ever sent.
@@ -711,7 +715,11 @@ export type ClientCommand =
        *  Without it a page can only guess whether its frame landed: a socket that dies without a FIN
        *  stays `OPEN` in JS, so `send()` returns true for a frame nobody received and the operator's
        *  words vanish with no error. With it, "the server started a turn for prompt X" is a fact. */
-      pid?: string }
+      pid?: string;
+      /** The QUEUE row this prompt came from (issue #104). The same row can reach the wire twice — two
+       *  drains in one frame storm, a retry after a dead socket — and row ids are stable across both
+       *  copies, so the server can recognise the second delivery instead of running the words twice. */
+      rowId?: string }
   | { t: "cancel"; sessionId: string }
   | { t: "set-mode"; sessionId: string; modeId: string }
   | { t: "set-config"; sessionId: string; configId: string; value: string | number | boolean }
