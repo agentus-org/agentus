@@ -322,6 +322,12 @@ function BlockedSlotDialog({ slot }: { slot: BlockedSlot }): JSX.Element {
           <div className="hint">
             到点会自动再试一次恢复，不用守着；想现在就看一眼也可以点下面的按钮。
           </div>
+          {slot.takeoverAvailable ? (
+            <div className="hint">
+              不想等就打断它：会把 agent 里那一轮<b>停掉</b>（哪怕它不是这个窗口起的），然后把这个会话
+              接管过来 —— 被打断的那一轮就没了，用它换来现在就能说话。
+            </div>
+          ) : null}
           {slot.message ? <div className="hint muted">{slot.message}</div> : null}
           <div className="row">
             <button className="cancel" onClick={() => cockpit.dismissBlocked()}>知道了</button>
@@ -331,6 +337,14 @@ function BlockedSlotDialog({ slot }: { slot: BlockedSlot }): JSX.Element {
             >
               现在再试一次
             </button>
+            {slot.takeoverAvailable ? (
+              <button
+                className="go"
+                onClick={() => { cockpit.dismissBlocked(); void cockpit.takeover(slot.id); }}
+              >
+                打断那一轮并接管
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

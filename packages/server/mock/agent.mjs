@@ -14,8 +14,18 @@
 //                         where the cockpit's 「正在唤醒 agent 进程…」 state lives — a browser sweep
 //                         cannot observe a state that lasts 80 ms.
 //   MOCK_SINK=1        -> exit the process mid-turn (crash path for AC5/QA)
+//   MOCK_TURN_LEASE=1  -> hold a `session_turn_leases` row in <HERMES_HOME>/state.db for the length of
+//                         a turn, like the 0.23 gateway does. That row is the only thing the cockpit
+//                         reads to answer 「agent 里那一轮还要跑多久」, so a sweep needs it to build the
+//                         冷槽位 + 租约 shapes (#107/#108) without a real gateway.
+//   MOCK_IGNORE_CANCEL=1 -> cancel() does NOTHING (the pre-0.22.18 adapter, which silently ignored a
+//                         stop for a turn it did not submit). The cockpit must then say the stop was
+//                         not confirmed instead of reporting success (#108).
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { AgentSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
 import { Readable, Transform, Writable } from "node:stream";
 
@@ -37,6 +47,34 @@ if (process.argv[2] === "sessions" && process.argv[3] === "discard") {
 
 
 const SLOW = Number(process.env.MOCK_SLOW_MS || 60);
+
+const LEASE = process.env.MOCK_TURN_LEASE === "1";
+const LEASE_SEC = Number(process.env.MOCK_TURN_LEASE_SEC || 60);
+/** `<HERMES_HOME>/state.db` — the same file the real gateway keeps its lease in, and the one the
+ *  cockpit's `turn-busy.ts` opens read-only. */
+const LEASE_DB = path.join(process.env.HERMES_HOME || path.join(os.homedir(), ".hermes"), "state.db");
+function leaseWrite(fn) {
+  if (!LEASE) return;
+  let db = null;
+  try {
+    db = new DatabaseSync(LEASE_DB);
+    db.exec(`CREATE TABLE IF NOT EXISTS session_turn_leases (
+      conversation_id TEXT PRIMARY KEY, holder TEXT NOT NULL,
+      acquired_at REAL NOT NULL, expires_at REAL NOT NULL)`);
+    fn(db);
+  } catch {
+    // A mock is not allowed to fail a turn over a lease: the real gateway would, but a sweep that
+    // cannot write the row must still be able to run everything else.
+  } finally {
+    try { db?.close(); } catch { /* closed */ }
+  }
+}
+const leaseSet = (conversationId) => leaseWrite((db) =>
+  db.prepare("INSERT OR REPLACE INTO session_turn_leases VALUES (?,?,?,?)").run(
+    conversationId, `mock:pid=${process.pid}`, Date.now() / 1000,
+    (Date.now() + LEASE_SEC * 1000) / 1000));
+const leaseClear = (conversationId) => leaseWrite((db) =>
+  db.prepare("DELETE FROM session_turn_leases WHERE conversation_id = ?").run(conversationId));
 // MOCK_IGNORE_TERM=1 -> 不理会 SIGTERM（只有 SIGKILL 能停它）。用来复刻「关闭时它还在握手、而且
 // 关不掉」的窗口：有界等待超时后槽被删掉，握手随后落地，正好能验证"关闭中回魂"那道守卫。
 if (process.env.MOCK_IGNORE_TERM === "1") process.on("SIGTERM", () => {});
@@ -412,11 +450,26 @@ const agent = () => ({
   },
 
   async cancel({ sessionId }) {
+    // MOCK_IGNORE_CANCEL=1 复刻 fork 0.22.17 及更早的行为：对「不是这个 surface 起的那一轮」，cancel
+    // 静默无效。驾驶舱必须因此回答「没停住」，不能报成功（#108）。
+    if (process.env.MOCK_IGNORE_CANCEL === "1") return;
     const s = sessions.get(sessionId);
     if (s) s.cancelled = true;
+    leaseClear(sessionId);
   },
 
-  async prompt({ sessionId, prompt }) {
+  /** The turn itself, with the lease the 0.23 gateway would hold around it (#107/#108). */
+  async prompt(args) {
+    if (!LEASE) return this._prompt(args);
+    leaseSet(args.sessionId);
+    try {
+      return await this._prompt(args);
+    } finally {
+      leaseClear(args.sessionId);
+    }
+  },
+
+  async _prompt({ sessionId, prompt }) {
     const s = sessions.get(sessionId);
     if (!s) throw new Error("no such session");
     s.cancelled = false;
@@ -533,7 +586,13 @@ const agent = () => ({
     // fixture). No frames at all, so 「有任务在跑 + 没有动静」 is exactly the state the ticker must
     // speak on — and the state a `[slow]` stream can never reproduce (it emits every 900 ms).
     const hold = Number((/\[hold:(\d+)\]/.exec(text) || [])[1] || 0);
-    if (hold > 0) await sleep(Math.min(180_000, hold));
+    // 可被打断：真 agent 收到 interrupt 就结束这一轮，而 0.23 的回合租约是在**回合结束**时删的 ——
+    // 「租约还在不在」正是驾驶舱判断「停了没」的唯一依据（#107/#108）。睡死不认的话，一台诚实的
+    // 驾驶舱只能回答「没停住」，sweep 就永远看不到「停了」这一面。
+    for (let left = Math.min(180_000, hold); left > 0; left -= 100) {
+      if (s.cancelled) return { stopReason: "cancelled" };
+      await sleep(Math.min(100, left));
+    }
 
     // `[status]` — the agent-status carrier from issue #18, exactly as hermes' `make_status_cb` sends
     // it: an EMPTY thought chunk whose `_meta.hermes` holds the sentence. Sent mid-turn on purpose, so a

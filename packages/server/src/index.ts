@@ -610,6 +610,25 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   });
 }
 
+/** 已受理的队列行（#104）：sessionId → rowId → 受理时间。窗口内同一条行再来一次，就是第二份副本。 */
+const acceptedPromptRows = new Map<string, Map<string, number>>();
+const PROMPT_ROW_WINDOW_MS = 120_000;
+
+function isDuplicateRow(sessionId: string, rowId: string): boolean {
+  const now = Date.now();
+  const rows = acceptedPromptRows.get(sessionId) ?? new Map<string, number>();
+  for (const [key, at] of rows) if (now - at > PROMPT_ROW_WINDOW_MS) rows.delete(key);
+  acceptedPromptRows.set(sessionId, rows);
+  if (rows.has(rowId)) return true;
+  rows.set(rowId, now);
+  return false;
+}
+
+/** 那句话并没有进 transcript（被拒了）：把受理记录撤掉，重排队的那一份必须还能跑。 */
+function forgetPromptRow(sessionId: string, rowId?: string): void {
+  if (rowId) acceptedPromptRows.get(sessionId)?.delete(rowId);
+}
+
 /**
  * Single prompt entry point (REST + WS both use it).
  * A failed turn must never be silent: the UI used to show a bare
@@ -622,7 +641,17 @@ function runPrompt(
   attachments: PromptAttachment[] = [],
   interrupt = false,
   pid?: string,
+  rowId?: string,
 ): void {
+  // 同一条队列行只跑一次（#104）。同一个 rowId 今天有两种到法：同一帧风暴里两次 drain、死 socket 上的
+  // 重发/重连；两次都到 = 服务器确实收到了两遍，第二遍不是「操作者又说了一遍」，而是同一句话的另一份
+  // 副本 —— 让它跑会得到两条一样的消息（或两条互相打断的回合）。只在拒绝路径上注销：那句被拒的话
+  // 并没有进 transcript，重排队那一份必须还能跑。
+  if (rowId && isDuplicateRow(sessionId, rowId)) {
+    console.log(`[agentus] prompt for ${sessionId}: queue row ${rowId} was already delivered — not running it twice`);
+    if (pid) emit({ t: "prompt-duplicate", sessionId, pid, rowId });
+    return;
+  }
   void mgr.prompt(sessionId, text, attachments, { interrupt, pid }).catch((e: unknown) => {
     const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
@@ -633,6 +662,7 @@ function runPrompt(
     // cannot take the picture the operator just attached (issue #17) — there the sentence is still
     // worth keeping, it is the image that has to go.
     const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED;
+    if (lost) forgetPromptRow(sessionId, rowId);
     emit({ t: "message", message: {
       seq: -1, sessionId, kind: "meta",
       // `pid` rides along (issue #26) so the page can pair this refusal with the prompt it is still
@@ -1116,12 +1146,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           emit(sessionsEvent());
           return send(res, 200, { schema_version: COCKPIT_SCHEMA_VERSION, id, closed: true });
         }
-        const stopped = await mgr.cancel(id);
+        // 停是操作者对「会话」的动作，不是对起那一轮的人的动作（#107/#108）：冷槽位也占着租约时，
+        // manager 会先把 viewer 叫起来再停；停完只认租约，没清就回答 unconfirmed —— 这一层不许把
+        // 「发出去了」说成「停了」。
+        const outcome = await mgr.stopTurn(id);
+        if (outcome.status === "stopped") emit(sessionsEvent());
+        if (outcome.status !== "stopped") {
+          console.log(`[agentus] cockpit stop ${id}: ${outcome.status}${outcome.woke ? " (woke the slot first)" : ""}`);
+        }
         return send(res, 200, {
           schema_version: COCKPIT_SCHEMA_VERSION,
           id,
-          stopped,
-          ...(stopped ? {} : { message: "no turn was running — nothing to interrupt" }),
+          stopped: outcome.status === "stopped",
+          ...(outcome.woke ? { woke: true } : {}),
+          ...(outcome.status === "nothing_running"
+            ? { message: "no turn was running — nothing to interrupt" }
+            : {}),
+          ...(outcome.status === "unconfirmed"
+            ? {
+                code: "cancel_unconfirmed",
+                message: "the stop was sent, but the agent's turn did not end in time — it is still running",
+              }
+            : {}),
         });
       }
       if (url.pathname === "/api/cockpit/wake" && req.method === "POST") {
@@ -2105,8 +2151,35 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
               sessionHome: e.sessionHome,
               rowHome: e.rowHome,
               // `busy_turn` only: how long the agent says its own turn still needs (#238), so the
-              // client can show a countdown instead of asking the operator to click again.
+              // client can show a countdown instead of asking the operator to click again; and
+              // whether that wait can be short-circuited by stopping it (#107).
               retryAfterMs: e.retryAfterMs,
+              takeoverAvailable: e.takeoverAvailable,
+            });
+          }
+          throw e;
+        }
+      }
+      if (req.method === "POST" && sub === "/takeover") {
+        // #107: 操作者不想等那一轮跑完时的唯一动作 —— 先打断它（哪怕它是定时任务/通知回合/另一个浏览器
+        // 起的），再把这个槽位接管过来。两件事必须是同一个请求：分开做的那段窗口正是「停也停不了、恢复
+        // 也恢复不了」——先是租约挡着 resume，停完槽位又还空着。
+        const stop = await mgr.stopTurn(id);
+        console.log(`[agentus] takeover ${id}: stop ${stop.status}${stop.woke ? " (woke the slot first)" : ""}`);
+        try {
+          const info = await mgr.resume(id, { takeover: stop.status !== "stopped" });
+          emit(sessionsEvent());
+          return send(res, 200, info);
+        } catch (e) {
+          if (e instanceof SessionUnavailable) {
+            emit(sessionsEvent());
+            return send(res, 409, {
+              error: e.message,
+              code: e.code,
+              sessionHome: e.sessionHome,
+              rowHome: e.rowHome,
+              retryAfterMs: e.retryAfterMs,
+              takeoverAvailable: e.takeoverAvailable,
             });
           }
           throw e;
@@ -2132,8 +2205,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
               sessionHome: e.sessionHome,
               rowHome: e.rowHome,
               // `busy_turn` only: how long the agent says its own turn still needs (#238), so the
-              // client can show a countdown instead of asking the operator to click again.
+              // client can show a countdown instead of asking the operator to click again; and
+              // whether that wait can be short-circuited by stopping it (#107).
               retryAfterMs: e.retryAfterMs,
+              takeoverAvailable: e.takeoverAvailable,
             });
           }
           throw e;
@@ -2165,7 +2240,11 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         const attachments = Array.isArray(body.attachments) ? (body.attachments as PromptAttachment[]) : [];
         if (!text && !attachments.length) return send(res, 400, { error: "empty prompt" });
         // fire & forget: stream arrives via WS; client watches turn-start/end
-        void runPrompt(id, text, attachments, body.interrupt === true, typeof body.pid === "string" ? body.pid : undefined);
+        void runPrompt(
+          id, text, attachments, body.interrupt === true,
+          typeof body.pid === "string" ? body.pid : undefined,
+          typeof body.rowId === "string" ? body.rowId : undefined,
+        );
         return send(res, 202, { ok: true });
       }
       if (req.method === "POST" && sub === "/workspace") {
@@ -2621,7 +2700,7 @@ wss.on("connection", (ws) => {
           // Deferred behind the control frames already in flight on this socket FOR THIS SESSION,
           // and not serialized behind other prompts: the agent owns turn order (issue #74).
           const held = gate.afterControl(cmd.sessionId, () => {
-            void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid);
+            void runPrompt(cmd.sessionId, cmd.text, cmd.attachments ?? [], cmd.interrupt === true, cmd.pid, cmd.rowId);
           });
           // Held, not lost: the page's ack budget (8s) would otherwise expire while a cold
           // `set_model` is still probing, and it would report a message that IS about to run as
@@ -2629,9 +2708,22 @@ wss.on("connection", (ws) => {
           if (held && cmd.pid) sendEvt({ t: "prompt-held", sessionId: cmd.sessionId, pid: cmd.pid });
           break;
         }
-        case "cancel":
-          await mgr.cancel(cmd.sessionId);
+        case "cancel": {
+          // 同一个入口，同一条真相（#107/#108）：操作者的停也要能落到「别处起的那一轮」上，并且
+          // 停没停要回话 —— 以前这里只是 `mgr.cancel`，冷槽位直接被拒，页面上什么都不会变。
+          const outcome = await mgr.stopTurn(cmd.sessionId);
+          if (outcome.status === "unconfirmed") {
+            emit({ t: "message", message: {
+              seq: -1, sessionId: cmd.sessionId, kind: "meta",
+              payload: { text: outcome.woke
+                ? "stop was sent after waking the slot, but the agent's turn is still running"
+                : "stop was sent, but the agent's turn is still running" },
+              createdAt: Date.now(),
+            } });
+          }
+          if (outcome.status === "stopped") emit(sessionsEvent());
           break;
+        }
         case "set-mode":
           await gate.control(cmd.sessionId, () => mgr.setMode(cmd.sessionId, cmd.modeId));
           break;

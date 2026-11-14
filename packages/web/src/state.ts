@@ -360,6 +360,9 @@ export interface BlockedSlot {
   /** `busy_turn` only (#238): the agent says its turn still needs this long. The server already
    *  retries by itself when it expires; this is here so the card can count down honestly. */
   retryAfterMs?: number | null;
+  /** `busy_turn` only (#107): that turn can be interrupted on purpose — stop is the way in, instead
+   *  of waiting out someone else's work. */
+  takeoverAvailable?: boolean;
 }
 
 /** The body of a 409 from POST /api/sessions/:id/resume. */
@@ -369,6 +372,7 @@ interface ResumeRefusal {
   sessionHome?: string | null;
   rowHome?: string | null;
   retryAfterMs?: number | null;
+  takeoverAvailable?: boolean;
 }
 
 /** Snapshot shape handed to useSyncExternalStore. */
@@ -987,7 +991,7 @@ export class Cockpit {
   }): void {
     const pid = `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const cmd: ClientCommand = { t: "prompt", sessionId, text: opts.text, attachments: opts.attachments, pid,
-      ...(opts.interrupt ? { interrupt: true } : {}) };
+      ...(opts.interrupt ? { interrupt: true } : {}), ...(opts.rowId ? { rowId: opts.rowId } : {}) };
     const delivered = this.send(cmd);
     // Not OPEN: `send()` filed the prompt in the queue itself and told the operator so — that row IS
     // the acknowledgement, and registering a second one would duplicate his words on reconnect.
@@ -1337,14 +1341,19 @@ export class Cockpit {
     const busy = busyNow(this.byId.get(sessionId))
       || this.sessions.find((s) => s.id === sessionId)?.status === "running";
     if (busy) return;
-    // Interrupt is what makes this safe: the server clears its own `busy` flag in the `finally`
-    // right after emitting turn-end, so a plain prompt can still meet "turn already running" — and
-    // with interrupt it simply waits for a turn that is already over. (It only cancels if one is
-    // genuinely still running, which is the case this whole feature exists for.)
+    // …and NO interrupt (#104). This used to send `interrupt: true`, which cancels whatever turn is
+    // running — and the turn running right now is very often the one this very drain just handed
+    // over: two prompts (composer + queue) in one frame storm drain the next row while the previous
+    // turn is still starting, the server cancels that turn, and the operator is left with "Stopped
+    // waiting for another Hermes process on this session" and a question with no answer. A drain is
+    // a HAND-OFF, not a takeover: if it races a turn that is genuinely still busy, the server answers
+    // `turn already running` and `#requeueInflight` puts the row back in line — words kept, nothing
+    // cancelled. Also send the queue row id, so a second delivery of the same row is recognisable
+    // instead of being run twice.
     this.#setQueue(sessionId, rows.map((r) => (r.id === head.id ? { ...r, inflight: true } : r)));
     // …and it is acknowledged like an Enter (#26): a drain into a dead socket would otherwise drop
     // the operator's next message with no trace at all.
-    this.#sendAcked(sessionId, { text: head.text, attachments: head.attachments, interrupt: true, rowId: head.id });
+    this.#sendAcked(sessionId, { text: head.text, attachments: head.attachments, rowId: head.id });
   }
 
   /** `turn-start` proves an inflight prompt landed: it has left the queue (it is a real message now). */
@@ -1807,6 +1816,21 @@ export class Cockpit {
    *  await, which is why a cold row kept him staring at the previous session until the handshake
    *  finished. */
   async resume(id: string): Promise<void> {
+    await this.#bringUp(id, "resume", 120_000, "恢复失败");
+  }
+
+  /** #107: 「打断那一轮并接管」—— 操作者不想等 agent 里那一轮跑完时的唯一动作。
+   *
+   *  一个请求做完两件事（server 的 `/takeover`）：先停掉占着租约的那一轮 —— 哪怕它不是这个驾驶舱起
+   *  的（定时任务、通知回合、另一个浏览器）—— 再把槽位恢复起来。分成两个请求做的话，中间那段窗口正是
+   *  操作者卡住的地方：resume 被租约挡着，停完槽位又还空着。 */
+  async takeover(id: string): Promise<void> {
+    await this.#bringUp(id, "takeover", 180_000, "接管失败");
+  }
+
+  /** resume 与 takeover 的同一具身体：先铺开视图、一个槽位只起一次、409 换成同一张解释卡，失败只报
+   *  一次。两者真正不同的只有请求路径与超时 —— 「先打断那一轮」那件事在 server 里做。 */
+  async #bringUp(id: string, verb: "resume" | "takeover", timeoutMs: number, failLabel: string): Promise<void> {
     // ① The view first. `#view()` creates the row's view if the rail has not built one yet, so
     //    `setActive` finds it and fires the history fetch below in the same tick.
     this.#view(id);
@@ -1818,7 +1842,7 @@ export class Cockpit {
     this.#view(id).resuming = true;
     this.bump();
     try {
-      const info = await this.#req<SessionInfo>(`/api/sessions/${id}/resume`, { method: "POST" }, { timeoutMs: 120_000, retry: false });
+      const info = await this.#req<SessionInfo>(`/api/sessions/${id}/${verb}`, { method: "POST" }, { timeoutMs, retry: false });
       this.#view(id).info = info;
       if (!this.sessions.some((s) => s.id === id)) this.sessions = [info, ...this.sessions];
       this.cold = this.cold.filter((s) => s.id !== id);
@@ -1845,11 +1869,12 @@ export class Cockpit {
           rowHome: body.rowHome ?? null,
           message: body.error,
           retryAfterMs: body.retryAfterMs ?? null,
+          takeoverAvailable: body.takeoverAvailable === true,
         };
         this.bump();
         return;
       }
-      this.#setNet(false, `恢复失败：${String((e as Error).message ?? e)}`);
+      this.#setNet(false, `${failLabel}：${String((e as Error).message ?? e)}`);
     } finally {
       this.#resuming.delete(id);
       this.#view(id).resuming = false;
@@ -1885,6 +1910,7 @@ export class Cockpit {
           rowHome: body.rowHome ?? null,
           message: body.error,
           retryAfterMs: body.retryAfterMs ?? null,
+          takeoverAvailable: body.takeoverAvailable === true,
         };
         this.bump();
         return;
@@ -2389,6 +2415,13 @@ export class Cockpit {
         // store hands it straight to the renderer. Whether this device shows it — and whether it makes
         // a sound — is the page's own per-device business (webNotify.ts).
         webNotify.handle(e.notice);
+        break;
+      }
+      case "prompt-duplicate": {
+        // #104: same session + same queue row already ran (two drains in one frame storm, a retry after a
+        // dead socket). The words ARE in the transcript — confirming is honest, and re-filing the row
+        // would invite the operator to send them a second time.
+        this.#confirmSent(e.sessionId, e.pid);
         break;
       }
       case "prompt-held": {
