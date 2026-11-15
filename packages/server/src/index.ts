@@ -1167,10 +1167,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           ...(outcome.status === "nothing_running"
             ? { message: "no turn was running — nothing to interrupt" }
             : {}),
+          // Delivered outranks the clock (#109): a hard interrupt lands at the turn's boundary —
+          // the tool call in flight has to return first — so "not gone within 2.5 s" is the normal
+          // shape of a successful stop, not evidence against it. `cancel_unconfirmed` is now used
+          // only when nothing reached the agent at all.
+          ...(outcome.status === "stopping"
+            ? {
+                code: "cancel_pending",
+                message:
+                  "the stop has been delivered — the turn ends at its next step (a few seconds while " +
+                  "the current tool call wraps up; it is not a verdict that it kept running)",
+              }
+            : {}),
           ...(outcome.status === "unconfirmed"
             ? {
                 code: "cancel_unconfirmed",
-                message: "the stop was sent, but the agent's turn did not end in time — it is still running",
+                message: "the stop could not be delivered to the agent — nothing was interrupted",
               }
             : {}),
         });
@@ -2717,16 +2729,25 @@ wss.on("connection", (ws) => {
           // 同一个入口，同一条真相（#107/#108）：操作者的停也要能落到「别处起的那一轮」上，并且
           // 停没停要回话 —— 以前这里只是 `mgr.cancel`，冷槽位直接被拒，页面上什么都不会变。
           const outcome = await mgr.stopTurn(cmd.sessionId);
+          // #109: 三种回执各说各的。`stopping` 不是失败 —— 硬中断要等回合边界，2.5 s 内看不到
+          // 租约消失是**成功停**的常态；写成「还在跑」会让操作者去点第二、第三次。
+          if (outcome.status === "stopping") {
+            emit({ t: "message", message: {
+              seq: -1, sessionId: cmd.sessionId, kind: "meta",
+              payload: { text: "stop sent — the turn ends as soon as the step it is in finishes" },
+              createdAt: Date.now(),
+            } });
+          }
           if (outcome.status === "unconfirmed") {
             emit({ t: "message", message: {
               seq: -1, sessionId: cmd.sessionId, kind: "meta",
               payload: { text: outcome.woke
-                ? "stop was sent after waking the slot, but the agent's turn is still running"
-                : "stop was sent, but the agent's turn is still running" },
+                ? "the slot was woken, but the stop could not be delivered — the turn is still running"
+                : "the stop could not be delivered — the turn is still running" },
               createdAt: Date.now(),
             } });
           }
-          if (outcome.status === "stopped") emit(sessionsEvent());
+          if (outcome.status !== "nothing_running") emit(sessionsEvent());
           break;
         }
         case "set-mode":

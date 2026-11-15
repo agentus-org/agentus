@@ -454,7 +454,16 @@ const agent = () => ({
     // 静默无效。驾驶舱必须因此回答「没停住」，不能报成功（#108）。
     if (process.env.MOCK_IGNORE_CANCEL === "1") return;
     const s = sessions.get(sessionId);
-    if (s) s.cancelled = true;
+    if (!s) return;
+    // MOCK_CANCEL_LAG_MS —— 硬中断在**回合边界**生效，不在收到帧时生效（#109）：真 agent 要等当前
+    // 这一步（工具调用/流）返回才看得到中断标志，实测 ~9s。lag 窗口内这一轮照跑、租约照在，之后
+    // 才像真 agent 一样结束 —— sweep 靠它复现「停成功了，但 2.5s 的窗口里看不出来」。
+    const lag = Number(process.env.MOCK_CANCEL_LAG_MS || 0);
+    if (lag > 0) {
+      setTimeout(() => { s.cancelled = true; }, lag).unref?.();
+      return;
+    }
+    s.cancelled = true;
     leaseClear(sessionId);
   },
 
