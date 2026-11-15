@@ -591,10 +591,14 @@ if (cmd === "capabilities") {
           ? (body?.closed ? "its agent process is stopped and the slot is cold; the transcript is untouched." : "nothing was running: the slot was already cold.")
           : body?.stopped
             ? `the turn was cancelled${body?.woke ? " (the slot had to be woken first)" : ""}; the words it had already produced stay in the transcript.`
-            // #108: 「发出去了」不是「停了」。这条回执必须和服务器说的是同一件事 —— 以前这里一律说
-            // 「没有回合在跑」，而真实情况是那一轮还在 agent 里跑。
-            : body?.code === "cancel_unconfirmed"
-              ? "the stop was sent, but the agent's turn did not end — it is STILL RUNNING. Retry, or close the slot."
+            // #109: 送达了但还没走到回合边界（硬中断要等当前这一步返回，实测 ~9s）。这不是失败，
+            // 也不能写成「还在跑」—— 那样操作者会再点几次，每次都在同一个窗口里被判负。
+            : body?.code === "cancel_pending"
+              ? "the stop was delivered; the turn ends as soon as the step it is in finishes. Nothing more to do."
+              // #108: 「发出去了」不是「停了」。这条回执必须和服务器说的是同一件事 —— 以前这里一律说
+              // 「没有回合在跑」，而真实情况是那一轮还在 agent 里跑。
+              : body?.code === "cancel_unconfirmed"
+              ? "the stop could NOT be delivered to the agent — the turn is still running. Retry, or close the slot."
               : "no turn was running — nothing was interrupted.",
       },
     });

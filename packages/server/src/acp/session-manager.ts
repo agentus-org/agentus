@@ -208,7 +208,19 @@ const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETR
 
 /** 按下「停」之后等这一轮真的结束多久 (#107/#108)。cancel 只是「发出去了」，租约清掉才是「停了」；
  *  过了这个窗口还没清，就老实回答 unconfirmed，不许报成功。 */
+/** How long a stop request is allowed to BLOCK before answering.
+ *
+ *  It is not "how long the interrupt takes": a hard interrupt only lands at the turn's boundary —
+ *  the tool call, the LLM stream or the command the agent is inside has to return first, and that
+ *  latency is measured in seconds (issue #109: ~9 s for a `sleep 240`), so waiting it out inline
+ *  would park an HTTP request for ten seconds and the page's ack budget would expire meanwhile.
+ *  The receipt therefore goes out after this short window, and `#watchStopSettles` keeps waiting
+ *  in the background. What must NOT happen is calling that short wait a verdict. */
 const STOP_SETTLE_MS = Number(process.env.AGENTUS_STOP_SETTLE_MS || 2500);
+/** How long that background watcher keeps watching for the turn boundary (~3 min covers a long
+ *  tool call; past it the answer is "the agent never reached a boundary", which is a log line, not
+ *  a receipt — the operator still sees a busy slot with a stop button). */
+const STOP_WATCH_MS = Number(process.env.AGENTUS_STOP_WATCH_MS || 180_000);
 
 /** 退出时等被打断的那一轮收尾多久。短而硬：关机不许被一个不吭声的 agent 拖住。 */
 const SHUTDOWN_CANCEL_WAIT_MS = Number(process.env.AGENTUS_SHUTDOWN_CANCEL_WAIT_MS || 1200);
@@ -216,6 +228,18 @@ const SHUTDOWN_CANCEL_WAIT_MS = Number(process.env.AGENTUS_SHUTDOWN_CANCEL_WAIT_
 /** resume 的两个额外开关：`replace` 是 restart 换进程，`takeover` 是操作者的「停」——后者允许越过租约
  *  闸门，因为等别人起的那一轮自然结束是无上限的，而停必须现在生效 (#107)。 */
 type ResumeOpts = { replace?: boolean; takeover?: boolean };
+
+/** What a stop request can truthfully say, kept as four distinct answers because collapsing any two
+ *  of them is what produced #107 (silent no-op), #108 (success that never happened) and #109 (a
+ *  failure that never happened):
+ *
+ *   `stopped`          the lease is gone — the turn really ended
+ *   `stopping`         the cancel reached the agent; the turn ends at its next boundary (a few
+ *                      seconds while a tool call unwinds). Watched in the background, never called
+ *                      a verdict.
+ *   `nothing_running`  there was no turn to interrupt
+ *   `unconfirmed`      nothing was delivered (the slot could not be woken, the send failed) */
+export type StopOutcome = { status: "stopped" | "stopping" | "nothing_running" | "unconfirmed"; woke: boolean };
 
 /** The agent's config option that carries the same decision as the mode selector (#234). Its own
  *  value vocabulary (`ask` / `workspace_session` / `session`) is the POLICY; the selector speaks mode
@@ -535,6 +559,9 @@ export class SessionManager {
   #busyRetries = new Map<string, NodeJS.Timeout>();
   #store: Store;
   #emit: Emitter;
+  /** Sessions whose stop was delivered but not yet confirmed — one watcher each, so repeated stops
+   *  do not stack pollers. */
+  #stopWatchers = new Set<string>();
   /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
    *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
    *  turn with no restart and no session to hibernate. */
@@ -2438,14 +2465,20 @@ export class SessionManager {
    *      `stopped:true`（#108 假成功）。
    *   3. **什么都没有**：老实说没有。
    */
-  async stopTurn(id: string): Promise<{ status: "stopped" | "nothing_running" | "unconfirmed"; woke: boolean }> {
+  async stopTurn(id: string): Promise<StopOutcome> {
     const live = this.#sessions.get(id);
     if (live?.busy && live.conn && live.info.acpSessionId) {
       await this.cancel(id);
-      const gone = await this.#awaitTurnGone(id, STOP_SETTLE_MS);
-      if (gone) return { status: "stopped", woke: false };
-      console.log(`[agentus] stop ${id}: our cancel did not end the turn within ${STOP_SETTLE_MS}ms`);
-      return { status: "unconfirmed", woke: false };
+      if (await this.#awaitTurnGone(id, STOP_SETTLE_MS)) return { status: "stopped", woke: false };
+      // Delivered, but a turn boundary is still ahead of us (#109). Waiting longer inline would
+      // hold the request for as long as the agent's current tool call runs, so answer "delivered,
+      // ending at its next step" and let the watcher report the end when it lands.
+      console.log(
+        `[agentus] stop ${id}: cancel delivered; the turn is still inside its current step ` +
+          `after ${STOP_SETTLE_MS}ms — watching the lease instead of calling it a failure`,
+      );
+      this.#watchStopSettles(id);
+      return { status: "stopping", woke: false };
     }
     const eta = this.#busyEta(id);
     // 判据是「租约行还在」，不是「还没到期」：TTL 只是预告（实测 540s、回合中途不续期），
@@ -2462,6 +2495,8 @@ export class SessionManager {
         await this.resume(id, { takeover: true });
         woke = true;
       } catch (err) {
+        // `unconfirmed` keeps its narrow meaning: NOTHING was delivered. Everything that did
+        // reach the agent is `stopping` at worst (#109).
         console.log(`[agentus] stop ${id}: waking the slot failed (${errMessage(err)})`);
         return { status: "unconfirmed", woke: false };
       }
@@ -2477,11 +2512,19 @@ export class SessionManager {
       `[agentus] stop ${id}: interrupting a turn this cockpit did not start ` +
         `(${eta?.holder || "unknown holder"})${woke ? ", after waking the slot" : ""}`,
     );
+    let delivered = true;
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch((err: unknown) => {
+      delivered = false;
       console.log(`[agentus] stop ${id}: session/cancel failed (${errMessage(err)})`);
     });
-    const gone = await this.#awaitTurnGone(id, STOP_SETTLE_MS);
-    return { status: gone ? "stopped" : "unconfirmed", woke };
+    if (!delivered) return { status: "unconfirmed", woke };
+    if (await this.#awaitTurnGone(id, STOP_SETTLE_MS)) return { status: "stopped", woke };
+    console.log(
+      `[agentus] stop ${id}: cancel delivered to a turn this cockpit did not start; still inside ` +
+        `its current step after ${STOP_SETTLE_MS}ms — watching the lease`,
+    );
+    this.#watchStopSettles(id);
+    return { status: "stopping", woke };
   }
 
   /** 停完之后只认租约：那一轮可能不是我们起的，`turn-end` 帧不一定到我们这里，租约一定会清。
@@ -2496,6 +2539,57 @@ export class SessionManager {
       if (Date.now() >= until) return false;
       await new Promise((r) => setTimeout(r, 120));
     }
+  }
+
+  /** Keep watching a stop that was delivered but has not landed yet (#109).
+   *
+   *  The point is not to produce another receipt — the caller already answered `stopping`. It is to
+   *  (a) put the truth in the log the moment the turn boundary arrives, and (b) refresh the rail so
+   *  a slot the operator just stopped stops looking busy. For a turn this cockpit did not submit
+   *  there may be no `turn-end` frame at all (the owner is another surface), so the lease going
+   *  away is the only signal we get. */
+  #watchStopSettles(id: string): void {
+    if (this.#stopWatchers.has(id)) return;
+    this.#stopWatchers.add(id);
+    const startedAt = Date.now();
+    void (async () => {
+      try {
+        for (;;) {
+          if (await this.#awaitTurnGone(id, 500)) {
+            console.log(
+              `[agentus] stop ${id}: the turn reached its boundary and ended after ` +
+                `${Math.round((Date.now() - startedAt) / 100) / 10}s`,
+            );
+            this.#emitSessions();
+            return;
+          }
+          if (Date.now() - startedAt >= STOP_WATCH_MS) {
+            // Patience ran out: this is now evidence, not a clock reading. Either the turn is stuck
+            // inside something that never returns, or the adapter ignored the cancel outright
+            // (#108). Say it in the transcript — the receipt already said "delivered", and the
+            // operator must not be left believing a stop that never happens.
+            console.log(
+              `[agentus] stop ${id}: still running ${Math.round(STOP_WATCH_MS / 1000)}s after the ` +
+                `cancel was delivered — the agent has not reached a turn boundary`,
+            );
+            // Written to the transcript, not only pushed: a stop that never happens is exactly the
+            // thing that has to survive a page reload (#108 was about being told otherwise), and a
+            // transient toast is the easy thing to miss.
+            const note = this.#store.appendNote(id, {
+              category: "stop",
+              text:
+                "the stop was delivered, but the agent never reached a turn boundary — the turn is " +
+                "still running. Retry the stop, or close the slot.",
+            });
+            this.#emit({ t: "message", message: note });
+            this.#emitSessions();
+            return;
+          }
+        }
+      } finally {
+        this.#stopWatchers.delete(id);
+      }
+    })();
   }
 
   /**

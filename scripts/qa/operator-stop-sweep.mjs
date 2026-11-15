@@ -257,6 +257,55 @@ check("#104 web: the auto-drain hands over WITHOUT `interrupt: true` (it would c
   Boolean(drainBlock) && !/interrupt:\s*true/.test(drainCode),
   drainBlock ? (drainCode.match(/interrupt:\s*true/) ? "still sends interrupt" : "plain hand-off") : "drainQueue not found");
 
+// ---- ②f #109：停成功了，但 2.5 s 的窗口里看不出来 --------------------------------
+// 硬中断在**回合边界**生效：真 agent 要等当前这一步（工具调用 / 流）返回才看得到它，实测 ~9 s。
+// 用 `MOCK_CANCEL_LAG_MS` 复刻这段延迟（> STOP_SETTLE_MS），断言回执说的是「已送达」而不是
+// 「还在跑」，并且租约最终真的消失 —— 旧码（0.23.0）在同一形状下回的是 `cancel_unconfirmed`。
+const L = await boot({ MOCK_CANCEL_LAG_MS: "6000" });
+const lagSlot = await createSession(L, "回合边界之前的停");
+const sent = await L.api(`/api/sessions/${lagSlot.id}/prompt`, {
+  method: "POST", body: JSON.stringify({ text: "[hold:30000] 停要等这一步结束" }),
+});
+let lagHeld = false;
+for (let i = 0; i < 60; i++) {
+  if (await leaseOf(L, lagSlot.acpSessionId)) { lagHeld = true; break; }
+  await sleep(150);
+}
+check("the turn really is running before the stop (#109 setup)", lagHeld,
+  `${sent.status} lease=${JSON.stringify(await leaseOf(L, lagSlot.acpSessionId))}`);
+const lagStop = await stopCockpit(L, lagSlot.id);
+check("a stop delivered inside the turn's own step answers `cancel_pending`, NOT `cancel_unconfirmed`",
+  lagStop.body?.code === "cancel_pending" && lagStop.body?.stopped === false,
+  `${lagStop.status} ${JSON.stringify(lagStop.body)?.slice(0, 160)}`);
+check("…and the message does not claim the turn is still running",
+  typeof lagStop.body?.message === "string" && !/still running/i.test(lagStop.body.message),
+  String(lagStop.body?.message).slice(0, 120));
+// CLI 那一层说的必须是同一件事：操作者看到的是它的 note。
+const cliStop = (() => {
+  try {
+    return execFileSync(process.execPath, [path.join(ROOT, "bin/cli.mjs"), "session", "stop", lagSlot.id], {
+      encoding: "utf8",
+      env: { ...process.env, AGENTUS_DATA: L.dataDir, AGENTUS_ENDPOINT: L.base,
+        HERMES_SESSION_CHAT_ID: "", HERMES_SESSION_ID: "", AGENTUS_SESSION_ROLE: "", AGENTUS_COCKPIT_TOKEN: "" },
+    });
+  } catch (e) { return String(e?.stdout ?? "") + String(e?.stderr ?? ""); }
+})();
+const cliNote = (() => { try { return JSON.parse(cliStop).meta?.note ?? ""; } catch { return cliStop; } })();
+check("#109 the CLI note says the stop was delivered and not that it is STILL RUNNING",
+  /delivered/i.test(cliNote) && !/STILL RUNNING/i.test(cliNote), String(cliNote).slice(0, 120));
+let lagGone = false;
+for (let i = 0; i < 80; i++) {
+  if (!(await leaseOf(L, lagSlot.acpSessionId))) { lagGone = true; break; }
+  await sleep(250);
+}
+check("…and the turn does reach its boundary: the lease goes away without a second stop",
+  lagGone, JSON.stringify(await leaseOf(L, lagSlot.acpSessionId)));
+const afterLag = await stopCockpit(L, lagSlot.id);
+check("a second stop after it ended reports `nothing_running` (no phantom turn)",
+  afterLag.body?.code === undefined && /no turn was running/i.test(String(afterLag.body?.message)),
+  JSON.stringify(afterLag.body)?.slice(0, 140));
+L.kill();
+
 // ---- ③ #104：同一条队列行只跑一次 --------------------------------------------------
 const dedupeSlot = await createSession(A, "队列行幂等");
 const rowId = `row-${Date.now()}`;
@@ -298,18 +347,35 @@ check("…and that turn finished normally (turn-usage recorded)", turnCompleted,
   turnCompleted ? "" : "no turn-usage row: the turn never completed");
 
 // ══ 实例二：agent 不认这一停（0.22.17 及更早）══════════════════════════════════════════
-const B = await boot({ MOCK_IGNORE_CANCEL: "1" });
+// #109 之后，「送达但还没结束」和「agent 根本不认」在 2.5 s 这一刻是**同一件事**，谁也判不出来 ——
+// 硬中断要等回合边界。所以立即回执只能是 `cancel_pending`（诚实），把判负的活儿交给后台观察者：
+// 把耐心窗口压到 4 s，让它在租约一直不消失时开口写一条「它还在跑」。
+const B = await boot({ MOCK_IGNORE_CANCEL: "1", AGENTUS_STOP_WATCH_MS: "4000" });
 const deafSlot = await createSession(B, "agent 不认这一停");
-await B.api(`/api/sessions/${deafSlot.id}/prompt`, { method: "POST", body: JSON.stringify({ text: "[hold:6000] 停不掉的一轮" }) });
+await B.api(`/api/sessions/${deafSlot.id}/prompt`, { method: "POST", body: JSON.stringify({ text: "[hold:30000] 停不掉的一轮" }) });
 for (let i = 0; i < 40; i++) {
   if (await leaseOf(B, deafSlot.acpSessionId)) break;
   await sleep(150);
 }
 const lied = await stopCockpit(B, deafSlot.id);
-check("when the agent does NOT honour the stop, the cockpit says so instead of reporting success (#108)",
-  lied.body?.stopped === false && lied.body?.code === "cancel_unconfirmed", JSON.stringify(lied.body));
+check("a stop the agent may be ignoring is never reported as success (#108): stopped stays false",
+  lied.body?.stopped === false, JSON.stringify(lied.body));
+check("…and it is not called a failure either — the receipt only says the cancel was delivered (#109)",
+  lied.body?.code === "cancel_pending", JSON.stringify(lied.body?.code));
 check("…and the lease is still held, i.e. the turn really is still running",
   Boolean(await leaseOf(B, deafSlot.acpSessionId)), JSON.stringify(await leaseOf(B, deafSlot.acpSessionId)));
+// 观察者的耐心用完之后必须把话说清（否则「已送达」就成了新的沉默）。
+let gaveUp = "";
+for (let i = 0; i < 40; i++) {
+  const { body } = await B.api(`/api/sessions/${deafSlot.id}/messages`);
+  const rows = Array.isArray(body) ? body : (body?.messages ?? body?.rows ?? []);
+  // 落库的是 note（`appendNote`），不是只推一次的 meta —— 刷新页面后它还得在。
+  const hit = rows.filter((m) => /never reached a turn boundary/i.test(String(m?.payload?.text ?? "")));
+  if (hit.length) { gaveUp = String(hit.at(-1)?.payload?.text ?? ""); break; }
+  await sleep(250);
+}
+check("…and when its patience runs out, the transcript says the turn is still running (#108)",
+  gaveUp.length > 0, gaveUp || "no giving-up note appeared");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 A.kill();
