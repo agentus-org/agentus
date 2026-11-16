@@ -26,7 +26,7 @@ import * as ide from "./ide/proxy.js";
 import { terms } from "./term.js";
 import { VoiceError, listVoiceModels, setHotwordSource, synthesize, transcribe, voiceCapabilities } from "./voice.js";
 import { dictationContext, hotwordsFor, vocabularyOf } from "./hotwords.js";
-import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech } from "./dashscope.js";
+import { DashscopeTtsConnection, openDashscopeStream, summarizeForSpeech, summaryReasoningEffort } from "./dashscope.js";
 import { bridgeTitle, buildBridgeEnvelope } from "./bridge.js";
 import {
   SUMMARY_CHARS_RANGE, SUMMARY_MODEL_DEFAULT, SUMMARY_PROMPT_DEFAULT,
@@ -2453,6 +2453,8 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
             // a little reasoning reads the sentence better than none, and 200 keeps it from
             // wandering the way the default 4000 did (measured 235 output tokens on a 40-char ask).
             thinkingBudget: /^qwen3/i.test(model) ? SUMMARY_THINKING_BUDGET : undefined,
+            // A side call whose answer is a few spoken sentences: no thinking budget on TokenHub Hy.
+            reasoningEffort: summaryReasoningEffort(own.route?.provider),
             endpoint: own.route ? { baseUrl: own.route.baseUrl, apiKey: own.route.apiKey } : undefined,
           });
           // Newlines are the one thing the model keeps ignoring: 「不要换行」 in the prompt is a
