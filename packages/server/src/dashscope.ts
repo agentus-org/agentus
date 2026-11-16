@@ -683,6 +683,21 @@ export function openDashscopeStream(opts: {
 }
 
 /**
+ * Providers whose summary chat would otherwise spend the whole output budget on reasoning.
+ *
+ * TokenHub's Hy models answer a 120-token rewrite with >2000 characters of `reasoning_content`
+ * by default, leaving `content` empty and `finish_reason=length` (measured 2026-11-16 on
+ * `hy4-flash`). The summary is a side call whose only job is a few speakable sentences: thinking
+ * adds cost and here it adds failure. The knob is kept in one place so the caller cannot forget
+ * it, and qwen3's `thinking_budget` path stays untouched (vendors reject the two together).
+ */
+const THINKING_FREE_SUMMARY_PROVIDERS: ReadonlySet<string> = new Set(["tencent-tokenhub"]);
+
+export function summaryReasoningEffort(provider: string | undefined): string | undefined {
+  return provider && THINKING_FREE_SUMMARY_PROVIDERS.has(provider) ? "none" : undefined;
+}
+
+/**
  * 语音总结: one message in, a few spoken sentences out.
  *
  * Same door as batch ASR (`{compat}/chat/completions`) with the audio block swapped for text, so
@@ -713,6 +728,9 @@ export async function summarizeForSpeech(opts: {
    *  (issue #83) has no 字数档 to derive from — it asks for a share of the input instead, because a
    *  budget derived from 字数 would make the model summarise a long message back into a short one. */
   maxOutputTokens?: number;
+  /** OpenAI-compat `reasoning_effort` for providers whose default thinking eats the answer's
+   *  budget (TokenHub Hy). Never sent together with ``thinkingBudget`` — vendors reject the pair. */
+  reasoningEffort?: string;
 }): Promise<{ text: string; ms: number }> {
   const { key, compat } = opts.endpoint
     ? { key: opts.endpoint.apiKey, compat: opts.endpoint.baseUrl.replace(/\/+$/, "") }
@@ -745,6 +763,12 @@ export async function summarizeForSpeech(opts: {
         // must never travel together (the vendor rejects the pair), so this is the only knob.
         ...(opts.thinkingBudget
           ? { enable_thinking: true, thinking_budget: opts.thinkingBudget }
+          : {}),
+        // TokenHub Hy: default thinking burns the whole 1200-token budget (2081 reasoning chars,
+        // empty content, finish_reason=length). `none` is accepted by the vendor and makes the
+        // summary a 7-token answer; never paired with thinking_budget (vendor rejects the pair).
+        ...(opts.reasoningEffort && !opts.thinkingBudget
+          ? { reasoning_effort: opts.reasoningEffort }
           : {}),
       }),
       signal: ac.signal,

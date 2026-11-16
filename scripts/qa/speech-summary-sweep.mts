@@ -22,7 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const { summarizeForSpeech } = await import("../../packages/server/src/dashscope.ts");
+const { summarizeForSpeech, summaryReasoningEffort } = await import("../../packages/server/src/dashscope.ts");
 const { routeForModel } = await import("../../packages/server/src/speech/route.ts");
 const settings = await import("../../packages/server/src/settings.ts");
 const { SUMMARY_MODEL_DEFAULT, SUMMARY_THINKING_BUDGET, SUMMARY_MAX_INPUT_CHARS } = settings;
@@ -46,10 +46,21 @@ const stub = http.createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {
-    try { seen.push(JSON.parse(raw) as Body); } catch { seen.push({}); }
+    let body: Body = {};
+    try { body = JSON.parse(raw) as Body; } catch { body = {}; }
+    seen.push(body);
     if (stubStatus !== 200) {
       res.writeHead(stubStatus, { "content-type": "application/json" });
       res.end(JSON.stringify({ code: "model_not_allowed", error: "model_not_allowed: qwen3.8-flash" }));
+      return;
+    }
+    // Reproduce the real TokenHub Hy shape: default thinking eats the whole output budget,
+    // leaving content empty with finish_reason=length. `reasoning_effort: none` avoids it.
+    if (String(body.model ?? "").startsWith("hy4") && body.reasoning_effort !== "none") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{ message: { content: "", reasoning_content: "推理".repeat(1040) }, finish_reason: "length" }],
+      }));
       return;
     }
     res.writeHead(200, { "content-type": "application/json" });
@@ -63,16 +74,17 @@ const addr = stub.address();
 const baseUrl = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
 
 /** Run one summarize call and hand back the request body it actually put on the wire. */
-async function call(text: string, thinkingBudget?: number): Promise<{ body: Body; input: string; out: string; result: Record<string, unknown> }> {
+async function call(text: string, thinkingBudget?: number, reasoningEffort?: string, model = "qwen3.8-flash"): Promise<{ body: Body; input: string; out: string; result: Record<string, unknown> }> {
   seen.length = 0;
   const r = await summarizeForSpeech({
     text,
     maxChars: 120,
     prompt: "把下面这段压成 {maxChars} 字以内",
-    model: "qwen3.8-flash",
+    model,
     timeoutSec: 10,
     endpoint: { baseUrl, apiKey: "sk-stub" },
     ...(thinkingBudget === undefined ? {} : { thinkingBudget }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   });
   const body = seen[0] ?? {};
   const messages = (body.messages ?? []) as { role: string; content: string }[];
@@ -106,6 +118,33 @@ check("不把 reasoning_effort 一起发（厂商会拒这一对）", !("reasoni
 const plain = await call("一段需要压成口播的话。");
 check("非 qwen3 模型不带思考字段", !("enable_thinking" in plain.body) && !("thinking_budget" in plain.body));
 check("非 qwen3 也走 max_completion_tokens", !("max_tokens" in plain.body) && Number(plain.body.max_completion_tokens) >= 1200);
+
+// ---- 2b) TokenHub Hy: default thinking eats the answer's budget ---------------------------
+check("只有 TokenHub 需要关思考", summaryReasoningEffort("tencent-tokenhub") === "none"
+  && summaryReasoningEffort("deepseek") === undefined
+  && summaryReasoningEffort(undefined) === undefined,
+  String(summaryReasoningEffort("tencent-tokenhub")));
+
+// The stub answers a hy4 call with empty content + finish_reason=length unless the knob is sent.
+let hungryFailure = "";
+try { await call("一段需要压成口播的话。", undefined, undefined, "hy4-flash"); }
+catch (e) { hungryFailure = String((e as Error).message); }
+check("旧形状复现：hy4 默认思考会报「预算被推理吃光」", /预算被推理吃光/.test(hungryFailure), hungryFailure);
+
+const hy = await call("一段需要压成口播的话。", undefined, summaryReasoningEffort("tencent-tokenhub"), "hy4-flash");
+check("TokenHub 请求带 reasoning_effort=none", hy.body.reasoning_effort === "none", String(hy.body.reasoning_effort));
+check("关掉思考后拿到可见答案", hy.out === "这是摘要。", hy.out);
+
+seen.length = 0;
+await summarizeForSpeech({
+  text: "一段需要压成口播的话。", maxChars: 120, prompt: "{maxChars} 字",
+  model: "qwen3.8-flash", timeoutSec: 10,
+  endpoint: { baseUrl, apiKey: "sk-stub" },
+  thinkingBudget: 200, reasoningEffort: "none",
+});
+check("reasoning_effort 不与 thinking_budget 同发（厂商拒这一对）",
+  !("reasoning_effort" in (seen[0] ?? {})) && seen[0]?.thinking_budget === 200,
+  Object.keys(seen[0] ?? {}).join(","));
 
 // (the stub stays up: §5 below asks it to answer 403)
 
