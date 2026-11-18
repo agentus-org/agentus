@@ -874,6 +874,62 @@ const agent = () => ({
       return { stopReason: "end_turn" };
     }
 
+    // `[latest-probe]` — 钉住通话朗读的「最新优先」：三段文字接连到达，段1第一句还在念时
+    // 段2、段3先后到达。期望只念段1第一句（in flight 的不打断）+ 段3两句；段1第二句和
+    // 整个段2 都在等待区被丢弃。三条 messageId = 三条独立消息 -> 三次 agentKey 变化。
+    // QA only。
+    // `[bed-cycle]` — 和弦红绿：先说一句完整的话（喇叭中、bed 灭），句子念完后转一个长工具
+    // 窗口（回合仍 busy、phase 卡 speaking，这期间 bed 该回来），最后一句收尾。
+    // 判据在 QA 里读真实 __sfx.bedPlaying()：说话中=false，工具静默期=true。
+    if (/\[bed-cycle\]/.test(text)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `bed-first-${sessionId}`,
+        content: { type: "text", text: "我先把这句话完整地说完。" },
+      });
+      await sleep(2200);                                  // 让 TTS 把第一句念完，喇叭转 idle
+      const id = `tc-${sessionId}-bed-cycle`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "read_file docs/notes.md", kind: "read", status: "in_progress",
+        rawInput: { path: "docs/notes.md" },
+      });
+      await sleep(3500);                                  // 工具静默期：busy 仍 true，bed 该响
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "42 lines",
+      });
+      await sleep(200);
+      return { stopReason: "end_turn" };
+    }
+
+    if (/\[latest-probe\]/.test(text)) {
+      const a1 = `甲段第一句AAA这是足够长的第一句话用来避免短句粘连。`;
+      const a2 = `甲段第二句AAA这句必须被下一段丢掉不要念出来。`;
+      const b = `乙段第一句BBB这整段都要被第三段覆盖不要念。`;
+      const c1 = `丙段第一句CCC这是最终段的第一句话。`;
+      const c2 = `丙段第二句CCC这是最终段的第二句话。`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-a-${sessionId}`,
+        content: { type: "text", text: `${a1}${a2}` },
+      });
+      await sleep(1500);                                 // reader has shifted a1 to the speaker; a1 now in flight
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-b-${sessionId}`,
+        content: { type: "text", text: b },
+      });
+      await sleep(900);                                  // a1 STILL speaking (3s clip); b sits in the waiting slot
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-c-${sessionId}`,
+        content: { type: "text", text: `${c1}${c2}` },
+      });
+      await sleep(500);
+      return { stopReason: "end_turn" };
+    }
+
     if (wantThink) {
       // ONE `messageId` per burst, like the real adapter sends: ACP gives every chunk of one
       // thought block the same id, and the cockpit/server coalesce on it (`block_key`). A mock

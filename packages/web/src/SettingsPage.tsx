@@ -17,7 +17,7 @@ import { NotifySettings } from "./NotifySettings";
 import { TrustCard } from "./TrustCard";
 import { WebNotifySettings } from "./WebNotifySettings";
 import { BackendsPanel } from "./BackendsPanel";
-import { getBedLevel, loadSfx, playCut, previewBed, setBedLevel, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
+import { getBedLevel, loadSfx, playCut, previewBed, previewWork, setBedLevel, sfxStatus, unlockAudio as unlockSfxAudio } from "./sfx";
 import {
   dictation, getVoicePrefs, loadVoiceCaps, NO_CAPS, playBlob, unlockAudio, useDictation,
   useVoicePrefs, voiceCaps, type VoiceCaps, type VoicePrefs,
@@ -1418,7 +1418,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         <section className="set-card" id="set-sfx" data-setgroup="voice">
           <h3>通话状态音</h3>
           <p className="set-hint">
-            它干活的时候有一点很轻的底音，它开口说话就停；你打断它的时候响一声短的。
+            它干活的时候有一点很轻的底音和敲键盘声，它开口说话就停；你打断它的时候响一声短的。
             这里放的和通话里放的是同一份素材、同一个音频上下文，所以这里能听到、通话里就该能听到。
           </p>
           <div className="set-row">
@@ -1452,6 +1452,21 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
               }}
             >
               试听背景音（3 秒）
+            </button>
+            <button
+              type="button"
+              className="set-btn"
+              onClick={() => {
+                unlockSfxAudio();
+                setSfxNote("正在解码…");
+                void loadSfx().then(() => {
+                  const st = sfxStatus();
+                  previewWork(3);
+                  setSfxNote(`上下文 ${st.ctxState} · 通道 ${st.channel} · 工作音 ${st.work ? st.work.toFixed(1) + "s" : "没解码"}${st.error ? " · 错误：" + st.error : ""}`);
+                });
+              }}
+            >
+              试听敲键盘声（3 秒）
             </button>
             <button
               type="button"

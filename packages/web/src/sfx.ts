@@ -16,13 +16,19 @@
  *  所以两件事同时做 —— 分别解码、各自记错、备一份 mp3。 */
 const BED_URLS = ["/sfx/thinking.m4a", "/sfx/thinking.mp3"];
 const CUT_URL = "/sfx/interrupt.wav";
+/** 工作音（工具执行时的敲键盘哒哒声）。操作者从 3 个候选里选定 R2（密集单键）。
+ *  素材说明：来自 mechvibes-classic-pack 的单个按键录音拼接，操作者知情接受授权风险后拍板
+ *  （判断"只是下载单个声音"）。若日后要公开发布/商用，需替换成明确授权的音源。 */
+const WORK_URL = "/sfx/work-buzz.wav";
 
 let ctx: AudioContext | null = null;
 let bedBuf: AudioBuffer | null = null;
 let cutBuf: AudioBuffer | null = null;
+let workBuf: AudioBuffer | null = null;
 let error = "";
 let loading: Promise<void> | null = null;
 let bed: { gain: GainNode; src: AudioBufferSourceNode | null } | null = null;
+let work: { gain: GainNode; src: AudioBufferSourceNode | null } | null = null;
 let preview: AudioBufferSourceNode | null = null;
 
 type Ctor = typeof AudioContext;
@@ -85,19 +91,23 @@ export function loadSfx(): Promise<void> {
     grab(CUT_URL).then((k) => { cutBuf = k; }).catch((e) => {
       fails.push(`${CUT_URL}: ${String((e as Error)?.message ?? e)}`);
     }),
+    grab(WORK_URL).then((w) => { workBuf = w; }).catch((e) => {
+      fails.push(`${WORK_URL}: ${String((e as Error)?.message ?? e)}`);
+    }),
   ]).then(() => {
     error = fails.join(" | ");
-    if (!bedBuf || !cutBuf) loading = null;   // 允许下次再试（比如换了网络/换了浏览器）
+    if (!bedBuf || !cutBuf || !workBuf) loading = null;   // 允许下次再试（比如换了网络/换了浏览器）
   });
   return loading;
 }
 
-export function sfxStatus(): { ctxState: string; bed: number | null; cut: number | null; error: string; channel: string } {
+export function sfxStatus(): { ctxState: string; bed: number | null; cut: number | null; work: number | null; error: string; channel: string } {
   const c = audioCtx();
   return {
     ctxState: c ? c.state : "unavailable",
     bed: bedBuf ? bedBuf.duration : null,
     cut: cutBuf ? cutBuf.duration : null,
+    work: workBuf ? workBuf.duration : null,
     error,
     channel: channel(),
   };
@@ -132,8 +142,8 @@ export function channel(): "webaudio" | "element" | "none" {
   return "none";
 }
 
-export function ready(): { bed: AudioBuffer | null; cut: AudioBuffer | null } {
-  return { bed: bedBuf, cut: cutBuf };
+export function ready(): { bed: AudioBuffer | null; cut: AudioBuffer | null; work: AudioBuffer | null } {
+  return { bed: bedBuf, cut: cutBuf, work: workBuf };
 }
 
 /** 打断音：一声 0.3 秒的短促提示。语义是「停」，不是「叮咚」。 */
@@ -224,6 +234,72 @@ export function bedPlaying(): boolean {
   return Boolean(bed && bed.src) || Boolean(bedEl && !bedEl.paused);
 }
 
+/** 工作音电平：它叠在和弦上、只是"有人在干活"的底色，比和弦还轻一档。 */
+const WORK_LEVEL = 0.28;
+
+/** 工具执行时循环播放的敲键盘声。和 setBed 一样幂等：want=true 已在播就不重建 source。
+ *  一开口就由调用方 setWork(false) 淡出 —— 敲键盘声压过人声比没有更糟。 */
+export function setWork(want: boolean, fadeMs = 300): void {
+  if (!workBuf) return;
+  const c = audioCtx();
+  if (!c) return;
+  if (want) {
+    if (!work) {
+      const gain = c.createGain();
+      gain.gain.value = 0.0001;
+      gain.connect(c.destination);
+      work = { gain, src: null };
+    }
+    if (!work.src) {
+      const src = c.createBufferSource();
+      src.buffer = workBuf;
+      src.loop = true;
+      src.connect(work.gain);
+      src.start();
+      work.src = src;
+    }
+    work.gain.gain.cancelScheduledValues(c.currentTime);
+    work.gain.gain.setValueAtTime(Math.max(0.0001, work.gain.gain.value), c.currentTime);
+    work.gain.gain.exponentialRampToValueAtTime(WORK_LEVEL, c.currentTime + fadeMs / 1000);
+    return;
+  }
+  if (!work) return;
+  const w = work;
+  work = null;
+  try {
+    w.gain.gain.cancelScheduledValues(c.currentTime);
+    w.gain.gain.setValueAtTime(Math.max(0.0001, w.gain.gain.value), c.currentTime);
+    w.gain.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + fadeMs / 1000);
+    const src = w.src;
+    window.setTimeout(() => { try { src?.stop(); } catch { /* already */ } w.gain.disconnect(); }, fadeMs + 80);
+  } catch { /* gone */ }
+}
+
+export function workPlaying(): boolean {
+  return Boolean(work && work.src);
+}
+
+/** 设置页试听：放 3 秒工作音（走真实通道，含淡入淡出）。 */
+export function previewWork(seconds = 3): void {
+  const c = audioCtx();
+  if (!c || !workBuf) return;
+  if (preview) { try { preview.stop(); } catch { /* already */ } preview = null; }
+  try {
+    const src = c.createBufferSource();
+    const g = c.createGain();
+    src.buffer = workBuf;
+    src.loop = true;
+    g.gain.value = 0.0001;
+    src.connect(g).connect(c.destination);
+    g.gain.exponentialRampToValueAtTime(0.5, c.currentTime + 0.15);
+    g.gain.setValueAtTime(0.5, c.currentTime + seconds);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + seconds + 0.2);
+    src.start();
+    src.stop(c.currentTime + seconds + 0.3);
+    preview = src;
+  } catch { /* scheduling refused */ }
+}
+
 /** 设置页的试听：放 3 秒背景音（走真实的 bed 通道，含淡入），停掉后再放打断音。 */
 export function previewBed(seconds = 3): void {
   const c = audioCtx();
@@ -261,6 +337,6 @@ export function previewBed(seconds = 3): void {
 // 通话页里的声音听不见也看不见，没有这个入口只能靠猜（这一轮就是这么耗掉的）。
 if (typeof window !== "undefined") {
   (window as unknown as { __sfx?: unknown }).__sfx = {
-    loadSfx, previewBed, playCut, setBed, sfxStatus, bedPlaying, channel, getBedLevel, setBedLevel,
+    loadSfx, previewBed, previewWork, playCut, setBed, setWork, sfxStatus, bedPlaying, workPlaying, channel, getBedLevel, setBedLevel,
   };
 }

@@ -28,7 +28,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
-import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
+import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, setWork, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { turnUsageText } from "./tokens";
 import { splitSentences } from "./speech";
@@ -766,6 +766,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     if (agentKey !== replyKeyRef.current) {          // a new reply started
       const replacedKey = replyKeyRef.current;       // the reply this one is replacing
       replyKeyRef.current = agentKey;
+      // 最新优先：新段落一到，上一段落里**还没开始念**的句子全部作废。
+      // 队列里此刻只有已经 shift 给 speaker 的那一句还 in flight（不打断，让它念完），
+      // 其余都是等待区——等待区只认最新，这就是聊天页朗读的三条队列规则（speakQueue.ts）。
+      // 不清会把整段回复 FIFO 念到底：文字早刷完了还在从头念，正是他报的现象。
+      // 半句（下面 heldTail）是"正在念这句的尾巴"，属于要念完的那句，仍先念，不在这里丢。
+      queueRef.current = [];
       // The previous reply may still OWE a sentence. A turn that switches to a tool does not end
       // its message: `busy` stays true, so the fragment held back for merging is never flushed —
       // and clearing the queue here dropped it for good, which is exactly the reported
@@ -873,21 +879,39 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     return () => { alive = false; };
   }, []);
 
-  /** 状态音跟着相位走：**thinking 时淡入，一开口说话就淡出**。
-   *  这条规则比"什么时候响"更重要 —— 说话时还垫着底噪，人声会被糊掉，那比没有背景音更差。 */
+  /** 状态音跟着"回合在跑、但喇叭没在出声"走：**思考/调工具/等授权时淡入，一开始念就淡出**。
+   *
+   *  判据不能只看 phase：说完后转工具/思考期间 `busy` 仍为 true，但 reader 只有在 `!busy`
+   *  时才把 phase 从 speaking 调回 listening —— 那段时间 phase 卡在 speaking，旧的
+   *  `phase !== "speaking"` 判据一直是假，和弦只在回合最初响一次（操作者报的现象）。
+   *  改问喇叭的 `spoken.speaking`：speak() 一进一出都会 set 这个 state 并唤醒本 effect。
+   *  句子之间的 false 窗口全在微任务里（withSpeechLock 的 await prev），React 看不到，
+   *  所以整段播报期间和弦持续静音，不会在句间闪。别用 queueRunRef/queueRef 那些 ref ——
+   *  ref 变化不触发重渲染，读它们会和 effect 的重渲染时机打架，反而在该响时不响。 */
   useEffect(() => {
-    // 触发条件不是「thinking 相位」——那个窗口只有几十毫秒（第一段思考一到就转 speaking），
-    // 真正的「在干活」是整轮在跑：思考、调工具、等授权。它一开口说话就停，说完再响。
     // 「有音」的判据是**任一通道可用**，不是 buffer 解码成功：解不开 m4a 的 WebView 上
     // buffer 永远为空，按 buffer 判就把 `<audio>` 兜底也一起关了（见 sfx.ts `bedAvailable`）。
-    const want = (busy || phase === "thinking") && phase !== "speaking" && sfxReady && bedAvailable();
+    const want = (busy || phase === "thinking") && !spoken.speaking && sfxReady && bedAvailable();
     setBed(want);
     (window as unknown as { __callBed?: { playing: boolean; level: number } }).__callBed =
       want ? { playing: true, level: 0.1 } : { playing: false, level: 0 };
-  }, [busy, phase, sfxReady]);
+  }, [busy, phase, spoken.speaking, sfxReady]);
 
   // 离开通话页时别把底噪留在后台
-  useEffect(() => () => { setBed(false, 0); }, []);
+  useEffect(() => () => { setBed(false, 0); setWork(false, 0); }, []);
+
+  /** 工作音（敲键盘）：工具正在执行时叠在和弦上响，人一开口就淡出。
+   *  判据 = 最新一行是 tool 且它还没到终态（completed/success/failed），并且喇叭此刻没在出声。
+   *  不用 faceSubstate —— 它把"busy 但 newest 不是工具"也算成 thinking，分不出"真在跑工具"。
+   *  和和弦共用 spoken.speaking 这个"有没有在出声"信号，所以两者会同起同落、开口一起静。 */
+  const toolStatus = newestTool?.status ?? "";
+  const toolRunning = Boolean(newestTool)
+    && toolStatus !== "completed" && toolStatus !== "success" && toolStatus !== "failed";
+  useEffect(() => {
+    const want = toolRunning && !spoken.speaking && (busy || phase === "thinking") && sfxReady;
+    setWork(want);
+    (window as unknown as { __callWork?: { playing: boolean } }).__callWork = { playing: want };
+  }, [toolRunning, toolStatus, spoken.speaking, busy, phase, sfxReady]);
 
   // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
   // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
