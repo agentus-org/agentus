@@ -34,7 +34,7 @@ import { turnUsageText } from "./tokens";
 import { splitSentences } from "./speech";
 import { BriefPlanner, type Cue } from "./call-brief";
 import { TusFace } from "./TusFace";
-import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, tidyForSpeech, type TusMood, type ToolSubstate } from "./tusMood";
+import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, tidyForSpeech, toolIsTerminal, type TusMood, type ToolSubstate } from "./tusMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
 import {
@@ -899,10 +899,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
    *  !busy 时才调回 listening），spoken.speaking 只在真正出声的那一瞬为 true、句间假静。
    *  两者都让状态音在"话已入队还没念"的窗口钻出来盖住人声 —— 操作者报的就是这个。
    *  现在播报周期由入队/念完/打断的明确事件驱动（playing state），状态音只认它。 */
-  const toolStatus = newestTool?.status ?? "";
-  const toolRunning = Boolean(newestTool)
-    && toolStatus !== "completed" && toolStatus !== "success" && toolStatus !== "failed"
-    && toolStatus !== "done" && toolStatus !== "cancelled";
+  /** 敲键盘声的判据：最后一个工具行还在跑（后面跟了 thought/文本行也算 —— 真实 agent
+   *  边执行边推理，工具帧早就被挤到倒数第二行了，绝不能用 "最后一行是不是工具"）。
+   *  终态名单和脸的子状态统一走 toolIsTerminal，别再各写一份。 */
+  const toolStatus = lastTool?.status ?? "";
+  const toolRunning = Boolean(lastTool) && !toolIsTerminal(toolStatus);
   useEffect(() => {
     // 「有音」判据是任一通道可用，不是 buffer 解码成功（解不开 m4a 的 WebView 上 buffer
     // 为空，按 buffer 判就把 <audio> 兜底一起关了，见 sfx.ts bedAvailable）。

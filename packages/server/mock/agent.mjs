@@ -903,6 +903,37 @@ const agent = () => ({
       return { stopReason: "end_turn" };
     }
 
+    // `[tool-then-text]` — 复现真实 agent：工具 in_progress 期间，最后一行不是工具而是文本帧
+    // （进度播报/未成句的尾巴）。newestTool 认不出来 -> 敲键盘不响；lastTool 才对。
+    if (/\[tool-then-text\]/.test(text)) {
+      const id = `tc-${sessionId}-tool-then-text`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `ttt-${sessionId}`,
+        content: { type: "text", text: "我先把这句话完整地说完。" },
+      });
+      await sleep(2200);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "read_file docs/notes.md", kind: "read", status: "in_progress",
+        rawInput: { path: "docs/notes.md" },
+      });
+      await sleep(300);
+      // 工具还在跑，最后一行变成 thought 帧（真实 agent 边干活边推理就是这样的流）——
+      // 不触发播报/playing，但把 tool 挤到倒数第二行，newestTool 认不出来。
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "我得先看看这份笔记写了什么。" },
+      });
+      await sleep(3500);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "42 lines",
+      });
+      await sleep(200);
+      return { stopReason: "end_turn" };
+    }
+
     if (/\[latest-probe\]/.test(text)) {
       const a1 = `甲段第一句AAA这是足够长的第一句话用来避免短句粘连。`;
       const a2 = `甲段第二句AAA这句必须被下一段丢掉不要念出来。`;

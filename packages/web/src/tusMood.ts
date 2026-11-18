@@ -681,6 +681,15 @@ function toolClassOf(title = "", kind = ""): "reading" | "running" | "writing" {
   return "running";
 }
 
+/** 工具这一行是不是"已经结束了"。工作音（敲键盘）和脸的子状态共用这一份判据 ——
+ *  曾有两份各写各的名单（工作音认 done/cancelled，脸认 error），漂移过。终态就这几种，
+ *  其余（in_progress / pending / 空 / 未知）都当"还在跑"。 */
+export function toolIsTerminal(status?: string): boolean {
+  const s = String(status ?? "").toLowerCase();
+  return s === "completed" || s === "success" || s === "done"
+    || s === "failed" || s === "error" || s === "cancelled";
+}
+
 /**
  * 工具执行的可观测子状态。判据全部来自行本身；`pending > 0`（授权请求还在）优先于
  * 一切 —— 此刻它不是在读也不是在写，是在等你。
@@ -697,7 +706,7 @@ export function substateOf(o: {
   if (!o.busy || o.newestKind !== "tool") return "idle";
   const s = String(o.newestToolStatus ?? "").toLowerCase();
   if (s === "failed" || s === "error" || s === "cancelled") return "failed";
-  if (s === "completed" || s === "success") return "done";
+  if (s === "completed" || s === "success" || s === "done") return "done";
   return toolClassOf(o.newestToolTitle, o.newestToolKind);
 }
 
