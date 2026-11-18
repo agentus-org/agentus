@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const CDP = 'http://127.0.0.1:9222';
+const CDP = process.env.CDP || 'http://127.0.0.1:9222';
 const PORT = Number(process.env.PORT || 8901);
 const BASE = `http://127.0.0.1:${PORT}`;
 const WORK = process.env.FIXTURE_DIR || '/tmp/agentus-qa-files';

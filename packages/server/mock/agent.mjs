@@ -874,6 +874,124 @@ const agent = () => ({
       return { stopReason: "end_turn" };
     }
 
+    // `[latest-probe]` — 钉住通话朗读的「最新优先」：三段文字接连到达，段1第一句还在念时
+    // 段2、段3先后到达。期望只念段1第一句（in flight 的不打断）+ 段3两句；段1第二句和
+    // 整个段2 都在等待区被丢弃。三条 messageId = 三条独立消息 -> 三次 agentKey 变化。
+    // QA only。
+    // `[bed-cycle]` — 和弦红绿：先说一句完整的话（喇叭中、bed 灭），句子念完后转一个长工具
+    // 窗口（回合仍 busy、phase 卡 speaking，这期间 bed 该回来），最后一句收尾。
+    // 判据在 QA 里读真实 __sfx.bedPlaying()：说话中=false，工具静默期=true。
+    // `[short-then-tool]` — 复现操作者的现场：八个字的完整短句 -> 立刻长工具 -> 第二段。
+    // 红：当前代码把短句扣进 heldTail，工具期不念，工具结束+第二段到达才吐出来（迟到、和
+    // 第二段挤在一起），且工具期因为没在播报而哒哒响。绿：工具一进来就把扣着的短句念掉。
+    if (/\[short-then-tool\]/.test(text)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `stt-first-${sessionId}`,
+        content: { type: "text", text: "好，开始干活了。" },
+      });
+      await sleep(400);                                   // 短句到达，被 splitter 扣住
+      const id = `tc-${sessionId}-short-then-tool`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "terminal: sleep 8", kind: "execute", status: "in_progress",
+        rawInput: { command: "sleep 8" },
+      });
+      await sleep(4000);                                  // 长工具期
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "done",
+      });
+      await sleep(300);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `stt-second-${sessionId}`,
+        content: { type: "text", text: "干完了，这是第二段话。" },
+      });
+      await sleep(600);
+      return { stopReason: "end_turn" };
+    }
+
+    if (/\[bed-cycle\]/.test(text)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `bed-first-${sessionId}`,
+        content: { type: "text", text: "我先把这句话完整地说完。" },
+      });
+      await sleep(2200);                                  // 让 TTS 把第一句念完，喇叭转 idle
+      const id = `tc-${sessionId}-bed-cycle`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "read_file docs/notes.md", kind: "read", status: "in_progress",
+        rawInput: { path: "docs/notes.md" },
+      });
+      await sleep(3500);                                  // 工具静默期：busy 仍 true，bed 该响
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "42 lines",
+      });
+      await sleep(200);
+      return { stopReason: "end_turn" };
+    }
+
+    // `[tool-then-text]` — 复现真实 agent：工具 in_progress 期间，最后一行不是工具而是文本帧
+    // （进度播报/未成句的尾巴）。newestTool 认不出来 -> 敲键盘不响；lastTool 才对。
+    if (/\[tool-then-text\]/.test(text)) {
+      const id = `tc-${sessionId}-tool-then-text`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `ttt-${sessionId}`,
+        content: { type: "text", text: "我先把这句话完整地说完。" },
+      });
+      await sleep(2200);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "read_file docs/notes.md", kind: "read", status: "in_progress",
+        rawInput: { path: "docs/notes.md" },
+      });
+      await sleep(300);
+      // 工具还在跑，最后一行变成 thought 帧（真实 agent 边干活边推理就是这样的流）——
+      // 不触发播报/playing，但把 tool 挤到倒数第二行，newestTool 认不出来。
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "我得先看看这份笔记写了什么。" },
+      });
+      await sleep(3500);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "42 lines",
+      });
+      await sleep(200);
+      return { stopReason: "end_turn" };
+    }
+
+    if (/\[latest-probe\]/.test(text)) {
+      const a1 = `甲段第一句AAA这是足够长的第一句话用来避免短句粘连。`;
+      const a2 = `甲段第二句AAA这句必须被下一段丢掉不要念出来。`;
+      const b = `乙段第一句BBB这整段都要被第三段覆盖不要念。`;
+      const c1 = `丙段第一句CCC这是最终段的第一句话。`;
+      const c2 = `丙段第二句CCC这是最终段的第二句话。`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-a-${sessionId}`,
+        content: { type: "text", text: `${a1}${a2}` },
+      });
+      await sleep(1500);                                 // reader has shifted a1 to the speaker; a1 now in flight
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-b-${sessionId}`,
+        content: { type: "text", text: b },
+      });
+      await sleep(900);                                  // a1 STILL speaking (3s clip); b sits in the waiting slot
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `latest-c-${sessionId}`,
+        content: { type: "text", text: `${c1}${c2}` },
+      });
+      await sleep(500);
+      return { stopReason: "end_turn" };
+    }
+
     if (wantThink) {
       // ONE `messageId` per burst, like the real adapter sends: ACP gives every chunk of one
       // thought block the same id, and the cockpit/server coalesce on it (`block_key`). A mock

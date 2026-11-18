@@ -85,11 +85,19 @@ export function localTarget(url: string, base?: string): LocalTarget | null {
   let raw = String(url ?? "").trim();
   if (!raw || raw === "#") return null;
   if (/^file:\/\//i.test(raw)) {
-    raw = decodeURIComponent(raw.replace(/^file:\/\/(?:localhost)?/i, ""));
+    raw = raw.replace(/^file:\/\/(?:localhost)?/i, "");
   } else if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) {
     // http(s), mailto, data:, javascript:, vscode:, x-apple:… — none of them are ours to open
     return null;
   }
+  // markdown-it normalizes link/image targets at PARSE time (mdurl.encode): a non-ASCII path
+  // already arrives here percent-encoded (`%E5%8D%95…`), and so does a space (`%20`). Decode
+  // exactly ONCE before any path test — both to feed the non-ASCII path whitelist below the
+  // real characters, and so rawFileUrl's encodeURIComponent is not the second encode in a
+  // double-encode chain (%25E5…). `file://` used to decode here in its own branch; unifying at
+  // this join point keeps it a single decode for every scheme. A malformed % sequence must not
+  // throw — keep that target as-is rather than dropping the link.
+  try { raw = decodeURIComponent(raw); } catch { /* keep literal % on malformed sequences */ }
   const suffix = LINE_SUFFIX.exec(raw);
   let line: number | undefined;
   if (suffix) {
@@ -179,8 +187,14 @@ md.renderer.rules.image = (tokens, idx, options, env, self) => {
     tokens[idx].attrSet("src", rawFileUrl(local.path));
     tokens[idx].attrSet("loading", "lazy");
     tokens[idx].attrSet("class", "md-img");
-    // click → the raw file in a new tab (full size, right-click still offers save)
-    const alt = tokens[idx].content ?? "";
+    // markdown-it keeps the alt text in token.children (token.content is empty for images), so
+    // without this the custom rule emits `<img alt="">` — Chrome draws no broken-image icon and
+    // no text for an empty alt, leaving only the 1px CSS border = a 2×2 "dot" when the file 404s.
+    // Mirror the stock image rule to fill alt (also fixes accessibility).
+    const alt = tokens[idx].children
+      ? self.renderInlineAsText(tokens[idx].children, options, env)
+      : (tokens[idx].content ?? "");
+    tokens[idx].attrSet("alt", alt);
     const html = self.renderToken(tokens, idx, options);
     return `<a class="md-img-link" href="${md.utils.escapeHtml(rawFileUrl(local.path))}" target="_blank" rel="noopener noreferrer" title="${md.utils.escapeHtml(alt || local.path)}">${html}</a>`;
   }
