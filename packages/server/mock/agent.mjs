@@ -881,6 +881,37 @@ const agent = () => ({
     // `[bed-cycle]` — 和弦红绿：先说一句完整的话（喇叭中、bed 灭），句子念完后转一个长工具
     // 窗口（回合仍 busy、phase 卡 speaking，这期间 bed 该回来），最后一句收尾。
     // 判据在 QA 里读真实 __sfx.bedPlaying()：说话中=false，工具静默期=true。
+    // `[short-then-tool]` — 复现操作者的现场：八个字的完整短句 -> 立刻长工具 -> 第二段。
+    // 红：当前代码把短句扣进 heldTail，工具期不念，工具结束+第二段到达才吐出来（迟到、和
+    // 第二段挤在一起），且工具期因为没在播报而哒哒响。绿：工具一进来就把扣着的短句念掉。
+    if (/\[short-then-tool\]/.test(text)) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `stt-first-${sessionId}`,
+        content: { type: "text", text: "好，开始干活了。" },
+      });
+      await sleep(400);                                   // 短句到达，被 splitter 扣住
+      const id = `tc-${sessionId}-short-then-tool`;
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call", toolCallId: id,
+        title: "terminal: sleep 8", kind: "execute", status: "in_progress",
+        rawInput: { command: "sleep 8" },
+      });
+      await sleep(4000);                                  // 长工具期
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "tool_call_update", toolCallId: id,
+        status: "completed", rawOutput: "done",
+      });
+      await sleep(300);
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_message_chunk",
+        messageId: `stt-second-${sessionId}`,
+        content: { type: "text", text: "干完了，这是第二段话。" },
+      });
+      await sleep(600);
+      return { stopReason: "end_turn" };
+    }
+
     if (/\[bed-cycle\]/.test(text)) {
       await send(agent._conn, sessionId, {
         sessionUpdate: "agent_message_chunk",

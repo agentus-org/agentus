@@ -828,6 +828,27 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentText, agentKey, busy, failureText]);
 
+  /** splitter 把末尾的短句扣在 heldTail 里等下一句合并（防句间静音，见 speech.ts）。
+   *  但工具一进来，这一轮就不会再有下一句来跟它合并了 —— 再扣着就会把它拖到工具结束、
+   *  和第二段挤在一起念，工具期反而变成"没在播报"而哒哒响（操作者报的现场）。
+   *  所以工具一出现，立刻把欠着的尾句吐出去念。用 toolCallId 去重：同一个工具别 flush 两次。 */
+  const toolFlushRef = useRef<string | null>(null);
+  useEffect(() => {
+    const id = lastTool?.toolCallId;
+    if (!id || toolFlushRef.current === id) return;
+    if (!aliveRef.current || !heldTailRef.current || tailQueuedRef.current) return;
+    if (heldTailKeyRef.current && heldTailKeyRef.current !== replyKeyRef.current) return;
+    toolFlushRef.current = id;                 // 只有真 flush 了才记，空工具回合让位给后续文本
+    const frag = heldTailRef.current;
+    tailQueuedRef.current = true;
+    queueRef.current.push(frag);
+    setPlaying(true);
+    setReply((r) => `${r}${r ? " " : ""}${frag}`);
+    if (phaseRef.current !== "speaking") setPhase("speaking");
+    warmQueue();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastTool?.toolCallId]);
+
   /** 有人要你批准时，电话里不能静着（#58）。这跟"报进度"不是一回事：进度没人听也无所谓，
    *  一张卡没人批会把回合永远卡在那儿。所以它不受那个开关管，但同样不抢答案的话筒。 */
   const [approvalLine, setApprovalLine] = useState("");
