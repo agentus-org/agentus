@@ -114,7 +114,7 @@ try {
   for (let i = 0; i < 48; i++) { await sleep(250);
     const st = await ev(`({ phase: document.querySelector('.call-mode')?.dataset.phase ?? null,
       work: window.__sfx?.workPlaying?.() ?? null, speaking: !!document.querySelector('.call-mode [data-speaking="1"]'),
-      intent: (window.__callWork || {}).playing ?? null })`); tl.push(st); }
+      intent: (window.__callSound||{}).work ?? (window.__callWork || {}).playing ?? null })`); tl.push(st); }
   console.log("---- timeline ----\n" + tl.map((s,i)=>`${(i*.25).toFixed(2)}s ${s.phase} work=${s.work} intent=${s.intent}`).join("\n"));
 
   // 说话期：工作音该静（用 intent 布尔判，避开音层解码竞态）

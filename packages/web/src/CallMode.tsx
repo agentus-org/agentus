@@ -313,6 +313,13 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const sentRef = useRef(false);       // a turn is in flight (do not send twice)
   const queueRef = useRef<string[]>([]);
   const queueRunRef = useRef(false);
+  /** 播报周期：从第一句入队到最后一句念完。状态音的唯一权威来源。
+   *  不是从 spoken.speaking/phase/ref 去猜 —— 那些在句间、合成等待期会假静/假忙。
+   *  由明确的事件驱动：入队置 true，念完(队列 drain)置 false，打断/挂断置 false。
+   *  state 给 effect/渲染用，ref 给回调(不等重渲染)用。 */
+  const [playing, setPlayingState] = useState(false);
+  const playingRef = useRef(false);
+  const setPlaying = (v: boolean): void => { playingRef.current = v; setPlayingState(v); };
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
   /** 这一条回复里**扣着还没念**的那半句（等后半句接上再合并）。回合中途去做工具时，
@@ -784,6 +791,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       if (heldTailRef.current && !tailQueuedRef.current && heldTailKeyRef.current === replacedKey) {
         queueRef.current.push(heldTailRef.current);
         tailQueuedRef.current = true;
+        setPlaying(true);                  // 欠的半句要念了 -> 进入播报周期
         warmQueue();
       }
       queuedRef.current = 0;
@@ -797,6 +805,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     if (fresh.length) {
       queuedRef.current = done.length;
       queueRef.current.push(...fresh);
+      setPlaying(true);                          // 有句子要念 -> 播报周期开始,状态音全静
       setReply((r) => `${r}${r ? " " : ""}${fresh.join(" ")}`);
       if (phaseRef.current !== "speaking") setPhase("speaking");
       warmQueue();                                   // ask for it the moment it exists
@@ -806,6 +815,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         queuedRef.current = done.length + 1;
         tailQueuedRef.current = true;
         queueRef.current.push(tail);
+        setPlaying(true);                            // 最后半句也要念
         setReply((r) => `${r}${r ? " " : ""}${tail}`);
       }
     }
@@ -879,39 +889,37 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     return () => { alive = false; };
   }, []);
 
-  /** 状态音跟着"回合在跑、但喇叭没在出声"走：**思考/调工具/等授权时淡入，一开始念就淡出**。
+  /** 状态音统一状态机（和弦 + 敲键盘）：三选一，只读 `playing` 这个权威播报周期。
    *
-   *  判据不能只看 phase：说完后转工具/思考期间 `busy` 仍为 true，但 reader 只有在 `!busy`
-   *  时才把 phase 从 speaking 调回 listening —— 那段时间 phase 卡在 speaking，旧的
-   *  `phase !== "speaking"` 判据一直是假，和弦只在回合最初响一次（操作者报的现象）。
-   *  改问喇叭的 `spoken.speaking`：speak() 一进一出都会 set 这个 state 并唤醒本 effect。
-   *  句子之间的 false 窗口全在微任务里（withSpeechLock 的 await prev），React 看不到，
-   *  所以整段播报期间和弦持续静音，不会在句间闪。别用 queueRunRef/queueRef 那些 ref ——
-   *  ref 变化不触发重渲染，读它们会和 effect 的重渲染时机打架，反而在该响时不响。 */
+   *  idle    —— 没有回合在跑：全静
+   *  playing —— 播报周期（第一句入队 → 最后一句念完）：全静，人声不能被垫/盖
+   *  working —— 回合在跑、但没在播报（思考/调工具/等授权）：和弦响；工具在跑时叠敲键盘
+   *
+   *  为什么不再用 phase / spoken.speaking：phase 说完后转工具会卡在 speaking（reader 只在
+   *  !busy 时才调回 listening），spoken.speaking 只在真正出声的那一瞬为 true、句间假静。
+   *  两者都让状态音在"话已入队还没念"的窗口钻出来盖住人声 —— 操作者报的就是这个。
+   *  现在播报周期由入队/念完/打断的明确事件驱动（playing state），状态音只认它。 */
+  const toolStatus = newestTool?.status ?? "";
+  const toolRunning = Boolean(newestTool)
+    && toolStatus !== "completed" && toolStatus !== "success" && toolStatus !== "failed"
+    && toolStatus !== "done" && toolStatus !== "cancelled";
   useEffect(() => {
-    // 「有音」的判据是**任一通道可用**，不是 buffer 解码成功：解不开 m4a 的 WebView 上
-    // buffer 永远为空，按 buffer 判就把 `<audio>` 兜底也一起关了（见 sfx.ts `bedAvailable`）。
-    const want = (busy || phase === "thinking") && !spoken.speaking && sfxReady && bedAvailable();
-    setBed(want);
+    // 「有音」判据是任一通道可用，不是 buffer 解码成功（解不开 m4a 的 WebView 上 buffer
+    // 为空，按 buffer 判就把 <audio> 兜底一起关了，见 sfx.ts bedAvailable）。
+    const soundState = playing ? "playing" : ((busy || phase === "thinking") && sfxReady) ? "working" : "idle";
+    const bedOn = soundState === "working" && bedAvailable();
+    const workOn = soundState === "working" && toolRunning;
+
+    setBed(bedOn);
+    setWork(workOn);
     (window as unknown as { __callBed?: { playing: boolean; level: number } }).__callBed =
-      want ? { playing: true, level: 0.1 } : { playing: false, level: 0 };
-  }, [busy, phase, spoken.speaking, sfxReady]);
+      bedOn ? { playing: true, level: 0.1 } : { playing: false, level: 0 };
+    (window as unknown as { __callSound?: { state: string; bed: boolean; work: boolean } }).__callSound =
+      { state: soundState, bed: bedOn, work: workOn };
+  }, [playing, busy, phase, sfxReady, toolStatus]);
 
   // 离开通话页时别把底噪留在后台
   useEffect(() => () => { setBed(false, 0); setWork(false, 0); }, []);
-
-  /** 工作音（敲键盘）：工具正在执行时叠在和弦上响，人一开口就淡出。
-   *  判据 = 最新一行是 tool 且它还没到终态（completed/success/failed），并且喇叭此刻没在出声。
-   *  不用 faceSubstate —— 它把"busy 但 newest 不是工具"也算成 thinking，分不出"真在跑工具"。
-   *  和和弦共用 spoken.speaking 这个"有没有在出声"信号，所以两者会同起同落、开口一起静。 */
-  const toolStatus = newestTool?.status ?? "";
-  const toolRunning = Boolean(newestTool)
-    && toolStatus !== "completed" && toolStatus !== "success" && toolStatus !== "failed";
-  useEffect(() => {
-    const want = toolRunning && !spoken.speaking && (busy || phase === "thinking") && sfxReady;
-    setWork(want);
-    (window as unknown as { __callWork?: { playing: boolean } }).__callWork = { playing: want };
-  }, [toolRunning, toolStatus, spoken.speaking, busy, phase, sfxReady]);
 
   // 一张卡来了：响一下、写一行、说得出来就说一句。之后 60s / 5min 还在，就再响一次
   // （用户原话：「审批音效与超时提醒」——卡住没人批是最贵的失败，因为它在等一个不存在的人）。
@@ -1075,6 +1083,11 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         /* speak() reports its own failures; a throw here must not kill the loop's lock */
       } finally {
         queueRunRef.current = false;
+        // 念完了（队列 drain 且没被打断）-> 播报周期结束,状态音可以回来。
+        // 若还有句子(理论上不会,while 条件是队列空才退出)或被 break,保持 playing。
+        if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length) {
+          setPlaying(false);
+        }
         if (aliveRef.current && phaseRef.current === "speaking" && !queueRef.current.length && !busy) {
           void backToListening(false);
         }
@@ -1173,6 +1186,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     const wasBusy = running || queueRunRef.current || phase === "speaking" || phase === "thinking";
     if (wasBusy) confirmTakeFloor();
     queueRef.current = [];
+    setPlaying(false);                 // 抢过话筒 -> 播报周期结束,状态音全静
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
@@ -1196,6 +1210,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     manualRef.current = false;          // 轮到别人的时候，点按式收音不该还挂着
     setManual(false);
     queueRef.current = [];
+    setPlaying(false);                 // 回到听 -> 播报周期结束
     queuedRef.current = 0;
     queueRunRef.current = false;
     sentRef.current = false;
@@ -1236,6 +1251,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // the call ends HERE: anything queued or in flight must not leave the speaker after the
     // screen is gone ("挂断的时候它有时候还在说话")
     aliveRef.current = false;
+    setPlaying(false);
     speaker.stop();
     dictation.cancel();   // the call's transcript is the call's; never hand it to the chat composer
     onClose();
