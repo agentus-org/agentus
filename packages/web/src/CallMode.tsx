@@ -27,7 +27,7 @@
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { cockpit, type MsgView } from "./state";
-import { dictation, micEchoCancelled, micInfo, playbackLevel, playbackRms, playbackWave, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
+import { dictation, micEchoCancelled, micInfo, pausePlayback, playbackLevel, playbackRms, playbackWave, resumePlayback, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, setWork, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { turnUsageText } from "./tokens";
@@ -37,6 +37,7 @@ import { TusFace } from "./TusFace";
 import { activityOf, deriveEmotion, readEmoTags, stripEmoTags, substateOf, tidyForSpeech, toolIsTerminal, type TusMood, type ToolSubstate } from "./tusMood";
 import { vadStep, newVad, type VadState } from "./vad";
 import { silero } from "./silero";
+import { beginSuspect, newSuspectState, suspectStep, type SuspectState } from "./barge-in";
 import {
   IconChevronDown, IconClose, IconHistory, IconKeyboard, IconMic, IconMicOff, IconPhoneDown, IconRefresh, IconSend,
   IconSettings, IconStop, IconSubtitles,
@@ -49,6 +50,14 @@ import {
 } from "./callSettings";
 
 export type CallPhase = "connecting" | "listening" | "thinking" | "speaking" | "error";
+
+/** QA-only observability for the L4 false-interruption decision (no user-visible surface). The
+ *  real-page sweep reads `window.__barge` to prove a false barge resumed playback (revives grew,
+ *  no cancel sent) and a real barge took the floor (confirms grew). */
+const bargeQA = { active: false, verdict: "", candidates: 0, confirms: 0, revives: 0 };
+if (typeof window !== "undefined") {
+  (window as unknown as { __barge: typeof bargeQA }).__barge = bargeQA;
+}
 
 /** One palette per phase: input and output are deliberately different colours (a call has
  *  two speakers, and the operator should see at a glance who has the floor). */
@@ -297,6 +306,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   /** When the floor last changed hands by voice — the cooldown that keeps the tail of an
    *  interruption (and the recogniser catching up with it) from firing a second one. */
   const lastBargeRef = useRef(0);
+  /** L4 false-interruption suspect: a barge candidate pauses playback and waits here for a verdict.
+   *  `active` means the voice audio is currently suspended and a decision is pending. */
+  const suspectRef = useRef<SuspectState>(newSuspectState());
   /** The echo's OWN level: a slow average of the microphone while our reply is playing and the
    *  operator is still silent. A voice is then a STEP over this line, which is the second (and on
    *  a device without echo cancellation, the only reliable) proof of a barge-in. */
@@ -320,6 +332,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const [playing, setPlayingState] = useState(false);
   const playingRef = useRef(false);
   const setPlaying = (v: boolean): void => { playingRef.current = v; setPlayingState(v); };
+  /** L4: bumped on a false-interruption revival to re-run the read-aloud effect even if the agent
+   *  sent no new text during the (<=1.2s) pause — otherwise text that streamed in mid-pause and was
+   *  skipped by the suspect guard could sit unqueued until the next chunk. */
+  const [reviveTick, setReviveTick] = useState(0);
   const queuedRef = useRef(0);         // sentences of the current reply already queued
   const replyKeyRef = useRef("");      // which agent message we are reading
   /** 这一条回复里**扣着还没念**的那半句（等后半句接上再合并）。回合中途去做工具时，
@@ -512,6 +528,41 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         setPhase("error");
         return;
       }
+      // ---- L4 false-interruption suspect -------------------------------------------------
+      // A barge candidate PAUSES playback and waits here for a verdict. The pause removes our own
+      // speaker from the mic, so `voice` below is a clean "is a human still talking" signal. While
+      // suspect, no other phase logic runs: the speaker loop is frozen with its queue intact, and
+      // the agent turn keeps generating (we have NOT cancelled yet). A confirm runs the original
+      // destructive bargeIn(); a revive just resumes playback and carries on reading.
+      if (suspectRef.current.active) {
+        const now = Date.now();
+        // Voice evidence = a real voice on the mic now that our own output is paused. Do NOT use the
+        // barge comparator: it needs a live `play` reference, and the audio clock is frozen. Do NOT
+        // use the VAD either: it learns a steady level as room noise, so a sustained voice (or the
+        // sweep's steady injected level) would be suppressed. The operator-tuned barge floor is the
+        // right discriminator — above it is a human, below it is the echo/noise that fooled L1.
+        const voice = !mutedRef.current && mic > bargeFloorRms(cfgRef.current.bargeSensitivity);
+        const r = suspectStep(suspectRef.current, now, voice);
+        suspectRef.current = r.state;
+        bargeQA.active = r.state.active;
+        bargeQA.verdict = r.verdict;
+        if (r.verdict === "confirm") {
+          bargeQA.confirms++;
+          lastBargeRef.current = now;       // cooldown starts from the decision, not the candidate
+          void bargeIn();                   // resume happens inside speaker.stop() -> takeFloor
+        } else if (r.verdict === "revive") {
+          bargeQA.revives++;
+          resumePlayback();                  // keep the turn and the queue — just start reading again
+          // F5: treat revival as a fresh clip boundary so the grace/cooldown are intact and the
+          // attack transient on the resumed source is not read as another barge immediately.
+          clipAtRef.current = now;
+          echoBaseRef.current = 0;
+          lastBargeRef.current = now;
+          audibleRef.current = now;
+          setReviveTick((n) => n + 1);   // re-run the read-aloud effect for text that arrived mid-pause
+        }
+        return;
+      }
       // 按键打断 means NOBODY is listening while it speaks — not for the barge, not for the
       // transcript, not for the level. The operator's rule, verbatim: 「打断的时候就不要去用
       // 语音识别这个打断情况了，只有语音打断的时候才需要去识别我的语音是否打断了」. So the
@@ -639,8 +690,14 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
         bargeRef.current = over ? bargeRef.current + LOOP_MS : 0;
         if (bargeRef.current >= c.bargeMs) {
           bargeRef.current = 0;
+          // L4: a barge CANDIDATE no longer destroys the answer. Pause playback, stamp the cooldown
+          // as before, and let the suspect state machine decide on the next ticks. Only voice mode
+          // reaches here (keyword/button are handled above); a deliberate tap still barges instantly.
           lastBargeRef.current = now;
-          void bargeIn();
+          suspectRef.current = beginSuspect(now);
+          bargeQA.active = true;
+          bargeQA.candidates++;
+          pausePlayback();
         }
       } else {
         bargeRef.current = 0;
@@ -740,6 +797,12 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // following turn in the same call stayed mute (#44).
     const p = phaseRef.current;
     if (p === "connecting" || p === "error") return;
+    // L4: while a barge candidate is suspended and awaiting its verdict, do not hand the read-aloud
+    // effect new work. The agent keeps streaming during the window; a phase/reply/busy change would
+    // otherwise re-enter this effect and (if the current clip had settled) start a fresh speaker run
+    // that resumes the suspended context mid-pause (F3). On revive the text is still in the store and
+    // a state change re-runs this effect; on confirm cutKey/cutAt suppress it as before.
+    if (suspectRef.current.active) return;
     // Nothing to read yet, or the only agent message in play is the PREVIOUS answer: wait for a
     // message this turn actually produced.
     if (!agentKey || agentKey === baselineKeyRef.current) return;
@@ -826,7 +889,7 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       void backToListening(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentText, agentKey, busy, failureText]);
+  }, [agentText, agentKey, busy, failureText, reviveTick]);
 
   /** splitter 把末尾的短句扣在 heldTail 里等下一句合并（防句间静音，见 speech.ts）。
    *  但工具一进来，这一轮就不会再有下一句来跟它合并了 —— 再扣着就会把它拖到工具结束、
@@ -1196,6 +1259,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   /** 抢过话筒的那三步（停播、取消在跑的回合、清掉没念的队列）——三处入口共用：打断按钮、
    *  按住说话、点按式收音。抄三份的话，改一处就会漏两处。 */
   const takeFloor = (): void => {
+    // A deliberate takeover (button/PTT/manual) while an L4 suspect was pending wins: clear it so
+    // no stale confirm fires on a later tick. speaker.stop() below resumes any suspended context.
+    if (suspectRef.current.active) { suspectRef.current = newSuspectState(); bargeQA.active = false; }
     cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // this reply is over
     cutAtRef.current = Date.now();
     speaker.stop();
@@ -1274,7 +1340,8 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     // screen is gone ("挂断的时候它有时候还在说话")
     aliveRef.current = false;
     setPlaying(false);
-    speaker.stop();
+    if (suspectRef.current.active) { suspectRef.current = newSuspectState(); bargeQA.active = false; }
+    speaker.stop();   // resumes any L4-suspended context before stopping the sources
     dictation.cancel();   // the call's transcript is the call's; never hand it to the chat composer
     onClose();
   };

@@ -319,6 +319,56 @@ export function splitForSpeech(text: string, max = BROWSER_CHUNK): string[] {
  */
 let audioCtx: AudioContext | null = null;
 
+// ------------------------------------------------------- L4 pause / resume (false interruption)
+// A barge candidate pauses PLAYBACK, not the turn: if the mic goes quiet we resume and keep reading.
+// Only the voice-playback path is frozen here — sfx.ts and the mic each own a separate AudioContext,
+// so the cut sound, cues and the operator's microphone keep working while we decide (that is what
+// makes the post-pause mic level a trustworthy "is a human still talking" signal).
+/** The <audio> fallback's live element (only used when decodeAudioData cannot take the format). */
+let activeFallbackAudio: HTMLAudioElement | null = null;
+/** Queued resume wins over a stale suspend: see the two functions below. */
+let playbackPaused = false;
+/** Resolvers waiting for an intentional L4 pause to be lifted. New clips must not auto-resume the
+ *  context while a pause is pending (that would re-expose our own TTS to the mic — see F1). */
+let unpauseWaiters: Array<() => void> = [];
+
+export function isPlaybackPaused(): boolean {
+  return playbackPaused;
+}
+
+/** Resolve once playback is NOT intentionally paused. Used by new clips so they never resume a
+ *  context that the L4 decision is deliberately holding suspended. */
+function awaitPlaybackResumed(): Promise<void> {
+  if (!playbackPaused) return Promise.resolve();
+  return new Promise<void>((resolve) => { unpauseWaiters.push(resolve); });
+}
+
+/** Freeze voice playback in place. Web Audio's scheduled sources stop advancing (their `onended`
+ *  never fires, so the speaker loop's `await speak()` stays pending with its queue intact); browser
+ *  speech synthesis and the <audio> fallback are paused as well. Idempotent. */
+export function pausePlayback(): void {
+  playbackPaused = true;
+  if (audioCtx && audioCtx.state === "running") void audioCtx.suspend();
+  if (browserSpeechAvailable() && window.speechSynthesis.speaking) window.speechSynthesis.pause();
+  if (activeFallbackAudio && !activeFallbackAudio.paused) {
+    try { activeFallbackAudio.pause(); } catch { /* already ended */ }
+  }
+}
+
+/** Resume a paused voice playback from exactly where it froze. Idempotent, and safe to call even
+ *  when nothing was paused (a manual takeover / hangup clears any lingering suspend). */
+export function resumePlayback(): void {
+  playbackPaused = false;
+  if (audioCtx && audioCtx.state === "suspended") void audioCtx.resume();
+  if (browserSpeechAvailable() && window.speechSynthesis.paused) window.speechSynthesis.resume();
+  if (activeFallbackAudio && activeFallbackAudio.paused) {
+    void activeFallbackAudio.play().catch(() => { /* element ended while we were deciding */ });
+  }
+  const waiting = unpauseWaiters;
+  unpauseWaiters = [];
+  for (const fn of waiting) { try { fn(); } catch { /* a waiter's own problem */ } }
+}
+
 function audioContextCtor(): typeof AudioContext | null {
   return (window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) ?? null;
 }
@@ -472,6 +522,12 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
   if (Ctor) {
     try {
       audioCtx = audioCtx ?? new Ctor();
+      // L4: never auto-resume a context the decision is deliberately holding suspended. A clip
+      // starting during the suspect window (e.g. candidate on an inter-sentence gap) must wait for
+      // resumePlayback(), otherwise our own TTS returns to the mic and the "post-pause voice" test
+      // becomes meaningless (F1). The abort listener below rejects if the call ends while waiting.
+      await awaitPlaybackResumed();
+      if (signal?.aborted) throw new SpeechStopped();
       if (audioCtx.state === "suspended") await audioCtx.resume();
       const buf = await audioCtx.decodeAudioData(await blob.arrayBuffer());
       await new Promise<void>((resolve, reject) => {
@@ -507,9 +563,10 @@ export async function playBlob(blob: Blob, signal?: AbortSignal): Promise<void> 
   try {
     await new Promise<void>((resolve, reject) => {
       const audio = new Audio(url);
-      const abort = (): void => { try { audio.pause(); } catch { /* already paused */ } reject(new SpeechStopped()); };
-      audio.onended = () => { cleanup(); resolve(); };
-      audio.onerror = () => { cleanup(); reject(new Error("audio playback failed")); };
+      activeFallbackAudio = audio;
+      const abort = (): void => { if (activeFallbackAudio === audio) activeFallbackAudio = null; try { audio.pause(); } catch { /* already paused */ } reject(new SpeechStopped()); };
+      audio.onended = () => { if (activeFallbackAudio === audio) activeFallbackAudio = null; cleanup(); resolve(); };
+      audio.onerror = () => { if (activeFallbackAudio === audio) activeFallbackAudio = null; cleanup(); reject(new Error("audio playback failed")); };
       const cleanup = (): void => { if (signal) signal.removeEventListener("abort", abort); };
       if (signal) {
         if (signal.aborted) return abort();
@@ -978,6 +1035,10 @@ async function speakStreaming(text: string, prefs: VoicePrefs, signal: AbortSign
   const Ctor = audioContextCtor();
   if (!Ctor) return false;
   audioCtx = audioCtx ?? new Ctor();
+  // L4: same gate as playBlob — a clip starting during a suspect pause waits for resumePlayback()
+  // instead of re-exposing our TTS to the mic. `signal` aborts on stop/hangup so this cannot hang.
+  await awaitPlaybackResumed();
+  if (signal.aborted) return true;
   if (audioCtx.state === "suspended") await audioCtx.resume();
   const relay = relayFor(audioCtx, caps.sampleRate ?? 24000);
   await relay.speak(text, signal, prefs.rate);
@@ -1294,6 +1355,10 @@ class Speaker {
     // Web Audio playback stops through the abort signal above; the browser voice needs
     // its own cancel.
     if (browserSpeechAvailable()) window.speechSynthesis.cancel();
+    // A confirmed barge / hangup must not leave a context suspended by an L4 pause: the sources
+    // were just stopped above, so resuming here is silent and keeps the next clip playable.
+    if (playbackPaused) resumePlayback();
+    if (activeFallbackAudio) { try { activeFallbackAudio.pause(); } catch { /* ended */ } activeFallbackAudio = null; }
     if (this.#state.speaking) this.#set({ speaking: false, speakingId: null });
   }
 }
