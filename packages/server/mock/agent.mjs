@@ -180,13 +180,23 @@ const MODES = [
 
 // One shape for "what this session currently runs with", shared by newSession and
 // loadSession so a resume re-announces the session's OWN config instead of a default.
+// MOCK_THINK_STALE=<档位>: simulate a model switch that left configOptions.currentValue on a level
+// the new model no longer offers (the hy4-flash "medium rejected, actual none" report). The knob is
+// advertised with only low/none, but its currentValue starts at MOCK_THINK_STALE (e.g. "medium"), so
+// lowering to the cheapest level works while the hang-up restore is rejected — exactly the shape
+// the fix must handle. Default (unset) keeps the full low/medium/high list unchanged.
+const STALE_THINK = process.env.MOCK_THINK_STALE || "";
+const reasoningLevels = STALE_THINK
+  ? [{ value: "none", name: "None" }, { value: "low", name: "Low" }]
+  : [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }];
+
 const configOptionsFor = (config) => [
   // `category` is ACP's placement hint (the cockpit uses it to give a knob its own
   // button). Real backends may omit it — the UI falls back to the id — but the mock
   // advertises it so the placement path is exercised offline.
   { id: "reasoning_effort", name: "Reasoning Effort", type: "select", category: "thought_level",
-    currentValue: config.reasoning_effort || "medium",
-    options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }] },
+    currentValue: config.reasoning_effort || STALE_THINK || "medium",
+    options: reasoningLevels },
   // The second typed option a real Hermes session advertises (acp_adapter/server.py): the window
   // Hermes budgets its compression against. The cockpit renders it generically in chat settings,
   // and the usage popover points at it instead of pretending its own number configures the model.

@@ -101,6 +101,10 @@ export interface ThinkingChoice {
   current: string;
   /** The cheapest/fastest value the backend offers — what a call switches to. */
   lowest: string;
+  /** Every level the agent currently offers. A snapshot value outside this list is stale — left
+   *  behind by a model switch (hy4-flash: configOptions still said "medium" while the agent only
+   *  accepts none) — and must never be saved or restored. */
+  values: string[];
 }
 
 /**
@@ -147,5 +151,6 @@ export function thinkingOptionOf(options: unknown): ThinkingChoice | null {
       ? currentRaw
       : typeof currentRaw === "number" || typeof currentRaw === "boolean" ? String(currentRaw) : "",
     lowest: pick.value,
+    values: values.map((v) => v.value),
   };
 }

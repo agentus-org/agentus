@@ -864,7 +864,13 @@ export class SessionManager {
     // A snapshot left behind by an earlier call (the restore could not run: slot was cold, or the
     // process died) is still the operator's real level — never overwrite it with the pressed-down
     // value we may have persisted onto the session row (review B1).
-    const before = prev.thoughtBefore ?? choice?.current ?? null;
+    let before = prev.thoughtBefore ?? choice?.current ?? null;
+    // A model switch can leave configOptions.currentValue stale: hy4-flash advertised "medium"
+    // while the agent only accepts none/low. Such a value is NOT the operator's real level — it was
+    // never accepted by the current model. Saving it makes the hang-up restore push an illegal value
+    // (the "Reasoning effort medium not applied, actual none" report). Validate against the levels
+    // the agent actually offers; an illegal snapshot becomes "nothing to restore" (review R1).
+    if (choice && before && !choice.values.includes(before)) before = null;
     this.#store.upsertVoiceMode(id, {
       inCall: true, boundary: "enter", turns: 0,
       thoughtBefore: before,
@@ -910,6 +916,14 @@ export class SessionManager {
     if (!s) return false;
     const choice = thinkingOptionOf(s.info.configOptions);
     if (!choice || !choice.lowest) return false;
+    // Belt-and-braces for snapshots written by an older build (or while the slot was cold and the
+    // fresh choice was unavailable at #beginCall): never push a level the current agent does not
+    // offer. Clearing it is the only safe outcome — there is no legal value to restore, and keeping
+    // it would replay the rejected restore on every later call (review R1).
+    if (!choice.values.includes(v.thoughtBefore)) {
+      this.#store.upsertVoiceMode(id, { thoughtBefore: null, thoughtTouched: false });
+      return true;
+    }
     try {
       await this.setConfig(id, choice.id, v.thoughtBefore, { internal: true });
     } catch {
@@ -2791,14 +2805,21 @@ export class SessionManager {
       }
     }
     if (rejected) {
-      this.#emit({
-        t: "config-rejected",
-        sessionId,
-        configId,
-        value: requested,
-        actual,
-        name: s.info.configOptions.find((o) => o.id === configId)?.name,
-      });
+      // A rejected INTERNAL write is the cockpit lowering/restoring the dial around a call — never a
+      // pick the operator made. Popping "config not applied" for it is a false alarm (the hy4-flash
+      // "Reasoning effort medium not applied" report). Keep it in the log for diagnostics only.
+      if (opts.internal) {
+        console.log(`[agentus] internal config "${configId}"=${requested} rejected by ${sessionId} (agent runs ${actual}) — not surfacing to the operator`);
+      } else {
+        this.#emit({
+          t: "config-rejected",
+          sessionId,
+          configId,
+          value: requested,
+          actual,
+          name: s.info.configOptions.find((o) => o.id === configId)?.name,
+        });
+      }
     }
     this.#updateSession(s);
   }
