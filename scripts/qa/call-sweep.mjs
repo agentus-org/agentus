@@ -1283,8 +1283,10 @@ try {
     ccv.orbPosition === "absolute" && ccv.orbPointer === "none"
     && /blur/.test(ccv.canvasFilter) && /blur/.test(ccv.backdrop),
     JSON.stringify({ pos: ccv.orbPosition, pointer: ccv.orbPointer, filter: ccv.canvasFilter, backdrop: ccv.backdrop }));
-  check("…the stage furniture is gone (no duplicate lines, fake wave or history bar)",
-    ccv.stageLines === false && ccv.stageHist === false && ccv.waveShown === false,
+  // 字幕视图的波形现在刻意保留（2026-11-21 操作者要「字幕时也能看到输入波/环境噪声」）：
+  // 它作为普通 flex 子项停在字幕面板与圆按钮之间，不再是"舞台家具"。舞台专属的是 lines / hist。
+  check("…stage-only lines and history bar are gone (the mic wave stays, docked)",
+    ccv.stageLines === false && ccv.stageHist === false && ccv.waveShown === true,
     JSON.stringify({ lines: ccv.stageLines, hist: ccv.stageHist, wave: ccv.waveShown }));
   check("…it scrolls inside itself and the call's controls stay on the phone's screen",
     ccv.overflowY === "auto" && ccv.overscroll === "contain" && ccv.controlsIn && ccv.btnsIn && ccv.corpus <= 0,

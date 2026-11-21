@@ -264,7 +264,6 @@ export function wakeArmed(o: {
   if (!(o.heardAgoMs <= WAKE_FRESH_MS)) return false;
   if (o.own && matchesWakePhrase(o.own, o.phrase)) return false;
   if (!matchesWakePhrase(o.heard, o.phrase)) return false;
-  if (o.playRms >= 0 && !o.evidence) return false;
   return true;
 }
 

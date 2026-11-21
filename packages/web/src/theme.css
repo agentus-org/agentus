@@ -3123,7 +3123,17 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 }
 .call-mode[data-caption="true"]::before { z-index: 1; }
 /* no stage header here: the panel's own toolbar carries the phase and the interrupt switch */
-.call-mode[data-caption="true"] .call-wave { display: none; }
+/* The mic waveform stays visible in the transcript view: the operator reads the captions while
+   listening for their own level / ambient noise (a barge word has to land in it). It is a normal
+   flex child of .call-mode — the canvas already sits between the sheet and .call-controls in the
+   DOM — so it docks in the natural gap above the round buttons with NO absolute positioning or
+   magic offsets (a bottom:72px guess landed it behind the buttons on a real phone, measured).
+   Just keep it short and let the flex layout own the place. */
+.call-mode[data-caption="true"] .call-wave {
+  display: block;
+  height: 30px; min-height: 30px; max-height: 30px;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.015), rgba(255,255,255,0.055));
+}
 
 .call-cc {
   position: relative; z-index: 2;
