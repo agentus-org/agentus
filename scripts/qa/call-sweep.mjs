@@ -617,7 +617,7 @@ try {
     setter.call(input, String(${value}));
     input.dispatchEvent(new Event('input', { bubbles: true }));
     return Number(input.value); })()`);
-  const knobsNow = () => ev2(`(() => [...document.querySelectorAll('.call-sheet .call-knob')].map((k) => {
+  const knobsNow = () => ev2(`(() => [...document.querySelectorAll('.call-sheet .call-knob')].filter((k) => k.querySelector('input[type=range]')).map((k) => {
     const i = k.querySelector('input[type=range]');
     return { label: i.getAttribute('aria-label'), value: Number(i.value), shown: k.querySelector('.call-knob-val').textContent }; }))()`);
 
@@ -632,7 +632,9 @@ try {
   await sleep(500);
   const sheet = await ev2(`(() => { const el = document.querySelector('.call-sheet'); if (!el) return null;
     const card = el.querySelector('.call-sheet-card').getBoundingClientRect();
-    const knobs = [...el.querySelectorAll('.call-knob')].map((k) => {
+    // 唤醒词 is a .call-knob too (in keyword mode, now the default) but holds a TEXT input, not a
+    // range — skip it here; this check is about the four draggable thresholds.
+    const knobs = [...el.querySelectorAll('.call-knob')].filter((k) => k.querySelector('input[type=range]')).map((k) => {
       const i = k.querySelector('input[type=range]'); const r = i.getBoundingClientRect();
       return { label: i.getAttribute('aria-label'), value: Number(i.value), h: Math.round(r.height), w: Math.round(r.width) };
     });
@@ -728,9 +730,11 @@ try {
   await tapOrb2();
   await waitPhase2("listening", 3000);
 
-  // 抢话灵敏度: the SAME voice either may or may not take the floor, depending on the knob.
-  // The reply has to be long enough to talk over, so the prompt carries sentence enders the
-  // mock echoes straight back (the call reads them one at a time).
+  // 抢话灵敏度: keyword mode is the default now (语音打断 retired 2026-11-21). The floor changes
+  // hands on the WAKE WORD, not on a level — but 抢话灵敏度 still gates it as the echo floor of
+  // isBargeEvidence (see callSettings.ts). Feed the wake word as recognised text; the same phrase
+  // may or may not barge depending on the knob. The reply must be long enough to talk over, so the
+  // prompt carries sentence enders the mock echoes straight back (the call reads them one at a time).
   await openSheet(); await sleep(300);
   await setRange("最少字数", 1); await setRange("说完停顿", 1200); await sleep(600);
   await closeSheet();
@@ -752,12 +756,12 @@ try {
   await sleep(200);
   const cancelsBefore = await frameCount("cancel");
   const phaseAtQuiet = await phase2();
-  await feed(0.35, "");                                      // loud enough to barge at the default
+  await feed(0.35, "摇摇");                                   // wake word said, but the floor is at its highest
   await sleep(1400);
   // the observable is the PHASE (did the floor change hands), not the cancel frame: a cancel is
   // only sent when a turn is actually running (see below), so the frame count cannot carry the
   // knob's meaning any more.
-  check("with 抢话灵敏度 at its least sensitive, that voice does NOT take the floor",
+  check("with 抢话灵敏度 at its least sensitive, the wake word does NOT take the floor",
     (await phase2()) === phaseAtQuiet && (await frameCount("cancel")) === cancelsBefore,
     JSON.stringify({ set: insensitive, phase: await phase2(), phaseAtStart: phaseAtQuiet, cancels: await frameCount("cancel") }));
 
@@ -765,10 +769,13 @@ try {
   await sleep(300);
   const sensitive = await setRange("抢话灵敏度", 100);        // 100 % = 最灵敏, applied live
   await sleep(300);
+  await feed(0, "");                                          // clear the earlier wake-word hit before the real one
+  await sleep(250);
+  await feed(0.35, "摇摇");
   const busyAtBarge = await busyOf(slow2.id);
   const floorMark = log.length;
   const tookFloor = await waitPhase2("listening", 3000);
-  check("…and at its most sensitive the SAME voice takes the floor immediately (live apply)",
+  check("…and at its most sensitive the SAME wake word takes the floor immediately (live apply)",
     tookFloor === true, JSON.stringify({ set: sensitive, phase: await phase2() }));
   // #58 的反面：语音模式抢过话筒时**不许说「好，停了」** —— 这一刻麦克风是开的，我们自己念出来的
   // 那句会被识别成操作者的下一句话（和关键词模式在回答期间必须关 relay 是同一类坑）。那里只给两声
@@ -798,11 +805,11 @@ try {
   check("an idle session is never cancelled: the server logs the refusal and does not forward it",
     log.slice(idleMark).includes("cancel ignored") && !log.slice(idleMark).includes("cancel sent"),
     JSON.stringify((log.slice(idleMark).match(/\[agentus\] cancel [a-z]+/g) ?? [])));
-  // ---- 打断方式（语音打断 / 按键打断）：开关就在通话页上，一下切换、立即生效 ---------------
-  // One setting changes with the ROOM (a phone on a table hears its own loudspeaker; a headset does
-  // not), so both ends live on the call itself, always visible, and flipping one is a single tap —
-  // NOT a knob inside the settings sheet. In 按键打断 the voice barge is off and only the orb
-  // interrupts; the two barge knobs then have nothing to do and must say so.
+  // ---- 打断方式（关键词打断 / 按键打断）：开关就在通话页上，一下切换、立即生效 ---------------
+  // 语音打断 retired (2026-11-21): exactly two modes. One setting changes with the ROOM (a phone
+  // on a table hears its own loudspeaker; a headset does not), so both ends live on the call itself,
+  // always visible, and flipping one is a single tap — NOT a knob inside the settings sheet. In
+  // 按键打断 the mic is closed and only the orb interrupts; the barge knobs then say so.
   const modesOf = () => ev2(`(() => { const b = document.querySelector('.call-modes');
     return { present: !!(b && document.querySelector('.call-mode')), inSheet: !!(b && b.closest('.call-sheet')),
       dataMode: b?.dataset.mode ?? null,
@@ -821,35 +828,20 @@ try {
     await ev2(`document.querySelector('button[aria-label="开始语音通话"]').click(); true`);
     return await waitPhase2("speaking", 30000);
   };
-  /** 语音打断现在默认收在设置里（#53），所以「点一下那一排上的语音打断」之前要先把它放出来 ——
-   *  这正是操作员要的路径：不在通话页常驻，要用就去设置里勾。 */
-  const revealVoice = async () => {
-    const present = await ev2(`[...document.querySelectorAll('.call-mode-btn')].some((b) => b.textContent.trim() === '语音打断')`);
-    if (present) return;
-    await openSheet();
-    await sleep(400);
-    // by LABEL, not by position: the sheet now carries more than one switch (#58 报进度 is above it)
-    await ev2(`(() => { const c = document.querySelector('.call-sheet input[aria-label="在通话页显示语音打断"]');
-      if (!c || c.checked) return false; c.click(); return true; })()`);
-    await sleep(300);
-    await closeSheet();
-    await sleep(400);
-  };
-  const setMode = async (label) => {
-    await revealVoice();
-    return ev2(`[...document.querySelectorAll('.call-mode-btn')].find((b) => b.textContent.trim() === '${label}')?.click(); true`);
-  };
-  await api("PUT", "/api/settings", { call: { bargeSensitivity: 100, interruptMode: "voice" } });   // would barge instantly
+  // Both modes are always visible on the call row now; no settings-sheet reveal (语音打断 retired).
+  const setMode = async (label) =>
+    ev2(`[...document.querySelectorAll('.call-mode-btn')].find((b) => b.textContent.trim() === '${label}')?.click(); true`);
+  await api("PUT", "/api/settings", { call: { bargeSensitivity: 100, interruptMode: "keyword", wakePhrase: "摇摇" } });
 
   const modes = await modesOf();
   check("the interrupt-mode switch lives on the CALL (always visible), not inside the settings sheet",
     modes.present === true && modes.inSheet === false, JSON.stringify(modes));
-  // Three modes since #42's keyword request: a keyword is a third answer, and the sweep pins the
-  // whole row (labels AND aria-pressed) so a mode that silently disappears is caught here.
-  check("all three interrupt modes are offered and the active one is marked",
-    JSON.stringify(modes.labels) === JSON.stringify(["语音打断", "关键词打断", "按键打断"])
-      && modes.on === "语音打断"
-      && JSON.stringify(modes.pressed) === JSON.stringify(["true", "false", "false"]), JSON.stringify(modes));
+  // 语音打断 retired (2026-11-21): exactly two modes, labels AND aria-pressed pinned so a mode
+  // that silently disappears (or the retired one reappears) is caught here.
+  check("exactly two interrupt modes are offered and the active one is marked",
+    JSON.stringify(modes.labels) === JSON.stringify(["关键词打断", "按键打断"])
+      && modes.on === "关键词打断"
+      && JSON.stringify(modes.pressed) === JSON.stringify(["true", "false"]), JSON.stringify(modes));
 
   check("a fresh reply is being read out (so a barge is a real claim)", (await speakWindow()) === true, `phase=${await phase2()}`);
   // flip WHILE it is talking: this is the situation the switch exists for, and the whole reason it
@@ -859,15 +851,14 @@ try {
   check("tapping 按键打断 mid-reply is saved to the server (one tap, no sheet)",
     (await api("GET", "/api/settings")).body?.call?.interruptMode === "button");
   check("the switch reports the mode it is in", (await modesOf()).dataMode === "button");
-  // #53：语音打断不再常驻这一排 —— 切走之后它就收起来，要用的时候在通话设置里勾回来。
   const afterButton = await modesOf();
-  check("切到按键打断之后，「语音打断」默认从这一排收回（#53）",
+  check("the row is still exactly two modes after a flip (no retired mode reappears)",
     JSON.stringify(afterButton.labels) === JSON.stringify(["关键词打断", "按键打断"]), JSON.stringify(afterButton.labels));
 
   const cancelsBeforeBtn = await frameCount("cancel");
-  await feed(0.35, "");                    // the level that barged a moment ago, at 100 % sensitivity
+  await feed(0.35, "摇摇");                    // the wake word that barged a moment ago, at 100 % sensitivity
   await sleep(1400);
-  check("…and that same voice no longer takes the floor while 按键打断 is on",
+  check("…and that same wake word no longer takes the floor while 按键打断 is on",
     (await phase2()) === "speaking" && (await frameCount("cancel")) === cancelsBeforeBtn,
     JSON.stringify({ phase: await phase2(), cancelsBefore: cancelsBeforeBtn, cancels: await frameCount("cancel") }));
 
@@ -902,17 +893,21 @@ try {
   check("…but the orb still interrupts in 按键打断: one tap takes the floor back",
     (await waitPhase2("listening", 3000)) === true, `phase=${await phase2()}`);
 
-  // back to 语音打断: the same voice must barge again, live (the switch is wired to the running
-  // loop, not read once at join time).
-  await setMode("语音打断");
+  // back to 关键词打断: the same wake word must barge again, live (the switch is wired to the
+  // running loop, not read once at join time).
+  await setMode("关键词打断");
   await sleep(600);
-  check("switching back to 语音打断 on the call is saved too",
-    (await api("GET", "/api/settings")).body?.call?.interruptMode === "voice",
+  check("switching back to 关键词打断 on the call is saved too",
+    (await api("GET", "/api/settings")).body?.call?.interruptMode === "keyword",
     JSON.stringify((await modesOf())));
   check("…and a fresh reply is being read out again", (await speakWindow()) === true, `phase=${await phase2()}`);
-  await feed(0.35, "");
-  check("…and with 语音打断 back on the SAME voice takes the floor again (live apply, both directions)",
+  await feed(0.35, "摇摇");
+  check("…and with 关键词打断 back on the SAME wake word takes the floor again (live apply, both directions)",
     (await waitPhase2("listening", 4000)) === true, `phase=${await phase2()}`);
+  // The server keeps accepting `voice` for old rows (we migrate on the CLIENT, not the server — no
+  // :8788 restart). What must hold here is that the retired mode can never be selected in the UI.
+  check("the retired voice mode never appears again on the call row",
+    JSON.stringify((await modesOf()).labels) === JSON.stringify(["关键词打断", "按键打断"]));
   check("the server refuses a mode it does not know",
     (await api("PUT", "/api/settings", { call: { interruptMode: "banana" } })).status === 400);
 
