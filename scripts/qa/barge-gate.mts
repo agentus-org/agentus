@@ -104,16 +104,19 @@ const ev = (mic: number, play: number, base: number, aec = true, s = S): boolean
     matchesWakePhrase("你好呀，今天天气不错", "小灵") === false);
   check("an empty phrase is INERT, never 'always on'", matchesWakePhrase("小灵", "") === false
     && matchesWakePhrase("", "") === false);
-  // Tus mode forces keyword interruption, so the shipped phrase has to exist (2026-10-24). An
-  // explicitly cleared field still means inert — that is a choice, not the default.
-  check("the shipped keyword is 「hi, Tus」 and clears spaces/punctuation/case",
-    CALL_DEFAULT.wakePhrase === "hi, Tus"
-    && normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "hi, Tus"
-    && matchesWakePhrase("Hi, Tus，停一下", CALL_DEFAULT.wakePhrase)
-    && matchesWakePhrase("HI TUS", CALL_DEFAULT.wakePhrase));
+  // Tus mode forces keyword interruption, so the shipped phrase has to exist (2026-10-24;
+  // re-showed 2026-11-21 from 「hi, Tus」 to 「摇摇」). An explicitly cleared field still means
+  // inert — that is a choice, not the default.
+  check("the shipped keyword is 「摇摇」 and clears spaces/punctuation/case",
+    CALL_DEFAULT.wakePhrase === "摇摇"
+    && normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword" }).wakePhrase === "摇摇"
+    && matchesWakePhrase("小 摇 摇，停一下", CALL_DEFAULT.wakePhrase)
+    && matchesWakePhrase("摇摇", CALL_DEFAULT.wakePhrase));
   check("clearing the phrase by hand still makes keyword mode inert",
     normalizeCall({ ...CALL_DEFAULT, interruptMode: "keyword", wakePhrase: "" }).wakePhrase === ""
     && matchesWakePhrase("hi tus", "") === false);
+  check("a stored legacy 「hi, Tus」 migrates to the new default, not stuck in English",
+    normalizeCall({ ...CALL_DEFAULT, wakePhrase: "hi, Tus" }).wakePhrase === "摇摇");
   check("the stored phrase is trimmed and capped at 24 CODE POINTS",
     normalizeWakePhrase("  小  灵  ") === "小 灵" && [...normalizeWakePhrase("x".repeat(40))].length === WAKE_MAX);
   // A cap counted in UTF-16 units would cut an emoji in half and store a lone surrogate (U+FFFD in

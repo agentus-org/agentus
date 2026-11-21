@@ -39,18 +39,24 @@ export interface CallSettings {
 }
 
 export const CALL_DEFAULT: CallSettings = {
-  interruptMode: "voice", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
-  // Matching ignores spaces, punctuation and case (see `matchesWakePhrase`), so 「hi tus」,
-  // 「Hi, Tus」 and 「HI TUS」 all fire.
-  wakePhrase: "hi, Tus",
+  // 语音打断 retired (2026-11-21): too hard to get right, and the operator chose to keep only
+  // keyword + button. Old installs still carry `voice` in storage, so normalizeCall maps it here.
+  interruptMode: "keyword", bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3,
+  // 扶摇的摇. Matching strips spaces/punctuation/case, so 「摇 摇」 and 「摇摇，」 both fire.
+  wakePhrase: "摇摇",
 };
 
-/** The switch's ends, in the operator's words. */
+/** The switch's ends, in the operator's words. 语音打断 is deliberately NOT here any more — the
+ *  frontend offers exactly these two; the `voice` type value is kept only so stored legacy rows can
+ *  be migrated (see normalizeCall) without breaking the shared/server type. */
 export const INTERRUPT_MODES: { id: InterruptMode; label: string; hint: string }[] = [
-  { id: "voice", label: "语音打断", hint: "说一句就能打断它（灵敏度、持续时间在设置里调）" },
-  { id: "keyword", label: "关键词打断", hint: "要先说出你设的那句话才算打断（设置里填），比语音打断稳、不用碰屏幕" },
+  { id: "keyword", label: "关键词打断", hint: "要先说出你设的那句话才算打断（设了唤醒词才生效），不用碰屏幕" },
   { id: "button", label: "按键打断", hint: "只认按钮：它说话的时候麦克风关着，不识别、不抢话——外放串音、环境吵的时候用它" },
 ];
+
+/** Old shipped wake phrase. An untouched install that still carries it must adopt 摇摇, otherwise
+ *  a fresh boot would sit in keyword mode with a phrase the operator never typed. */
+const LEGACY_WAKE_PHRASE = "hi, Tus";
 
 /** The NUMERIC knobs (slider ends live here). `interruptMode` is a three-way choice and
  *  `wakePhrase` is text, so neither is a slider. */
@@ -188,9 +194,17 @@ export function normalizeCall(raw: unknown): CallSettings {
   const out = { ...CALL_DEFAULT };
   if (!raw || typeof raw !== "object") return out;
   const r = raw as Record<string, unknown>;
-  if (INTERRUPT_MODES.some((m) => m.id === r.interruptMode)) out.interruptMode = r.interruptMode as InterruptMode;
+  // 语音打断 retired: an old row that still says `voice` must not open in a mode the UI no longer
+  // offers (no button would be highlighted and no barge path could ever be chosen). Map it to the
+  // default; every real choice (keyword/button) passes through untouched.
+  const mode = r.interruptMode;
+  if (mode === "voice") out.interruptMode = "keyword";
+  else if (INTERRUPT_MODES.some((m) => m.id === mode)) out.interruptMode = mode as InterruptMode;
   for (const k of NUMERIC) if (k in r) out[k] = clamp(k, r[k]);
-  if ("wakePhrase" in r) out.wakePhrase = normalizeWakePhrase(r.wakePhrase);
+  if ("wakePhrase" in r) {
+    // Only the OLD shipped phrase is migrated; a phrase the operator actually typed survives.
+    out.wakePhrase = r.wakePhrase === LEGACY_WAKE_PHRASE ? CALL_DEFAULT.wakePhrase : normalizeWakePhrase(r.wakePhrase);
+  }
   return out;
 }
 
@@ -250,7 +264,6 @@ export function wakeArmed(o: {
   if (!(o.heardAgoMs <= WAKE_FRESH_MS)) return false;
   if (o.own && matchesWakePhrase(o.own, o.phrase)) return false;
   if (!matchesWakePhrase(o.heard, o.phrase)) return false;
-  if (o.playRms >= 0 && !o.evidence) return false;
   return true;
 }
 
