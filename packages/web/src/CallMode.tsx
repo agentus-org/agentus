@@ -48,6 +48,7 @@ import {
   isBargeEvidence, patchCallSettings, useCallSettings,
   type CallSettings,
 } from "./callSettings";
+import { smartTurn, endpointDelayMs, EOT_DEFAULT } from "./smart-turn";
 
 export type CallPhase = "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -55,8 +56,12 @@ export type CallPhase = "connecting" | "listening" | "thinking" | "speaking" | "
  *  real-page sweep reads `window.__barge` to prove a false barge resumed playback (revives grew,
  *  no cancel sent) and a real barge took the floor (confirms grew). */
 const bargeQA = { active: false, verdict: "", candidates: 0, confirms: 0, revives: 0 };
+/** QA-only: current EOT probability + an optional override so a sweep can force "not complete"
+ *  without waiting on the real 8 MB model. `override:null` = use the real verdict. */
+const eotQA = { probability: null as number | null, delayMs: 0, override: null as number | null, ready: false };
 if (typeof window !== "undefined") {
   (window as unknown as { __barge: typeof bargeQA }).__barge = bargeQA;
+  (window as unknown as { __eot: typeof eotQA }).__eot = eotQA;
 }
 
 /** One palette per phase: input and output are deliberately different colours (a call has
@@ -311,6 +316,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
   const manualRef = useRef(false);
   const [manual, setManual] = useState(false);
   const sentRef = useRef(false);       // a turn is in flight (do not send twice)
+  /** Smart Turn: the previous Silero speech flag, to detect the speech→silence edge that triggers one
+   *  inference; and the last probability handed to the send gate. Null = no model result yet. */
+  const prevSpeechRef = useRef(false);
+  const eotProbRef = useRef<number | null>(null);
   const queueRef = useRef<string[]>([]);
   const queueRunRef = useRef(false);
   /** 播报周期：从第一句入队到最后一句念完。状态音的唯一权威来源。
@@ -440,10 +449,17 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
           // The speech detector: Silero in the page, on this microphone's own 16 kHz frames. Lazy and
           // non-blocking — the call is already listening above, and every path below falls back to the
           // measured-floor gate (`vadStep`) while the model is loading or if it never loads at all.
+          // One tap feeds both detectors (set now; the load callbacks below only reset state).
+          dictation.setVadTap((s) => { silero.push(s); smartTurn.push(s); });
           void silero.load("/vad/silero_vad.onnx").then((ok) => {
             if (dead || !ok) return;
             silero.reset();
-            dictation.setVadTap((s) => silero.push(s));
+          });
+          // Smart Turn: same 16 kHz frames, one more consumer. Loaded lazily like Silero and never
+          // blocks the call — if the 8 MB model cannot load, the send gate falls back to silenceMs.
+          void smartTurn.load("/vad/smart-turn-v3.2-cpu.onnx").then((ok) => {
+            if (dead || !ok) return;
+            smartTurn.reset();
           });
         } else {
           setPhase("listening");
@@ -459,6 +475,9 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       dead = true;
       dictation.setVadTap(null);
       silero.reset();
+      smartTurn.reset();
+      eotProbRef.current = null;
+      prevSpeechRef.current = false;
       aliveRef.current = false;     // covers 改用键盘 and the parent closing the call
       speaker.stop();
       // DISCARD, not stop(): `stop()` keeps what was heard so the composer can take it. The
@@ -614,6 +633,18 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
       const speechNow = phaseRef.current === "listening"
         ? (silero.ready ? silero.st.speech : vadStep(vadRef.current, mic, Date.now()))
         : false;
+      // Smart Turn (keyword mode only): on the speech→silence edge, ask the model once whether the
+      // operator actually finished. "Not finished" only LENGTHENS the wait (maxDelay); "finished"
+      // shortens it. New speech cancels the pending result so a mid-utterance pause can't be reused.
+      if (c.interruptMode === "keyword" && smartTurn.ready) {
+        if (speechNow && !prevSpeechRef.current) {
+          eotProbRef.current = null;            // a new utterance starts: forget the last verdict
+        }
+        if (!speechNow && prevSpeechRef.current) {
+          void smartTurn.analyze().then((r) => { if (aliveRef.current && r.ok) eotProbRef.current = r.probability; });
+        }
+      }
+      prevSpeechRef.current = speechNow;
       if (phaseRef.current === "listening" && (speechNow || mic > VOICE_RMS)) voiceAtRef.current = Date.now();
       if (phaseRef.current === "listening") {
         setHeard((st.text + (st.interim ? ` ${st.interim}` : "")).trim());
@@ -628,11 +659,25 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
           return;
         }
         const quietFor = Date.now() - voiceAtRef.current;
+        // Smart Turn only decides HOW LONG to wait, never whether to send. No model result → the
+        // operator's plain silenceMs (unchanged). "Not complete" → maxDelay (never cut them off);
+        // "complete" → minDelay (kills the dumb 3.2 s wait). The re-start-on-speech anchor above and
+        // the char-count/PTT/manual guards below are unchanged — this is a drop-in delay swap.
+        // QA override (window.__eot.override) is resolved here so a sweep can force a verdict;
+        // in production it is always null and the real model probability is used.
+        const resolvedProb = eotQA.override ?? eotProbRef.current;
+        const effectiveMs = c.interruptMode === "keyword"
+          ? endpointDelayMs(resolvedProb, EOT_DEFAULT, c.silenceMs)
+          : c.silenceMs;
+        eotQA.ready = smartTurn.ready;
+        eotQA.probability = resolvedProb;
+        eotQA.delayMs = effectiveMs;
         // `minChars` gates the AUTOMATIC send only: a tap on the orb is an explicit
         // "send this" and refusing it would read as a broken button.
         // 点按式收音期间一律不自动发（`manualRef`）：这条路径上"说完"是一个动作，不是一次停顿。
         if (text && !mutedRef.current && !pttRef.current && !manualRef.current && charCount(text) >= c.minChars
-          && quietFor > c.silenceMs && !sentRef.current) {
+          && quietFor > effectiveMs && !sentRef.current) {
+          eotProbRef.current = null;             // the verdict is consumed by this send
           sentRef.current = true;
           setPhase("thinking");
           setHeard(text);

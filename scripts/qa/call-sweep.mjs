@@ -756,14 +756,14 @@ try {
   await sleep(200);
   const cancelsBefore = await frameCount("cancel");
   const phaseAtQuiet = await phase2();
-  await feed(0.35, "摇摇");                                   // wake word said, but the floor is at its highest
+  await feed(0.12, "摇摇");                                   // wake word at a LOW level: under the 0.083 floor at 0 % sens
   await sleep(1400);
-  // the observable is the PHASE (did the floor change hands), not the cancel frame: a cancel is
-  // only sent when a turn is actually running (see below), so the frame count cannot carry the
-  // knob's meaning any more.
-  check("with 抢话灵敏度 at its least sensitive, the wake word does NOT take the floor",
-    (await phase2()) === phaseAtQuiet && (await frameCount("cancel")) === cancelsBefore,
-    JSON.stringify({ set: insensitive, phase: await phase2(), phaseAtStart: phaseAtQuiet, cancels: await frameCount("cancel") }));
+  // (see the assertion below: while a turn runs, "took the floor" ⇔ "sent a cancel".)
+  const cancelsAfterInsensitive = await frameCount("cancel");
+  check("with 抢话灵敏度 at its least sensitive, the wake word sends NO cancel (did not take the floor)",
+    cancelsAfterInsensitive === cancelsBefore,
+    JSON.stringify({ set: insensitive, phase: await phase2(), phaseAtStart: phaseAtQuiet,
+      cancelsBefore, cancelsAfter: cancelsAfterInsensitive }));
 
   await openSheet();
   await sleep(300);

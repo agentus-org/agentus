@@ -3,7 +3,15 @@
 // Proves the NEW behaviour the pure state-machine test cannot: a barge candidate that was really
 // echo/noise (mic goes quiet once we pause) RESUMES playback instead of destroying the answer.
 //
+// RETIRED 2026-11-21: the operator retired the 语音打断 mode entirely ("逻辑先废弃掉"), so the default
+// is now 关键词打断 and a pure-level feed (no wake word) no longer barges — this sweep's premise is gone.
+// The L4 state machine is still fully guarded by the pure unit test `barge-revive.mts` (13/13), which
+// does not depend on any mode. Kept here for history; exits clean so the regression suite stays honest
+// about what is actually a supported product path.
+//
 // Run: CDP=http://127.0.0.1:9223 node scripts/qa/barge-revive-sweep.mjs
+console.log("barge-revive-sweep: RETIRED — 语音打断 mode retired 2026-11-21; pure logic still guarded by barge-revive.mts (13/13).");
+process.exit(0);
 import { spawn } from "node:child_process";
 import { createServer as createTcp } from "node:net";
 import http from "node:http";
