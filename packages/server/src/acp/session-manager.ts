@@ -16,6 +16,12 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { applyContextWindow, BACKENDS, buildSpawnEnv, nativePlanSourceOf, type BackendSpec } from "./backends.js";
 import { providerFromDescription, writeModelDefault } from "../model-default.js";
+import {
+  agentConfigPath,
+  contextWriteKey,
+  parseBudget,
+  writeContextWindow as writeContextWindowFile,
+} from "../context-win-writeback.js";
 import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
 import { thinkingOptionOf, voiceAppliesToPrompt, voiceModeBlock } from "./voice-mode.js";
 import {
@@ -1314,7 +1320,8 @@ export class SessionManager {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
       live.caps = readCaps(init?.agentCapabilities);
-      const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
+      const newMeta = this.#handshakeMeta(spec);
+      const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live), ...(newMeta ? { _meta: newMeta } : {}) });
       if (live.tornDown) {
         // 握手期间被关掉了（#73 的"关闭中回魂"）：这条槽已经不在 map 里，写 ready 只会造出一行
         // 没有进程的 ready。杀掉子进程，什么都不广播。
@@ -1345,6 +1352,10 @@ export class SessionManager {
       // #62-2：新建会话从 `starting` 起步，握手这 1–3 秒里操作者已经能在 rail 上点它并选模型
       // （那时走冷分支写进 pending）。没有这一句，那个选择要等到几小时后被回收再 resume 才生效。
       await this.#replayPendingModel(live.info.id);
+      // #112: after the pending model (if any) settled, apply the window remembered for the final
+      // model so a new session shows it on the usage row without a re-pick.
+      await this.#applyRememberedContext(live);
+      this.#updateSession(live);
     } catch (err) {
       child.kill("SIGKILL");
       if (live.tornDown) return;   // 已经关了：失败也不是这条槽的失败，别往 rail 上写 error
@@ -1682,8 +1693,10 @@ export class SessionManager {
       });
       live.caps = readCaps(reloadInit?.agentCapabilities);
       live.caps.gatewayOwned = false; // decided below, from what `session/load` says it adopted
+      const loadMeta = this.#handshakeMeta(spec);
       let loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
+        ...(loadMeta ? { _meta: loadMeta } : {}),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
       // ── Did the agent actually adopt it? ────────────────────────────────────────────────────
       // Measured against the real CLI (scripts/probe-load-missing.mjs): for a session it does not
@@ -1709,7 +1722,8 @@ export class SessionManager {
         // had. An ordinary session with rows keeps the loud failure: there the missing context IS the
         // operator's conversation.
         if (this.#store.maxSeq(id) === 0 || Boolean(row.forkedFrom)) {
-          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live) })) as typeof loaded;
+          const resumeMeta = this.#handshakeMeta(spec);
+          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live), ...(resumeMeta ? { _meta: resumeMeta } : {}) })) as typeof loaded;
           const freshId = loaded?.sessionId;
           if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
           live.info.acpSessionId = freshId;
@@ -2028,6 +2042,82 @@ export class SessionManager {
     }
   }
 
+  /** The context-window config option (Hermes advertises `context_budget`, values auto/256K/…).
+   *  Mirrors the web-side `isContextWindowOption` so the server recognizes the same knob. */
+  #contextOption(s: SessionInfo): ConfigOptionView | null {
+    const opts = (s.configOptions ?? []) as ConfigOptionView[];
+    return (
+      opts.find((o) => o.category === "_context_window") ??
+      opts.find((o) => /budget|context/i.test(`${o.id} ${o.name ?? ""}`)) ??
+      null
+    );
+  }
+
+  /** #112: the config-option path used to only send the value to the agent — `model_context` and
+   *  the agent's config.yaml never moved, so a new session always fell back to `auto`. Mirror
+   *  `setContextLimit`'s memory write here and write back the per-model override, the same way
+   *  `#writeBackModelDefault` persists a model pick. `auto` clears both. */
+  #writeBackContextWindow(s: SessionInfo, value: string | number | boolean): void {
+    if (this.#contextOption(s) == null) return; // not a window pick — nothing to remember
+    const budget = parseBudget(value);
+    if (budget === undefined) return; // unparseable → don't persist garbage
+    const modelId = s.models?.currentModelId ?? null;
+    if (!modelId) return;
+    this.#store.setModelLimit(modelId, budget); // null = forget (auto)
+    try {
+      const shape = this.#spawnShape(s.backend);
+      if (!shape) return;
+      const home = buildSpawnEnv(shape.spec).home;
+      const file = agentConfigPath(s.backend, home, shape.spec.profile ?? null);
+      if (!file) return; // not Hermes / no config yet → store memory still applies to new sessions
+      const desc = (s.models?.availableModels ?? []).find((m) => m.modelId === modelId)?.description ?? null;
+      const providerHint = providerFromDescription(desc);
+      if (!providerHint) {
+        console.warn(`[agentus] contextWindowWriteBack: no provider for ${modelId} on ${s.id} — remembered in store, config.yaml untouched`);
+        return;
+      }
+      // Use the SAME authority split as writeModelDefault: splitChoiceId reads the config's named
+      // endpoints and splits at the FIRST colon, so `openrouter:anthropic/claude-3.5-sonnet:beta`
+      // writes key `anthropic/claude-3.5-sonnet:beta` (what Hermes queries), not lastIndexOf's `beta`.
+      let configText: string | null = null;
+      try { configText = fs.readFileSync(file, "utf-8"); } catch { /* 交给 writeContextWindowFile 报错 */ }
+      const keys = contextWriteKey(modelId, providerHint, configText);
+      if (!keys) {
+        console.warn(`[agentus] contextWindowWriteBack: cannot resolve provider/model for ${modelId} on ${s.id} (unresolved endpoint) — config.yaml untouched`);
+        return;
+      }
+      const { provider: providerKey, model: bareModel } = keys;
+      const r = writeContextWindowFile(file, providerKey, bareModel, budget);
+      if (!r.ok) console.warn(`[agentus] contextWindowWriteBack: refused for ${s.id} (${providerKey}/${bareModel}): ${r.reason}`);
+      else if (r.changed) console.log(`[agentus] context window → ${budget ?? "auto"} for ${providerKey}/${bareModel} (${s.id})`);
+    } catch (e) {
+      console.log(`[agentus] context window write-back failed: ${errMessage(e)}`);
+    }
+  }
+
+  /** #112: on a fresh session (or a model switch), apply the window remembered for THIS model so
+   *  the usage row shows it without a re-pick. Overrides the option's `currentValue` in place and
+   *  sends it down; a model with no memory keeps the agent's own default (`auto`). */
+  async #applyRememberedContext(s: LiveSession): Promise<void> {
+    const info = s.info;
+    const modelId = info.models?.currentModelId ?? null;
+    if (!modelId || !s.conn) return;
+    const limit = this.#store.getModelLimit(modelId);
+    if (!limit || !Number.isFinite(limit) || limit <= 0) return;
+    option:
+    for (const o of (info.configOptions ?? []) as ConfigOptionView[]) {
+      if (o.category !== "_context_window" && !/budget|context/i.test(`${o.id} ${o.name ?? ""}`)) continue;
+      const k = `${Math.round(limit / 1024)}K`;
+      o.currentValue = k;
+      if (info.acpSessionId) {
+        await s.conn.setSessionConfigOption({ sessionId: info.acpSessionId, configId: o.id, value: k as never }).catch((e) => {
+          console.log(`[agentus] session ${info.id}: remembered context ${k} not applied: ${errMessage(e)}`);
+        });
+      }
+      break option;
+    }
+  }
+
   #infoFromRow(r: SessionRow): SessionInfo {
     return {
       id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
@@ -2126,27 +2216,12 @@ export class SessionManager {
     }
     const blocks = buildPromptBlocks(text, attachments);
     if (!blocks.length) throw new Error("empty prompt");
-    // The plan hand-over, owed once per agent process (§7): a restarted agent never knew about the
-    // plan, and nothing else on this wire would tell it (ACP has no server->agent state channel).
-    //
-    // It carries a second thing the agent cannot learn on its own: that this session HAS a plan
-    // tool. Its own description says "prefer this over any todo tool", but a runtime that keeps MCP
-    // tools in a lazy-loaded catalog (Hermes) never shows that text to the model unless the model
-    // goes looking — so the plan card stayed empty while the agent kept a todo list only its own
-    // process could see. The nudge therefore has to come from the wire; Studio does the same
-    // (its `task-plan-runs.ts` appends a template to the latest input every turn).
-    //
-    // Read per prompt, and only CONSUME the hand-over when it is actually injected: an operator who
-    // turns the hint off and later back on gets the plan hand-over then, rather than losing it.
-    const hint = this.#planHint();
-    if (hint.on) {
-      const owed = Boolean(s.planReminderPending);
-      s.planReminderPending = false;
-      if (owed || hint.everyTurn) {
-        const reminder = this.#planReminder(s);
-        if (reminder) blocks.push(reminder);
-      }
-    }
+    // 计划提示 / 驾驶舱 CLI 现在都由别处承载，这里一次都不注入：
+    //   · 计划用法 → update_plan 工具自己的 description（首句就是触发条件）+ SOUL.md
+    //   · 跨会话 CLI → agentus-cockpit skill（握手时经 HERMES_EXTERNAL_SKILLS_DIRS 挂载）
+    // 这里曾经每轮（或首轮）往 prompt 塞一个 agentus://plan resource 块，既浪费 token，
+    // 又会被标题生成与 Hindsight 当成用户原话吞进去（content.py 把所有 text 拼成一条）。
+    // 保留 #planReminder() 与 planHint 设置仅为将来需要恢复时改一处即可，当前不接线。
     // 语音通话模式（issue #48）: entering, staying in, and leaving a call each owe the agent one
     // sentence it cannot infer — that its output is being SPOKEN, or that the speaking is over.
     // Rides the same `_meta`-tagged resource channel as the plan reminder; the operator's own words
@@ -2821,6 +2896,13 @@ export class SessionManager {
         });
       }
     }
+    // #112: a window pick that actually landed becomes the model's remembered window (and is
+    // written back to the agent config), so the NEXT session with this model starts there. Only a
+    // real, accepted operator pick counts — not the cockpit's internal call-time lowering, and not
+    // a value the agent refused. Skip when the agent didn't advertise a window option at all.
+    if (!opts.internal && !rejected && this.#contextOption(s.info)?.id === configId && actual === requested) {
+      this.#writeBackContextWindow(s.info, value);
+    }
     this.#updateSession(s);
   }
 
@@ -2926,6 +3008,19 @@ export class SessionManager {
     if (!token) return null;
     for (const s of this.#sessions.values()) if (s.cockpitToken === token) return s.info.id;
     return null;
+  }
+
+  /**
+   * ACP handshake `_meta` for a Hermes session. The cockpit drives the plan on its own card via
+   * the `update_plan` MCP tool; Hermes' built-in `todo_list` (the `todo` toolset) would show a second,
+   * invisible list. Ask Hermes to disable JUST that toolset for THIS session. `_meta` is a top-level
+   * field of session/new|load|resume; the ACP router expands it into the create/resume editor, where
+   * it is frozen into the session policy. Non-Hermes backends don't know `todo` and get no field.
+   * Requires the fork — an older Hermes simply ignores unknown `_meta` keys.
+   */
+  #handshakeMeta(spec: BackendSpec): Record<string, unknown> | undefined {
+    if (spec.kind !== "hermes") return undefined;
+    return { agentus: { disabled_toolsets: ["todo"] } } as Record<string, unknown>;
   }
 
   #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
@@ -4362,6 +4457,10 @@ export class SessionManager {
     // **重放不算**：冷槽上留下的意图可能被一次无人值守的 completion 唤醒带上（resume <-
     // `this.resume(e.origin)`），那时代码里没有"操作者在选模型"这件事，不该改全局配置。
     if (!opts.fromReplay && agentSettings().modelWriteBack) this.#writeBackModelDefault(s.info, modelId);
+    // #112: a manual switch to a model that has a remembered window applies it right away, so the
+    // usage row follows the model (each model keeps its own value). Replay is excluded — create()
+    // applies the remembered window once, after the pending-model replay settles.
+    if (!opts.fromReplay) await this.#applyRememberedContext(s);
     this.#updateSession(s);
     this.#emitSessions();
     return s.info;
