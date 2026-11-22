@@ -1319,7 +1319,8 @@ export class SessionManager {
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
       });
       live.caps = readCaps(init?.agentCapabilities);
-      const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live) });
+      const newMeta = this.#handshakeMeta(spec);
+      const res = await conn.newSession({ cwd, mcpServers: this.#planMcpServers(spec, live), ...(newMeta ? { _meta: newMeta } : {}) });
       if (live.tornDown) {
         // 握手期间被关掉了（#73 的"关闭中回魂"）：这条槽已经不在 map 里，写 ready 只会造出一行
         // 没有进程的 ready。杀掉子进程，什么都不广播。
@@ -1691,8 +1692,10 @@ export class SessionManager {
       });
       live.caps = readCaps(reloadInit?.agentCapabilities);
       live.caps.gatewayOwned = false; // decided below, from what `session/load` says it adopted
+      const loadMeta = this.#handshakeMeta(spec);
       let loaded = (await conn.loadSession({
         sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
+        ...(loadMeta ? { _meta: loadMeta } : {}),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
       // ── Did the agent actually adopt it? ────────────────────────────────────────────────────
       // Measured against the real CLI (scripts/probe-load-missing.mjs): for a session it does not
@@ -1718,7 +1721,8 @@ export class SessionManager {
         // had. An ordinary session with rows keeps the loud failure: there the missing context IS the
         // operator's conversation.
         if (this.#store.maxSeq(id) === 0 || Boolean(row.forkedFrom)) {
-          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live) })) as typeof loaded;
+          const resumeMeta = this.#handshakeMeta(spec);
+          loaded = (await conn.newSession({ cwd: resumeCwd, mcpServers: this.#planMcpServers(spec, live), ...(resumeMeta ? { _meta: resumeMeta } : {}) })) as typeof loaded;
           const freshId = loaded?.sessionId;
           if (!freshId) throw new Error(`the agent would not open a fresh session in ${resumeCwd}`);
           live.info.acpSessionId = freshId;
@@ -2998,6 +3002,19 @@ export class SessionManager {
     if (!token) return null;
     for (const s of this.#sessions.values()) if (s.cockpitToken === token) return s.info.id;
     return null;
+  }
+
+  /**
+   * ACP handshake `_meta` for a Hermes session. The cockpit drives the plan on its own card via
+   * the `update_plan` MCP tool; Hermes' built-in `todo_list` (the `todo` toolset) would show a second,
+   * invisible list. Ask Hermes to disable JUST that toolset for THIS session. `_meta` is a top-level
+   * field of session/new|load|resume; the ACP router expands it into the create/resume editor, where
+   * it is frozen into the session policy. Non-Hermes backends don't know `todo` and get no field.
+   * Requires the fork — an older Hermes simply ignores unknown `_meta` keys.
+   */
+  #handshakeMeta(spec: BackendSpec): Record<string, unknown> | undefined {
+    if (spec.kind !== "hermes") return undefined;
+    return { agentus: { disabled_toolsets: ["todo"] } } as Record<string, unknown>;
   }
 
   #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
