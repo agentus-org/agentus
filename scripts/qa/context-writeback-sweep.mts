@@ -9,7 +9,8 @@
 import { mkdtempSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { applyContextWindow, parseBudget, writeContextWindow } from "../../packages/server/src/context-win-writeback.js";
+import { applyContextWindow, contextWriteKey, parseBudget, writeContextWindow } from "../../packages/server/src/context-win-writeback.js";
+import { parse as parseYaml } from "yaml";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -62,6 +63,32 @@ check("creates model_overrides when absent",
 const four = "model_overrides:\n    deepseek:\n        m:\n            context_window: 1\n";
 const r4 = applyContextWindow(four, "deepseek", "m", 2);
 check("respects a 4-space indent", /context_window: 2/.test(r4.text) && !/^  context_window/m.test(r4.text));
+// The old assertion above was a false green: the buggy +2 writer emitted a 6-space `m:` next to the
+// real 8-space one, which YAML reads as m.context_window=2 AND a nested m.m — both matched. Parse
+// the result and demand the model-key set is unchanged and no nested duplicate appeared.
+const fourDoc = parseYaml(r4.text) as { model_overrides?: Record<string, Record<string, unknown>> } | null;
+const ds = fourDoc?.model_overrides?.deepseek as { m?: { context_window?: unknown; m?: unknown } } | undefined;
+check("4-space: model keys unchanged, no nested duplicate",
+  !!ds && Object.keys(ds).length === 1 && ds.m?.context_window === 2 && ds.m?.m === undefined,
+  JSON.stringify(fourDoc?.model_overrides));
+const fourClear = applyContextWindow(four, "deepseek", "m", null);
+const fourClearDoc = parseYaml(fourClear.text) as { model_overrides?: Record<string, Record<string, unknown>> } | null;
+const dsClear = fourClearDoc?.model_overrides?.deepseek as { m?: { context_window?: unknown; m?: unknown } } | undefined;
+check("4-space: auto clear leaves no nested junk", !!dsClear && Object.keys(dsClear).length === 1 && dsClear.m?.context_window === undefined && dsClear.m?.m === undefined);
+
+// ── colon-bearing model id (MAJOR 2): must split at the first colon via splitChoiceId ──────────
+const colonId = "openrouter:anthropic/claude-3.5-sonnet:beta";
+const colonCfg = "model_overrides:\n  openrouter:\n    anthropic/claude-3.5-sonnet:beta:\n      context_window: 1000\n";
+const ck = contextWriteKey(colonId, "openrouter", colonCfg);
+check("colon id → full bare model (not lastIndexOf 'beta')",
+  !!ck && ck.provider === "openrouter" && ck.model === "anthropic/claude-3.5-sonnet:beta",
+  JSON.stringify(ck));
+const rColon = applyContextWindow(colonCfg, ck!.provider, ck!.model, 524288);
+const colonDoc = parseYaml(rColon.text) as { model_overrides?: Record<string, Record<string, { context_window?: unknown }>> } | null;
+const orSection = colonDoc?.model_overrides?.openrouter ?? {};
+check("colon id: only the real model key changed, no 'beta' junk",
+  Object.keys(orSection).length === 1 && orSection["anthropic/claude-3.5-sonnet:beta"]?.context_window === 524288,
+  JSON.stringify(colonDoc?.model_overrides));
 
 // ── atomic write + read-back ─────────────────────────────────────────────────
 const dir = mkdtempSync(path.join(tmpdir(), "ctx-writeback-"));

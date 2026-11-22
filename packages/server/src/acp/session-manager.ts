@@ -18,6 +18,7 @@ import { applyContextWindow, BACKENDS, buildSpawnEnv, nativePlanSourceOf, type B
 import { providerFromDescription, writeModelDefault } from "../model-default.js";
 import {
   agentConfigPath,
+  contextWriteKey,
   parseBudget,
   writeContextWindow as writeContextWindowFile,
 } from "../context-win-writeback.js";
@@ -2070,17 +2071,22 @@ export class SessionManager {
       const file = agentConfigPath(s.backend, home, shape.spec.profile ?? null);
       if (!file) return; // not Hermes / no config yet → store memory still applies to new sessions
       const desc = (s.models?.availableModels ?? []).find((m) => m.modelId === modelId)?.description ?? null;
-      const provider = providerFromDescription(desc);
-      if (!provider) {
+      const providerHint = providerFromDescription(desc);
+      if (!providerHint) {
         console.warn(`[agentus] contextWindowWriteBack: no provider for ${modelId} on ${s.id} — remembered in store, config.yaml untouched`);
         return;
       }
-      // Hermes looks model_overrides providers up case-sensitively (models_dev._provider_override_section
-      // does overrides.get(key)); the description often prints "DeepSeek" while the config key is
-      // "deepseek". Normalise to lowercase or we write a second, unreadable block.
-      const providerKey = provider.trim().toLowerCase();
-      // model_overrides keys use the bare model id; strip a `<provider>:` prefix if present.
-      const bareModel = modelId.includes(":") ? modelId.slice(modelId.lastIndexOf(":") + 1) : modelId;
+      // Use the SAME authority split as writeModelDefault: splitChoiceId reads the config's named
+      // endpoints and splits at the FIRST colon, so `openrouter:anthropic/claude-3.5-sonnet:beta`
+      // writes key `anthropic/claude-3.5-sonnet:beta` (what Hermes queries), not lastIndexOf's `beta`.
+      let configText: string | null = null;
+      try { configText = fs.readFileSync(file, "utf-8"); } catch { /* 交给 writeContextWindowFile 报错 */ }
+      const keys = contextWriteKey(modelId, providerHint, configText);
+      if (!keys) {
+        console.warn(`[agentus] contextWindowWriteBack: cannot resolve provider/model for ${modelId} on ${s.id} (unresolved endpoint) — config.yaml untouched`);
+        return;
+      }
+      const { provider: providerKey, model: bareModel } = keys;
       const r = writeContextWindowFile(file, providerKey, bareModel, budget);
       if (!r.ok) console.warn(`[agentus] contextWindowWriteBack: refused for ${s.id} (${providerKey}/${bareModel}): ${r.reason}`);
       else if (r.changed) console.log(`[agentus] context window → ${budget ?? "auto"} for ${providerKey}/${bareModel} (${s.id})`);

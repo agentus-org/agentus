@@ -16,6 +16,7 @@
 import { chmodSync, copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { namedEndpoints, splitChoiceId } from "./model-default.js";
 
 export interface ContextWriteResult {
   ok: boolean;
@@ -81,18 +82,24 @@ export function applyContextWindow(text: string, provider: string, model: string
     return { text: lines.join("\n"), ok: true, changed: true };
   }
   const pIndent = childIndent(lines, root, 2);
-  const mIndent = pIndent + 2;
-  const cIndent = mIndent + 2;
-
+  // One indent LEVEL, not a fixed "2": a config.yaml may use 4 spaces (or any width). root is at
+  // column 0, so the provider layer's indent is the per-level step. Each deeper layer is inferred
+  // from the real structure below its parent — hardcoding `pIndent + 2` here wrote a 6-space model
+  // next to an existing 8-space one, which YAML nested as m.m and corrupted the operator's config.
+  const step = pIndent > 0 ? pIndent : 2;
   const pAt = keyAtInBlock(lines, root, provider, pIndent);
+  const mIndent = pAt >= 0 ? childIndent(lines, pAt, pIndent + step) : pIndent + step;
+
   if (pAt < 0) {
     if (value === null) return { text, ok: true, changed: false };
+    const cIndent = mIndent + step;
     const copy = [...lines];
     copy.splice(root + 1, 0, `${" ".repeat(pIndent)}${provider}:${eol}`, `${" ".repeat(mIndent)}${model}:${eol}`, `${" ".repeat(cIndent)}context_window: ${value}${eol}`);
     return { text: copy.join("\n"), ok: true, changed: true };
   }
   const pEnd = blockEnd(lines, pAt);
   const mAt = keyAtInBlock(lines, pAt, model, mIndent);
+  const cIndent = mAt >= 0 && mAt < pEnd ? childIndent(lines, mAt, mIndent + step) : mIndent + step;
   if (mAt < 0 || mAt >= pEnd) {
     if (value === null) return { text, ok: true, changed: false };
     const copy = [...lines];
@@ -170,6 +177,30 @@ export function writeContextWindow(
     return { ok: false, changed: false, reason: `write failed: ${(e as Error).message}` };
   }
   return { ok: true, changed: true };
+}
+
+/**
+ * #112: 从一个 ACP modelId 算出该写进 `model_overrides.<provider>.<model>` 的键。
+ * 复用 model-default 的权威拆法 splitChoiceId —— 它按首个冒号切并核对配置里声明的命名端点，
+ * 所以 `openrouter:anthropic/claude-3.5-sonnet:beta` 的裸模型是 `anthropic/claude-3.5-sonnet:beta`
+ * 而不是 lastIndexOf(':') 切出的 `beta`（后者 Hermes 消费端永不查询，窗口静默失效）。
+ * provider 用 split 的持久身份（配置键/别名），缺失时回退到 description 推的小写 slug。
+ * unresolved（choice 指向本配置未声明的端点）时返回 null，整次拒写。
+ */
+export function contextWriteKey(
+  modelId: string,
+  providerHint: string | null,
+  configText: string | null,
+): { provider: string; model: string } | null {
+  let named = namedEndpoints(null);
+  if (configText) {
+    try { named = namedEndpoints(parseYaml(configText)); } catch { /* 坏配置：按空端点集拆，不阻断 */ }
+  }
+  const split = splitChoiceId(modelId, providerHint, named);
+  if (split.unresolved) return null;
+  const provider = (split.provider ?? providerHint ?? "").trim().toLowerCase();
+  const model = (split.model ?? "").trim();
+  return provider && model ? { provider, model } : null;
 }
 
 /** agent 的 config.yaml 路径。与 model-default.ts:configPath() 同规则（hermes + home + 可选 profile）。 */
