@@ -36,12 +36,13 @@ const TOOLS = [
   {
     name: "update_plan",
     description:
-      "Publish this session's plan — the step list the operator watches in the Agentus cockpit, one " +
-      "progress dot per step. PREFER THIS over any checklist/todo tool of your own: this list is the " +
-      "one the cockpit DISPLAYS, and it survives your restarts, while a built-in task list dies with " +
-      "your process (the cockpit does not read it and will not show it). Call it when you START a " +
-      "multi-step task, and again each time a step's status changes — a plan that is not updated is a " +
-      "plan that lies. `items` is the WHOLE list as it stands now (a snapshot, not a delta): include " +
+      "Track a plan for multi-step work (3+ steps), and update it as you go. Call this at the START " +
+      "of any multi-step task and again each time a step's status changes — a plan that is not " +
+      "updated is a plan that lies. This is the step list the operator watches in the Agentus " +
+      "cockpit, one progress dot per step. PREFER THIS over any checklist/todo tool of your own: " +
+      "this list is the one the cockpit DISPLAYS, and it survives your restarts, while a built-in " +
+      "task list dies with your process (the cockpit does not read it and will not show it). " +
+      "`items` is the WHOLE list as it stands now (a snapshot, not a delta): include " +
       "every step, finished or not, in order. Statuses: pending, in_progress (at most one at a time), " +
       "completed, cancelled. Give `title` on your first call for a multi-step task — a short action " +
       "phrase (max 40 characters) naming the job, because that is the line the operator's completion " +

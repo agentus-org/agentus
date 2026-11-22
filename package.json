@@ -77,6 +77,7 @@
     "store-fold": "tsx scripts/qa/store-fold.mts",
     "session-cwd-persist": "tsx scripts/qa/session-cwd-persist.mts",
     "context-window": "tsx scripts/qa/context-window.mts",
+    "context-writeback": "tsx scripts/qa/context-writeback-sweep.mts",
     "live-stream": "tsx scripts/qa/live-stream.mts",
     "open-target": "tsx scripts/qa/open-target.mts",
     "rail-recent": "tsx scripts/qa/rail-recent.mts",
