@@ -1239,7 +1239,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const ip = clientIp(req);
       if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the plan tool is loopback-only" });
       const body = await readJson(req);
-      const token = String(req.headers["x-hermes-studio-plan-token"] ?? "");
+      const token = String(req.headers["x-studio-plan-token"] ?? "");
       const sessionId = String(body.session ?? "");
       if (body.op === "read") {
         const out = mgr.planForMcp(sessionId, token);

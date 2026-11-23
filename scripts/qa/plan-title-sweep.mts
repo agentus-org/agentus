@@ -21,7 +21,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${name}${detail ? `  — ${detail}` : ""}`);
 };
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-studio-plan-title-"));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "studio-plan-title-"));
 const store = new Store(path.join(dir, "hermes-studio.sqlite"));
 const SID = "sess_title_probe";
 const items = (...steps: [string, string][]) => steps.map(([content, status]) => ({ content, status }));

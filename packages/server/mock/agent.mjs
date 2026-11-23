@@ -118,7 +118,7 @@ const sessions = new Map();
 function notePlanTool(mcpServers) {
   const file = process.env.MOCK_PLAN_TOKEN_FILE;
   if (!file || !Array.isArray(mcpServers)) return;
-  const tool = mcpServers.find((m) => m?.name === "hermes-studio-plan");
+  const tool = mcpServers.find((m) => m?.name === "studio-plan");
   if (!tool) return;
   const env = Object.fromEntries((tool.env ?? []).map((e) => [e.name, e.value]));
   try {

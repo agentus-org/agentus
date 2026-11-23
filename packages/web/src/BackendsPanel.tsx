@@ -308,7 +308,7 @@ export function BackendsPanel(): JSX.Element {
                     agent gets plan cards without any adapter code. */}
                 {row.nativePlanSource === "acp"
                   ? <> · 计划 <code>原生帧</code></>
-                  : <> · 计划 <code>hermes-studio-plan 工具</code></>}
+                  : <> · 计划 <code>studio-plan 工具</code></>}
                 {/* Where a NEW session from this row starts, permission-wise (the operator's ask:
                     「在智能体设置中设置默认选中权限」). */}
                 {row.defaultMode ? <> · 默认权限 <code>{modeLabel(row, row.defaultMode)}</code></> : null}
@@ -448,12 +448,12 @@ export function BackendsPanel(): JSX.Element {
                       value={draft.nativePlanSource ?? "none"}
                       onChange={(e) => field("nativePlanSource", e.target.value)}
                     >
-                      <option value="none">注入 hermes-studio-plan 计划工具（推荐）</option>
+                      <option value="none">注入 studio-plan 计划工具（推荐）</option>
                       <option value="acp">agent 自己发计划帧（原生 ACP）</option>
                     </select>
                   </div>
                   <p className="set-hint be-kind-help">
-                    计划卡的数据由谁写：<b>计划工具</b> 会在握手时给 agent 注入 <code>hermes-studio-plan</code>
+                    计划卡的数据由谁写：<b>计划工具</b> 会在握手时给 agent 注入 <code>studio-plan</code>
                     （<code>update_plan</code>/<code>read_plan</code>），工具写的计划存在座舱里、重启不丢，
                     新 agent 不用改一行代码就有计划卡 —— 所有后端默认走这条。<b>原生</b> 是逃生口：只有
                     在这个 agent 自己发的 ACP <code>plan</code> 帧比座舱对象更可信时才选它，选了之后

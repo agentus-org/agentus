@@ -1,12 +1,12 @@
 import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
-// QA: the `hermes-studio-plan` MCP channel (P1) — the way an agent that does NOT emit ACP plan frames
+// QA: the `studio-plan` MCP channel (P1) — the way an agent that does NOT emit ACP plan frames
 // gets plan cards without a line of its own code.
 //
 //   node scripts/qa/plan-mcp-sweep.mjs
 //
 // What it proves, and why each part is here:
 //   1. the capability bit GATES injection. The mock row is `nativePlanSource: none`, so its handshake
-//      carries `hermes-studio-plan`; flipped to `acp`, a new session's handshake carries nothing. Every
+//      carries `studio-plan`; flipped to `acp`, a new session's handshake carries nothing. Every
 //      backend — Hermes included — defaults to `none`: the cockpit renders the plan OBJECT it owns,
 //      because the agent's own todo list dies with its process (design-plan-service.md §1).
 //   2. the injected env works END TO END. The first half is a real `plan-server.mjs` child speaking
@@ -167,7 +167,7 @@ let sid = s1.id;
 await say(sid, "[mcp] what did the handshake carry?");
 const declared = JSON.parse((await lastReply(sid)).replace(/^MCP\s*/, "") || "[]");
 check("a `none` backend is handed the plan tool at HANDSHAKE time (and nothing else)",
-  declared.length === 1 && declared[0].name === "hermes-studio-plan",
+  declared.length === 1 && declared[0].name === "studio-plan",
   JSON.stringify(declared));
 check("…running this repo's own plan server, not some other binary",
   declared[0]?.command === "node" && declared[0]?.args?.[0] === "plan-server.mjs",
@@ -201,7 +201,7 @@ const mcp = mcpChild({
   HERMES_STUDIO_PLAN_SESSION: env.HERMES_STUDIO_PLAN_SESSION,
 });
 const init = await mcp.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
-check("the plan server speaks MCP (initialize)", init?.result?.serverInfo?.name === "hermes-studio-plan",
+check("the plan server speaks MCP (initialize)", init?.result?.serverInfo?.name === "studio-plan",
   JSON.stringify(init?.result?.serverInfo));
 mcp.notify("notifications/initialized");
 const listed = await mcp.call("tools/list");

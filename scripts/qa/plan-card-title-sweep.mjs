@@ -105,7 +105,7 @@ try {
   const upd = await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(TITLE)}, items: ${JSON.stringify(items)} }),
     });
     return { status: r.status, body: await r.json().catch(() => null) };
@@ -137,7 +137,7 @@ try {
   const LONG = "把 hermes-studio 的任务计划面板在手机上重新排一遍包括标题和每一步的字号";
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(LONG)}, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -201,7 +201,7 @@ try {
   // --- 5: no name ⇒ the old label (no regression for agents that never send one) -----------
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: null, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -215,7 +215,7 @@ try {
   // put the name back: the next section archives THIS plan into the transcript
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(TITLE)}, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -240,7 +240,7 @@ try {
   const SECOND = "第二轮：换一份计划";
   const secondUpd = await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(SECOND)},
         items: [{ content: '第二轮的步骤', status: 'in_progress' }] }) });
     return { status: r.status, body: await r.json().catch(() => null) };

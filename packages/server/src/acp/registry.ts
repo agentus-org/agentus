@@ -38,7 +38,7 @@ export interface BackendRow {
   kind: BackendKind;
   /**
    * Which channel carries this agent's plan: `acp` (it emits plan frames itself, so we inject
-   * nothing) or `none` (we inject the `hermes-studio-plan` MCP server at handshake time). A declaration
+   * nothing) or `none` (we inject the `studio-plan` MCP server at handshake time). A declaration
    * the operator can flip when an agent gains or loses the native ability — the alternative is a
    * code change per agent, which is exactly what this design exists to avoid.
    */

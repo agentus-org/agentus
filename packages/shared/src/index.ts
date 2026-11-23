@@ -651,12 +651,12 @@ export interface PlanSnapshot {
 
 /** Injected when the session has no plan yet and the backend is MCP-driven. */
 export const PLAN_GUIDANCE_INTRO = [
-  "This session has an `update_plan` tool mounted on it (MCP server `hermes_studio_plan`), and the",
+  "This session has an `update_plan` tool mounted on it (MCP server `studio_plan`), and the",
   "plan it holds is the one the operator sees — a todo list of your own is invisible there and",
   "dies with your process. For anything with more than one step, publish the steps with",
   "`update_plan` and update it as you go: mark a step completed only once its work is actually",
   "verified, and drop or cancel what you are no longer doing. If `update_plan` is not in your",
-  "tool list it is deferred — search for `hermes_studio_plan update_plan` to find it, then call it by",
+  "tool list it is deferred — search for `studio_plan update_plan` to find it, then call it by",
   "that exact name. On that first call also give a `title`: one short action phrase (≤40 chars)",
   "naming the job — it is the line the operator's completion notification shows, so the phone says",
   "what finished instead of just which conversation ended. A one-step request needs no plan.",

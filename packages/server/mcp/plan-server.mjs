@@ -1,7 +1,7 @@
 import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 #!/usr/bin/env node
 /**
- * `hermes-studio-plan` — the cockpit's plan tool, as a stdio MCP server.
+ * `studio-plan` — the cockpit's plan tool, as a stdio MCP server.
  *
  * WHY THIS EXISTS
  * The cockpit owns a session's plan (design-plan-service.md §2-3) and an agent's own todo list
@@ -100,7 +100,7 @@ async function callCockpit(op, payload) {
   }
   const res = await fetch(`${ENDPOINT}/api/plan/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-hermes-studio-plan-token": TOKEN },
+    headers: { "content-type": "application/json", "x-studio-plan-token": TOKEN },
     body: JSON.stringify({ session: SESSION, op, ...payload }),
   });
   const body = await res.json().catch(() => null);
@@ -173,7 +173,7 @@ async function handle(msg) {
       reply(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "hermes-studio-plan", version: "1.0.0" },
+        serverInfo: { name: "studio-plan", version: "1.0.0" },
       });
       return;
     case "notifications/initialized":
@@ -219,16 +219,16 @@ process.stdin.on("data", (chunk) => {
     try {
       msg = JSON.parse(line);
     } catch {
-      process.stderr.write(`hermes-studio-plan: ignoring a line that is not JSON\n`);
+      process.stderr.write(`studio-plan: ignoring a line that is not JSON\n`);
       continue;
     }
     handle(msg).catch((e) => {
-      process.stderr.write(`hermes-studio-plan: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.stderr.write(`studio-plan: ${e instanceof Error ? e.message : String(e)}\n`);
       if (msg?.id !== undefined && msg?.id !== null) replyError(msg.id, -32603, "internal error");
     });
   }
 });
 process.stdin.on("end", () => process.exit(0));
 process.stderr.write(
-  `hermes-studio-plan ready (session ${SESSION || "?"}, endpoint ${ENDPOINT || "unset"})\n`,
+  `studio-plan ready (session ${SESSION || "?"}, endpoint ${ENDPOINT || "unset"})\n`,
 );

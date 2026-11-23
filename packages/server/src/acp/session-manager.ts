@@ -3034,7 +3034,7 @@ export class SessionManager {
     if (nativePlanSourceOf(spec) !== "none") return [];
     return [
       {
-        name: "hermes-studio-plan",
+        name: "studio-plan",
         command: process.execPath,
         args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "../../mcp/plan-server.mjs")],
         env: [
@@ -3061,7 +3061,7 @@ export class SessionManager {
       live.planFramesDropped = true;
       console.log(
         `[hermes-studio] plan frame ignored for ${live.info.id}: backend '${live.info.backend}' is MCP-driven ` +
-        `(the card is fed by the hermes-studio-plan tool)`,
+        `(the card is fed by the studio-plan tool)`,
       );
     }
     return false;
@@ -4341,7 +4341,7 @@ export class SessionManager {
       sessionId: s.info.acpSessionId!,
       cwd: s.info.workspace || s.info.cwd,
       // Deliberately NO plan tool: this fork exists to be asked for a title and then thrown away.
-      // Injecting one would spawn a second `hermes-studio-plan` child per title for nothing.
+      // Injecting one would spawn a second `studio-plan` child per title for nothing.
       mcpServers: [],
     });
     const forkId = (fork as { sessionId?: string } | null)?.sessionId;

@@ -58,7 +58,7 @@ export interface BackendSpec {
    *  · `acp`  — the agent emits ACP `plan` frames itself (Hermes does; that is the whole point of
    *             the fork fix). The cockpit ingests them and must NOT hand the agent a second
    *             writable list, so no plan MCP server is injected into the handshake.
-   *  · `none` — anything else. The cockpit injects the `hermes-studio-plan` MCP server at handshake
+   *  · `none` — anything else. The cockpit injects the `studio-plan` MCP server at handshake
    *             time, so a new agent gets plan cards without one line of its own code.
    *
    *  The choice is per SESSION (it rides the handshake), which is why it can never leak into the
@@ -161,7 +161,7 @@ export type BackendId = keyof typeof BACKENDS;
 /** Which channel carries a backend's plan. See BackendSpec.nativePlanSource.
  *
  *  `none` is the default AND the shipping configuration for every backend: the cockpit's plan
- *  object is the only plan that survives an agent restart, so the `hermes-studio-plan` MCP tool is what
+ *  object is the only plan that survives an agent restart, so the `studio-plan` MCP tool is what
  *  writes (and what the agent is told to prefer). `acp` is a per-row escape hatch for an agent whose
  *  frames you have decided to trust more than the object — it is the ONLY case in which frames are
  *  rendered. */
