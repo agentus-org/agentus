@@ -45,14 +45,14 @@ brew install node                 # 或者 https://nodejs.org/en/download
 按基座版本各有一个**集成构建的 tag**，自成命名空间：
 
 ```
-agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
+studio/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 ```
 
 用 tag 而不是分支是刻意的：同名分支（在 `yl-dev/` 下）是工作面、会被重建，而 tag 永不移动 —— 所以钉
-tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.23.0`、`v0.23.0+canary.*`）分开；最后一段是时间戳，
+tag。`studio/` 这个前缀也把它和上游自己的 tag（`v0.23.0`、`v0.23.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.23.0/merge-20261123-1847`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`studio/v0.23.0/merge-20261123-1847`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.23.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 
@@ -74,7 +74,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # 2. 最新的集成构建，按 tag 取（写全 refs/tags/：永不歧义）
 TAG=$(git ls-remote --tags --refs https://github.com/LiangYang666/hermes-agent.git \
-      'refs/tags/agentus/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
+      'refs/tags/studio/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
 git clone --depth=1 --branch "$TAG" https://github.com/LiangYang666/hermes-agent.git ~/Project/hermes-agent
 
 # 3. 包一层，让驾驶舱指向这个 wrapper

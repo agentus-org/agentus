@@ -52,15 +52,15 @@ They live on the ACP branches of the fork
 through one **tag per integration build**, in a namespace of its own:
 
 ```
-agentus/<hermes version>/merge-<YYYYMMDD-HHMM>
+studio/<hermes version>/merge-<YYYYMMDD-HHMM>
 ```
 
 A tag and not a branch, on purpose: the branch of the same name (under `yl-dev/`) is the working
-ref and gets rebuilt, while a tag never moves — so pin the tag. The `agentus/` prefix also keeps
+ref and gets rebuilt, while a tag never moves — so pin the tag. The `studio/` prefix also keeps
 ours apart from upstream's own tags (`v0.23.0`, `v0.23.0+canary.*`), and the timestamp in the
 last segment sorts, so "newest" is a `sort -V`.
 
-**Current integration build: `agentus/v0.23.0/merge-20261123-1847`** — the newest tag on the fork,
+**Current integration build: `studio/v0.23.0/merge-20261123-1847`** — the newest tag on the fork,
 built on Hermes `v0.23.0`. This line is for orientation only, not the source of truth: the
 `TAG=$(…)` step below resolves the newest one on every run, so read it there if this sentence
 ever looks stale.
@@ -84,7 +84,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # 2. the newest integration build, as a tag (`refs/tags/` spelled out: never ambiguous)
 TAG=$(git ls-remote --tags --refs https://github.com/LiangYang666/hermes-agent.git \
-      'refs/tags/agentus/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
+      'refs/tags/studio/*' | awk '{print $2}' | sed 's#refs/tags/##' | sort -V | tail -1)
 git clone --depth=1 --branch "$TAG" https://github.com/LiangYang666/hermes-agent.git ~/Project/hermes-agent
 
 # 3. wrap it, and point the cockpit at the wrapper
