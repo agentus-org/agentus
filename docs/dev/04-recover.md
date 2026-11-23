@@ -9,7 +9,7 @@ The boot log is the authoritative account of what the server resolved. It prints
 data directory won and why** and the auth state:
 
 ```
-data dir: /Users/…/packages/server/.data  (AGENTUS_DATA was set)      ← the dir + the reason
+data dir: /Users/…/packages/server/.data  (HERMES_STUDIO_DATA was set)      ← the dir + the reason
 auth on: user "admin"
 http port: 8788                                                       ← the only listener
 ```
@@ -35,7 +35,7 @@ ps -o pid,ppid,pgid,command -p <pid>    # its process group and command line
 
 `EADDRINUSE` means another process holds the port — often a previous instance that never
 died, or (this box) an ambient `PORT=8648` pointed at Studio. The Hermes Studio server reads
-`AGENTUS_PORT`, never bare `PORT`, so a script that reads the ambient value will fight for
+`HERMES_STUDIO_PORT`, never bare `PORT`, so a script that reads the ambient value will fight for
 Studio's port. Do not just relaunch: identify the current holder, decide whether it is the
 one you want, then stop it through its own launcher.
 
@@ -85,7 +85,7 @@ file at that same path, and its server was the only way into the machine. Rules:
 
 ## The SQLite store, WAL, and the `*.bak` files
 
-State lives in `<DATA_DIR>/agentus.sqlite` (the transcript and every other row), accessed
+State lives in `<DATA_DIR>/hermes-studio.sqlite` (the transcript and every other row), accessed
 through Node's built-in `node:sqlite` (hence Node `>= 22.5`). Files beside it: `credentials.json`,
 `auth.token`, `auth.secret`, `sessions.json`, `settings.json` — several of them
 `0600`. The server creates the directory `0700` on first boot.
@@ -94,8 +94,8 @@ through Node's built-in `node:sqlite` (hence Node `>= 22.5`). Files beside it: `
 a backup and a record of the old values:
 
 ```bash
-cp -p packages/server/.data/agentus.sqlite \
-      ~/.hermes/cache/scratch/agentus.sqlite.bak-$(date +%H%M%S)
+cp -p packages/server/.data/hermes-studio.sqlite \
+      ~/.hermes/cache/scratch/hermes-studio.sqlite.bak-$(date +%H%M%S)
 ```
 
 The one migration path in the project that rewrites rows in place — the legacy transcript
@@ -124,7 +124,7 @@ Symptoms that look like separate bugs but share one cause: the operator's sessio
 back empty and a running slot was reaped — yet the port answers 200 and `/api/version` looks
 fine. Cause:
 `relaunch → launch.py` inherited the QA environment. The launcher now pins its own
-`AGENTUS_DATA`/`AGENTUS_PORT` and pops the QA/DEV keys, but verify identity directly:
+`HERMES_STUDIO_DATA`/`HERMES_STUDIO_PORT` and pops the QA/DEV keys, but verify identity directly:
 
 ```bash
 PID=$(lsof -nP -iTCP:8788 -sTCP:LISTEN -t)
@@ -136,9 +136,9 @@ Recovery:
 
 ```bash
 cd worktrees/agentus
-env -u AGENTUS_DATA -u AGENTUS_BASE -u DEV_LOG_PATH -u DEV_PROMOTE_DETACHED -u DEV_PROMOTE_SELF \
+env -u HERMES_STUDIO_DATA -u HERMES_STUDIO_BASE -u DEV_LOG_PATH -u DEV_PROMOTE_DETACHED -u DEV_PROMOTE_SELF \
   bash scripts/relaunch.sh --port 8788 --launcher ~/.hermes/cache/agentus/launch.py \
-    --launchd ai.hermes.agentus
+    --launchd ai.hermes.hermes-studio
 TOK=$(cat packages/server/.data/auth.token)
 curl -s -X POST -H "Authorization: Bearer $TOK" http://127.0.0.1:8788/api/sessions/<id>/resume
 ```
@@ -166,10 +166,10 @@ curl -s -X DELETE -H "Authorization: Bearer $TOK" http://127.0.0.1:8788/api/auth
 ```
 
 In the UI it is Settings → 登录失败锁定 (which IPs are locked, for how long, unlock / unlock
-all). Tunables: `AGENTUS_LOGIN_MAX_FAILS` (default 5) / `AGENTUS_LOGIN_LOCK_MS` (default
+all). Tunables: `HERMES_STUDIO_LOGIN_MAX_FAILS` (default 5) / `HERMES_STUDIO_LOGIN_LOCK_MS` (default
 30000). Login sessions are stateless signed cookies indexed at `<DATA_DIR>/sessions.json`
 (0600) — advisory for display, authoritative for existence. A password change invalidates
-every other session; `AGENTUS_AUTH=off` disables the login entirely and the boot log scolds
+every other session; `HERMES_STUDIO_AUTH=off` disables the login entirely and the boot log scolds
 you (do not leave it off — the listener is `0.0.0.0` and this cockpit is tunnelled).
 
 ## The process-exit safety net for children

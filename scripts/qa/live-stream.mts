@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The live stream, through the CLIENT's own code.
 //
 // The frames a real server sends are fed to the real cockpit store (`apply`, the same entry point the
@@ -18,7 +19,7 @@ const auth = (): Record<string, string> => ({ ...authHeaders() }) as Record<stri
 (globalThis as any).localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} };
 const { cockpit } = await import("../../packages/web/src/state.ts");
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8788";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8788";
 const PROMPT = process.argv[2] || "你好，介绍一下你自己";
 const DEADLINE = 45_000;
 
@@ -36,7 +37,7 @@ const created = await fetch(`${BASE}/api/sessions`, {
 });
 if (!created.ok) {
   console.error("cannot create a session:", created.status, await created.text());
-  console.error("hint: start the cockpit, or pass AGENTUS_BASE");
+  console.error("hint: start the cockpit, or pass HERMES_STUDIO_BASE");
   process.exit(1);
 }
 const session = await created.json();

@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.content.Context;
 
@@ -172,7 +172,7 @@ final class Http {
     }
 
     static X509Certificate bundled(Context context) throws Exception {
-        try (InputStream in = context.getResources().openRawResource(R.raw.agentus_ca)) {
+        try (InputStream in = context.getResources().openRawResource(R.raw.hermes_studio_ca)) {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             return (X509Certificate) cf.generateCertificate(in);
         }

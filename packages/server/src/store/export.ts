@@ -183,7 +183,7 @@ export function renderMarkdown(session: ExportSessionHeader, messages: StoredMes
 export function renderJson(session: ExportSessionHeader, messages: StoredMessage[]): string {
   return JSON.stringify(
     {
-      format: "agentus-session/1",
+      format: "hermes-studio-session/1",
       exportedAt: new Date().toISOString(),
       session,
       // lossless: every stored row with its raw payload, seq order preserved

@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The cross-session message's provenance, in the DOM (not just in the view model).
 //
 // `message-origin.mts` proves the reducer builds `from`; this proves the PAGE tells the truth with it:
@@ -5,7 +6,7 @@
 // and a cockpit that borrows it for another agent's words is lying quietly. The bubble must say
 // 来自「<that session's name>», carry the from-agent class, and name the source id in its tooltip.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/send-origin-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 HERMES_STUDIO_DATA=/tmp/agentus-qa-account node scripts/qa/send-origin-dom.mjs
 //        (needs a browser with --remote-debugging-port=9222)
 //
 // What it does, in order: two mock sessions on the real server → `send` from one to the other through
@@ -16,12 +17,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const DATA = process.env.AGENTUS_DATA || "/tmp/agentus-qa-account";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const DATA = process.env.HERMES_STUDIO_DATA || "/tmp/agentus-qa-account";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const BIN = path.join(REPO, "bin/hermes-studio.mjs");
-const U = process.env.AGENTUS_USERNAME || "scratch";
-const P = process.env.AGENTUS_PASSWORD || "scratch-pass-1";
+const U = process.env.HERMES_STUDIO_USERNAME || "scratch";
+const P = process.env.HERMES_STUDIO_PASSWORD || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();
@@ -47,7 +48,7 @@ const identityOf = (pid) => {
   const found = {};
   for (const kv of env.split(/\s+/)) {
     const at = kv.indexOf("=");
-    if (at > 0 && kv.startsWith("AGENTUS_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
+    if (at > 0 && kv.startsWith("HERMES_STUDIO_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
   }
   return found;
 };
@@ -73,7 +74,7 @@ const before = (await api("/api/settings")).body.agent?.cockpitSend ?? false;
 const src = await mkSession("来源甲（自动删除）");
 const dst = await mkSession("来源乙（自动删除）");
 const env = identityOf(src.pid);
-const SID = env.AGENTUS_COCKPIT_SESSION;
+const SID = env.HERMES_STUDIO_COCKPIT_SESSION;
 await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
 console.log(`      src=${SID} dst=${dst.id} send was ${before ? "ON" : "OFF"}`);
 

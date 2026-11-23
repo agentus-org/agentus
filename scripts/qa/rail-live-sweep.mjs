@@ -48,7 +48,7 @@ const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`).catch(()
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — the QA account is not this instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — the QA account is not this instance (HERMES_STUDIO_DATA?)`);
 
   // Two fresh mock sessions: one to run a turn in, one to leave still. A fresh session per run, so a
   // leftover from the previous run cannot be mistaken for this one.

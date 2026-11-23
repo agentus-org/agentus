@@ -61,7 +61,7 @@ check("普通 thought 帧（没有 _meta.hermes）→ undefined", statusItemsOf(
 
 // --- 2. 折叠：同一行、最新一次的条目 ------------------------------------------------------
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-recall-"));
-const store = new Store(path.join(dir, "agentus.sqlite"));
+const store = new Store(path.join(dir, "hermes-studio.sqlite"));
 store.appendMessage({ sessionId: "s1", kind: "user", payload: { text: "hi" }, createdAt: Date.now() });
 
 const first = store.appendNote("s1", { category: "memory", text: "recalled 1 memory", items: [{ text: "旧的那条" }] });

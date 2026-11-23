@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the companion app's WebView over CDP (the app enables WebView debugging).
 
-    adb forward tcp:9333 localabstract:webview_devtools_remote_$(adb shell pidof app.agentus.companion)
+    adb forward tcp:9333 localabstract:webview_devtools_remote_$(adb shell pidof app.hermesstudio.companion)
 
 Actions:
     login <token-file>      attach as the machine token (Network.setExtraHTTPHeaders) and reload

@@ -20,7 +20,7 @@ type TlsInfo = {
   selfSigned: boolean;
 };
 
-const HINT_KEY = "agentus.tls.card.seen";
+const HINT_KEY = "hermes-studio.tls.card.seen";
 
 /** OpenSSL 的 `Sep 30 13:39:12 2036 GMT` 对一个设置页来说太长也没必要 —— 只留日期（本地时区）。 */
 function isoDay(s: string | undefined): string {
@@ -36,7 +36,7 @@ const STEPS: { os: string; items: JSX.Element[] }[] = [
     os: "安卓",
     items: [
       <>用手机浏览器打开本页 → 点上面的「下载」（存进「下载」目录）。</>,
-      <>设置 → 安全 → <b>加密与凭据</b> → 安装证书 → <b>CA 证书</b> → 选刚下载的 <code>agentus-ca.crt</code>。<br />
+      <>设置 → 安全 → <b>加密与凭据</b> → 安装证书 → <b>CA 证书</b> → 选刚下载的 <code>hermes-studio-ca.crt</code>。<br />
         <span className="tls-side">小米：安全 → 更多安全设置 → 加密与凭据；华为：安全 → 更多安全设置 → 加密和凭据。</span></>,
       <>系统会要求输一次锁屏密码，装完会有一条「网络可能会被监控」的提示 —— 那是系统对任何用户证书的标准警告。</>,
       <>Chrome 重进本站，地址栏不再报警。<b>伴侣 App 不用装</b>，它的 APK 里已经带了这张根。</>,
@@ -54,10 +54,10 @@ const STEPS: { os: string; items: JSX.Element[] }[] = [
   {
     os: "电脑（Mac）",
     items: [
-      <>点「下载」，双击 <code>agentus-ca.crt</code>。</>,
+      <>点「下载」，双击 <code>hermes-studio-ca.crt</code>。</>,
       <>钥匙串访问里把钥匙串选成 <b>系统</b> → 添加（要输一次管理员密码）。</>,
       <>在钥匙串里找到它 → 双击 → 展开「信任」→ 使用此证书时：<b>始终信任</b>。</>,
-      <>或者一条命令：<br /><code className="tls-cmd">sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/Downloads/agentus-ca.crt</code></>,
+      <>或者一条命令：<br /><code className="tls-cmd">sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/Downloads/hermes-studio-ca.crt</code></>,
     ],
   },
 ];
@@ -104,7 +104,7 @@ export function TrustCard(): JSX.Element {
       {state === "loading" && <p className="set-hint">正在读证书…</p>}
       {state === "missing" && (
         <p className="set-hint tls-warn">
-          这台服务器没有配置根证书（<code>AGENTUS_CA_FILE</code> 未设置，默认位置也没有文件），所以这里没有可下载的东西。
+          这台服务器没有配置根证书（<code>HERMES_STUDIO_CA_FILE</code> 未设置，默认位置也没有文件），所以这里没有可下载的东西。
         </p>
       )}
       {state === "error" && <p className="set-err">读证书失败：{err}</p>}
@@ -115,9 +115,9 @@ export function TrustCard(): JSX.Element {
             {/* 不用 `download` 属性：iOS 只有「点链接 → 导航 → 收到 attachment + x-x509-ca-cert」
                 才会弹「此网站正尝试下载配置描述文件」这套安装流程。带 download 属性时 Safari 会
                 把它当成普通文件存进「文件」，描述文件那一步就没了。文件名靠响应头的
-                Content-Disposition（agentus-ca.crt），桌面端照样落到下载目录。 */}
+                Content-Disposition（hermes-studio-ca.crt），桌面端照样落到下载目录。 */}
             <a className="tls-dl" href="/api/tls/ca.crt">
-              下载 agentus-ca.crt
+              下载 hermes-studio-ca.crt
             </a>
             <p className="set-hint tls-meta">
               <span>{info.selfSigned ? "自签根" : "根证书"}</span>

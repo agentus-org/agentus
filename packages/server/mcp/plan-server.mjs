@@ -1,6 +1,7 @@
+import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 #!/usr/bin/env node
 /**
- * `agentus-plan` — the cockpit's plan tool, as a stdio MCP server.
+ * `hermes-studio-plan` — the cockpit's plan tool, as a stdio MCP server.
  *
  * WHY THIS EXISTS
  * The cockpit owns a session's plan (design-plan-service.md §2-3) and an agent's own todo list
@@ -23,9 +24,9 @@
  * client, so all diagnostics go to stderr.
  */
 
-const ENDPOINT = (process.env.AGENTUS_PLAN_ENDPOINT ?? "").replace(/\/+$/, "");
-const TOKEN = process.env.AGENTUS_PLAN_TOKEN ?? "";
-const SESSION = process.env.AGENTUS_PLAN_SESSION ?? "";
+const ENDPOINT = (process.env.HERMES_STUDIO_PLAN_ENDPOINT ?? "").replace(/\/+$/, "");
+const TOKEN = process.env.HERMES_STUDIO_PLAN_TOKEN ?? "";
+const SESSION = process.env.HERMES_STUDIO_PLAN_SESSION ?? "";
 
 /** MCP revision this server implements. Cheap to keep current: we only use tools/*. */
 const PROTOCOL_VERSION = "2024-11-05";
@@ -93,13 +94,13 @@ const TOOLS = [
 async function callCockpit(op, payload) {
   if (!ENDPOINT || !TOKEN) {
     throw new Error(
-      "this plan tool was started without AGENTUS_PLAN_ENDPOINT/AGENTUS_PLAN_TOKEN — it only works " +
+      "this plan tool was started without HERMES_STUDIO_PLAN_ENDPOINT/HERMES_STUDIO_PLAN_TOKEN — it only works " +
         "inside an Hermes Studio session; keep your own todo list instead",
     );
   }
   const res = await fetch(`${ENDPOINT}/api/plan/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-agentus-plan-token": TOKEN },
+    headers: { "content-type": "application/json", "x-hermes-studio-plan-token": TOKEN },
     body: JSON.stringify({ session: SESSION, op, ...payload }),
   });
   const body = await res.json().catch(() => null);
@@ -172,7 +173,7 @@ async function handle(msg) {
       reply(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agentus-plan", version: "1.0.0" },
+        serverInfo: { name: "hermes-studio-plan", version: "1.0.0" },
       });
       return;
     case "notifications/initialized":
@@ -218,16 +219,16 @@ process.stdin.on("data", (chunk) => {
     try {
       msg = JSON.parse(line);
     } catch {
-      process.stderr.write(`agentus-plan: ignoring a line that is not JSON\n`);
+      process.stderr.write(`hermes-studio-plan: ignoring a line that is not JSON\n`);
       continue;
     }
     handle(msg).catch((e) => {
-      process.stderr.write(`agentus-plan: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.stderr.write(`hermes-studio-plan: ${e instanceof Error ? e.message : String(e)}\n`);
       if (msg?.id !== undefined && msg?.id !== null) replyError(msg.id, -32603, "internal error");
     });
   }
 });
 process.stdin.on("end", () => process.exit(0));
 process.stderr.write(
-  `agentus-plan ready (session ${SESSION || "?"}, endpoint ${ENDPOINT || "unset"})\n`,
+  `hermes-studio-plan ready (session ${SESSION || "?"}, endpoint ${ENDPOINT || "unset"})\n`,
 );

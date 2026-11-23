@@ -54,7 +54,7 @@ The cockpit only forwards, and reports whether the upstream is up.
 ## 2. Point Hermes Studio at it
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
+HERMES_STUDIO_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
 Unset (the default) means the feature is absent: no tab, no routes beyond `GET /api/ide/status`, no
@@ -108,7 +108,7 @@ if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/
 code-server's editor, terminal and file watching ride one socket. A proxy that forwards HTTP only,
 or a mount missing from that list, produces the worst failure mode in this integration: **the
 interface renders and connects to nothing**, with no request error to point at. Hermes Studio registers
-`/api/ide/*` for upgrades whenever `AGENTUS_IDE_UPSTREAM` is set, and keeps the same
+`/api/ide/*` for upgrades whenever `HERMES_STUDIO_IDE_UPSTREAM` is set, and keeps the same
 "verify the cookie, then upgrade" order the cockpit's own sockets use.
 
 ### Rule 3 — the proxy route must run before the SPA fallback
@@ -141,8 +141,8 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
 
 - The frame is `GET /api/ide/?folder=<session workspace>` — the folder comes from the session, never
   from an input. "Open the IDE" means "open where this agent is working".
-- The split is generic (#78): panes come from one registry, the pair lives in `agentus.panel-pair`,
-  and the divider's row height is remembered **per pair** (`agentus.panel-split-ratio:ide+terminal`),
+- The split is generic (#78): panes come from one registry, the pair lives in `hermes-studio.panel-pair`,
+  and the divider's row height is remembered **per pair** (`hermes-studio.panel-split-ratio:ide+terminal`),
   so switching combinations never inherits the previous pair's height. Orders are integers
   (top = 1, divider = 2, bottom = 3) — CSS `order` does not accept `1.5`, and a discarded declaration
   silently paints the divider at the top of the panel while it keeps dragging.
@@ -198,7 +198,7 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
 
 | symptom | cause |
 |---|---|
-| no `ide` tab at all | `AGENTUS_IDE_UPSTREAM` unset (or empty) |
+| no `ide` tab at all | `HERMES_STUDIO_IDE_UPSTREAM` unset (or empty) |
 | tab present, greyed, shows the command | upstream configured but not answering — start it per §1 |
 | tab opens, frame stays dark, no error | the upstream's absolute URLs are escaping the mount: confirm the request carries `x-forwarded-prefix` and that the answer's `Location` values start with `/api/ide` |
 | frame renders, editor never finishes loading | the WebSocket is not being forwarded — check Rule 2 and the upgrade whitelist |
@@ -208,7 +208,7 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
 A quick check of the whole chain from a shell:
 
 ```bash
-TOKEN=$(cat ~/.agentus/auth.token)
+TOKEN=$(cat ~/.hermes-studio/auth.token)
 curl -s "http://127.0.0.1:8788/api/ide/status?token=$TOKEN"
 # {"configured":true,"reachable":true,"base":"http://127.0.0.1:8133", …}
 ```

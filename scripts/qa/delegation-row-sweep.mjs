@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (issue #39) — 子任务（delegate_task background）在驾驶舱里要有自己的一行。
 //
 // 这条测的是「看不见」这件事的反面：`[bg-delegation]` 发的是一帧 `kind=background`，
@@ -10,7 +11,7 @@
 // Usage: PORT=8901 node scripts/qa/agentus-dev-sweep-delegation.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

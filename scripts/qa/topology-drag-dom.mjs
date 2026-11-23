@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // #95：拓扑的折叠与拖动 —— 这两件事只有在真页面上才验得出来。
 //
 // 单测（topology-units 第 8/9 节）钉的是几何，这里钉的是「人真的能这么操作」：
@@ -6,13 +7,13 @@
 //   · 卡片能拖：位置变、连线端点跟着变、拖完不会被当成「点击打开会话」
 //   · 位置刷新后还在；重置布局能一键回到自动排版
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-drag-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-drag-dom.mjs
 import { mkdirSync } from "node:fs";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const OTHER_WS = process.env.TOPO_OTHER_WS || "/tmp/topo-second-ws";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -87,7 +88,7 @@ check("logged in", login === 200, `status ${login}`);
 mkdirSync(OTHER_WS, { recursive: true });
 // 折叠状态与拖动位置都存在同一个 origin 的 localStorage 里：不清掉的话，别的 sweep
 // （比如手机那份把两组都展开了）会把这里「默认只展开当前组」的断言变成假红。
-await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
+await ev(`localStorage.removeItem('hermes-studio.topo.collapsed'); localStorage.removeItem('hermes-studio.topo.pos'); localStorage.removeItem('hermes-studio.topo.groupPos'); true`);
 await send("Page.reload"); await sleep(2600);
 const made = await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},
   body:JSON.stringify({backend:'mock',cwd:${JSON.stringify(OTHER_WS)}})}).then(async r=>({s:r.status,b:await r.text()}))`);
@@ -161,9 +162,9 @@ check("#95 clicking the header expands the group", g.find((x) => x.label === fol
 const after = await ev(`document.querySelectorAll('[data-topo-node]').length`);
 check("#95 …and its cards appear", after > before, `${before} → ${after}`);
 check("#95 the choice is stored",
-  await ev(`!JSON.parse(localStorage.getItem('agentus.topo.collapsed')||'[]').includes(${JSON.stringify('/tmp/' + foldedLabel)})`) === true ||
-  await ev(`!JSON.parse(localStorage.getItem('agentus.topo.collapsed')||'[]').some(x => x.endsWith(${JSON.stringify('/' + foldedLabel)}))`) === true,
-  await ev(`localStorage.getItem('agentus.topo.collapsed') || '[]'`));
+  await ev(`!JSON.parse(localStorage.getItem('hermes-studio.topo.collapsed')||'[]').includes(${JSON.stringify('/tmp/' + foldedLabel)})`) === true ||
+  await ev(`!JSON.parse(localStorage.getItem('hermes-studio.topo.collapsed')||'[]').some(x => x.endsWith(${JSON.stringify('/' + foldedLabel)}))`) === true,
+  await ev(`localStorage.getItem('hermes-studio.topo.collapsed') || '[]'`));
 
 // 刷新页面：折叠选择要活下来
 await send("Page.reload"); await sleep(2600);
@@ -181,7 +182,7 @@ g = await groups();
 check("#95 clicking again folds it back", g.filter((x) => x.collapsed === "1").length >= 1,
   g.map((x) => `${x.label}:${x.collapsed}`).join(","));
 check("#95 the collapsed list is persisted",
-  (await ev(`localStorage.getItem('agentus.topo.collapsed') || '[]'`)) !== "[]");
+  (await ev(`localStorage.getItem('hermes-studio.topo.collapsed') || '[]'`)) !== "[]");
 
 // 拖之前把所有组合都展开：被拖的卡片可能在刚才折叠的那一组里。
 for (const x of g.filter((y) => y.collapsed === "1")) {
@@ -246,7 +247,7 @@ check("#95 the card actually moved",
   `${JSON.stringify(startRect)} → ${JSON.stringify(endRect)}`);
 check("#95 …and stayed a card (not opened as a session click)",
   await ev(`!!document.querySelector('[data-topo-board]')`) === true, "board still on screen");
-check("#95 the stored position matches", await ev(`!!JSON.parse(localStorage.getItem('agentus.topo.pos')||'{}')[${JSON.stringify(startRect.id)}]`) === true);
+check("#95 the stored position matches", await ev(`!!JSON.parse(localStorage.getItem('hermes-studio.topo.pos')||'{}')[${JSON.stringify(startRect.id)}]`) === true);
 const pathAfter = await pathOf();
 check("#95 the lines were re-drawn from the new position", pathBefore !== pathAfter,
   `${String(pathBefore).slice(0, 40)} → ${String(pathAfter).slice(0, 40)}`);
@@ -270,8 +271,8 @@ check("#95 reset puts the card back in the grid",
   Boolean(resetRect) && (Math.abs(resetRect.left - endRect.left) > 20 || Math.abs(resetRect.top - endRect.top) > 20),
   `${JSON.stringify(endRect)} → ${JSON.stringify(resetRect)}`);
 check("#95 …and forgets the stored positions",
-  (await ev(`localStorage.getItem('agentus.topo.pos') || '{}'`)) === "{}",
-  await ev(`localStorage.getItem('agentus.topo.pos') || 'null'`));
+  (await ev(`localStorage.getItem('hermes-studio.topo.pos') || '{}'`)) === "{}",
+  await ev(`localStorage.getItem('hermes-studio.topo.pos') || 'null'`));
 check("#95 …and the reset button goes away",
   await ev(`!document.querySelector('[data-topo-reset-pos]')`) === true);
 // ---- ⑤ 点卡片（真鼠标）必须打开会话浮窗 ----------------------------------------
@@ -330,8 +331,8 @@ check("#95 …and its cards travel with it",
   cardTopNow !== null && Math.abs(cardTopNow - gAfter.top) < 200,
   `card=${memberId} top=${cardTopNow} group=${gAfter?.top} (卡片属于这一组、跟着组一起下去)`);
 check("#95 the group position is stored",
-  await ev(`!!JSON.parse(localStorage.getItem('agentus.topo.groupPos')||'{}')[${JSON.stringify(gBefore.label)}]`) === true ||
-  await ev(`Object.keys(JSON.parse(localStorage.getItem('agentus.topo.groupPos')||'{}')).length > 0`) === true);
+  await ev(`!!JSON.parse(localStorage.getItem('hermes-studio.topo.groupPos')||'{}')[${JSON.stringify(gBefore.label)}]`) === true ||
+  await ev(`Object.keys(JSON.parse(localStorage.getItem('hermes-studio.topo.groupPos')||'{}')).length > 0`) === true);
 // 不移动地点一下组头：这次必须是折叠
 const headNow = JSON.parse(await ev(`JSON.stringify((() => {
   const h = document.querySelector('[data-topo-group="${gBefore.label}"] .topo-group-head').getBoundingClientRect();

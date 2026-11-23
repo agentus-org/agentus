@@ -29,7 +29,7 @@ function era(db: DatabaseSync, uv: number): void {
 }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-store-fold-"));
-const dbPath = path.join(dir, "agentus.sqlite");
+const dbPath = path.join(dir, "hermes-studio.sqlite");
 const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent" | "thought" = "agent"):
   { sessionId: string; kind: "agent" | "thought"; payload: unknown; createdAt: number } =>
     ({ sessionId, kind, createdAt: Date.now(), payload: { sessionUpdate: `${kind}_message_chunk`, content: { type: "text", text }, ...(messageId ? { messageId } : {}) } });
@@ -604,7 +604,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
 // a genuine repeat 6 h later reads as a copy of the first and gets deleted.
 {
   const dir7 = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-legacy-"));
-  const db7 = path.join(dir7, "agentus.sqlite");
+  const db7 = path.join(dir7, "hermes-studio.sqlite");
   new Store(db7).close();
   const raw = new DatabaseSync(db7);
   const ins = raw.prepare(
@@ -644,7 +644,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
 // accounts, approval cards). A branch of a conversation is a copy of it, so the store copies.
 {
   const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-branch-"));
-  const db8 = path.join(dir8, "agentus.sqlite");
+  const db8 = path.join(dir8, "hermes-studio.sqlite");
   const store = new Store(db8);
   const put = (sid: string, rows: [string, number, number | null, string | null][]) => {
     rows.forEach(([kind, at, turn, block]) => {

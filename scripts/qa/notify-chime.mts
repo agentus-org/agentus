@@ -11,7 +11,7 @@
 // module state — a copy of the logic here would test nothing.
 //
 //   npx tsx scripts/qa/notify-chime.mts
-const KEY = "agentus.webnotify";
+const KEY = "hermes-studio.webnotify";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = "") => {

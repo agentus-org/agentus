@@ -40,8 +40,8 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   // HOME is NOT overridden here on purpose: qodercli keeps its login under ~/.qoder, and a session
   // that cannot spawn produces no row to look at. Only the data dir is scratch.
-  env: { ...process.env, NODE_ENV: "development", AGENTUS_QODER_CMD: `${process.env.HOME}/.local/bin/qodercli`,
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HERMES_STUDIO_QODER_CMD: `${process.env.HOME}/.local/bin/qodercli`,
+    HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -90,7 +90,7 @@ const ev = async (expr, to = 30000) => {
 
 await ev(`(async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ username: 'admin', password: '123456' }) });
-  localStorage.setItem('agentus.active', ${JSON.stringify(cold.id)}); return true; })()`);
+  localStorage.setItem('hermes-studio.active', ${JSON.stringify(cold.id)}); return true; })()`);
 await send("Page.navigate", { url: BASE });
 for (let i = 0; i < 40; i += 1) { if (await ev("!!document.querySelector('.usage-row')")) break; await sleep(250); }
 

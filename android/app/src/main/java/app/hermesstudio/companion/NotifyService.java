@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.app.Service;
 import android.content.Context;
@@ -40,8 +40,8 @@ import okhttp3.WebSocketListener;
  */
 public final class NotifyService extends Service {
     private static final String TAG = "AgentusNotify";
-    public static final String ACTION_START = "app.agentus.companion.START";
-    public static final String ACTION_STOP = "app.agentus.companion.STOP";
+    public static final String ACTION_START = "app.hermesstudio.companion.START";
+    public static final String ACTION_STOP = "app.hermesstudio.companion.STOP";
 
     /** Read by MainActivity (a polled status beats a broadcast for a one-screen app). */
     static volatile String status = "未启动";

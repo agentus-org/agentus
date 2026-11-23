@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Operator-managed backend registry (M6).
 //
 // "which hermes" turned out to be THREE independent choices, not one:
@@ -5,8 +6,8 @@
 //                     runtime tree vs the operator's fork under ~/Project/hermes-agent);
 //   2. which DATA   — HERMES_HOME (live ~/.hermes vs a disposable test home);
 //   3. which PROFILE— `hermes -p <profile>` inside that home.
-// Until now 1 and 2 were env vars fixed at server start (AGENTUS_HERMES_CMD /
-// AGENTUS_HERMES_HOME) and 3 was impossible, so isolating a slot meant restarting the
+// Until now 1 and 2 were env vars fixed at server start (HERMES_STUDIO_HERMES_CMD /
+// HERMES_STUDIO_HERMES_HOME) and 3 was impossible, so isolating a slot meant restarting the
 // cockpit. Rows live in the store, are edited from the UI, and are resolved per spawn.
 //
 // backends.ts stays the isolation CORE (buildSpawnEnv + the fail-closed live-home rule) and
@@ -27,7 +28,7 @@ export const BACKEND_KINDS: BackendKind[] = ["hermes", "qoder", "mock"];
 /** The operator's real home. Not a禁区 any more: it is the DEFAULT home for a hermes row. */
 export const HERMES_LIVE_HOME = path.join(homedir(), ".hermes");
 /** Where a hermes row goes when it does not name a home itself: the operator's own home. */
-export const HERMES_DEFAULT_HOME = process.env.AGENTUS_HERMES_HOME || HERMES_LIVE_HOME;
+export const HERMES_DEFAULT_HOME = process.env.HERMES_STUDIO_HERMES_HOME || HERMES_LIVE_HOME;
 
 /** One registry row: the whole definition of "how to spawn this kind of agent". */
 export interface BackendRow {
@@ -37,7 +38,7 @@ export interface BackendRow {
   kind: BackendKind;
   /**
    * Which channel carries this agent's plan: `acp` (it emits plan frames itself, so we inject
-   * nothing) or `none` (we inject the `agentus-plan` MCP server at handshake time). A declaration
+   * nothing) or `none` (we inject the `hermes-studio-plan` MCP server at handshake time). A declaration
    * the operator can flip when an agent gains or loses the native ability — the alternative is a
    * code change per agent, which is exactly what this design exists to avoid.
    */

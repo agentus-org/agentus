@@ -458,7 +458,7 @@ export class Store {
       );
       -- Operator-managed backends (M6): which COMMAND to spawn, which HERMES_HOME it gets and
       -- which hermes profile it runs as (hermes -p PROFILE acp). Before this, "which hermes"
-      -- was two env vars fixed at server start (AGENTUS_HERMES_CMD / AGENTUS_HERMES_HOME),
+      -- was two env vars fixed at server start (HERMES_STUDIO_HERMES_CMD / HERMES_STUDIO_HERMES_HOME),
       -- so isolating a slot meant restarting the cockpit. Seeded once from the builtin rows, so
       -- an existing cockpit keeps behaving exactly as before until a row is edited.
       create table if not exists backends (

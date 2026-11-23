@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 热备槽位 (settings.agent.warmSlots / warmTtlHours) — the reaper's SECOND deadline.
 //
 // The operator's report (2026-10-10): 「我的会话还放在这里，我只是离开浏览器，但是这个 ACP 经常就不可用了，
@@ -29,14 +30,14 @@
 // real numbers inside the ranges, which is what makes hours-scale behaviour testable in seconds.
 //
 //   cd worktrees/agentus-dev
-//   env AGENTUS_PORT=8907 AGENTUS_DATA=/tmp/agentus-qa-warm AGENTUS_USERNAME=scratch \
-//       AGENTUS_PASSWORD=scratch-pass-1 AGENTUS_IDLE_SWEEP_MS=2000 \
+//   env HERMES_STUDIO_PORT=8907 HERMES_STUDIO_DATA=/tmp/agentus-qa-warm HERMES_STUDIO_USERNAME=scratch \
+//       HERMES_STUDIO_PASSWORD=scratch-pass-1 HERMES_STUDIO_IDLE_SWEEP_MS=2000 \
 //       NODE_ENV=development node_modules/.bin/tsx packages/server/src/index.ts &
 //   PORT=8907 node scripts/qa/warm-slots-sweep.mjs
 import { authHeaders } from "../lib/auth.mjs";
 
 const PORT = Number(process.env.PORT || 8907);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const IDLE_MIN = Number(process.env.WARM_IDLE_MIN || 0.05); // 3 s — the idle rule, when it is on
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

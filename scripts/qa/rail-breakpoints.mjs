@@ -98,7 +98,7 @@ try {
   // Fixtures: at least one row, and a KNOWN fold state so the empty-archive note really renders.
   const made = await ev(`Promise.all([0,1].map((i)=>fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:i?'/tmp':'/Users/liang'})}).then(r=>r.ok)))`);
   check("fixture sessions created", Array.isArray(made) && made.every(Boolean), JSON.stringify(made));
-  await ev(`localStorage.setItem('agentus.rail-mode','hidden');
+  await ev(`localStorage.setItem('hermes-studio.rail-mode','hidden');
     for (const k of Object.keys(localStorage)) if (/fold/i.test(k)) localStorage.removeItem(k);`);
   await send("Page.reload"); await sleep(2600);
   await freezeAnimations();
@@ -135,7 +135,7 @@ try {
     opened.open && opened.display !== "none" && opened.left >= -1, JSON.stringify(opened));
 
   // ---- 3. narrow + stored compact: a real list, not a column of squares --------------------
-  await ev(`localStorage.setItem('agentus.rail-mode','compact')`);
+  await ev(`localStorage.setItem('hermes-studio.rail-mode','compact')`);
   await send("Page.reload"); await sleep(2600);
   await freezeAnimations();
   await ev(`document.querySelector('button.menu-btn')?.click()`);

@@ -20,8 +20,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Every remembered layout key the suite leans on. The two fold flags belong here for the same
 // reason as the widths: they PERSIST by design, so a previous run hands this one whatever the panel
 // was left in — and 「the tree column is folded」 would then be measured as this run's behaviour.
-const RAIL_KEYS = ['agentus.rail-width', 'agentus.panel-width', 'agentus.explorer-width',
-  'agentus.panel-tree-folded', 'agentus.panel-preview-folded'];
+const RAIL_KEYS = ['hermes-studio.rail-width', 'hermes-studio.panel-width', 'hermes-studio.explorer-width',
+  'hermes-studio.panel-tree-folded', 'hermes-studio.panel-preview-folded'];
 
 let pass = 0, fail = 0;
 const check = (ok, what, detail = '') => {
@@ -324,7 +324,7 @@ console.log('== ⑤ / ⑥ the panes drag, persist and clamp ==');
   const rail1 = await rect('.sidebar');
   check(Math.abs((rail1.w - rail0.w) - 80) <= 6, 'dragging the rail handle widens the rail',
     `${rail0.w} -> ${rail1.w}`);
-  const stored = await ev(`localStorage.getItem('agentus.rail-width')`);
+  const stored = await ev(`localStorage.getItem('hermes-studio.rail-width')`);
   check(Number(stored) === rail1.w, 'and the width is written to localStorage', `stored ${stored} vs ${rail1.w}`);
   // A full page load is the honest test of persistence — and the app drops `?session=` from the URL
   // once it has opened a slot, so an explicit navigation is what a reload has to look like here.
@@ -505,8 +505,8 @@ console.log('== ⑤c each column of the workspace panel folds on its own ==');
     '…and folding one column UNFOLDS the other (the panel is never an empty box nobody can escape)',
     JSON.stringify(noPreview.explorer));
 
-  const stored = await ev(`JSON.stringify({ tree: localStorage.getItem('agentus.panel-tree-folded'),
-    preview: localStorage.getItem('agentus.panel-preview-folded') })`);
+  const stored = await ev(`JSON.stringify({ tree: localStorage.getItem('hermes-studio.panel-tree-folded'),
+    preview: localStorage.getItem('hermes-studio.panel-preview-folded') })`);
   check(/"tree":"0"/.test(stored) && /"preview":"1"/.test(stored),
     'the folds are remembered like the panel width beside them (a layout preference, in localStorage)', stored);
 

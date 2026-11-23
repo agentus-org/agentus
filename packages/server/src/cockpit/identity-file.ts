@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The cockpit identity as a FILE the agent's tool process can find (issue #106).
 //
 // WHY A FILE EXISTS AT ALL — `#cockpitEnv()` hands the three variables to the CHILD we spawn, and
@@ -5,7 +6,7 @@
 // a VIEWER: the turn runs inside one resident gateway that serves every session, so a PROCESS-level
 // environment cannot carry a per-session secret, and the tool subprocess the agent actually shells
 // out of inherits the GATEWAY's env, not ours. Measured on the live box 2026-11-13: 11 `hermes acp`
-// children each carried `AGENTUS_COCKPIT_SESSION`; 0 of the gateway's tool subprocesses carried any
+// children each carried `HERMES_STUDIO_COCKPIT_SESSION`; 0 of the gateway's tool subprocesses carried any
 // of the four variables. The token was not wrong, it just could not reach the place it is used.
 //
 // WHAT DOES SURVIVE — the one thing that is per-session on the far side: the agent's own session id.
@@ -25,19 +26,19 @@
 import fs from "node:fs";
 import path from "node:path";
 
-/** Where the rendezvous lives: `<HOME>/.agentus/cockpit/`.
+/** Where the rendezvous lives: `<HOME>/.hermes-studio/cockpit/`.
  *
  *  Deliberately NOT the data dir. The reader is a CLI process that started with no cockpit variables
  *  at all, so the only paths it can derive are the ones its own shell environment gives it — HOME is
- *  one of them, `AGENTUS_DATA` is not. Session ids are globally unique, so several instances (live, a
+ *  one of them, `HERMES_STUDIO_DATA` is not. Session ids are globally unique, so several instances (live, a
  *  dev tree, a QA instance in /tmp) share the directory without ever colliding on a name. */
 export function identityDir(): string {
-  return path.join(process.env.HOME || "", ".agentus", "cockpit");
+  return path.join(process.env.HOME || "", ".hermes-studio", "cockpit");
 }
 
 /** The endpoint agents are told to call — one spelling, shared with `#cockpitEnv()`. */
 export function cockpitEndpoint(): string {
-  return `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}`;
+  return `http://127.0.0.1:${process.env.HERMES_STUDIO_PORT ?? 8788}`;
 }
 
 export interface IdentityFile {
@@ -45,7 +46,7 @@ export interface IdentityFile {
   token: string;
   /** the cockpit's own session id — what the CLI reports as `self` */
   session: string;
-  /** the CLI to run; also handed over as `AGENTUS_COCKPIT_BIN` for runtimes that keep the env */
+  /** the CLI to run; also handed over as `HERMES_STUDIO_COCKPIT_BIN` for runtimes that keep the env */
   bin: string;
   /** the agent-side session id this file is named by (the lookup key) */
   agentSessionId: string;

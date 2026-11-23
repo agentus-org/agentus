@@ -328,13 +328,13 @@ grants focus permission).
 | P1 | Android 15 caps `dataSync` FGS at 6h/24h | `specialUse` + `FOREGROUND_SERVICE_SPECIAL_USE`, with the reason declared in `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` |
 | P2 | `POST_NOTIFICATIONS` is runtime; Live Updates are a user switch | app asks on first run, and offers a button straight to `MANAGE_APP_PROMOTED_NOTIFICATIONS` |
 | P3 | Aggressive OEM background kills | exponential backoff + cursor replay (so being killed only delays, never loses) |
-| P4 | Android 7+ ignores user-installed CAs; the server cert is a self-signed DDNS leaf | `res/raw/agentus_ca.pem` + a composite trust manager (system ∪ our root) and a waived hostname **for that root** |
+| P4 | Android 7+ ignores user-installed CAs; the server cert is a self-signed DDNS leaf | `res/raw/hermes-studio_ca.pem` + a composite trust manager (system ∪ our root) and a waived hostname **for that root** |
 | P5 | Cleartext is blocked since Android 9 | `network_security_config`: cleartext only for LAN test addresses, everything else https/wss |
 | P6 | Locked screen loses events | monotonic `seq` + `?since=` + ack (verified in the smoke test) |
 | P7 | The cockpit had no notification concept | activity centre derives activities from the existing event stream |
 | P8 | A notification button is a remote execution path | device token per device + single-use action + `visibility: private` + `VISIBILITY_PRIVATE`; the LAN/pin design keeps the transport from leaking a bearer token in clear |
 | P9 | Streaming agents update constantly | the server throttles/decides; `revision` + `setOnlyAlertOnce` keep updates from re-alerting |
-| P10 | Distribution | one static URL (`/agentus-companion.apk` on the cockpit, `/dl/…` on the test bed), **behind the operator login** — a phone-pairing page and an installable APK are not public material; schema compatibility keeps rebuilds rare |
+| P10 | Distribution | one static URL (`/hermes-studio-companion.apk` on the cockpit, `/dl/…` on the test bed), **behind the operator login** — a phone-pairing page and an installable APK are not public material; schema compatibility keeps rebuilds rare |
 | P11 | Xiaomi HyperOS ignores an app's `configChanges` and force-relaunches the activity on fold/unfold | do not fight it: declare `resizeableActivity` + continuity meta-data, accept the recreate, restore the half-typed form from `onSaveInstanceState`, and derive the layout from the current `screenWidthDp` |
 | P12 | The vendor island is gated by a HyperOS-side permission that has no runtime API | probe `canShowFocus`; attach `miui.focus.param` only when it says yes; report the outcome as a capability and in the UI instead of silently doing nothing (Xiaomi grants it per app on review — see §6.1) |
 | P13 | Since Android 15 / targetSdk 35, `windowSoftInputMode="adjustResize"` no longer resizes the window when the keyboard appears | handle `WindowInsets.Type.ime()` in the same listener that handles the system bars and pad the root by `max(bars, ime)` — padding the root is what makes a WebView (and any form) genuinely shrink, instead of the keyboard covering the page (verified: WebView 1688 px → 848 px → 1688 px around the IME on the emulator) |
@@ -398,8 +398,8 @@ operator-only routes inside re-check their own credential.
   packaged as `raw/agentus_ca` → `res/9n.pem`; `strings` on `classes.dex` finds the Xiaomi island
   keys (`miui.focus.param`, `canShowFocus`) and both `resizeableActivity` flags survive into the
   merged manifest.
-- Artifact delivery: `GET /agentus-companion.apk` answers **302 → `/` without a login** and **200
-  with the operator token**, streaming bytes byte-identical to `android/artifacts/agentus-companion.apk`
+- Artifact delivery: `GET /hermes-studio-companion.apk` answers **302 → `/` without a login** and **200
+  with the operator token**, streaming bytes byte-identical to `android/artifacts/hermes-studio-companion.apk`
   (sha256 `defc3a48…`, 1048446 bytes) — compared by hashing the served stream, not by trusting the 200.
   `/notify` (the onboarding page with the pairing string + device table) is behind the same login.
 - Username+password pairing: wrong password → `403 wrong username or password`, right one → `200` with a
@@ -633,7 +633,7 @@ immutable（没有人往里写东西）。顺带把 `NotifyService` 里"解析 J
 npm run notify-testbed            # http :8790, https :8791 (test bed state is its own dir)
 
 # 2. the phone app
-npm run apk                       # -> android/artifacts/agentus-companion.apk
+npm run apk                       # -> android/artifacts/hermes-studio-companion.apk
 
 # 3. on the phone: open the test bed page, copy the pairing string, paste it into the app
 #    http://<mac-lan-ip>:8790/     (or https://<mac-lan-ip>:8791/ and accept the cert once)
@@ -643,7 +643,7 @@ npm run apk                       # -> android/artifacts/agentus-companion.apk
 
 The test bed serves its own state (`packages/server/.data-notify-testbed`) precisely so it can run
 while the cockpit is up. Once the cockpit is restarted it owns the channel itself
-(`/api/notify/*`, `/agentus-companion.apk`) and has its own pairing code.
+(`/api/notify/*`, `/hermes-studio-companion.apk`) and has its own pairing code.
 
 ## 13. What is left
 

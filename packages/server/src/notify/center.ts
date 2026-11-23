@@ -709,7 +709,7 @@ export class NotifyCenter {
         watching: Boolean(presence.sessionId && this.watching(presence.sessionId)),
         code: this.state.code,
         pairUri: `hermes-studio://pair?u=${encodeURIComponent(base)}&c=${this.state.code}`,
-        apkUrl: "/agentus-companion.apk",
+        apkUrl: "/hermes-studio-companion.apk",
         apkBytes: this.apkPath && fs.existsSync(this.apkPath) ? fs.statSync(this.apkPath).size : null,
         devices: this.state.devices.map((d) => ({
           deviceId: d.deviceId, name: d.name, platform: d.platform, sdkInt: d.sdkInt,

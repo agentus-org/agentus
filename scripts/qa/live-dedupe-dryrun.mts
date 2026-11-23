@@ -6,9 +6,9 @@ import { execSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../packages/server/src/store/store.ts";
 
-const LIVE = "/Users/liang/Workspace/agent-dev-workspace/worktrees/agentus/packages/server/.data/agentus.sqlite";
+const LIVE = "/Users/liang/Workspace/agent-dev-workspace/worktrees/agentus/packages/server/.data/hermes-studio.sqlite";
 const dir = fs.mkdtempSync("/Users/liang/.hermes/cache/scratch/live-dedupe-");
-const copy = path.join(dir, "agentus.sqlite");
+const copy = path.join(dir, "hermes-studio.sqlite");
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
 console.log(`live : ${LIVE}`);

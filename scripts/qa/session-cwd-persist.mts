@@ -23,7 +23,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-cwd-persist-"));
-const dbPath = path.join(dir, "agentus.sqlite");
+const dbPath = path.join(dir, "hermes-studio.sqlite");
 
 const row = (id: string, cwd: string) => ({
   id, backend: "hermes" as const, acpSessionId: `acp-${id}`, cwd, title: id,

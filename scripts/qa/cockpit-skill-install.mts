@@ -106,7 +106,7 @@ check("the corpus we point at is the real one (SKILLS_ROOT holds the cockpit's o
 // ---- and the CLI can hand out the same document with no cockpit, no token ----
 const LAUNCHER = path.join(REPO, "bin/hermes-studio.mjs");
 const cliPath = execFileSync(process.execPath, [LAUNCHER, "skill"], {
-  cwd: "/tmp", encoding: "utf8", env: { ...process.env, AGENTUS_COCKPIT_BIN: "", AGENTUS_COCKPIT_TOKEN: "", AGENTUS_COCKPIT_SESSION: "" },
+  cwd: "/tmp", encoding: "utf8", env: { ...process.env, HERMES_STUDIO_COCKPIT_BIN: "", HERMES_STUDIO_COCKPIT_TOKEN: "", HERMES_STUDIO_COCKPIT_SESSION: "" },
 });
 check("`hermes-studio-cockpit skill` prints the document with NO identity in the environment", cliPath === doc,
   `${cliPath.length} bytes vs ${doc.length}`);

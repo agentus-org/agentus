@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.app.NotificationManager;
 import android.app.RemoteInput;

@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 会话拓扑面板的真页面证据（v0.19.0 / feat/v0.19.0/session-topology）。
 //
 // 这个面板的意义全在「谁把活交给了谁」那条线上，而单测只证明布局函数算得对 —— 它证明不了
@@ -12,11 +13,11 @@
 //   ⑤ 点卡片把会话浮窗打开，返回回到板子
 //   ⑥ 「派活」按钮打开派活面板，Esc 收掉
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-board-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-board-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -105,7 +106,7 @@ check("rail 里有拓扑入口", (await ev(`document.querySelectorAll('[data-nav
     body: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 70) })`));
 // 折叠/位置存在 localStorage：别的 sweep 会把它们改成「两组都展开」之类，
 // 这一份测的是「打开板子能看到什么」，先回到默认。
-await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
+await ev(`localStorage.removeItem('hermes-studio.topo.collapsed'); localStorage.removeItem('hermes-studio.topo.pos'); localStorage.removeItem('hermes-studio.topo.groupPos'); true`);
 await send("Page.reload"); await sleep(2600);
 for (let i = 0; i < 40; i++) {
   if (await ev(`!!document.querySelector('[data-nav="topology"]')`)) break;

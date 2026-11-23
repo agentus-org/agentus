@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 上下分屏的三处交互（issue #90）。panel-split-dom 证的是「分屏本身对不对」，这一份证的是
 // 「操作者能对每一行做什么」：
 //
@@ -7,11 +8,11 @@
 //   ③ 开分屏时下方是选择态：只有「图标 + 名字」的可用工具（不含上方那个），点一个才成行；
 //      按 Esc 或点 × 等于放弃（回到单屏），且选择态本身不落盘。
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/split-interactions-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/split-interactions-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -63,7 +64,7 @@ const state = async () => JSON.parse(await ev(`(() => {
   const stack = document.querySelector('.panel-stack')?.getBoundingClientRect();
   return JSON.stringify({ rows, stackH: stack ? Math.round(stack.height) : 0,
     picker: Boolean(document.querySelector('.pane-picker')),
-    pair: localStorage.getItem('agentus.panel-pair'),
+    pair: localStorage.getItem('hermes-studio.panel-pair'),
     tab: document.querySelector('.tool-tab.active')?.textContent?.trim().split(/\\s+/).pop() ?? null });
 })()`));
 const closeSplitIfAny = async () => {

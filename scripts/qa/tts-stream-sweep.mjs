@@ -165,7 +165,7 @@ process.on("exit", () => { for (const c of CHILDREN) { try { killGroup(c); } cat
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 CHILDREN.add(proc);
@@ -234,7 +234,7 @@ try {
     const putText = (await putRes.text()).slice(0, 200);
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentus.active', s.id);
+    localStorage.setItem('hermes-studio.active', s.id);
     // POST /prompt is fire-and-forget and answers 202 even when the agent is not up yet — the
     // refusal then only reaches the log, and the reply (and therefore the speaker button) never
     // appears. So the readiness wait happens BEFORE the prompt: retrying the prompt cannot help.
@@ -264,7 +264,7 @@ try {
     if (await ev(`!!document.querySelector('.bubble-btn.speak')`)) { ready = true; break; }
   }
   if (!ready) {
-    console.log("  … messages:", await ev(`fetch('/api/sessions/' + localStorage.getItem('agentus.active') + '/messages')
+    console.log("  … messages:", await ev(`fetch('/api/sessions/' + localStorage.getItem('hermes-studio.active') + '/messages')
       .then((r) => r.json()).then((m) => JSON.stringify(m).slice(0, 300)).catch((e) => String(e))`));
     const why = await ev(`({ url: location.href,
       bubbles: document.querySelectorAll('.bubble-btn').length,

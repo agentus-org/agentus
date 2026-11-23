@@ -33,7 +33,7 @@ console.log("\n[1] 三态：进入 / 每轮 / 退出");
   check(/不要表格|不要代码块/.test(t), "进入边界：明确禁止表格/代码块（TTS 会念符号）");
   check(uriOf(enter) === "hermes-studio://voice/sess1", "进入边界：uri 指向该会话");
   check((enter as { _meta?: Record<string, unknown> } | null)?._meta?.[VOICE_META_KEY] === true,
-    "进入边界：带 agentus/voice-mode 标记（可与操作者原话区分）");
+    "进入边界：带 hermes-studio/voice-mode 标记（可与操作者原话区分）");
 
   const steady = voiceModeBlock("sess1", { inCall: true, boundary: null, turns: 4 });
   check(textOf(steady) === VOICE_STEADY_TEXT, "通话中每轮：只有那句稳定约束（不重复进入边界）");
@@ -103,7 +103,7 @@ console.log("\n[2] 思考档位识别（通话中要压低、退出要还原）"
 console.log("\n[3] 持久化：边界必须活过刷新/回收");
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-voice-"));
-  const store = new Store(path.join(dir, "agentus.sqlite"));
+  const store = new Store(path.join(dir, "hermes-studio.sqlite"));
   const d = store.getVoiceMode("nobody");
   check(d.inCall === false && d.boundary === null && d.turns === 0, "没记录过的会话：默认不在通话、没有欠账");
   store.upsertVoiceMode("s1", { inCall: true, boundary: "enter", turns: 0, thoughtBefore: "medium" });

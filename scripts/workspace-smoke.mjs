@@ -77,7 +77,7 @@ async function boot(port, dataDir) {
   const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
     cwd: ROOT,
-    env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(port), AGENTUS_DATA: dataDir, HOME: EMPTY_HOME },
+    env: { ...process.env, NODE_ENV: "development", HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: dataDir, HOME: EMPTY_HOME },
     stdio: ["ignore", "pipe", "pipe"],
   });
   CHILDREN.add(proc);
@@ -412,7 +412,7 @@ try {
     (mdText.match(/### Agent/g) || []).length <= 3, String((mdText.match(/### Agent/g) || []).length));
   const jsonExport = await j(await fetch(`${base}/api/sessions/${created.id}/export?format=json`, { headers: H }));
   check("the json export is the lossless row dump",
-    jsonExport.format === "agentus-session/1" && Array.isArray(jsonExport.messages)
+    jsonExport.format === "hermes-studio-session/1" && Array.isArray(jsonExport.messages)
     // One row per MESSAGE now (streamed chunks fold into the row they belong to), so this flow is
     // user + agent. The floor proves the dump carries the transcript; the invariants below are what
     // make it "lossless" — and they are asserted harder than the old row-count guess.

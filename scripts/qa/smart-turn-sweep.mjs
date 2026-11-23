@@ -44,7 +44,7 @@ const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-eot-"));
 const home = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true, cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: home, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: home, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -85,7 +85,7 @@ try {
     await fetch('/api/settings', { method:'PUT', headers:{'content-type':'application/json'},
       body: JSON.stringify({ voice: ${JSON.stringify(stubVoice)}, prefs: { autoRead:true, serverTts:true, stt:'auto', rate:1, voiceURI:'', lang:'zh-CN' } }) });
     const s = await fetch('/api/sessions', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ backend:'mock', cwd:'/tmp' }) }).then(r=>r.json());
-    localStorage.setItem('agentus.active', s.id); return s.id; })()`);
+    localStorage.setItem('hermes-studio.active', s.id); return s.id; })()`);
   await send("Browser.grantPermissions", { origin: BASE, permissions: ["audioCapture"] }).catch(() => {});
   await send("Page.reload", { ignoreCache: true });
   for (let i = 0; i < 30; i++) { await sleep(500); if (await ev(`!!document.querySelector('.composer, .chat-head')`)) break; }

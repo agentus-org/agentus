@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 在 live 上取证（#61）：用户说「思考中那么长时间一点声音都没有」。之前所有绿都是在自起的
 // mock 实例上跑的，这次必须在 live + 真 hermes 后端上看。
 //
@@ -12,10 +13,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8788";
+const BASE = process.env.HERMES_STUDIO_BASE ?? "http://127.0.0.1:8788";
 // live 的口令用户改过，不猜；用实例自己的 machine token（Bearer）冒充已登录的页面。
 // token 只在这个进程里用，不打印。
-const TOKEN_FILE = process.env.AGENTUS_TOKEN_FILE
+const TOKEN_FILE = process.env.HERMES_STUDIO_TOKEN_FILE
   ?? "/Users/liang/Workspace/agent-dev-workspace/worktrees/agentus/packages/server/.data/auth.token";
 const TOKEN = readFileSync(TOKEN_FILE, "utf8").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -81,7 +82,7 @@ const sid = await ev(`(async () => {
   const r = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ backend: 'hermes', cwd: '/tmp' }) });
   const j = await r.json();
-  localStorage.setItem('agentus.active', j.id);
+  localStorage.setItem('hermes-studio.active', j.id);
   return j.id;
 })()`);
 console.log("session:", sid);

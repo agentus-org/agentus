@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: an approval must LEAVE the screen — and the operator must see his click land before any
 // server round trip can come back. Drives the user's Edge over raw CDP against the DEV instance.
 //
@@ -26,7 +27,7 @@
 // The mock's `[tool2]` turn raises the two requests of A (packages/server/mock/agent.mjs).
 //
 // NOTE on identity: this script logs in over HTTP against `BASE` with the QA account and never
-// reads a token file, so the host shell's `AGENTUS_DATA` (which points at the LIVE tree) cannot
+// reads a token file, so the host shell's `HERMES_STUDIO_DATA` (which points at the LIVE tree) cannot
 // make it talk to the wrong instance — but it warns, because that trap has bitten three times.
 const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";
@@ -34,8 +35,8 @@ const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cp = await import("node:child_process");
 
-if (process.env.AGENTUS_DATA?.includes("/worktrees/agentus/")) {
-  console.log(`[permission-echo] note: your shell's AGENTUS_DATA points at the LIVE tree; this run`
+if (process.env.HERMES_STUDIO_DATA?.includes("/worktrees/agentus/")) {
+  console.log(`[permission-echo] note: your shell's HERMES_STUDIO_DATA points at the LIVE tree; this run`
     + ` talks to ${BASE} with the QA login and ignores it.`);
 }
 

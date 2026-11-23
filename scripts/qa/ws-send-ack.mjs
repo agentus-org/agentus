@@ -20,7 +20,7 @@ import { WebSocket } from "ws";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const PORT = Number(process.env.QA_PORT ?? 8919);
 const DATA = process.env.QA_DATA ?? "/tmp/agentus-qa-ws-liveness";
-const BEAT = 800; // ms — server-side, via AGENTUS_WS_HEARTBEAT_MS
+const BEAT = 800; // ms — server-side, via HERMES_STUDIO_WS_HEARTBEAT_MS
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,7 +35,7 @@ fs.mkdirSync(DATA, { recursive: true });
 
 const srv = spawn(process.execPath, [path.join(REPO, "node_modules/.bin/tsx"), "packages/server/src/index.ts"], {
   cwd: REPO,
-  env: { ...process.env, AGENTUS_PORT: String(PORT), AGENTUS_DATA: DATA, AGENTUS_WS_HEARTBEAT_MS: String(BEAT) },
+  env: { ...process.env, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_WS_HEARTBEAT_MS: String(BEAT) },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";

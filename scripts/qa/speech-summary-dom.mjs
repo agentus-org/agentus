@@ -15,7 +15,7 @@ const check = (name, ok, detail = "") => { ok ? pass++ : fail++; console.log(`${
 // (`deepseek:deepseek-v4-flash`) — a mock-backed QA session has none, and without one the route can
 // only ever prove the fallback. The fixture is written into the QA store and put back at the end,
 // so a re-run starts from the same place and the operator's data is untouched on exit.
-const QA_DB = process.env.QA_DB ?? "/tmp/agentus-qa-account/agentus.sqlite";
+const QA_DB = process.env.QA_DB ?? "/tmp/agentus-qa-account/hermes-studio.sqlite";
 const FIXTURE = "deepseek:deepseek-v4-flash";
 let sqlite = null, restoreModels = [];
 try {
@@ -52,7 +52,7 @@ await send("Page.enable"); await send("Runtime.enable");
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (HERMES_STUDIO_DATA?)`);
   await ev(`location.reload()`);
   await sleep(1800);
 

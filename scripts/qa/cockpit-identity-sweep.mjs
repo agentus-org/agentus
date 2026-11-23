@@ -6,9 +6,9 @@
 //
 // 这个 sweep 用 mock 的 MOCK_GATEWAY_OWNED=1 复刻那个形状（握手时 `_meta.hermes.sessionProvenance`），
 // 然后分别扮演两个角色去敲真 CLI：
-//   · 工具子进程 —— 只带运行时自己的会话标记（HERMES_SESSION_CHAT_ID），没有任何 AGENTUS_COCKPIT_*，
+//   · 工具子进程 —— 只带运行时自己的会话标记（HERMES_SESSION_CHAT_ID），没有任何 HERMES_STUDIO_COCKPIT_*，
 //     数据目录里还躺着一份可读的 auth.token（agent 读得到，这正是 #106 说的处境）；
-//   · 人在终端 —— 只有 AGENTUS_DATA/PORT，没有运行时标记。
+//   · 人在终端 —— 只有 HERMES_STUDIO_DATA/PORT，没有运行时标记。
 //
 //   node scripts/qa/cockpit-identity-sweep.mjs
 import { execFileSync, spawn } from "node:child_process";
@@ -36,12 +36,12 @@ const freePort = () => new Promise((res, rej) => {
 
 const PORT = await freePort();
 const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-id106-data-"));
-// HOME 就是那个人口：CLI 只会去 ~/.agentus/cockpit 按会话号找文件，所以整台实例换一个 HOME，
+// HOME 就是那个人口：CLI 只会去 ~/.hermes-studio/cockpit 按会话号找文件，所以整台实例换一个 HOME，
 // 断言也就不会碰到操作者真机上的那些文件。
 const home = mkdtempSync(path.join(tmpdir(), "agentus-id106-home-"));
 const BASE = `http://127.0.0.1:${PORT}`;
-const ENV_MARKERS = ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE"];
-const COCKPIT_VARS = ["AGENTUS_COCKPIT_ENDPOINT", "AGENTUS_COCKPIT_TOKEN", "AGENTUS_COCKPIT_SESSION", "AGENTUS_COCKPIT_BIN"];
+const ENV_MARKERS = ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "HERMES_STUDIO_SESSION_ROLE"];
+const COCKPIT_VARS = ["HERMES_STUDIO_COCKPIT_ENDPOINT", "HERMES_STUDIO_COCKPIT_TOKEN", "HERMES_STUDIO_COCKPIT_SESSION", "HERMES_STUDIO_COCKPIT_BIN"];
 
 let log = "";
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
@@ -49,7 +49,7 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: "development", HOME: home,
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir,
+    HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir,
     MOCK_SLOW_MS: "20",
     // the shape that broke it: the agent owns the session, not our child
     MOCK_GATEWAY_OWNED: "1",
@@ -142,7 +142,7 @@ const AGENT_ID = rowA.acpSessionId;
 check("…and the row carries the agent-side session id (the lookup key)", Boolean(AGENT_ID), String(AGENT_ID));
 
 // ---- ① 身份文件 ----------------------------------------------------------------
-const idDir = path.join(home, ".agentus", "cockpit");
+const idDir = path.join(home, ".hermes-studio", "cockpit");
 const idFile = path.join(idDir, `${AGENT_ID}.json`);
 check("the cockpit published an identity file named by the AGENT-side session id",
   fs.existsSync(idFile), idFile.replace(home, "~"));
@@ -162,12 +162,12 @@ const diskToken = (() => {
 })();
 check("…it is NOT the operator's machine token", Boolean(pub.token) && pub.token !== diskToken);
 
-// ---- ② 工具子进程：只剩运行时标记，也没有一条 AGENTUS_COCKPIT_* ------------------
-// AGENTUS_PORT is here for the OLD build's sake: without it the operator fallback aims at the default
+// ---- ② 工具子进程：只剩运行时标记，也没有一条 HERMES_STUDIO_COCKPIT_* ------------------
+// HERMES_STUDIO_PORT is here for the OLD build's sake: without it the operator fallback aims at the default
 // 8788 (the operator's live cockpit) and the red proof would be about a port, not about identity.
 const AS_TURN = {
   HOME: home, HERMES_SESSION_CHAT_ID: AGENT_ID, HERMES_SESSION_ID: "20261113_220116_probe",
-  AGENTUS_DATA: dataDir, AGENTUS_PORT: String(PORT),
+  HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_PORT: String(PORT),
 };
 const listed = cli(AS_TURN, ["session", "list", "--here"]);
 check("a TOOL subprocess (runtime markers only) still reaches the cockpit", listed.code === 0 && listed.doc?.success === true,
@@ -197,7 +197,7 @@ for (let i = 0; i < 40; i++) {
 // The situation #106 demonstrated: the agent can read <data>/auth.token, and it has no cockpit identity.
 // Both of those are true for this call — and the answer must still be a refusal.
 const sneaky = cli({
-  HOME: home, HERMES_SESSION_CHAT_ID: "some-other-agent-session", AGENTUS_DATA: dataDir, AGENTUS_PORT: String(PORT),
+  HOME: home, HERMES_SESSION_CHAT_ID: "some-other-agent-session", HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_PORT: String(PORT),
 }, ["session", "delete", B]);
 check("a TOOL subprocess WITHOUT an identity cannot delete history, even holding the machine token",
   sneaky.code !== 0 && sneaky.doc?.error?.code === "agents_may_not_delete",
@@ -212,7 +212,7 @@ check("…and a resolved session identity is refused the same way (identity ≠ 
   JSON.stringify(byFile.doc?.error ?? `code ${byFile.code}`));
 
 // ---- ⑤ 人在终端仍然能删（别把门焊死了）------------------------------------------
-const human = cli({ HOME: home, AGENTUS_DATA: dataDir, AGENTUS_PORT: String(PORT) }, ["session", "delete", B]);
+const human = cli({ HOME: home, HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_PORT: String(PORT) }, ["session", "delete", B]);
 check("a HUMAN shell (no runtime markers, auth.token on disk) still gets operator mode",
   human.code === 0 && human.doc?.success === true,
   human.doc?.error ? JSON.stringify(human.doc.error) : `code ${human.code}`);

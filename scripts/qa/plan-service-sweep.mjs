@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: the plan service — the card's TRUTH must be the server's plan object, not the transcript's
 // frames.
 //
@@ -20,7 +21,7 @@
 const CDP = "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";   // dev instance (scripts/dev.sh start)
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
-const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
+const DATA = process.env.HERMES_STUDIO_DATA ?? "/tmp/agentus-qa-account";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { DatabaseSync } = await import("node:sqlite");
 
@@ -130,13 +131,13 @@ check("the bar sits ABOVE the composer (where the operator asked for it)", withF
 check("the live plan is NOT duplicated into the transcript", withFrames.archived === 0, `cards=${withFrames.archived}`);
 
 // Now the restart state: the transcript's frames are gone, the object is not.
-// Pick the database by EVIDENCE, not by env: an inherited AGENTUS_DATA (a shell that has pointed at
+// Pick the database by EVIDENCE, not by env: an inherited HERMES_STUDIO_DATA (a shell that has pointed at
 // another tree all along) must not silently redirect a DB-mutating sweep at that instance's data.
 // The candidate that actually holds the session we just created is the one under test. (Measured
-// 2026-10-08: with a stale AGENTUS_DATA this sweep opened a database with no `plans` table at all —
+// 2026-10-08: with a stale HERMES_STUDIO_DATA this sweep opened a database with no `plans` table at all —
 // its delete matched nothing by luck, not by design.)
 const { existsSync } = await import("node:fs");
-const candidates = [...new Set([DATA, "/tmp/agentus-qa-account"].map((d) => `${d}/agentus.sqlite`))];
+const candidates = [...new Set([DATA, "/tmp/agentus-qa-account"].map((d) => `${d}/hermes-studio.sqlite`))];
 const dbPath = candidates.find((p) => {
   if (!existsSync(p)) return false;
   try {

@@ -10,7 +10,7 @@ server, and this app renders it without a rebuild. See
 
 ```
 android/
-  app/src/main/java/app/agentus/companion/
+  app/src/main/java/app/hermes-studio/companion/
     MainActivity.java    one screen: paste the pairing string, watch the socket
     NotifyService.java   foreground service + websocket + reconnect/cursor
     Notifier.java        ActivityObject -> notification (the generic renderer)
@@ -19,14 +19,14 @@ android/
     Http.java            OkHttp with the bundled CA pinned (self-signed friendly)
     BootReceiver.java    come back after a reboot
     Prefs.java           pairing state
-  app/src/main/res/raw/agentus_ca.pem   the server's root CA, copied at build time
+  app/src/main/res/raw/hermes_studio_ca.pem   the server's root CA, copied at build time
 ```
 
 ## Build
 
 ```bash
 bash scripts/build-apk.sh          # from the repo root
-# -> android/artifacts/agentus-companion.apk
+# -> android/artifacts/hermes-studio-companion.apk
 ```
 
 The script pins `JAVA_HOME` to Android Studio's JBR because this machine's `java` is 8 and AGP
@@ -43,7 +43,7 @@ The script pins `JAVA_HOME` to Android Studio's JBR because this machine's `java
 
 ## Install and pair
 
-1. On the phone, download the APK from the server (`/agentus-companion.apk`) or the test bed,
+1. On the phone, download the APK from the server (`/hermes-studio-companion.apk`) or the test bed,
    then allow "install unknown apps" for the browser once.
 2. Open the app and paste the pairing string from the server page:
    `hermes-studio://pair?u=https://<host>:<port>&c=<CODE>`

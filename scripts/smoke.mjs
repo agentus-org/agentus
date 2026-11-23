@@ -1,10 +1,11 @@
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // End-to-end smoke: REST create session (mock backend) + WS event capture.
 // Usage: node scripts/smoke.mjs [backend] [promptText]
 // Needs a credential since the API is closed: the machine token (scripts/lib/auth.mjs).
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "./lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8788";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8788";
 const backend = process.argv[2] || "mock";
 const promptText = process.argv[3] || "hello hermes-studio";
 

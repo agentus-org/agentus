@@ -4,10 +4,10 @@
 # 为什么需要单独一步（而不是直接 promote）：这次改名同时动了三样 live 正在用的东西，
 # 任何一样漏掉都会静默出事：
 #
-#   1. 库文件名。index.ts 现在开的是 <data>/agentus.sqlite，而 live 的库叫
+#   1. 库文件名。index.ts 现在开的是 <data>/hermes-studio.sqlite，而 live 的库叫
 #      agentslot.sqlite —— 直接重启 = 开一个空库 = 操作者的会话列表凭空消失。
 #   2. 启动器目录。live 的启动器在 ~/.hermes/cache/agentslot/launch.py，它 set 的
-#      AGENTSLOT_* 变量改名后不再被代码读取（代码只认 AGENTUS_*）；不换 = 端口/数据目录
+#      AGENTSLOT_* 变量改名后不再被代码读取（代码只认 HERMES_STUDIO_*）；不换 = 端口/数据目录
 #      全部回落到默认值（8788/.data 恰好同值躲过一劫，TLS 与 HERMES_CMD 不会）。
 #   3. 启动形态。dev 树里 scripts/start.sh、package.json、npm workspace 名字都变了，
 #      需要 npm install 重连 @hermes-studio/* 链接 + 重新 build。
@@ -79,7 +79,7 @@ echo "  待恢复    : ${RESUME_BEFORE:-（无）}（另有冷会话 $(coldcount
 echo "  live 版本 : ${ASSET_BEFORE:-（取不到）}"
 echo "  启动器    : $LOLD  ->  $LNEW"
 
-# ── 1. 启动器目录改名 + AGENTSLOT_* -> AGENTUS_* ─────────────────────────────
+# ── 1. 启动器目录改名 + AGENTSLOT_* -> HERMES_STUDIO_* ─────────────────────────────
 say "1. 启动器目录改名（${LOLD} -> ${LNEW}）"
 if [ -d "$LNEW" ]; then
   echo "  ${LNEW} 已存在——跳过移动（假定上次已经迁过）"
@@ -136,26 +136,26 @@ else
 fi
 
 # 库文件 + 它的 WAL/SHM。这一条就是「会话列表不能丢」的全部保障。
-say "3b. 库文件改名 agentslot.sqlite* -> agentus.sqlite*"
-if [ -f "$DATA/agentus.sqlite" ]; then
-  echo "  $DATA/agentus.sqlite 已存在——跳过（假定上次已迁过）"
+say "3b. 库文件改名 agentslot.sqlite* -> hermes-studio.sqlite*"
+if [ -f "$DATA/hermes-studio.sqlite" ]; then
+  echo "  $DATA/hermes-studio.sqlite 已存在——跳过（假定上次已迁过）"
 elif [ "$DRY" = 1 ]; then
-  echo "  [dry] mv $DATA/agentslot.sqlite{,-wal,-shm} and agentslot.sqlite.pre-*.bak -> agentus.sqlite*"
+  echo "  [dry] mv $DATA/agentslot.sqlite{,-wal,-shm} and agentslot.sqlite.pre-*.bak -> hermes-studio.sqlite*"
 else
   # `.pre-fold.bak` used to be the only backup name; newer builds write
   # `agentslot.sqlite.pre-<tag>-v<ver>-<ts>.bak`, so glob the whole family or the backups of a
   # 400k-row store get left behind under the old basename.
   for f in agentslot.sqlite agentslot.sqlite-wal agentslot.sqlite-shm agentslot.sqlite.pre-*.bak; do
     if [ -e "$DATA/$f" ]; then
-      mv "$DATA/$f" "$DATA/${f/agentslot.sqlite/agentus.sqlite}"
+      mv "$DATA/$f" "$DATA/${f/agentslot.sqlite/hermes-studio.sqlite}"
       echo "  renamed $f"
     fi
   done
 fi
 
 if [ "$DRY" = 0 ]; then
-  [ -f "$DATA/agentus.sqlite" ] || die "改名后没看到 $DATA/agentus.sqlite——不要继续"
-  echo "  库文件就位: $(ls -la "$DATA/agentus.sqlite" | awk '{print $5" bytes"}')"
+  [ -f "$DATA/hermes-studio.sqlite" ] || die "改名后没看到 $DATA/hermes-studio.sqlite——不要继续"
+  echo "  库文件就位: $(ls -la "$DATA/hermes-studio.sqlite" | awk '{print $5" bytes"}')"
 fi
 
 if [ "$DRY" = 1 ]; then
@@ -212,11 +212,11 @@ ck() { if [ "$2" = 1 ]; then echo "  ok   $1"; else echo "  FAIL $1"; FAIL=1; fi
 
 ENVS="$(ps eww -p "$NEW_PID" | tr ' ' '\n' | grep -E '^AGENT' | sort)"
 echo "$ENVS" | sed 's/^/       /'
-ck "新进程的环境变量全是 AGENTUS_*（没有 AGENTSLOT_*）" \
-   "$([ -n "$(echo "$ENVS" | grep '^AGENTUS_')" ] && [ -z "$(echo "$ENVS" | grep '^AGENTSLOT_')" ] && echo 1 || echo 0)"
+ck "新进程的环境变量全是 HERMES_STUDIO_*（没有 AGENTSLOT_*）" \
+   "$([ -n "$(echo "$ENVS" | grep '^HERMES_STUDIO_')" ] && [ -z "$(echo "$ENVS" | grep '^AGENTSLOT_')" ] && echo 1 || echo 0)"
 ck "数据目录仍是 live 的 .data（没被 QA 库顶掉）" \
-   "$(echo "$ENVS" | grep -q "AGENTUS_DATA=$DATA$" && echo 1 || echo 0)"
-ck "端口仍是 $LIVE_PORT" "$(echo "$ENVS" | grep -q "^AGENTUS_PORT=$LIVE_PORT$" && echo 1 || echo 0)"
+   "$(echo "$ENVS" | grep -q "HERMES_STUDIO_DATA=$DATA$" && echo 1 || echo 0)"
+ck "端口仍是 $LIVE_PORT" "$(echo "$ENVS" | grep -q "^HERMES_STUDIO_PORT=$LIVE_PORT$" && echo 1 || echo 0)"
 
 SESS_AFTER="$(allsids | tr '\n' ' ')"
 ck "会话列表还在（${SESS_BEFORE:-无} -> ${SESS_AFTER:-无}）" \
@@ -252,11 +252,11 @@ done
 say "结果"
 if [ "$FAIL" = 0 ]; then
   echo "  改名已在 live 生效。硬刷新座舱标签页（web 资产 hash 变了）。"
-  echo "  剩下的：Android APK 需重编重装（applicationId 从 app.agentslot.companion 变 app.agentus.companion）——手机上的旧 App 仍是旧包名。"
+  echo "  剩下的：Android APK 需重编重装（applicationId 从 app.agentslot.companion 变 app.hermesstudio.companion）——手机上的旧 App 仍是旧包名。"
   exit 0
 else
   echo "  有 FAIL 项——live 可能不完整，回滚办法："
   echo "    git -C '$LIVE' checkout $OLD_TIP && (cd '$LIVE' && npm run build)"
-  echo "    mv '$LNEW' '$LOLD'; mv '$DATA/agentus.sqlite'* 回 agentslot.sqlite*; python3 '$LOLD/launch.py'"
+  echo "    mv '$LNEW' '$LOLD'; mv '$DATA/hermes-studio.sqlite'* 回 agentslot.sqlite*; python3 '$LOLD/launch.py'"
   exit 1
 fi

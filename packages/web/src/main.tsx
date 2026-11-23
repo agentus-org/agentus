@@ -1,3 +1,4 @@
+import "./legacy-storage"; // one-time hermes-studio.* -> hermes-studio.* localStorage migration
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";

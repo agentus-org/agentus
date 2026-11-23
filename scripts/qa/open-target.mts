@@ -55,7 +55,7 @@ check("…and the parameter is KEPT: the URL now truthfully names what is on scr
   loc.href.includes("session=bbb"), loc.href);
 check("…without dropping the other parameters it arrived with", loc.href.includes("x=1"), loc.href);
 check("…so it is remembered too (localStorage, the fallback for a bare `/`)",
-  stored.get("agentus.active") === "bbb", String(stored.get("agentus.active")));
+  stored.get("hermes-studio.active") === "bbb", String(stored.get("hermes-studio.active")));
 
 // switching slots rewrites the URL instead of leaving a stale session behind
 replaced.length = 0;
@@ -63,7 +63,7 @@ cockpit.setActive("aaa");
 check("switching slots rewrites ?session= (the address bar never lies about the view)",
   replaced.length === 1 && String(replaced[0]).includes("session=aaa"), JSON.stringify(replaced));
 check("…once, not once per row repaint", replaced.length === 1, `${replaced.length} replaceState calls`);
-check("…and the remembered slot follows", stored.get("agentus.active") === "aaa", String(stored.get("agentus.active")));
+check("…and the remembered slot follows", stored.get("hermes-studio.active") === "aaa", String(stored.get("hermes-studio.active")));
 
 // re-selecting the slot already on screen must not churn the URL
 replaced.length = 0;
@@ -90,7 +90,7 @@ check("an unknown id in the URL is ignored (the rail stays where it was)",
   activeId(cockpit) === "bbb", String(activeId(cockpit)));
 
 // and with no parameter, the operator's own last slot still wins — the old fallback is intact
-stored.set("agentus.active", "aaa");
+stored.set("hermes-studio.active", "aaa");
 loc.href = "https://host:38788/";
 const { cockpit: fresh } = await import("../../packages/web/src/state.ts?fresh=1");
 fresh.apply({ t: "sessions", sessions } as never);

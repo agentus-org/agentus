@@ -128,7 +128,7 @@ const activeOld = await ev(`(async () => {
   // activate the OLDEST session of the group (it is the one the recent-5 rule would hide)
   const oldest = ${JSON.stringify(seeded[0])};
   const r = await fetch('/api/sessions/'+oldest+'/resume',{method:'POST'}).then((x)=>x.status);
-  localStorage.setItem('agentus.active', oldest);
+  localStorage.setItem('hermes-studio.active', oldest);
   return r;
 })()`);
 await send("Page.navigate", { url: BASE });

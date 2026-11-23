@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // #74 端到端：新建会话时，对话框的选择与第一句话是**背靠背两帧**发出去的。
 //
 // 这一条跑的是真槽位、真 agent（dev :8901 上跑的是 fork 源码），复刻页面在 `ready` 那一刻做的事：
@@ -11,18 +12,18 @@
 // 会话行 status 必须回到 ready（fake turn 之后 status 也会 ready，所以必须同时看 turn-usage）。
 //
 //   node scripts/qa/first-turn-pick.mjs            # 默认 8901，跑 3 轮
-//   AGENTUS_QA_ROUNDS=5 node scripts/qa/first-turn-pick.mjs
+//   HERMES_STUDIO_QA_ROUNDS=5 node scripts/qa/first-turn-pick.mjs
 //
 // 依赖：dev 实例在跑、/tmp/agentus-qa-account/auth.token 可读（scripts/dev.sh 起的默认数据目录）。
 import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 
-const BASE = process.env.AGENTUS_QA_BASE ?? "http://127.0.0.1:8901";
-const DATA = process.env.AGENTUS_QA_DATA ?? "/tmp/agentus-qa-account";
-const ROUNDS = Number(process.env.AGENTUS_QA_ROUNDS ?? 3);
-const CWD = process.env.AGENTUS_QA_CWD ?? "/tmp/agentus-first-turn-qa";
-const PICK = process.env.AGENTUS_QA_MODEL ?? "";
+const BASE = process.env.HERMES_STUDIO_QA_BASE ?? "http://127.0.0.1:8901";
+const DATA = process.env.HERMES_STUDIO_QA_DATA ?? "/tmp/agentus-qa-account";
+const ROUNDS = Number(process.env.HERMES_STUDIO_QA_ROUNDS ?? 3);
+const CWD = process.env.HERMES_STUDIO_QA_CWD ?? "/tmp/agentus-first-turn-qa";
+const PICK = process.env.HERMES_STUDIO_QA_MODEL ?? "";
 
 fs.mkdirSync(CWD, { recursive: true });
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();
@@ -55,7 +56,7 @@ async function pickerModel() {
    * prompt, and "the first non-default" was `deepseek:deepseek-v4-pro`: 13 QA sessions on
    * 2026-10-29/30, 121 calls, ~10.7M input tokens billed to the operator's DeepSeek account — found
    * on his invoice, not in any log he reads. A picker only has to be non-default; it does not have
-   * to be the expensive one. Override with AGENTUS_QA_MODEL when a specific model is under test. */
+   * to be the expensive one. Override with HERMES_STUDIO_QA_MODEL when a specific model is under test. */
   const others = list.filter((id) => id !== hs?.currentModelId);
   /* Rank, don't take the first: a QA run must exercise a NON-DEFAULT pick, and nothing else. Cheapest
    * first — subscription/local providers (qoder, lab, the coding plan) before metered ones, `flash`/
@@ -73,7 +74,7 @@ async function pickerModel() {
    * script REFUSES to run — 「改成 flash」 means it must never fall back to pro. */
   const pool = others.filter((id) => CHEAP.test(id));
   if (!pool.length) {
-    throw new Error("first-turn-pick: no cheap non-default model in the handshake — set AGENTUS_QA_MODEL");
+    throw new Error("first-turn-pick: no cheap non-default model in the handshake — set HERMES_STUDIO_QA_MODEL");
   }
   const band = (id) => (provider(id) === here ? 0 : LOCAL.some((p) => id.startsWith(p)) ? 1 : 2);
   const rank = (id) => band(id);

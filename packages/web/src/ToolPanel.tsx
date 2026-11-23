@@ -60,8 +60,8 @@ export interface PanelTarget {
 const PREVIEW_MIN = 300;
 
 /* The two column-fold switches (see the state below). Their names say which key holds which. */
-const FOLD_TREE_KEY = "agentus.panel-tree-folded";
-const FOLD_PREVIEW_KEY = "agentus.panel-preview-folded";
+const FOLD_TREE_KEY = "hermes-studio.panel-tree-folded";
+const FOLD_PREVIEW_KEY = "hermes-studio.panel-preview-folded";
 /* Desktop split (2026-10-30): the IDE above, the terminal below, both alive at once. Two remembered
  * facts, both layout preferences like the widths and folds beside them: whether the split is on, and
  * which of the two panes is the top one. */
@@ -144,7 +144,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
   // row, not the column (AionUi partitions it as chat | preview | explorer, `ProjectPanelHost.tsx`).
   // Only the explorer's width is stored here; the preview takes whatever is left.
   const explorer = usePaneWidth({
-    storage: "agentus.explorer-width",
+    storage: "hermes-studio.explorer-width",
     fallback: 300,
     min: 220,
     max: () => Math.max(220, Math.min(460, panelWidth - PREVIEW_MIN)),
@@ -560,7 +560,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
                 </p>
                 <pre className="ide-cmd">{ide0?.start ?? ""}</pre>
                 <p className="ide-help-note">
-                  然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 hermes-studio。
+                  然后设 <code>HERMES_STUDIO_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 hermes-studio。
                   只监听回环是刻意的：<code>--auth none</code> 只有在回环上才安全，鉴权由驾驶舱的 cookie 这一跳承担。
                 </p>
               </div>
@@ -579,7 +579,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
       <div className="tool-tabs">
         {/* The tab bar is built from the registry (#78 §1): one entry per pane — `files` included,
             since 2026-10-30 — click = chooseTool (put me on top / start the split with me on top).
-            No AGENTUS_IDE_UPSTREAM ⇒ no ide tab at all: a control that cannot do anything is worse
+            No HERMES_STUDIO_IDE_UPSTREAM ⇒ no ide tab at all: a control that cannot do anything is worse
             than no control. */}
         {PANES.map((pane) => {
           if (!pane.available(ide0)) return null;

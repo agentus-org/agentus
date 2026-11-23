@@ -41,7 +41,7 @@ export interface WebNotifyPrefs {
 /** Bumped when a stored default has to be reinterpreted. 2 = `sound` defaults to `chime`. */
 export const WEB_NOTIFY_SCHEMA = 2;
 
-export const WEB_NOTIFY_KEY = "agentus.webnotify";
+export const WEB_NOTIFY_KEY = "hermes-studio.webnotify";
 // `chime`, not `default`: handing the tone to the platform is silent on exactly the setups that
 // matter — a system banner the OS drops (专注模式 / notification-centre settings) or a site whose
 // notification permission is off takes the platform's tone with it, and the turn finishes in silence.

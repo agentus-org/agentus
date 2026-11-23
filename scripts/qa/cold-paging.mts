@@ -8,7 +8,7 @@
 //
 // Two halves, both offline:
 //   1. the pure rule (`cold-page.ts`) — retention per workspace, ordering, the total backstop;
-//   2. real data — copy a live `agentus.sqlite` to a temp dir, open the real Store + SessionManager
+//   2. real data — copy a live `hermes-studio.sqlite` to a temp dir, open the real Store + SessionManager
 //      and assert every workspace that exists in the DB comes back from `cold()`.
 //
 //   npx tsx scripts/qa/cold-paging.mts
@@ -110,7 +110,7 @@ const dbIn = process.env.COLD_PAGING_DB;
 if (dbIn) {
   console.log(`\n[5] real DB: ${dbIn}`);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-cold-"));
-  const db = path.join(tmp, "agentus.sqlite");
+  const db = path.join(tmp, "hermes-studio.sqlite");
   fs.copyFileSync(dbIn, db);
   const { Store } = await import("../../packages/server/src/store/store.ts");
   const { SessionManager } = await import("../../packages/server/src/acp/session-manager.ts");

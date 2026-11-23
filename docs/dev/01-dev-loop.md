@@ -59,7 +59,7 @@ Three things `start` does that matter:
 - **It detaches** the server from the calling shell's process group (`detached: true`), so
   it does not die with the terminal that launched it.
 - **It strips inherited identity.** `dev.sh` reads the caller's environment and deletes
-  every `AGENTUS_*` / `AGENTSL*` / `DEV_*` key it did not set itself, printing
+  every `HERMES_STUDIO_*` / `AGENTSL*` / `DEV_*` key it did not set itself, printing
   `[dev] dropped inherited <KEY>`. This exists because a dev watcher that inherits a live
   identity pair will, on a reload, read the live port/data and reap the live agent
   children. Keep that behaviour when you touch the script.
@@ -77,19 +77,19 @@ which one won and why** — a directory change is the thing that would otherwise
 
 | order | rule |
 |---|---|
-| 1 | `AGENTUS_DATA` when it is set |
-| 2 | `~/.agentus` once it holds something, or when there is no repo-side data yet |
+| 1 | `HERMES_STUDIO_DATA` when it is set |
+| 2 | `~/.hermes-studio` once it holds something, or when there is no repo-side data yet |
 | 3 | `<repo>/packages/server/.data` — an existing checkout that predates the install layout |
 
 For the worktrees, the outcome is fixed by the launchers rather than by the rules:
 
-- **live** — `~/.hermes/cache/agentus/launch.py` pins `AGENTUS_DATA=<live>/packages/server/.data`
-  and `AGENTUS_PORT=8788`, and pops the inherited QA/DEV keys. The launcher owns its
+- **live** — `~/.hermes/cache/agentus/launch.py` pins `HERMES_STUDIO_DATA=<live>/packages/server/.data`
+  and `HERMES_STUDIO_PORT=8788`, and pops the inherited QA/DEV keys. The launcher owns its
   identity; it never trusts `os.environ`.
-- **dev** — `scripts/dev.sh` exports `AGENTUS_DATA=/tmp/agentus-qa-account` and
-  `AGENTUS_PORT=8901`.
+- **dev** — `scripts/dev.sh` exports `HERMES_STUDIO_DATA=/tmp/agentus-qa-account` and
+  `HERMES_STUDIO_PORT=8901`.
 
-`hermes-studio --where` (or `AGENTUS_PRINT_PATHS=1`) prints the resolved paths and exits without
+`hermes-studio --where` (or `HERMES_STUDIO_PRINT_PATHS=1`) prints the resolved paths and exits without
 starting anything — the single source of truth for "where did my state go".
 
 ### Keeping a dev instance's data separate
@@ -97,12 +97,12 @@ starting anything — the single source of truth for "where did my state go".
 The dev instance already points at `/tmp/agentus-qa-account`, so it shares nothing with
 live. Two independent knobs if you need more:
 
-- **The store** — override `AGENTUS_DATA` (as `dev.sh` does). A throwaway instance is one
+- **The store** — override `HERMES_STUDIO_DATA` (as `dev.sh` does). A throwaway instance is one
   line:
   ```bash
-  AGENTUS_PORT=8907 AGENTUS_DATA=/tmp/<name> npx tsx packages/server/src/index.ts
+  HERMES_STUDIO_PORT=8907 HERMES_STUDIO_DATA=/tmp/<name> npx tsx packages/server/src/index.ts
   ```
-  Note the server reads `AGENTUS_PORT`, not bare `PORT` — and this box exports an ambient
+  Note the server reads `HERMES_STUDIO_PORT`, not bare `PORT` — and this box exports an ambient
   `PORT=8648` (Hermes Studio), so a script that reads the ambient value starts a retry loop
   against the wrong port.
 - **The agent subprocess home** — see below.

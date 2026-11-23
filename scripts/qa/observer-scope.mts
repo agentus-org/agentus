@@ -6,7 +6,7 @@
 //      空结果是空集合而不是错误；
 //   C  心跳触发语是两态（有新进展 / 没有新输出），并且「同一句话说第二遍」不出声、不占配额、
 //      在诊断里记成 duplicate —— 时间闸和数量闸都挡不住换个说法；
-//   D  观察员会话要能被运行时认出来是旁观者（AGENTUS_SESSION_ROLE），才有机会关掉记忆召回与后台评审。
+//   D  观察员会话要能被运行时认出来是旁观者（HERMES_STUDIO_SESSION_ROLE），才有机会关掉记忆召回与后台评审。
 //
 //   node_modules/.bin/tsx scripts/qa/observer-scope.mts
 import fs from "node:fs";
@@ -159,9 +159,9 @@ function check(name: string, cond: boolean, detail = ""): void {
 {
   const mgr = fs.readFileSync(path.join(REPO, "packages/server/src/acp/session-manager.ts"), "utf8");
   check("D a system session's child is told it is an observer",
-    /if \(opts\.system\) plan\.env = \{ \.\.\.plan\.env, AGENTUS_SESSION_ROLE: "observer" \}/.test(mgr));
+    /if \(opts\.system\) plan\.env = \{ \.\.\.plan\.env, HERMES_STUDIO_SESSION_ROLE: "observer" \}/.test(mgr));
   check("D a RESUMED observer is still an observer",
-    /if \(row\.system\) plan\.env = \{ \.\.\.plan\.env, AGENTUS_SESSION_ROLE: "observer" \}/.test(mgr));
+    /if \(row\.system\) plan\.env = \{ \.\.\.plan\.env, HERMES_STUDIO_SESSION_ROLE: "observer" \}/.test(mgr));
   check("D the observer session is the one created with system:true",
     /createSession: async \(backend, cwd, title\) =>[\s\S]{0,140}system: true/.test(
       fs.readFileSync(path.join(REPO, "packages/server/src/index.ts"), "utf8")),

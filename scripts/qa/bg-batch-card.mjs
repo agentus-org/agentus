@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (2026-11-08): a FINISHED background process belongs to the transcript, not to the row above the
 // composer.
 //
@@ -16,7 +17,7 @@
 // Usage: PORT=8932 node scripts/qa/bg-batch-card.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8932);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -53,8 +54,8 @@ const until = async (expr, ms = 20000) => {
   return false;
 };
 
-const QA_USER = process.env.AGENTUS_QA_USER || "admin";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "123456";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "admin";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "123456";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

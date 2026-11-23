@@ -52,7 +52,7 @@ const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-title-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";

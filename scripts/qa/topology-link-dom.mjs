@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // #96：在拓扑里「从 A 拉一条线到 B」派活 —— 发起方由手点出来，不再是「当前正在看的会话」。
 //
 // 覆盖：
@@ -6,11 +7,11 @@
 //   ③ 拖到某个分区：面板变成「新会话」，说明会在这个工作空间新建
 //   ④ 没有任何发起方时，面板不把「当前会话」当成源
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-link-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-link-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -72,7 +73,7 @@ const board = await ev(`fetch('/api/topology?since=0&archived=1',{credentials:'s
   .then(r=>r.json()).then(d => JSON.stringify({ edges: (d.edges||[]).length }))`).then(JSON.parse);
 check("fixture: topology reachable", typeof board.edges === "number", JSON.stringify(board));
 
-await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
+await ev(`localStorage.removeItem('hermes-studio.topo.collapsed'); localStorage.removeItem('hermes-studio.topo.pos'); localStorage.removeItem('hermes-studio.topo.groupPos'); true`);
 await send("Page.reload"); await sleep(2600);
 for (let i = 0; i < 50; i++) { if (await ev(`!!document.querySelector('[data-nav="topology"]')`)) break; await sleep(200); }
 for (let i = 0; i < 20; i++) {

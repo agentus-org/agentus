@@ -40,7 +40,7 @@ const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-brief-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -87,7 +87,7 @@ const setup = await ev(`(async () => {
     body: JSON.stringify({ username: 'admin', password: '123456' }) });
   const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-  localStorage.setItem('agentus.active', s.id);
+  localStorage.setItem('hermes-studio.active', s.id);
   localStorage.removeItem('agentus.call.brief');
   return { sid: s.id };
 })()`);

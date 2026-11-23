@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 工作播报 (issue #16), end to end: the cockpit spawns ONE observer per watched session, in its own
 // scratch directory, out of the rail, and turns its answer into a `speak` line.
 //
@@ -5,12 +6,12 @@
 // observer is just another session — a real second child for the observer. The WebSocket below is the
 // SAME socket the browser opens, so a `speak` frame is what the operator's page would have received.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/observer-sweep.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 HERMES_STUDIO_DATA=/tmp/agentus-qa-account node scripts/qa/observer-sweep.mjs
 import fs from "node:fs";
 import path from "node:path";
 
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8901";
-const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
+const BASE = process.env.HERMES_STUDIO_BASE ?? "http://127.0.0.1:8901";
+const DATA = process.env.HERMES_STUDIO_DATA ?? "/tmp/agentus-qa-account";
 // `?token=` is the same door a script has to the page's socket (a browser would send its cookie).
 const WS = BASE.replace(/^http/, "ws") + "/ws?token=" + encodeURIComponent(
   fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim(),

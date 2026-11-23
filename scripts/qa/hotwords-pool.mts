@@ -28,7 +28,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-hotwords-"));
-const store = new Store(path.join(dir, "agentus.sqlite"));
+const store = new Store(path.join(dir, "hermes-studio.sqlite"));
 const SID = "sess-voice-probe";
 const OTHER = "sess-voice-other";
 for (const id of [SID, OTHER]) {

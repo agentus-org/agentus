@@ -131,9 +131,9 @@ const BOOT_GRACE_MS = 3000;
 
 /** Where the captions toggle is remembered. Local, not server-side: the two instances of a call
  *  (a phone in the car, a desktop at the desk) have no reason to share a reading preference. */
-const CAPTION_KEY = "agentus.call.caption";
+const CAPTION_KEY = "hermes-studio.call.caption";
 /** 干活期间的进度播报（#58）默认开；关掉它就只剩答案本身。 */
-const BRIEF_KEY = "agentus.call.brief";
+const BRIEF_KEY = "hermes-studio.call.brief";
 
 /** One line of history in the call's window.
  *  Memoised: the reply streams in chunks, the window re-renders on every one of them, and the rows

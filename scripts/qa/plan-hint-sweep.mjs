@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: the plan-tool hint is GONE — the agent must never be fed a plan resource block on the wire.
 //
 //   node scripts/qa/plan-hint-sweep.mjs
@@ -27,7 +28,7 @@ const path = await import("node:path");
 const { DatabaseSync } = await import("node:sqlite");
 
 const DATA = await (async () => {
-  const candidates = [...new Set([process.env.AGENTUS_DATA, "/tmp/agentus-qa-account"].filter(Boolean))];
+  const candidates = [...new Set([process.env.HERMES_STUDIO_DATA, "/tmp/agentus-qa-account"].filter(Boolean))];
   for (const dir of candidates) {
     const file = path.join(dir, "auth.token");
     if (!fs.existsSync(file)) continue;
@@ -91,7 +92,7 @@ const planBlockOf = (blocks) => (blocks ?? [])
   .find((b) => b?.type === "resource" && /agentus:\/\/plan\//.test(b?.resourceUri ?? "")) ?? null;
 
 const seedPlan = (id, items) => {
-  const db = new DatabaseSync(path.join(DATA, "agentus.sqlite"));
+  const db = new DatabaseSync(path.join(DATA, "hermes-studio.sqlite"));
   db.prepare("delete from plans where session_id = ?").run(id);
   db.prepare(
     `insert into plans (session_id, revision, items, explanation, source, terminal, updated_at)
@@ -109,7 +110,7 @@ const created = [];
 const cleanup = async () => {
   for (const id of created) {
     try {
-      const db = new DatabaseSync(path.join(DATA, "agentus.sqlite"));
+      const db = new DatabaseSync(path.join(DATA, "hermes-studio.sqlite"));
       db.prepare("delete from plans where session_id = ?").run(id);
       db.close();
     } catch { /* row may be gone */ }
@@ -165,7 +166,7 @@ const skill = path.resolve("skills/hermes-studio-cockpit/SKILL.md");
 check("hermes-studio-cockpit skill file exists", fs.existsSync(skill), skill);
 const skillText = fs.existsSync(skill) ? fs.readFileSync(skill, "utf8") : "";
 check("the skill documents the cross-session CLI (session list / send)",
-  /session list/.test(skillText) && /AGENTUS_COCKPIT_BIN/.test(skillText) && /session send/.test(skillText),
+  /session list/.test(skillText) && /HERMES_STUDIO_COCKPIT_BIN/.test(skillText) && /session send/.test(skillText),
   skillText.slice(0, 200));
 
 await cleanup();

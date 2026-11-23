@@ -11,7 +11,7 @@
 // dist/ is how you get a half-stale bundle — a documented failure in this project):
 //   pack → install into a throwaway prefix with a throwaway HOME → boot from that install
 //   with a scrubbed environment → drive the real API and the real mock agent → assert the
-//   state went to ~/.agentus and nowhere near node_modules → stop and check for leftovers.
+//   state went to ~/.hermes-studio and nowhere near node_modules → stop and check for leftovers.
 //
 // Usage: node scripts/qa/package-install.mjs [--keep]   (--keep leaves the temp tree)
 import { spawn, spawnSync } from "node:child_process";
@@ -92,7 +92,7 @@ const bin = path.join(prefix, "bin/hermes-studio");
 check("the install exposes an `hermes-studio` command", fs.existsSync(bin));
 
 // ── 3. boot it with a scrubbed environment ─────────────────────────────────────────────
-// `env -i` equivalent: the agent/CI shell may carry a live instance's AGENTUS_* variables,
+// `env -i` equivalent: the agent/CI shell may carry a live instance's HERMES_STUDIO_* variables,
 // and inheriting them would test the other instance's store instead of this one.
 const port = await freePort();
 const env = { HOME: fakeHome, PATH: process.env.PATH, TERM: "xterm", TMPDIR: os.tmpdir() };
@@ -108,9 +108,9 @@ for (let i = 0; i < 60 && !up; i++) {
 }
 check("the installed package boots and answers /healthz", up, `:${port}`);
 const bootLog = log.join("");
-const dataDir = path.join(fakeHome, ".agentus");
+const dataDir = path.join(fakeHome, ".hermes-studio");
 check("the boot log names the data directory it opened", bootLog.includes("data dir:"), bootLog.split("\n").find((l) => l.includes("data dir:"))?.trim());
-check("it opened ~/.agentus, not a directory inside node_modules", bootLog.includes(dataDir) && !bootLog.includes(path.join(pkgDir, "packages/server/.data")));
+check("it opened ~/.hermes-studio, not a directory inside node_modules", bootLog.includes(dataDir) && !bootLog.includes(path.join(pkgDir, "packages/server/.data")));
 
 if (up) {
   // 4. the lock, the shell and its bundle
@@ -120,7 +120,7 @@ if (up) {
   check("the app shell is served", /<div id="root">/.test(html));
   const js = asset ? await fetch(`${base}/${asset[0]}`) : null;
   check("the hashed bundle is served from the tarball", js ? js.status === 200 && (await js.text()).length > 100_000 : false, asset?.[0] ?? "no asset referenced");
-  const forged = await (await fetch(`${base}/api/auth/me`, { headers: { cookie: "agentus_session=forged" } })).json();
+  const forged = await (await fetch(`${base}/api/auth/me`, { headers: { cookie: "hermes_studio_session=forged" } })).json();
   check("a forged cookie is not authenticated", forged.authenticated === false);
 
   // 5. operator login
@@ -165,17 +165,17 @@ if (up) {
     check("the transcript is persisted", (stored.messages?.length ?? 0) > 0, `${stored.messages?.length ?? 0} rows`);
   }
 
-  // 7. state landed in ~/.agentus and NOT inside the installed package
+  // 7. state landed in ~/.hermes-studio and NOT inside the installed package
   const entries = fs.existsSync(dataDir) ? fs.readdirSync(dataDir) : [];
-  check("state is in ~/.agentus", entries.includes("agentus.sqlite") && entries.includes("auth.token"), entries.join(", "));
-  check("~/.agentus is 0700", (fs.statSync(dataDir).mode & 0o777) === 0o700);
+  check("state is in ~/.hermes-studio", entries.includes("hermes-studio.sqlite") && entries.includes("auth.token"), entries.join(", "));
+  check("~/.hermes-studio is 0700", (fs.statSync(dataDir).mode & 0o777) === 0o700);
   check("auth.token is 0600", (fs.statSync(path.join(dataDir, "auth.token")).mode & 0o777) === 0o600);
   check("nothing was written inside the installed package", !fs.existsSync(path.join(pkgDir, "packages/server/.data")));
 }
 
 // 8. --where answers without starting anything, and reports the same directory
 {
-  const where = run(bin, ["--where"], { env: { ...env, AGENTUS_PORT: String(port) }, cwd: scratch });
+  const where = run(bin, ["--where"], { env: { ...env, HERMES_STUDIO_PORT: String(port) }, cwd: scratch });
   check("--where reports the same data directory", where.stdout.includes(dataDir), where.stdout.split("\n").find((l) => l.includes("data dir"))?.trim() ?? where.stdout.slice(0, 120));
   check("--where exits without listening", where.status === 0);
 }

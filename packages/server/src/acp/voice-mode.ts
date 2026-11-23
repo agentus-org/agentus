@@ -16,7 +16,7 @@
 // transcript keeps the operator's own words and nothing else.
 
 /** The `_meta` key that marks a block as OURS — never the operator's words. */
-export const VOICE_META_KEY = "agentus/voice-mode";
+export const VOICE_META_KEY = "hermes-studio/voice-mode";
 
 import { emoTagHint } from "../../../shared/src/index.js";
 

@@ -132,8 +132,8 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       plan_items: "not truncated — a plan is short by construction (it is a step list)",
     },
     auth: {
-      how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the hermes-studio launcher itself, so every call is \"$AGENTUS_COCKPIT_BIN\" session <verb>",
-      operator: "outside a session the CLI also works for the operator: it reads <DATA_DIR>/auth.token (the machine token scripts already use) and talks to AGENTUS_ENDPOINT or 127.0.0.1:AGENTUS_PORT. In that mode there is no `self`, and a rename records no author (NULL title_by = the operator).",
+      how: "environment only: HERMES_STUDIO_COCKPIT_ENDPOINT / HERMES_STUDIO_COCKPIT_TOKEN / HERMES_STUDIO_COCKPIT_SESSION are set by the cockpit when it spawns you; HERMES_STUDIO_COCKPIT_BIN is the hermes-studio launcher itself, so every call is \"$HERMES_STUDIO_COCKPIT_BIN\" session <verb>",
+      operator: "outside a session the CLI also works for the operator: it reads <DATA_DIR>/auth.token (the machine token scripts already use) and talks to HERMES_STUDIO_ENDPOINT or 127.0.0.1:HERMES_STUDIO_PORT. In that mode there is no `self`, and a rename records no author (NULL title_by = the operator).",
       rule: "never print, echo, export or pass those variables anywhere — they identify your session",
     },
     session_list: {

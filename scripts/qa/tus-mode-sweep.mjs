@@ -47,7 +47,7 @@ const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -212,7 +212,7 @@ const settingsCall = async () => {
 };
 
 /** 这一轮跑完没有 —— 用服务端的 status，不靠猜"气泡是不是还在长"。 */
-const turnStatus = async () => ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+const turnStatus = async () => ev(`(async () => { const sid = localStorage.getItem('hermes-studio.active');
   const d = await fetch('/api/sessions').then((r) => r.json()).catch(() => null);
   return (d?.live ?? []).find((s) => s.id === sid)?.status ?? null; })()`);
 const waitIdle = async (maxMs = 25000) => {
@@ -239,7 +239,7 @@ const waitListening = async (maxMs = 40000) => {
 /** 发一句话给 mock。上一轮还在跑时服务端会拒，重试到它收下为止。 */
 const promptCall = async (text) => {
   for (let i = 0; i < 30; i++) {
-    const st = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+    const st = await ev(`(async () => { const sid = localStorage.getItem('hermes-studio.active');
       const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST',
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: ${JSON.stringify(text)} }) });
       return r.status; })()`);
@@ -260,7 +260,7 @@ try {
   const setup = await ev(`(async () => {
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentus.active', s.id);
+    localStorage.setItem('hermes-studio.active', s.id);
     localStorage.removeItem('agentus.call');
     return { sid: s.id };
   })()`);
@@ -276,7 +276,7 @@ try {
   for (let i = 0; i < 40; i++) { await sleep(400); if (await ev(`!!document.querySelector('.chat-head')`)) break; }
   // 先造一轮真实对话：记录区必须**有行**才量得到字号（这也是 captions 视图的同一个前提）。
   for (let i = 0; i < 20; i++) {
-    const ok = await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+    const ok = await ev(`(async () => { const sid = localStorage.getItem('hermes-studio.active');
       const r = await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: '第一句：这是一段足够长的回答，用来量聊天区的行高和滚动。第二句：Tus 模式要把这一页缩小放进下半屏。第三句：横屏时它应该在右边。' }) });
       return r.status; })()`);

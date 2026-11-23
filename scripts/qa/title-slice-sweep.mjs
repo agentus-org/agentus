@@ -50,7 +50,7 @@ const startInstance = async (sliceMode, llmDelayMs) => {
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development", HOME: home,
-      AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
+      HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off",
       MOCK_SLOW_MS: "20", MOCK_TITLE_STAGE: "1",
       MOCK_TITLE_LLM: LLM_TITLE, MOCK_TITLE_LLM_MS: String(llmDelayMs),
       ...(sliceMode ? { MOCK_TITLE_SLICE: sliceMode } : {}),
@@ -79,7 +79,7 @@ const startInstance = async (sliceMode, llmDelayMs) => {
   });
 
   const row = (id) => {
-    const d = new DatabaseSync(path.join(dataDir, "agentus.sqlite"), { readOnly: true });
+    const d = new DatabaseSync(path.join(dataDir, "hermes-studio.sqlite"), { readOnly: true });
     try {
       const r = d.prepare("select title, title_src from sessions where id = ?").get(id);
       return r ? { title: String(r.title), src: r.title_src == null ? null : String(r.title_src) } : null;

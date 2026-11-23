@@ -43,7 +43,7 @@ export interface VoicePrefs {
   stt: "auto" | "browser" | "stream" | "server";
 }
 
-const PREFS_KEY = "agentus.voice";
+const PREFS_KEY = "hermes-studio.voice";
 
 const DEFAULT_PREFS: VoicePrefs = {
   autoRead: false,
@@ -1798,7 +1798,7 @@ class Dictation {
           ? `${micUnavailableMessage()} `
           : "")
           + (want === "server" || serverOk
-            ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (AGENTUS_STT_BASE_URL)"
+            ? "no dictation available: this browser has no speech recognition and the server has no STT endpoint (HERMES_STUDIO_STT_BASE_URL)"
             : "no dictation available in this browser — set the server STT endpoint or use Chromium/Edge"),
       });
       return false;

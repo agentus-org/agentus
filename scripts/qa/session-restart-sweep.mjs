@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 「重启 agent 进程」— a LIVE slot must be able to swap its agent process (same session, same
 // picks, new pid) so a code change on disk — or a changed backend config — becomes real without
 // archiving the slot first. Operator ask (2026-10-07): "你能加个按钮吗，支持重启 acp 进程，
@@ -11,11 +12,11 @@
 //   4. the operator's pick survives it too (thinking depth stays where they left it);
 //   5. the new process really serves the slot: a prompt gets an answer, not a refusal;
 //   6. a cold slot has no process to restart -> 404 pointing at /resume.
-// Usage: AGENTUS_BASE=http://127.0.0.1:8901 node scripts/qa/session-restart-sweep.mjs
+// Usage: HERMES_STUDIO_BASE=http://127.0.0.1:8901 node scripts/qa/session-restart-sweep.mjs
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });

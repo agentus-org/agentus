@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -273,7 +273,7 @@ final class Notifier {
         String label = act.optString("label", actionId);
         boolean isOpen = "open".equals(actionId);
         Intent i = new Intent(ctx, ActionReceiver.class)
-            .setAction("app.agentus.companion.ACTION")
+            .setAction("app.hermesstudio.companion.ACTION")
             .putExtra("activityId", activity.optString("activityId"))
             .putExtra("actionId", actionId)
             .putExtra("revision", activity.optInt("revision", 1))
@@ -293,7 +293,7 @@ final class Notifier {
                 .setLabel(input.optString("placeholder", "回复"))
                 .build();
             Intent reply = new Intent(ctx, ActionReceiver.class)
-                .setAction("app.agentus.companion.REPLY")
+                .setAction("app.hermesstudio.companion.REPLY")
                 .putExtra("activityId", activity.optString("activityId"))
                 .putExtra("actionId", actionId)
                 .putExtra("revision", activity.optInt("revision", 1))

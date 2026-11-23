@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The call's streaming socket has to survive the operator THINKING.
 //
 // `dictation` opens one relay socket per utterance (/ws/asr). While the operator has the floor the
@@ -15,7 +16,7 @@
 // server's own TTS into the 16 kHz PCM the relay speaks; without either it SKIPS rather than fails,
 // the way a suite that depends on the operator's machine must.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 npx tsx scripts/qa/asr-idle-wedge.mts
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 npx tsx scripts/qa/asr-idle-wedge.mts
 //
 // The socket is the only thing touched: no session is created, no prompt is sent.
 import { spawnSync } from "node:child_process";
@@ -24,7 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { machineToken } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
 const TOKEN = machineToken();
 const GAP_MS = Number(process.env.WEDGE_GAP_MS || 26_000);   // past the upstream's ~23 s idle limit
 const FEED_CHUNK = 3200;                                     // 100 ms of 16 kHz mono s16le
@@ -75,7 +76,7 @@ g.WebSocket = TokenWS;
 const { dictation, loadVoiceCaps } = await import("../../packages/web/src/voice.ts");
 
 // ---- preconditions: say so and skip when the box cannot run this -------------------------------
-if (!TOKEN) { console.log("skip: no machine token (AGENTUS_DATA / AGENTUS_AUTH_TOKEN)"); process.exit(0); }
+if (!TOKEN) { console.log("skip: no machine token (HERMES_STUDIO_DATA / HERMES_STUDIO_AUTH_TOKEN)"); process.exit(0); }
 if (spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status !== 0) { console.log("skip: ffmpeg is not installed"); process.exit(0); }
 
 const caps = await loadVoiceCaps(true);

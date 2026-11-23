@@ -40,11 +40,11 @@ const WINDOWS: { key: TopoWindow; label: string }[] = [
 ];
 
 /** 拖动摆位：会话 id → 画布坐标。存在本机 —— 位置是这个人看图的手感，不是团队数据。 */
-const POS_KEY = "agentus.topo.pos";
+const POS_KEY = "hermes-studio.topo.pos";
 /** 拖动分区（workspace → 画布坐标）。组也是可以摆的盒子：线纠缠时常常该挪的是整组。 */
-const GROUP_POS_KEY = "agentus.topo.groupPos";
+const GROUP_POS_KEY = "hermes-studio.topo.groupPos";
 /** 折叠分区：workspace 路径数组。null = 从没动过，走「只展开当前会话那一组」的默认。 */
-const COLLAPSE_KEY = "agentus.topo.collapsed";
+const COLLAPSE_KEY = "hermes-studio.topo.collapsed";
 
 function readPos(key = POS_KEY): Record<string, { x: number; y: number }> {
   try {

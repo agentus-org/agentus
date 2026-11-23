@@ -46,7 +46,7 @@ code-server --auth none \
 ## 2. 把 Hermes Studio 指过去
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
+HERMES_STUDIO_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
 不设（默认）＝这个功能不存在：没有 tab、除 `GET /api/ide/status` 外没有路由、upgrade 白名单里也没有它。
@@ -95,7 +95,7 @@ if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/
 ```
 
 code-server 的编辑器、终端、文件监听全走同一条 socket。只转 HTTP、或挂载点没登记在白名单里，会产生这个集成里**最难自查的**
-半死状态：**界面出来了，但连不上后端**，而且没有任何一条请求报错可以指。只要设了 `AGENTUS_IDE_UPSTREAM`，
+半死状态：**界面出来了，但连不上后端**，而且没有任何一条请求报错可以指。只要设了 `HERMES_STUDIO_IDE_UPSTREAM`，
 Hermes Studio 就为 `/api/ide/*` 放行 upgrade，并保持和驾驶舱自己的 socket 一样「先验 cookie 再 upgrade」的顺序。
 
 ### 规则 3 —— 代理路由必须排在 SPA fallback 之前
@@ -130,8 +130,8 @@ IDE 住在工作区侧栏（`ToolPanel.tsx`），和 `files`、`terminal` 并排
   光标，拖动改高度，双击回对半，高度也会记住。规则只有一条：**上面那一行拿高度，下面那一行吃剩下的**，
   所以互换之后不会变成两行都固定高、把面板撑破。
 - 手机上永远不分：仍然一次一个 pane。
-- 分屏是泛化实现的（#78）：pane 来自同一张注册表，组合存在 `agentus.panel-pair`，分界线高度**按组合**记忆
-  （`agentus.panel-split-ratio:ide+terminal`），换组合不会沿用上一组的高度。`order` 必须是整数
+- 分屏是泛化实现的（#78）：pane 来自同一张注册表，组合存在 `hermes-studio.panel-pair`，分界线高度**按组合**记忆
+  （`hermes-studio.panel-split-ratio:ide+terminal`），换组合不会沿用上一组的高度。`order` 必须是整数
   （上=1、线=2、下=3）—— CSS `order` 不认 `1.5`，整条声明会被丢弃，分界线就会无声地画到面板顶上，
   而拖动还好使，特别隐蔽。
 - iframe **和** pty 都只挂一次、之后只隐藏；换位置是 CSS `order`，从不移动 DOM。移动＝code-server 整个前端重载
@@ -164,7 +164,7 @@ IDE 住在工作区侧栏（`ToolPanel.tsx`），和 `files`、`terminal` 并排
 
 | 症状 | 原因 |
 |---|---|
-| 根本没有 `ide` tab | `AGENTUS_IDE_UPSTREAM` 没设（或为空） |
+| 根本没有 `ide` tab | `HERMES_STUDIO_IDE_UPSTREAM` 没设（或为空） |
 | tab 在、置灰、显示命令 | 上游配了但没应答 —— 按 §1 起起来 |
 | tab 能开、frame 一直黑、无报错 | 上游的绝对路径逃出了挂载点：确认请求带了 `x-forwarded-prefix`，且响应的 `Location` 以 `/api/ide` 开头 |
 | frame 渲染出来了、编辑器一直转圈 | WebSocket 没被转发 —— 查规则 2 与 upgrade 白名单 |
@@ -174,7 +174,7 @@ IDE 住在工作区侧栏（`ToolPanel.tsx`），和 `files`、`terminal` 并排
 整条链路从 shell 验一下：
 
 ```bash
-TOKEN=$(cat ~/.agentus/auth.token)
+TOKEN=$(cat ~/.hermes-studio/auth.token)
 curl -s "http://127.0.0.1:8788/api/ide/status?token=$TOKEN"
 # {"configured":true,"reachable":true,"base":"http://127.0.0.1:8133", …}
 ```

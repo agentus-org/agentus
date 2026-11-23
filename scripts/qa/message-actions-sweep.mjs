@@ -42,7 +42,7 @@ await send("Page.reload", { ignoreCache: true });
 await sleep(3500);
 await ev(`(async () => { const api = await fetch('/api/sessions').then(r=>r.json());
   const me = [...api.live,...api.archived].find(s=>s.id===${JSON.stringify(sid)});
-  localStorage.setItem('agentus.active', ${JSON.stringify(sid)});
+  localStorage.setItem('hermes-studio.active', ${JSON.stringify(sid)});
   return me?.title; })()`);
 await send("Page.reload", { ignoreCache: true });
 await sleep(3500);
@@ -166,7 +166,7 @@ check("the fork is the session you land in", after.active && after.active.includ
 // --- phone: the message actions stay reachable (hover is not a thing on touch)
 // (the fork above landed us in the new session, which is still loading its transcript —
 //  go back to the conversation that has the two turns)
-await ev(`localStorage.setItem('agentus.active', ${JSON.stringify(sid)})`);
+await ev(`localStorage.setItem('hermes-studio.active', ${JSON.stringify(sid)})`);
 await send("Page.reload", { ignoreCache: true });
 for (let i = 0; i < 20; i++) { await sleep(500); if (await ev(`document.querySelectorAll('.msg.agent').length > 0`)) break; }
 await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });

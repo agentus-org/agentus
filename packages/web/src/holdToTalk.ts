@@ -106,7 +106,7 @@ export function createHoldToTalk(opts: HoldToTalkOptions): HoldToTalk {
 }
 
 /** 一次性提示的键（「按住这里说话」只该在第一次真正用上听写时出现一次）。 */
-export const HOLD_HINT_KEY = "agentus.hint.hold-to-talk";
+export const HOLD_HINT_KEY = "hermes-studio.hint.hold-to-talk";
 
 /** 桌面端才补「在输入框里长按鼠标左键」那句 —— 手机上那条路不存在，许诺它就是骗人。 */
 export function finePointer(): boolean {

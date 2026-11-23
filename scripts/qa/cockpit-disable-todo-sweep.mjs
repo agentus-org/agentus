@@ -4,7 +4,7 @@
 //
 // The cockpit shows ONE plan — its own `update_plan` card. Hermes' built-in `todo_list` (the `todo`
 // toolset) is invisible on that card, so a cockpit Hermes session must ask the fork to disable it.
-// The channel is ACP handshake `_meta.agentus.disabled_toolsets=["todo"]`, expanded by the fork into
+// The channel is ACP handshake `_meta.hermesStudio.disabled_toolsets=["todo"]`, expanded by the fork into
 // a per-session editor and frozen into the session policy (CLI/cron/Studio never send it). This
 // sweep guards the wire side: every Hermes handshake carries the meta, non-Hermes carries none.
 import { readFileSync } from "node:fs";
@@ -24,7 +24,8 @@ const check = (name, ok, detail = "") => {
 check("handshake meta helper exists", /#handshakeMeta\s*\(/.test(src));
 check("meta is gated on Hermes backend", /spec\.kind\s*!==\s*"hermes"\s*\)\s*return undefined/.test(src));
 check("meta disables only the todo toolset", /disabled_toolsets:\s*\["todo"\]/.test(src));
-check("meta is nested under agentus", /\{\s*agentus:\s*\{\s*disabled_toolsets/.test(src));
+check("meta is nested under hermesStudio", /hermesStudio:\s*\{\s*disabled_toolsets/.test(src));
+check("legacy agentus key still sent for old gateways", /agentus:\s*\{\s*disabled_toolsets/.test(src));
 
 // All three Hermes handshakes (new / load / resume-fresh) actually spread the meta onto the wire.
 const metaSpreads = (src.match(/\.\.\.\(\w*Meta \? \{ _meta: \w*Meta \} : \{\}\)/g) || []).length;

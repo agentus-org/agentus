@@ -11,7 +11,7 @@
 //     the iframe goes black with no error anywhere.
 //  3. THE SOCKET IS FORWARDED. An IDE whose HTTP works and whose upgrade does not looks alive and
 //     cannot load — the most confusing half-failure in the whole integration.
-//  4. UNCONFIGURED MEANS ABSENT. With `AGENTUS_IDE_UPSTREAM` unset, every pre-existing route must
+//  4. UNCONFIGURED MEANS ABSENT. With `HERMES_STUDIO_IDE_UPSTREAM` unset, every pre-existing route must
 //     answer exactly as before — the default-regression clause in the issue.
 //
 //   node scripts/qa/ide-bridge.mjs
@@ -58,7 +58,7 @@ const startServer = async (extraEnv) => {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-ide-"));
   const child = spawn(process.execPath, ["--import", "tsx", "packages/server/src/index.ts"], {
     cwd: REPO,
-    env: { ...process.env, AGENTUS_PORT: String(port), AGENTUS_DATA: data, AGENTUS_PASSWORD: "qa-ide-pw", DEV_TREE: "", ...extraEnv },
+    env: { ...process.env, HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: data, HERMES_STUDIO_PASSWORD: "qa-ide-pw", DEV_TREE: "", ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -100,7 +100,7 @@ const wsEcho = (port, cookie, path0) => new Promise((resolve) => {
 });
 
 /* ============================ configured ============================ */
-const ide = await startServer({ AGENTUS_IDE_UPSTREAM: `http://127.0.0.1:${upstreamPort}` });
+const ide = await startServer({ HERMES_STUDIO_IDE_UPSTREAM: `http://127.0.0.1:${upstreamPort}` });
 try {
   // 1. the gate, before anything else
   const noCookie = await fetch(`${ide.base}/api/ide/status`);
@@ -146,7 +146,7 @@ try {
 }
 
 /* ============================ unconfigured ============================ */
-const plain = await startServer({ AGENTUS_IDE_UPSTREAM: "" });
+const plain = await startServer({ HERMES_STUDIO_IDE_UPSTREAM: "" });
 try {
   const st = await (await fetch(`${plain.base}/api/ide/status`, { headers: { cookie: await login(plain.base) } })).json();
   check("unconfigured: status says configured:false / reachable:false", st.configured === false && st.reachable === false, JSON.stringify({ c: st.configured, r: st.reachable }));

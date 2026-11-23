@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (issue #35) — 后台任务行只显示「会唤醒 agent」的进程，静默进程收进设置开关。
 //
 // 这条链的三段都要一起成立，所以整条都测：
@@ -12,7 +13,7 @@
 // Usage: PORT=8901 node scripts/qa/bg-notify-filter.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -49,8 +50,8 @@ const until = async (expr, ms = 20000) => {
   return false;
 };
 
-const QA_USER = process.env.AGENTUS_QA_USER || "scratch";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "scratch-pass-1";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "scratch";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "scratch-pass-1";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

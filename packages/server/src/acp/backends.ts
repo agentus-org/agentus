@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Backend registry — the entire multi-backend support surface (D5).
 // Adding a backend = adding one row here; NEVER touch the protocol layer.
 //
@@ -7,7 +8,7 @@
 // its own (the live one) down to us.
 //
 // The early-dev isolation guard — a hard error whenever a row pointed at the live home, plus
-// the AGENTUS_ALLOW_LIVE_HOME escape hatch and the row's `allowLiveHome` tick — is GONE
+// the HERMES_STUDIO_ALLOW_LIVE_HOME escape hatch and the row's `allowLiveHome` tick — is GONE
 // (2026-10-06): the cockpit is meant to drive the operator's real runtime. It existed because
 // two openers on one WAL SQLite 3.50.4 (inside the WAL-reset range) corrupted the user's
 // state.db; the runtime's interpreter now links SQLite 3.53.1, so the reason is gone. A row
@@ -57,7 +58,7 @@ export interface BackendSpec {
    *  · `acp`  — the agent emits ACP `plan` frames itself (Hermes does; that is the whole point of
    *             the fork fix). The cockpit ingests them and must NOT hand the agent a second
    *             writable list, so no plan MCP server is injected into the handshake.
-   *  · `none` — anything else. The cockpit injects the `agentus-plan` MCP server at handshake
+   *  · `none` — anything else. The cockpit injects the `hermes-studio-plan` MCP server at handshake
    *             time, so a new agent gets plan cards without one line of its own code.
    *
    *  The choice is per SESSION (it rides the handshake), which is why it can never leak into the
@@ -101,12 +102,12 @@ export interface BackendSpec {
 
 /** The operator's real home — the DEFAULT for a hermes row, not a禁区. */
 const liveHermesHome = path.join(homedir(), ".hermes");
-const defaultHermesHome = process.env.AGENTUS_HERMES_HOME || liveHermesHome;
+const defaultHermesHome = process.env.HERMES_STUDIO_HERMES_HOME || liveHermesHome;
 
 export const BACKENDS: Record<string, BackendSpec> = {
   hermes: {
     label: "Hermes",
-    cmd: process.env.AGENTUS_HERMES_CMD || "hermes",
+    cmd: process.env.HERMES_STUDIO_HERMES_CMD || "hermes",
     args: ["acp"],
     check: ["acp", "--check"],
     // Hermes CAN emit ACP `plan` frames (acp_adapter/events.py), but the cockpit deliberately does
@@ -129,7 +130,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
   qoder: {
     label: "Qoder",
     cmd:
-      process.env.AGENTUS_QODER_CMD ||
+      process.env.HERMES_STUDIO_QODER_CMD ||
       path.join(homedir(), ".local/bin/qodercli"),
     args: ["--acp"],
     check: null,
@@ -140,7 +141,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
   },
   mock: {
     label: "Mock Agent",
-    cmd: process.env.AGENTUS_MOCK_CMD || "node",
+    cmd: process.env.HERMES_STUDIO_MOCK_CMD || "node",
     // resolve mock relative to this file, not process.cwd() (start.sh launches from the
     // repo root, the dev server from packages/server); fileURLToPath so a clone inside a
     // path with spaces ("~/My Projects/…") doesn't arrive percent-encoded
@@ -160,7 +161,7 @@ export type BackendId = keyof typeof BACKENDS;
 /** Which channel carries a backend's plan. See BackendSpec.nativePlanSource.
  *
  *  `none` is the default AND the shipping configuration for every backend: the cockpit's plan
- *  object is the only plan that survives an agent restart, so the `agentus-plan` MCP tool is what
+ *  object is the only plan that survives an agent restart, so the `hermes-studio-plan` MCP tool is what
  *  writes (and what the agent is told to prefer). `acp` is a per-row escape hatch for an agent whose
  *  frames you have decided to trust more than the object — it is the ONLY case in which frames are
  *  rendered. */
@@ -202,7 +203,7 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
   const { homeVar, homeDefault } = spec.isolation;
   // The parent env is untrusted here: a Hermes-launched terminal hands its own
   // HERMES_HOME (the live one) down to us, and inheriting that silently is how a slot ends up
-  // writing somewhere nobody chose. Only the row — or the AGENTUS_HERMES_HOME seed behind its
+  // writing somewhere nobody chose. Only the row — or the HERMES_STUDIO_HERMES_HOME seed behind its
   // default — decides; an ambient HERMES_HOME is reported, never obeyed.
   const ambient = process.env[homeVar] ? expandHome(process.env[homeVar]!) : null;
   const home = path.resolve(expandHome(homeDefault));

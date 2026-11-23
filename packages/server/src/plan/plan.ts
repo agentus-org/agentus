@@ -119,7 +119,7 @@ export function acceptsToolWrite(current: PlanSource | undefined, rowRendersFram
  *  not understand renders a plan that is quietly wrong. Off unless asked for: an experiment switch,
  *  not a feature flag. */
 export function v2PlanEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.AGENTUS_ACP_V2_PLAN === "1";
+  return env.HERMES_STUDIO_ACP_V2_PLAN === "1";
 }
 
 /** Fold a v2 `plan_update` payload back into the v1 frame shape, or null when it carries nothing a

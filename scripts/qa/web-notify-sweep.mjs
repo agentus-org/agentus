@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The page half of the notification channel, driven in a REAL browser (manual QA — needs a browser on
 // a debugging port plus the dev cockpit up; not in CI).
 //
@@ -23,7 +24,7 @@ const ROOT = path.resolve(import.meta.dirname, "../..");
 // The dev cockpit keeps its store in its own directory (scripts/dev.sh: DEV_DATA), not in the repo.
 // A token or a session minted against the wrong store is a 401 that reads exactly like a broken
 // feature, so this sweep resolves it the way the server does (scripts/lib/auth.mjs mirrors it too).
-process.env.AGENTUS_DATA = process.env.QA_DATA || "/tmp/agentus-qa-account";
+process.env.HERMES_STUDIO_DATA = process.env.QA_DATA || "/tmp/agentus-qa-account";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0;
@@ -255,7 +256,7 @@ try {
   await rules({ web: { enabled: true } });
 
   // ---- the sound: the operator's choice is the one that sounds ----------------------------------
-  await ev(`localStorage.setItem('agentus.webnotify', JSON.stringify({ on: true, sound: "chime", volume: 0.4 })); true`);
+  await ev(`localStorage.setItem('hermes-studio.webnotify', JSON.stringify({ on: true, sound: "chime", volume: 0.4 })); true`);
   await send("Page.reload");
   await waitFor("!!window.__notifyLog", 12000, "the recorder after the reload");
   await clearLog();
@@ -266,7 +267,7 @@ try {
     (await ev("window.__audioOpens")) > 0 && chimeEntry?.opts.silent === true,
     `audio=${await ev("window.__audioOpens")} silent=${chimeEntry?.opts.silent}`);
 
-  await ev(`localStorage.setItem('agentus.webnotify', JSON.stringify({ on: true, sound: "silent", volume: 0.4 })); true`);
+  await ev(`localStorage.setItem('hermes-studio.webnotify', JSON.stringify({ on: true, sound: "silent", volume: 0.4 })); true`);
   await send("Page.reload");
   await waitFor("!!window.__notifyLog", 12000, "the recorder after the reload");
   await clearLog();
@@ -277,7 +278,7 @@ try {
     `audio ${audioBefore} -> ${await ev("window.__audioOpens")}`);
 
   // the device's own off switch, which is not the server's
-  await ev(`localStorage.setItem('agentus.webnotify', JSON.stringify({ on: false, sound: "default", volume: 0.6 })); true`);
+  await ev(`localStorage.setItem('hermes-studio.webnotify', JSON.stringify({ on: false, sound: "default", volume: 0.6 })); true`);
   await send("Page.reload");
   await waitFor("!!window.__notifyLog", 12000, "the recorder after the reload");
   await clearLog();
@@ -286,7 +287,7 @@ try {
     (await log()).length === 0, JSON.stringify(await tags()));
 
   // ---- an approval: the one card that must WAIT ------------------------------------------------
-  await ev(`localStorage.setItem('agentus.webnotify', JSON.stringify({ on: true, sound: "default", volume: 0.6 })); true`);
+  await ev(`localStorage.setItem('hermes-studio.webnotify', JSON.stringify({ on: true, sound: "default", volume: 0.6 })); true`);
   await send("Page.reload");
   await waitFor("!!window.__notifyLog", 12000, "the recorder after the reload");
   await clearLog();

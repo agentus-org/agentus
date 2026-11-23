@@ -1,3 +1,4 @@
+import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Operator settings: one row per section in the store's `settings` table, secrets never
 // echoed back.
 //
@@ -538,10 +539,10 @@ function discoverEnv(): { apiKey: string; baseUrl: string; source: string } | nu
     { env: process.env, label: "process env" },
   ];
   // The credentials live in the agent's own home — the cockpit reads the same .env its slots do.
-  // AGENTUS_HERMES_HOME can move that fallback to whatever home this box really uses.
+  // HERMES_STUDIO_HERMES_HOME can move that fallback to whatever home this box really uses.
   const cands = [path.join(process.env.HOME ?? "", ".hermes", ".env")];
-  if (process.env.AGENTUS_HERMES_HOME) {
-    cands.push(path.join(process.env.AGENTUS_HERMES_HOME, ".env"));
+  if (process.env.HERMES_STUDIO_HERMES_HOME) {
+    cands.push(path.join(process.env.HERMES_STUDIO_HERMES_HOME, ".env"));
   }
   for (const p of cands) {
     if (fs.existsSync(p)) sources.push({ env: readEnvFile(p), label: p });

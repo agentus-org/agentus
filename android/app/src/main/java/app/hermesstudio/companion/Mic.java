@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;

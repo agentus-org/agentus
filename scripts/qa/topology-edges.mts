@@ -28,7 +28,7 @@ function check(ok: boolean, name: string, detail = ""): void {
 }
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-qa-edges-"));
-const DB = path.join(DIR, "agentus.sqlite");
+const DB = path.join(DIR, "hermes-studio.sqlite");
 const now = Date.now();
 
 function user(store: Store, target: string, text: string, origin?: string): void {

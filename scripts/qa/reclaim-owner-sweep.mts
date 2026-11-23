@@ -62,7 +62,7 @@ const realWarn = console.warn;
 console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
 console.warn = (...a: unknown[]) => { logs.push(a.join(" ")); };
 
-const store = new Store(path.join(DATA, "agentus.sqlite"));
+const store = new Store(path.join(DATA, "hermes-studio.sqlite"));
 /** one reclaim target row per case */
 function row(id: string, pid: number | null, status = "ready"): void {
   store.upsertSession({

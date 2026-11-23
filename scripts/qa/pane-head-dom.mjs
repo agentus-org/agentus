@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The head's pane doors and their glyphs, on a real page (issues #80 §1, #88).
 //
 // #88 was found by adding a third pane and seeing it arrive worse than the two that shipped: no head
@@ -12,11 +13,11 @@
 //  3. the IDE glyph is a titled window (a bar across the top), not the old `<>` that read as a second
 //     terminal at 16px.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9222 node scripts/qa/pane-head-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9222 node scripts/qa/pane-head-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

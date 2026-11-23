@@ -309,7 +309,7 @@ export function writeTextFile(
     const cur = readTextFile(target);
     throw new ChangedOnDiskError(target, before, cur.content, cur.truncated);
   }
-  const tmp = `${target}.agentus-${process.pid}.tmp`;
+  const tmp = `${target}.hermes-studio-${process.pid}.tmp`;
   try {
     fs.writeFileSync(tmp, bytes, { mode: st.mode & 0o7777 });
     fs.renameSync(tmp, target);

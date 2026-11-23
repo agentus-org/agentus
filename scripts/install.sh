@@ -22,21 +22,21 @@
 # prefix it installs into, and refuses to run as root unless you say so explicitly.
 #
 # Environment overrides:
-#   AGENTUS_VERSION="0.1.0"       pin a package version      (default: latest)
-#   AGENTUS_INSTALL_DIR="/x"      install into this npm --prefix instead of global   (default: unset)
-#   AGENTUS_REGISTRY="https://…"  npm registry to fetch from (default: npm's own registry)
-#   AGENTUS_ALLOW_ROOT=1          permit running as root     (default: refuse)
-#   AGENTUS_NODE_MIN="22.5"       override the Node floor check   (default: 22.5)
+#   HERMES_STUDIO_VERSION="0.1.0"       pin a package version      (default: latest)
+#   HERMES_STUDIO_INSTALL_DIR="/x"      install into this npm --prefix instead of global   (default: unset)
+#   HERMES_STUDIO_REGISTRY="https://…"  npm registry to fetch from (default: npm's own registry)
+#   HERMES_STUDIO_ALLOW_ROOT=1          permit running as root     (default: refuse)
+#   HERMES_STUDIO_NODE_MIN="22.5"       override the Node floor check   (default: 22.5)
 #
 # Flags:  --help  ·  --version <v>  ·  --dir <path>
 #
 set -euo pipefail
 
-VERSION="${AGENTUS_VERSION:-latest}"
-INSTALL_DIR="${AGENTUS_INSTALL_DIR:-}"
-REGISTRY="${AGENTUS_REGISTRY:-}"
-ALLOW_ROOT="${AGENTUS_ALLOW_ROOT:-0}"
-NODE_MIN="${AGENTUS_NODE_MIN:-22.5}"
+VERSION="${HERMES_STUDIO_VERSION:-latest}"
+INSTALL_DIR="${HERMES_STUDIO_INSTALL_DIR:-}"
+REGISTRY="${HERMES_STUDIO_REGISTRY:-}"
+ALLOW_ROOT="${HERMES_STUDIO_ALLOW_ROOT:-0}"
+NODE_MIN="${HERMES_STUDIO_NODE_MIN:-22.5}"
 
 log()  { printf 'hermes-studio: %s\n' "$*"; }
 warn() { printf 'hermes-studio: %s\n' "$*" >&2; }
@@ -56,7 +56,7 @@ Options
   -h, --help      this text
 
 Environment
-  AGENTUS_VERSION, AGENTUS_INSTALL_DIR, AGENTUS_REGISTRY, AGENTUS_ALLOW_ROOT, AGENTUS_NODE_MIN
+  HERMES_STUDIO_VERSION, HERMES_STUDIO_INSTALL_DIR, HERMES_STUDIO_REGISTRY, HERMES_STUDIO_ALLOW_ROOT, HERMES_STUDIO_NODE_MIN
 
 After install:
   hermes-studio            # start the cockpit on http://localhost:8788
@@ -80,7 +80,7 @@ done
 if [ "$(id -u 2>/dev/null || echo 0)" = "0" ] && [ "${ALLOW_ROOT}" != "1" ]; then
   die "refusing to install as root (a Node package does not need it, and a root-owned
   global tree makes later upgrades awkward). Re-run as your normal user, or set
-  AGENTUS_ALLOW_ROOT=1 if you really mean it."
+  HERMES_STUDIO_ALLOW_ROOT=1 if you really mean it."
 fi
 
 # ---- Node >= 22.5 (node:sqlite) -------------------------------------------------------------
@@ -88,9 +88,9 @@ command -v node >/dev/null 2>&1 || die "Node is not on PATH. Install Node >= ${N
   nvm:      nvm install 22 && nvm use 22
   homebrew: brew install node
   else:     https://nodejs.org/en/download"
-export AGENTUS_NODE_MIN="$NODE_MIN"
+export HERMES_STUDIO_NODE_MIN="$NODE_MIN"
 node -e '
-const need = process.env.AGENTUS_NODE_MIN || "22.5";
+const need = process.env.HERMES_STUDIO_NODE_MIN || "22.5";
 const [maj,min] = process.versions.node.split(".").map(Number);
 const [nmaj,nmin] = need.split(".").map(Number);
 if (maj < nmaj || (maj === nmaj && min < nmin)) {

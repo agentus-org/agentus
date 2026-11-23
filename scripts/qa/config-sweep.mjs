@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: the config surface is a REAL knob, and a pick the backend does not take must not look like
 // success. Two operator reports drive this sweep (2026-10-06):
 //   "那个上下文的设置能够实现一下吗" — the surface now carries context_budget next to thinking depth.
@@ -9,11 +10,11 @@
 //   2. a supported pick lands, comes back in the agent's own reply, and is NOT flagged;
 //   3. an unsupported pick emits `config-rejected` carrying what the session really runs with;
 //   4. the option list survives a set (a partial agent reply must not wipe the surface).
-// Usage: node scripts/qa/config-sweep.mjs   (AGENTUS_BASE to point at another instance)
+// Usage: node scripts/qa/config-sweep.mjs   (HERMES_STUDIO_BASE to point at another instance)
 import WebSocket from "ws";
 import { authHeaders, wsUrl } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";   // dev instance, never live
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";   // dev instance, never live
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });

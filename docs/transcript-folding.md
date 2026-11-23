@@ -123,7 +123,7 @@ accepted rather than guessed away.
    full stop.
 3. **Never fold on a guess.** Same id, or whitespace-insensitive equality, or ≥60% coverage. Everything
    else stays as it is, and the migration is logged (`[store] 历史分片已折叠：3804 行 → …`) with a
-   one-time `VACUUM INTO` backup beside the DB (`agentus.sqlite.pre-fold-v<ver>-<timestamp>.bak`,
+   one-time `VACUUM INTO` backup beside the DB (`hermes-studio.sqlite.pre-fold-v<ver>-<timestamp>.bak`,
    newest three kept per pass version; what actually ran is in the `repairs` table).
 4. **A page boundary must not be able to cut a message.** Page sizes are row- and byte-bounded, and the
    store guarantees a message is one row; if either changes, re-run the checks below.
@@ -140,7 +140,7 @@ And against real data — the one-off used when this landed, on the operator's o
 
 ```bash
 # rows → the CLIENT's fold, over the operator API
-curl -s -H "Authorization: Bearer $(cat "${AGENTUS_DATA:-$HOME/.agentus}/auth.token")" \
+curl -s -H "Authorization: Bearer $(cat "${HERMES_STUDIO_DATA:-$HOME/.hermes-studio}/auth.token")" \
   'http://127.0.0.1:8788/api/sessions/<id>/messages?tail=1'
 ```
 

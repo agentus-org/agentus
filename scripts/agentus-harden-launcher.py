@@ -29,19 +29,19 @@ OLD_NS = '"AGENT" + "SL" + "OT_"'
 OLD_WATCH = '"AGENT" + "SL" + "OT_WATCH"'
 OLD_BASE = '"AGENT" + "SL" + "OT_BASE"'
 BLOCK = MARK + f"""
-# AGENTUS_FOREGROUND 是 job 自己的开关（launchd plist 声明），不是"调用者身份"：下面的清洗会连它
+# HERMES_STUDIO_FOREGROUND 是 job 自己的开关（launchd plist 声明），不是"调用者身份"：下面的清洗会连它
 # 一起剥掉，于是 foreground 分支永远不触发 → launchd 只能反复 respawn 一个 detached spawner
 # （crash loop，每轮还会 reap 掉 live 槽位）。所以先读，再剥 —— 这个捕获必须留在 BLOCK 里，
 # 否则 --replace 会把 launch.py 里的同名修复覆盖掉。
-_FOREGROUND = os.environ.get("AGENTUS_FOREGROUND", "").lower() in ("1", "on", "true", "yes")
+_FOREGROUND = os.environ.get("HERMES_STUDIO_FOREGROUND", "").lower() in ("1", "on", "true", "yes")
 # 见 track §64：调用者往往是座舱/agent 自己的 shell，环境里带着「那个实例」的身份，而本文件
 # 原样复制 os.environ —— 于是身份跟着一起走。两套命名空间一起剥（含改名前的旧名），env 与
 # os.environ 都要剥：下面的 pin 有的直接读 os.environ。watch 同理不能从外面带进来。
-for _ns in ("AGENTUS_", {OLD_NS}, "DEV_"):
+for _ns in ("HERMES_STUDIO_", {OLD_NS}, "DEV_"):
     for _k in [k for k in list(os.environ) if k.startswith(_ns)]:
         os.environ.pop(_k, None)
         env.pop(_k, None)
-for _k in ("AGENTUS_WATCH", {OLD_WATCH}, "AGENTUS_BASE", {OLD_BASE}):
+for _k in ("HERMES_STUDIO_WATCH", {OLD_WATCH}, "HERMES_STUDIO_BASE", {OLD_BASE}):
     os.environ.pop(_k, None)
     env.pop(_k, None)
 """

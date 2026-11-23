@@ -1,8 +1,9 @@
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 #!/usr/bin/env node
 /**
  * `hermes-studio <command>` — the CLI client: sessions, their transcripts and plans, and the gated
  * cross-session `send`. Dispatched by `bin/hermes-studio.mjs`, which is also what the cockpit hands agents
- * as `AGENTUS_COCKPIT_BIN`, so there is exactly one command and one spelling everywhere.
+ * as `HERMES_STUDIO_COCKPIT_BIN`, so there is exactly one command and one spelling everywhere.
  *
  * SHAPE: noun, then verb — `hermes-studio session list|show|messages|plan|send|wake|create|stop`
  * The five things an agent needs are all about ONE object (a session), so the noun is not decoration:
@@ -12,7 +13,7 @@
  * the verb acts on, not an option, and `--tail` stays an option exactly because it is a modifier.
  *
  * IDENTITY AND SECRETS
- * The cockpit sets `AGENTUS_COCKPIT_ENDPOINT` / `_TOKEN` / `_SESSION` in the agent's own environment
+ * The cockpit sets `HERMES_STUDIO_COCKPIT_ENDPOINT` / `_TOKEN` / `_SESSION` in the agent's own environment
  * when it spawns it; this file only reads them. NEVER echo/export/print them: one is your session, the
  * other is the key to it. Nothing here takes a token on the command line — a command line ends up in
  * `ps` and in shell history, an environment does not.
@@ -36,7 +37,7 @@ const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
  *
  *  ① the environment — what the cockpit puts in the child it spawns. Still the correct channel for an
  *    in-process backend, and the ONLY one an agent could ever see before this file existed;
- *  ② `~/.agentus/cockpit/<agent-session-id>.json` — for a runtime that owns the session in a shared
+ *  ② `~/.hermes-studio/cockpit/<agent-session-id>.json` — for a runtime that owns the session in a shared
  *    gateway (Hermes 0.23+), where the turn's tool processes inherit the GATEWAY's environment and a
  *    per-session secret cannot travel that way. The file is named by the agent-side session id, which
  *    is the one per-session fact such a process does carry (`HERMES_SESSION_CHAT_ID` is byte-identical
@@ -45,11 +46,11 @@ const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
  *  ③ the operator credential — a HUMAN at a shell, never an agent (see `inAgentTurn()`).
  *
  *  Both ① and ② are a SESSION identity: they read and dispatch, and they may not touch history (#73). */
-const AGENT_SESSION_MARKERS = ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE"];
+const AGENT_SESSION_MARKERS = ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "HERMES_STUDIO_SESSION_ROLE"];
 
-const ENV_ENDPOINT = (process.env.AGENTUS_COCKPIT_ENDPOINT ?? "").replace(/\/+$/, "");
-const ENV_TOKEN = process.env.AGENTUS_COCKPIT_TOKEN ?? "";
-const ENV_SELF = process.env.AGENTUS_COCKPIT_SESSION ?? "";
+const ENV_ENDPOINT = (process.env.HERMES_STUDIO_COCKPIT_ENDPOINT ?? "").replace(/\/+$/, "");
+const ENV_TOKEN = process.env.HERMES_STUDIO_COCKPIT_TOKEN ?? "";
+const ENV_SELF = process.env.HERMES_STUDIO_COCKPIT_SESSION ?? "";
 const FILE_IDENTITY = ENV_TOKEN && ENV_SELF ? null : resolveIdentityFile();
 const ENDPOINT = ENV_ENDPOINT || FILE_IDENTITY?.endpoint || "";
 const TOKEN = ENV_TOKEN || FILE_IDENTITY?.token || "";
@@ -96,8 +97,8 @@ another one
   hermes-studio capabilities                the contract: commands, fields, truncation, scope, send state
   hermes-studio skill [--path]              this CLI's manual, as shipped in the package
 
-Operator mode: run outside a session with AGENTUS_DATA (data dir) and AGENTUS_PORT (or
-AGENTUS_ENDPOINT) pointing at your cockpit — the CLI then authenticates with <data>/auth.token, the
+Operator mode: run outside a session with HERMES_STUDIO_DATA (data dir) and HERMES_STUDIO_PORT (or
+HERMES_STUDIO_ENDPOINT) pointing at your cockpit — the CLI then authenticates with <data>/auth.token, the
 same credential scripts already use. Inside a session it always prefers the cockpit's own variables.
 
 Read "capabilities" first: it is self-describing, so no doc can drift from the code.
@@ -118,7 +119,7 @@ function fail(code, message, extra = {}) {
 /** The environment variables a runtime stamps its tool processes with — the agent-side session ids.
  *
  *  Hermes: `HERMES_SESSION_CHAT_ID` is the session (measured byte-identical to our `acp_session_id`);
- *  `HERMES_SESSION_ID` is its chat-row id and is only used as a second chance. `AGENTUS_SESSION_ROLE`
+ *  `HERMES_SESSION_ID` is its chat-row id and is only used as a second chance. `HERMES_STUDIO_SESSION_ROLE`
  *  is ours (a 工作播报 observer). Names are matched EXACTLY and read only — nothing here is trusted for
  *  authorisation; the token in the file is what the server verifies. */
 
@@ -158,12 +159,12 @@ function destructiveVerb() {
 
 /** One wording for the refusal, wherever it is raised from (pre-auth or in the verb's own branch). */
 function destructiveRefusal(verb) {
-  return `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。usage: hermes-studio session ${verb} <id>`;
+  return `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（HERMES_STUDIO_DATA 指向这个驾驶舱，身份取自 auth.token）。usage: hermes-studio session ${verb} <id>`;
 }
 
 /** The rendezvous the cockpit publishes for gateway-owned runtimes — see `AGENT_SESSION_MARKERS`. */
 function resolveIdentityFile() {
-  const dir = path.join(process.env.HOME ?? "", ".agentus", "cockpit");
+  const dir = path.join(process.env.HOME ?? "", ".hermes-studio", "cockpit");
   for (const id of agentSessionIds()) {
     const file = path.join(dir, `${id}.json`);
     if (!existsSync(file)) continue;
@@ -189,11 +190,11 @@ function resolveOperator() {
   // below makes "the cockpit lost its channel" indistinguishable from "the operator is at the terminal"
   // — and hands an agent the delete/archive verbs it is documented not to have.
   if (inAgentTurn()) return null;
-  const dataDir = process.env.AGENTUS_DATA || path.join(process.env.HOME ?? "", ".agentus");
+  const dataDir = process.env.HERMES_STUDIO_DATA || path.join(process.env.HOME ?? "", ".hermes-studio");
   const file = path.join(dataDir, "auth.token");
   if (!existsSync(file)) return null;
-  const port = process.env.AGENTUS_PORT || "8788";
-  const endpoint = (process.env.AGENTUS_ENDPOINT || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+  const port = process.env.HERMES_STUDIO_PORT || "8788";
+  const endpoint = (process.env.HERMES_STUDIO_ENDPOINT || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
   const token = readFileSync(file, "utf8").trim();
   return token ? { endpoint, token } : null;
 }
@@ -220,7 +221,7 @@ function needAuth() {
     }
     fail(
       "no_identity",
-      "no cockpit to talk to: either run this inside an Hermes Studio session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION, or — on a gateway-owned runtime — publishes them in ~/.agentus/cockpit/<agent-session-id>.json), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
+      "no cockpit to talk to: either run this inside an Hermes Studio session (the cockpit hands the agent HERMES_STUDIO_COCKPIT_ENDPOINT/_TOKEN/_SESSION, or — on a gateway-owned runtime — publishes them in ~/.hermes-studio/cockpit/<agent-session-id>.json), or from a shell with HERMES_STUDIO_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
     );
   }
 }
@@ -606,7 +607,7 @@ if (cmd === "capabilities") {
     // 只对 operator 身份开放（#73）。这道边界是刻意的：cockpit 通道 "Deliberately NOT
     // DELETE /api/sessions/:id"（server index.ts 的注释），因为没有任何跨会话调用方该动操作员的
     // 历史。CLI 是操作员的工具，不是 agent 的 —— 所以这里用 <data>/auth.token 直连 operator 路由，
-    // 并且在 agent 身份（AGENTUS_COCKPIT_TOKEN/_SESSION 都在）时**一律拒绝**。
+    // 并且在 agent 身份（HERMES_STUDIO_COCKPIT_TOKEN/_SESSION 都在）时**一律拒绝**。
     const usage = `usage: hermes-studio session ${verb} <id>`;
     if (!id) fail("bad_request", usage);
     const leftover = args.slice(1);
@@ -615,7 +616,7 @@ if (cmd === "capabilities") {
       fail(verb === "delete" ? "agents_may_not_delete" : "agents_may_not_archive", destructiveRefusal(verb));
     }
     if (!OPERATOR) {
-      fail("no_identity", `this needs the operator credential: set AGENTUS_DATA to the cockpit's data dir so ${verb} can read auth.token. ${usage}`);
+      fail("no_identity", `this needs the operator credential: set HERMES_STUDIO_DATA to the cockpit's data dir so ${verb} can read auth.token. ${usage}`);
     }
     const opHeaders = { authorization: `Bearer ${OPERATOR.token}` };
     const url = verb === "delete"

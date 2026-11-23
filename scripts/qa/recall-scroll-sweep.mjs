@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (issue #37) — 召回条目展开是「定高滚动框」，不是把转录顶下去。
 //
 // 操作者 2026-10-21 的原话：「召回的信息展示用定高的框上下可滚动，要不然一展开就是刷屏了，
@@ -10,7 +11,7 @@
 // Usage: PORT=8901 node scripts/qa/recall-scroll-sweep.mjs [--shot /tmp/recall.png]
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const shotIdx = process.argv.indexOf("--shot");
 const SHOT = shotIdx > 0 ? process.argv[shotIdx + 1] : "";

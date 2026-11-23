@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 槽位空闲回收 — the reaper stops an IDLE slot's agent process to reclaim memory (AionUi parity:
 // 设置 → 系统 → 「Agent 空闲超时（分钟）」, default 5, 1–60; Hermes Studio adds 0 = 关闭).
 //
@@ -19,13 +20,13 @@
 //
 // It drives the setting over the API instead of an env override, which is also the proof that the
 // threshold is read from settings on every tick. Run it against an instance whose sweep tick is short
-// (AGENTUS_IDLE_SWEEP_MS=2000) so the test takes seconds:
+// (HERMES_STUDIO_IDLE_SWEEP_MS=2000) so the test takes seconds:
 //
 //   cd worktrees/agentus-arch
-//   env AGENTUS_PORT=8905 AGENTUS_DATA=/tmp/agentus-qa-reap AGENTUS_USERNAME=scratch \
-//       AGENTUS_PASSWORD=scratch-pass-1 AGENTUS_IDLE_SWEEP_MS=2000 \
+//   env HERMES_STUDIO_PORT=8905 HERMES_STUDIO_DATA=/tmp/agentus-qa-reap HERMES_STUDIO_USERNAME=scratch \
+//       HERMES_STUDIO_PASSWORD=scratch-pass-1 HERMES_STUDIO_IDLE_SWEEP_MS=2000 \
 //       NODE_ENV=development node_modules/.bin/tsx packages/server/src/index.ts &
-//   PORT=8905 AGENTUS_DATA=/tmp/agentus-qa-reap node scripts/qa/idle-reap-sweep.mjs
+//   PORT=8905 HERMES_STUDIO_DATA=/tmp/agentus-qa-reap node scripts/qa/idle-reap-sweep.mjs
 //
 // NOTE: the fractional threshold (0.05 min = 3s) is deliberate and used only here — the settings page
 // offers whole minutes; the API accepts a real number in 0…60, which is what makes the reclaim path
@@ -39,7 +40,7 @@
 import { authHeaders } from "../lib/auth.mjs";
 
 const PORT = Number(process.env.PORT || 8905);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const THRESHOLD_MIN = Number(process.env.REAP_MIN || 0.05); // 3 s
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (issue #38) — 「改了什么文件」面板，页面级。位置契约（2026-10-21 操作者反馈后改）：
 //   面板挂在**那次工具执行**的下面，不再攒到回合末尾。
 //   原先一回合一块、落在回合尾巴：一轮里改了 5 个文件之后又跑了 20 分钟命令，那块「N 个文件变更」
@@ -17,7 +18,7 @@
 // Usage: PORT=8901 node scripts/qa/file-changes-sweep.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

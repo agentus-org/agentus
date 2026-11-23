@@ -36,7 +36,7 @@ done
 # Default the port from ports.env (the single source for live's ports) rather than a literal that
 # goes stale the moment the port moves. --port still wins for scratch/dev instances.
 if [ -z "$PORT" ]; then
-  PORT="$(sed -n 's/^AGENTUS_PORT=\([0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
+  PORT="$(sed -n 's/^HERMES_STUDIO_PORT=\([0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
 fi
 PORT="${PORT:-8788}"
 
@@ -64,12 +64,12 @@ if [ -n "$LAUNCHD" ] && launchctl print "gui/$(id -u)/$LAUNCHD" >/dev/null 2>&1;
   # explicitly, and the scratch launcher's PORT), then fall back to ports.env — the source the live
   # job reads. If none of them yields a number the guard is skipped rather than guessed at.
   # The values in `launchctl print` are UNQUOTED (`PORT => 8797`), and the block also contains
-  # `AGENTUS_PORT => N` for a job that declares it — so the patterns are anchored (`^...PORT =>`)
+  # `HERMES_STUDIO_PORT => N` for a job that declares it — so the patterns are anchored (`^...PORT =>`)
   # rather than free to match the tail of a longer key.
   _jl="$(launchctl print "gui/$(id -u)/$LAUNCHD" 2>/dev/null | tr -d '"')"
-  job_port="$(printf '%s\n' "$_jl" | sed -n 's/^[[:space:]]*AGENTUS_PORT => *\([0-9][0-9]*\).*/\1/p' | head -1)"
+  job_port="$(printf '%s\n' "$_jl" | sed -n 's/^[[:space:]]*HERMES_STUDIO_PORT => *\([0-9][0-9]*\).*/\1/p' | head -1)"
   [ -n "$job_port" ] || job_port="$(printf '%s\n' "$_jl" | sed -n 's/^[[:space:]]*PORT => *\([0-9][0-9]*\).*/\1/p' | head -1)"
-  [ -n "$job_port" ] || job_port="$(sed -n 's/^AGENTUS_PORT=\([0-9][0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
+  [ -n "$job_port" ] || job_port="$(sed -n 's/^HERMES_STUDIO_PORT=\([0-9][0-9]*\).*/\1/p' /Users/liang/.hermes/cache/agentus/ports.env 2>/dev/null | head -1)"
   if [ -n "$job_port" ] && [ "$job_port" != "$PORT" ]; then
     echo "[relaunch] FAILED: $LAUNCHD serves :$job_port but --port was $PORT" >&2
     exit 1

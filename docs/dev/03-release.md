@@ -104,7 +104,7 @@ cd worktrees/agentus-dev
 git checkout -B feat/<slug>-live <live-tip>     # live tip = git -C ../agentus rev-parse HEAD
 git cherry-pick <web-commit>
 git diff --name-only <live-tip> HEAD            # MUST list only packages/web/** (+ scripts/qa/**)
-env -u AGENTUS_DATA -u AGENTUS_BASE -u AGENTUS_PORT -u DEV_* bash scripts/dev.sh promote <slug>
+env -u HERMES_STUDIO_DATA -u HERMES_STUDIO_BASE -u HERMES_STUDIO_PORT -u DEV_* bash scripts/dev.sh promote <slug>
 ```
 
 Also drop `package.json` back to the live tip's version before promoting (`git checkout
@@ -115,12 +115,12 @@ absent.
 ### Never fire the release from the dev environment
 
 The shell that runs `promote` usually carries the QA instance's variables
-(`AGENTUS_DATA=/tmp/agentus-qa-account`, `AGENTUS_BASE=…:8901`, `DEV_*`), and
+(`HERMES_STUDIO_DATA=/tmp/agentus-qa-account`, `HERMES_STUDIO_BASE=…:8901`, `DEV_*`), and
 `promote → relaunch.sh → launch.py` inherits them. The launcher now pins its own identity,
 but wrap it anyway to keep the environment (and the log) honest:
 
 ```bash
-env -u AGENTUS_DATA -u AGENTUS_BASE -u AGENTUS_PORT \
+env -u HERMES_STUDIO_DATA -u HERMES_STUDIO_BASE -u HERMES_STUDIO_PORT \
     -u DEV_LOG_PATH -u DEV_PROMOTE_DETACHED -u DEV_PROMOTE_SELF -u DEV_PROMOTE_SLUG \
     bash scripts/dev.sh promote <slug>
 ```

@@ -178,7 +178,7 @@ export const BARGE_GRACE_MS = 600;
  *  catching up) cannot fire a second one. */
 export const BARGE_COOLDOWN_MS = 900;
 
-const KEY = "agentus.call";
+const KEY = "hermes-studio.call";
 /** numeric knobs only — clamping `interruptMode` as a number would erase the choice */
 const NUMERIC = Object.keys(CALL_RANGE) as CallKnobKey[];
 

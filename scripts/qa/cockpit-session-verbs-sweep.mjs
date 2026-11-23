@@ -39,8 +39,8 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   // 也就是 #73 附的"关闭中回魂"。参数调反了这一条就是假绿。
   env: {
     ...process.env, NODE_ENV: "development", HOME: mkdtempSync(path.join(tmpdir(), "cli-home-")),
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir,
-    MOCK_SPAWN_MS: "2000", AGENTUS_CLOSE_WAIT_MS: "200",
+    HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir,
+    MOCK_SPAWN_MS: "2000", HERMES_STUDIO_CLOSE_WAIT_MS: "200",
     // 它不理会 SIGTERM：否则 #stop 那一刀就把进程收掉了，握手根本走不到"落地"这一步 ——
     // 也就永远测不到回魂。只有 SIGKILL 有效 = 真实世界里那个「关不掉的槽」。
     MOCK_IGNORE_TERM: "1",
@@ -68,16 +68,16 @@ await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cock
  *  CLI 以为自己是 agent（身份优先），于是 operator 动词全被拒 —— 这一版的第一轮就是这么全红的。 */
 const OPERATOR_ENV = (() => {
   const e = { ...process.env };
-  delete e.AGENTUS_COCKPIT_ENDPOINT;
-  delete e.AGENTUS_COCKPIT_TOKEN;
-  delete e.AGENTUS_COCKPIT_SESSION;
+  delete e.HERMES_STUDIO_COCKPIT_ENDPOINT;
+  delete e.HERMES_STUDIO_COCKPIT_TOKEN;
+  delete e.HERMES_STUDIO_COCKPIT_SESSION;
   return e;
 })();
 
 /** 跑一次 CLI，返回 { code, json }（json 是 stdout 的 JSON，失败时为 null）。 */
 const cli = (args, env = {}) => new Promise((res) => {
   execFile(process.execPath, [path.join(ROOT, "bin/cli.mjs"), ...args], {
-    env: { ...OPERATOR_ENV, AGENTUS_DATA: dataDir, AGENTUS_PORT: String(PORT), ...env },
+    env: { ...OPERATOR_ENV, HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_PORT: String(PORT), ...env },
     timeout: 60_000,
   }, (err, stdout, stderr) => {
     let json = null;
@@ -146,16 +146,16 @@ check("unarchive brings it back", unarch.code === 0 && (await cli(["session", "l
 
 // ---------------------------------------------------------------- 5. agent 身份一律拒
 const asAgent = await cli(["session", "delete", archId], {
-  AGENTUS_COCKPIT_ENDPOINT: BASE,
-  AGENTUS_COCKPIT_TOKEN: "agent-token-whatever",
-  AGENTUS_COCKPIT_SESSION: "some-agent-session",
+  HERMES_STUDIO_COCKPIT_ENDPOINT: BASE,
+  HERMES_STUDIO_COCKPIT_TOKEN: "agent-token-whatever",
+  HERMES_STUDIO_COCKPIT_SESSION: "some-agent-session",
 });
 check("an agent identity may not delete", asAgent.json?.error?.code === "agents_may_not_delete", JSON.stringify(asAgent.json?.error));
 check("…and exits non-zero", asAgent.code !== 0, String(asAgent.code));
 const asAgentArch = await cli(["session", "archive", archId], {
-  AGENTUS_COCKPIT_ENDPOINT: BASE,
-  AGENTUS_COCKPIT_TOKEN: "agent-token-whatever",
-  AGENTUS_COCKPIT_SESSION: "some-agent-session",
+  HERMES_STUDIO_COCKPIT_ENDPOINT: BASE,
+  HERMES_STUDIO_COCKPIT_TOKEN: "agent-token-whatever",
+  HERMES_STUDIO_COCKPIT_SESSION: "some-agent-session",
 });
 check("…nor archive", asAgentArch.json?.error?.code === "agents_may_not_archive", JSON.stringify(asAgentArch.json?.error));
 

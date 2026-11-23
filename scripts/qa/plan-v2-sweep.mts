@@ -1,7 +1,8 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: ACP v2's `plan_update`, behind its experiment switch (P2).
 //
 //   npm run plan-v2-sweep            # against whatever mode the server is in
-//   AGENTUS_ACP_V2_PLAN=1 bash scripts/dev.sh start && npm run plan-v2-sweep
+//   HERMES_STUDIO_ACP_V2_PLAN=1 bash scripts/dev.sh start && npm run plan-v2-sweep
 //
 // Why the switch and why test both ways: v2 is still a DRAFT — the SDK ships it under an
 // experimental subpath, both ends of this wire declare protocolVersion 1, and nothing may depend on
@@ -56,8 +57,8 @@ check("a status we have never heard of is passed through, not silently completed
     return f?.entries?.[0]?.status === "deferred";
   })(), "unknown statuses must survive (forward compatibility)");
 
-check("the switch is OFF unless someone asks for it", v2PlanEnabled({}) === false && v2PlanEnabled({ AGENTUS_ACP_V2_PLAN: "0" }) === false);
-check("…and ON with AGENTUS_ACP_V2_PLAN=1", v2PlanEnabled({ AGENTUS_ACP_V2_PLAN: "1" }) === true);
+check("the switch is OFF unless someone asks for it", v2PlanEnabled({}) === false && v2PlanEnabled({ HERMES_STUDIO_ACP_V2_PLAN: "0" }) === false);
+check("…and ON with HERMES_STUDIO_ACP_V2_PLAN=1", v2PlanEnabled({ HERMES_STUDIO_ACP_V2_PLAN: "1" }) === true);
 check("normalizeItems still drops entries with no content (v1 and v2 share it)",
   normalizeItems([{ status: "pending" }, { content: "kept", status: "pending" }]).length === 1);
 
@@ -69,11 +70,11 @@ check("…while the turn lifecycle may always stamp the plan", acceptsWriteFrom(
 
 // --- on the wire: whatever mode this server is in -------------------------------------
 // Pick the data dir by EVIDENCE (which token actually authenticates against BASE), never by an
-// inherited env var: a shell that has pointed AGENTUS_DATA at another tree all along would otherwise
+// inherited env var: a shell that has pointed HERMES_STUDIO_DATA at another tree all along would otherwise
 // hand this sweep that cockpit's token, every call would 401, and the "v2 is ignored" check would
 // pass VACUOUSLY — the worst kind of green (measured 2026-10-08).
 const dataDir = await (async () => {
-  const dirs = [...new Set([process.env.AGENTUS_DATA, "/tmp/agentus-qa-account"].filter((d): d is string => Boolean(d)))];
+  const dirs = [...new Set([process.env.HERMES_STUDIO_DATA, "/tmp/agentus-qa-account"].filter((d): d is string => Boolean(d)))];
   for (const d of dirs) {
     const file = path.join(d, "auth.token");
     if (!fs.existsSync(file)) continue;

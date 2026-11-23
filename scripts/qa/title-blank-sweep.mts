@@ -29,7 +29,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 {
   const { Store } = await import("../../packages/server/src/store/store.ts");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-title-"));
-  const store = new Store(path.join(dir, "agentus.sqlite"));
+  const store = new Store(path.join(dir, "hermes-studio.sqlite"));
   const SID = "sess_title_settle";
   store.upsertSession({
     id: SID, backend: "mock", acpSessionId: null, cwd: "/tmp", title: "Mock @ tmp", status: "ready",
@@ -75,8 +75,8 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 {
   const PORT = Number(process.env.BLANK_SWEEP_PORT ?? 8926);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-blank-"));
-  const env = { ...process.env, AGENTUS_PORT: String(PORT), AGENTUS_DATA: data, AGENTUS_DEV: "1" };
-  delete env.AGENTUS_BASE;
+  const env = { ...process.env, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: data, HERMES_STUDIO_DEV: "1" };
+  delete env.HERMES_STUDIO_BASE;
   const child = spawn(process.execPath, ["--import", "tsx", "packages/server/src/index.ts"], {
     cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"],
   });

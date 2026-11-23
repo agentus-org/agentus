@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (2026-11-09): #96 — a turn the last restart lost must be a BUTTON, not a 500.
 //
 // Hermes 0.23 fences a turn interrupted by a restart as `unknown` and refuses every idle-only
@@ -16,7 +17,7 @@
 // remote debugging — CMD in the header of scripts/qa/bg-batch-card.mjs)
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8957);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const MARKER = process.env.MOCK_LOST_TURN_FILE || "/tmp/agentus-96-markers/lost.marker";
 const fs = await import("node:fs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -55,8 +56,8 @@ const until = async (expr, ms = 25000) => {
   return false;
 };
 
-const QA_USER = process.env.AGENTUS_QA_USER || "admin";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "123456";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "admin";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "123456";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

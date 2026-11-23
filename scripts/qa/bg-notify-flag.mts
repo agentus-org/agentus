@@ -29,7 +29,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-bg-flag-"));
-const store = new Store(path.join(dir, "agentus.sqlite"));
+const store = new Store(path.join(dir, "hermes-studio.sqlite"));
 initSettings(dir, store);
 
 /** One `kind:"background"` frame, exactly as the agent puts it on the wire. */
@@ -76,7 +76,7 @@ try { saveAgent({ showSilentBackground: "yes" }); } catch (e) { threw = String((
 check("非布尔值被拒绝（不静默转成 true/false）", /showSilentBackground/.test(threw), threw);
 
 // ---- 5) it survives a reload -------------------------------------------------------------
-const reread = new Store(path.join(dir, "agentus.sqlite")).listSettings() as { agent?: { showSilentBackground?: boolean } };
+const reread = new Store(path.join(dir, "hermes-studio.sqlite")).listSettings() as { agent?: { showSilentBackground?: boolean } };
 check("存盘后可读回", reread.agent?.showSilentBackground === true, JSON.stringify(reread.agent ?? null));
 
 // ---- 6) back off is the shipped default --------------------------------------------------

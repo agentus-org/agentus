@@ -17,7 +17,7 @@
 //   · an EMPTY parent plus an agent that replays nothing still says so instead of showing blank
 //   · `replay-window.mjs` keeps owning the inverse rule (a resume of a live transcript drops it)
 //
-//   BASE=http://127.0.0.1:8901 AGENTUS_DATA=… node scripts/qa/fork-replay.mjs
+//   BASE=http://127.0.0.1:8901 HERMES_STUDIO_DATA=… node scripts/qa/fork-replay.mjs
 import path from "node:path";
 import { authHeaders } from "../lib/auth.mjs";
 

@@ -40,7 +40,7 @@ await send("Page.enable"); await send("Runtime.enable");
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — is this the QA/dev instance? (AGENTUS_DATA)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — is this the QA/dev instance? (HERMES_STUDIO_DATA)`);
   const sid = (await ev(`fetch('/api/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({backend:'mock',cwd:'/tmp'})}).then(r=>r.json())`))?.id;
   if (!sid) throw new Error("could not create the probe session");
   await sleep(400);

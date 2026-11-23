@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 记忆召回抽屉（#37 第二版）在 REAL 页面上的形状断言。
 //
 // 操作者两次反馈：「一展开就是刷屏」（第一版就修成了定高 + 内部滚动）、「展示效果不好」（第二版重做
@@ -10,12 +11,12 @@
 //   · 条目有 1..N 序号、标签在正文下方；
 //   · 收起后高度回到单行附近，转录滚动位置不因为展开而跳到底部。
 //
-//   PORT=8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/status-note-drawer.mjs
+//   PORT=8901 HERMES_STUDIO_DATA=/tmp/agentus-qa-account node scripts/qa/status-note-drawer.mjs
 const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? `http://127.0.0.1:${process.env.PORT ?? 8901}`;
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";
-const DATA_RAW = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
-// 环境里常残留 live 树的 AGENTUS_DATA（`worktrees/agentus/packages/server/.data`）：读它不会写坏什么，
+const DATA_RAW = process.env.HERMES_STUDIO_DATA ?? "/tmp/agentus-qa-account";
+// 环境里常残留 live 树的 HERMES_STUDIO_DATA（`worktrees/agentus/packages/server/.data`）：读它不会写坏什么，
 // 但那库里的会话在 dev 实例上根本不存在，测出来的「找不到按钮」是假红。QA 只认 QA 账号目录。
 const DATA = /worktrees\/agentus\//.test(DATA_RAW) ? "/tmp/agentus-qa-account" : DATA_RAW;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,8 +35,8 @@ const { execFileSync } = await import("node:child_process");
 const { existsSync } = await import("node:fs");
 // `sqlite3 -json` + execFileSync（参数数组）而不是把 SQL 拼进 shell 字符串：payload 是 JSON（含引号、
 // 换行），过 shell 一次就会被转义成 `\n` 字面量，sqlite 报 `unrecognized token`。第一版还因此读到
-// 了**错的库**（继承了环境里的 AGENTUS_DATA，指到 live 树），于是造出库里不存在的 session id。
-const dbPath = existsSync(`${DATA}/agentus.sqlite`) ? `${DATA}/agentus.sqlite` : "/tmp/agentus-qa-account/agentus.sqlite";
+// 了**错的库**（继承了环境里的 HERMES_STUDIO_DATA，指到 live 树），于是造出库里不存在的 session id。
+const dbPath = existsSync(`${DATA}/hermes-studio.sqlite`) ? `${DATA}/hermes-studio.sqlite` : "/tmp/agentus-qa-account/hermes-studio.sqlite";
 const q = (sql) => execFileSync("sqlite3", ["-json", dbPath, sql], { encoding: "utf8" }).trim();
 console.log(`      db = ${dbPath}`);
 let cands = [];
@@ -54,7 +55,7 @@ try {
   // 离尾部越近越稳：抽屉只存在于已经渲染出来的那段转录里
   cands.sort((a, b) => a.dist - b.dist);
 } catch (e) {
-  console.log(`note: could not read ${DATA}/agentus.sqlite — ${e.message}`);
+  console.log(`note: could not read ${DATA}/hermes-studio.sqlite — ${e.message}`);
 }
 if (!cands.length) {
   console.log(`SKIP  no recall note with ≥6 items in ${DATA}`);

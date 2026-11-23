@@ -27,7 +27,7 @@ accumulates in a local buffer, and reading the PTY is suspended while that buffe
 backpressure travels back to the producing program instead of parking in here. The input path is
 never gated by output.
 
-Sizing: the initial size comes from AGENTUS_PTY_COLS / AGENTUS_PTY_ROWS, and `resize` applies
+Sizing: the initial size comes from HERMES_STUDIO_PTY_COLS / HERMES_STUDIO_PTY_ROWS, and `resize` applies
 TIOCSWINSZ to the master — the kernel then signals the child's foreground process group (SIGWINCH),
 which is what makes vim redraw at the new width.
 
@@ -60,8 +60,8 @@ def set_winsize(fd: int, cols: int, rows: int) -> None:
 def main() -> int:
     argv = sys.argv[1:] or [os.environ.get("SHELL") or "/bin/sh"]
     try:
-        cols = int(os.environ.get("AGENTUS_PTY_COLS") or 80)
-        rows = int(os.environ.get("AGENTUS_PTY_ROWS") or 24)
+        cols = int(os.environ.get("HERMES_STUDIO_PTY_COLS") or 80)
+        rows = int(os.environ.get("HERMES_STUDIO_PTY_ROWS") or 24)
     except ValueError:
         cols, rows = 80, 24
 

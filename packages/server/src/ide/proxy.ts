@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Web IDE (code-server) bridge — issue #77.
 //
 // WHY A PROXY AND NOT A SECOND ORIGIN
@@ -22,7 +23,7 @@
 //    third-party service (multiple processes, a port, a persistent volume, a readiness wait); its
 //    lifecycle belongs to the deployment. This module only forwards, plus answers "is it up" so the
 //    tab can hide itself instead of showing a dead frame.
-//  * NOTHING CHANGES WHEN IT IS NOT CONFIGURED. `AGENTUS_IDE_UPSTREAM` unset ⇒ no routes beyond
+//  * NOTHING CHANGES WHEN IT IS NOT CONFIGURED. `HERMES_STUDIO_IDE_UPSTREAM` unset ⇒ no routes beyond
 //    `/api/ide/status` (which reports `configured:false`), no tab, no upgrade path.
 //
 // The upstream is expected to run `--auth none` bound to loopback: the cookie gate above is then the
@@ -50,10 +51,10 @@ export interface IdeUpstream {
   base: string;
 }
 
-/** Read `AGENTUS_IDE_UPSTREAM` on every call: a status probe during boot would otherwise cache a
+/** Read `HERMES_STUDIO_IDE_UPSTREAM` on every call: a status probe during boot would otherwise cache a
  *  typo across a whole process lifetime, and parsing a short string is free. */
 export function upstream(): IdeUpstream | null {
-  const raw = String(process.env.AGENTUS_IDE_UPSTREAM ?? "").trim();
+  const raw = String(process.env.HERMES_STUDIO_IDE_UPSTREAM ?? "").trim();
   if (!raw) return null;
   let u: URL;
   try {
@@ -166,7 +167,7 @@ export async function handleHttp(req: IncomingMessage, res: ServerResponse, url:
   const up = upstream();
   if (!up) {
     res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
-    res.end(JSON.stringify({ error: "ide_not_configured", hint: "set AGENTUS_IDE_UPSTREAM", start: IDE_START_COMMAND }));
+    res.end(JSON.stringify({ error: "ide_not_configured", hint: "set HERMES_STUDIO_IDE_UPSTREAM", start: IDE_START_COMMAND }));
     return true;
   }
 

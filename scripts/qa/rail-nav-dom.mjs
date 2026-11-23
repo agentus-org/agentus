@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // #94：全局视图入口归左侧 rail，不归 ChatHead。
 //
 // 判据一句话：「这台机器/这个项目在干什么」→ rail 顶部固定区；「这个会话怎么用」→ ChatHead。
@@ -11,11 +12,11 @@
 //   ④ 手机上 rail 收起时入口仍可达（跟现有 hamburger 一致）
 //   ⑤ 会话级按钮（通话）仍在 head —— #88/#80 的形态不回退
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/rail-nav-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/rail-nav-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -66,7 +67,7 @@ check("fixture session exists", Boolean(await ev(`fetch('/api/sessions',{method:
   body:JSON.stringify({backend:'mock',cwd:'/tmp'})}).then(r=>r.ok)`)));
 
 const reload = async (mode) => {
-  await ev(`localStorage.setItem('agentus.rail-mode','${mode}')`);
+  await ev(`localStorage.setItem('hermes-studio.rail-mode','${mode}')`);
   await send("Page.reload"); await sleep(2600); await freeze();
   // reload 之后 shell 是重新挂的：等 rail 真的画出来，别在「正在检查登录状态…」上量 null。
   for (let i = 0; i < 40; i++) {

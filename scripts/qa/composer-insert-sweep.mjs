@@ -47,7 +47,7 @@ const waitFor = async (expr, ms = 15_000) => {
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (HERMES_STUDIO_DATA?)`);
   const api = async (path, init = {}) => ev(`(() => {
     const r = await fetch(${JSON.stringify(path)}, ${JSON.stringify({ headers: { "content-type": "application/json" }, ...init })});
     const body = await r.text();

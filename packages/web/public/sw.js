@@ -4,7 +4,7 @@
 //  - hashed assets (/assets/): CACHE FIRST (immutable by content hash).
 //  - other static (icons/manifest): cache-first with network fill.
 //  - /api /ws /healthz: NEVER touch (live agent state must always be live).
-const SHELL = "agentus-shell-v2";
+const SHELL = "hermes-studio-shell-v2";
 
 self.addEventListener("install", (e) => {
   e.waitUntil(

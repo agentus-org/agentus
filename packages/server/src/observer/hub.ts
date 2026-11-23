@@ -7,7 +7,7 @@
 // summariser nobody can debug. So the cockpit hires a reader: a normal ACP session with its own
 // transcript, spawned once, kept alive, and asked one line per event (「看看进展」). Because it is
 // long-lived its context carries over — the second brief costs a line, not the whole story — and
-// because its facts come from the cockpit CLI (`$AGENTUS_COCKPIT_BIN`, issue #15) the trigger line
+// because its facts come from the cockpit CLI (`$HERMES_STUDIO_COCKPIT_BIN`, issue #15) the trigger line
 // never has to carry data that could be wrong.
 //
 // WHAT THIS MODULE IS ALLOWED TO KNOW

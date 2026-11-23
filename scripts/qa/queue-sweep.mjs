@@ -119,7 +119,7 @@ await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', b
 await sleep(400);
 
 // A clean queue: this session is a shared QA slot and an earlier run may have left rows behind.
-await ev(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('agentus.queue.')) localStorage.removeItem(k); return true })()`);
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('hermes-studio.queue.')) localStorage.removeItem(k); return true })()`);
 await ev(`location.reload()`);
 await sleep(3000);
 await ev(`location.href = ${JSON.stringify(`${BASE}/?session=`)} + ${JSON.stringify(String(sid))}`);
@@ -172,7 +172,7 @@ await sleep(300);
 rows = await queueRows();
 check(rows.length === 1 && !rows.some((r) => r.text.includes('第三条')), 'drops it, keeps the other',
   JSON.stringify(rows.map((r) => r.text)));
-const stored = await ev(`localStorage.getItem('agentus.queue.${String(sid)}')`);
+const stored = await ev(`localStorage.getItem('hermes-studio.queue.${String(sid)}')`);
 check(Boolean(stored) && JSON.parse(stored).length === 1, 'and localStorage agrees with the screen (a reload cannot lose it)');
 
 check(await typeAndEnter(FOURTH), 'and a fourth, which we will edit');
@@ -213,7 +213,7 @@ check(iSecond >= 0 && iEdited > iSecond, 'in the order he wrote them', `#${iSeco
 
 await send('Page.enable');
 console.log(`\n${pass} ok, ${fail} failed`);
-await ev(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('agentus.queue.')) localStorage.removeItem(k); return true })()`);
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('hermes-studio.queue.')) localStorage.removeItem(k); return true })()`);
 try { await fetch(`${CDP}/json/close/${tab.id}`); } catch {}  // 别把页面留在浏览器里（堆到几百个会把整台机器拖死）
 ws.close();
 process.exit(fail ? 1 : 0);

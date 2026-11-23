@@ -1,7 +1,7 @@
 // The instance's own name (issue #19): one person runs several cockpits, and every tab + every
 // home-screen icon used to say "Hermes Studio".
 //
-// Two servers are started from THIS tree on spare ports — one with `AGENTUS_TITLE` unset, one with
+// Two servers are started from THIS tree on spare ports — one with `HERMES_STUDIO_TITLE` unset, one with
 // it set — and the running process is asked for the two bodies that carry the name. Nothing is
 // stubbed: a title that only works in a helper function would pass a unit test and fail the tab.
 //
@@ -24,9 +24,9 @@ async function start(port, extraEnv) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), `title-sweep-${port}-`));
   // A scratch instance must not inherit the LIVE identity from the shell that runs the sweep — the
   // name included, or the "unset" case would silently test the operator's own title.
-  const env = { ...process.env, AGENTUS_PORT: String(port), AGENTUS_DATA: data, AGENTUS_DEV: "1" };
-  delete env.AGENTUS_TITLE;
-  delete env.AGENTUS_BASE;
+  const env = { ...process.env, HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: data, HERMES_STUDIO_DEV: "1" };
+  delete env.HERMES_STUDIO_TITLE;
+  delete env.HERMES_STUDIO_BASE;
   Object.assign(env, extraEnv);
   const child = spawn(process.execPath, ["--import", "tsx", "packages/server/src/index.ts"], {
     cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"],
@@ -57,20 +57,20 @@ const get = async (port, p) => {
 
 const PLAIN = 8913, NAMED = 8914;
 const NAME = "Hermes Studio（pre-betabox）";
-const weird = { AGENTUS_TITLE: "<b>x</b> & co" };
+const weird = { HERMES_STUDIO_TITLE: "<b>x</b> & co" };
 const WEIRD_PORT = 8915;
 
 const a = await start(PLAIN, {});
-const b = await start(NAMED, { AGENTUS_TITLE: NAME });
+const b = await start(NAMED, { HERMES_STUDIO_TITLE: NAME });
 const c = await start(WEIRD_PORT, weird);
 try {
   // ---- unset: the built file is served, unchanged ----
   const plainHtml = await get(PLAIN, "/");
-  check("no AGENTUS_TITLE → the tab still says Hermes Studio",
+  check("no HERMES_STUDIO_TITLE → the tab still says Hermes Studio",
     /<title>Hermes Studio<\/title>/i.test(plainHtml.body), (plainHtml.body.match(/<title>[^<]*<\/title>/i) ?? [""])[0]);
   // ---- named: both surfaces follow ----
   const namedHtml = await get(NAMED, "/");
-  check("AGENTUS_TITLE → the tab title is the instance name",
+  check("HERMES_STUDIO_TITLE → the tab title is the instance name",
     namedHtml.body.includes(`<title>${NAME}</title>`), (namedHtml.body.match(/<title>[^<]*<\/title>/i) ?? [""])[0]);
   check("…the page is still the real SPA shell (it names the hashed bundle)",
     /\/assets\/index-[A-Za-z0-9_-]+\.js/.test(namedHtml.body));

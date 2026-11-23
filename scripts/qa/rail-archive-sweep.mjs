@@ -76,13 +76,13 @@ await until(`Boolean(document.querySelector('#rail-workspaces .rail-group-head')
 await sleep(600);
 
 // Establish the precondition the fold test depends on: it CLICKS a directory head expecting to FOLD
-// it, so no directory may start folded. A leftover `agentus.railClosed` from an earlier run made the
+// it, so no directory may start folded. A leftover `hermes-studio.railClosed` from an earlier run made the
 // click UNFOLD an already-folded group and turned two checks red for no reason — 02-verify.md's
 // "set what you depend on first". Cleared through the app's own reload so React reads it back.
 {
-  const cleared = await ev(`(() => { try { const o = JSON.parse(localStorage.getItem('agentus.railClosed') || '{}');
+  const cleared = await ev(`(() => { try { const o = JSON.parse(localStorage.getItem('hermes-studio.railClosed') || '{}');
     const n = Object.keys(o).length;
-    localStorage.setItem('agentus.railClosed', JSON.stringify({}));
+    localStorage.setItem('hermes-studio.railClosed', JSON.stringify({}));
     return n; } catch (e) { return 'ERR ' + e; } })()`);
   await ev(`location.reload()`);
   await until(`document.querySelectorAll('.sidebar .session-item').length > 0`, 30000);
@@ -132,10 +132,10 @@ const foldKey = await ev(`(() => {
 })()`);
 check(Boolean(foldKey), "folded a live directory", foldKey ? String(foldKey).replace("/Users/liang", "~") : "no live directory in the rail");
 await sleep(600);
-const stored = await ev(`(() => { try { const o = JSON.parse(localStorage.getItem('agentus.railClosed') || '{}');
+const stored = await ev(`(() => { try { const o = JSON.parse(localStorage.getItem('hermes-studio.railClosed') || '{}');
   return JSON.stringify({ keys: Object.keys(o).length, hasKey: Object.keys(o).some((k) => k.indexOf(${JSON.stringify(String(foldKey))}) >= 0) }); } catch (e) { return 'ERR ' + e; } })()`);
 const storedObj = JSON.parse(stored === "ERR " ? '{"keys":0,"hasKey":false}' : stored);
-check(storedObj.hasKey, "the fold is written to localStorage under agentus.railClosed", stored);
+check(storedObj.hasKey, "the fold is written to localStorage under hermes-studio.railClosed", stored);
 
 await ev(`location.reload()`);
 await sleep(1200);
@@ -152,7 +152,7 @@ const afterReload = await ev(`(() => {
   const group = head.closest('.rail-group') || head.parentElement;
   return JSON.stringify({ open: head.classList.contains('open'), expanded: head.getAttribute('aria-expanded'),
     bodyRows: group.querySelectorAll('.session-item').length,
-    stored: (() => { try { return localStorage.getItem('agentus.railClosed'); } catch (e) { return 'ERR'; } })(),
+    stored: (() => { try { return localStorage.getItem('hermes-studio.railClosed'); } catch (e) { return 'ERR'; } })(),
     live: [...document.querySelectorAll('#rail-workspaces .rail-group-head')].map((h) => h.getAttribute('data-workspace')).length });
 })()`);
 const ar = JSON.parse(String(afterReload));
@@ -174,7 +174,7 @@ if (samePath) {
     const find = (root, p) => [...document.querySelectorAll(root + ' .rail-group-head')].find((h) => h.getAttribute('data-workspace') === p);
     const live = find('#rail-workspaces', ${JSON.stringify(String(samePath))});
     const arch = find('#rail-archived', ${JSON.stringify(String(samePath))});
-    const keys = Object.keys(JSON.parse(localStorage.getItem('agentus.railClosed') || '{}'));
+    const keys = Object.keys(JSON.parse(localStorage.getItem('hermes-studio.railClosed') || '{}'));
     return JSON.stringify({ liveFolded: live ? !live.classList.contains('open') : "no-live-group",
       archFolded: arch ? !arch.classList.contains('open') : "no-arch-group",
       prefixed: keys.filter((k) => k.indexOf(':') > 0).length, keys: keys.length });
@@ -186,7 +186,7 @@ if (samePath) {
 
 console.log("== stale fold flags are pruned ==");
 const pruned = await ev(`(() => {
-  const key = 'agentus.railClosed';
+  const key = 'hermes-studio.railClosed';
   const o = JSON.parse(localStorage.getItem(key) || '{}');
   o['ws:/nonexistent/directory/for-pruning'] = true;
   localStorage.setItem(key, JSON.stringify(o));
@@ -196,7 +196,7 @@ await ev(`location.reload()`);
 await sleep(1200);
 await until(`Boolean(document.querySelector('#rail-workspaces .rail-group-head'))`, 20000);
 await sleep(1500);
-const afterPrune = await ev(`(() => JSON.parse(localStorage.getItem('agentus.railClosed') || '{}'))()`);
+const afterPrune = await ev(`(() => JSON.parse(localStorage.getItem('hermes-studio.railClosed') || '{}'))()`);
 check(!Object.keys(afterPrune).includes("ws:/nonexistent/directory/for-pruning"),
   "a fold flag for a directory with no sessions is dropped on load", `${pruned} keys before, ${Object.keys(afterPrune).length} after`);
 

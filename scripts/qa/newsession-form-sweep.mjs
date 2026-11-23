@@ -75,7 +75,7 @@ const closeTab = async () => { await fetch(`${CDP}/json/close/${t.id}`).catch(()
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — the QA account is not this instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — the QA account is not this instance (HERMES_STUDIO_DATA?)`);
 
   // The form is reached from the rail's own 「新会话」 button (the 「+」 inside a group passes a FIXED
   // directory and hides the picker — that path is rail-sweep's business, not this suite's).

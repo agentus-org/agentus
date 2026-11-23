@@ -8,7 +8,7 @@ when it breaks.
 (`hermes acp` / `qodercli --acp`). The server spawns one child process per session and
 relays ACP JSON-RPC between the browser and that agent. The UI holds no intelligence:
 gate access → spawn → relay → stream → persist → surface permission cards. State lives in
-`<DATA_DIR>` (default `~/.agentus`; see [01-dev-loop.md](./01-dev-loop.md) for how the
+`<DATA_DIR>` (default `~/.hermes-studio`; see [01-dev-loop.md](./01-dev-loop.md) for how the
 directory resolves). Node `>= 22.5` is required — the store is `node:sqlite`.
 
 ## The mental model
@@ -23,7 +23,7 @@ variables, and they must never touch each other's code or data:
 | HTTP port | `8788` | `8901` |
 | data dir | `<tree>/packages/server/.data` (pinned by the launcher) | `/tmp/agentus-qa-account` |
 | launcher | `~/.hermes/cache/agentus/launch.py` | `scripts/dev.sh start\|stop\|status\|logs` |
-| supervision | launchd job `ai.hermes.agentus` (`KeepAlive`) | none — a plain detached process |
+| supervision | launchd job `ai.hermes.hermes-studio` (`KeepAlive`) | none — a plain detached process |
 | hot reload | **no** — restart is explicit | yes (`tsx watch`) |
 
 **Ports are configuration, not literals.** Live's port lives in
@@ -38,12 +38,12 @@ start it: nothing brought it back after a crash, and it inherited that shell's e
 it spawned). Now:
 
 ```bash
-launchctl print gui/$(id -u)/ai.hermes.agentus         # state, pid, the job's environment
-launchctl kickstart -k gui/$(id -u)/ai.hermes.agentus  # the supported restart (stop then start)
+launchctl print gui/$(id -u)/ai.hermes.hermes-studio         # state, pid, the job's environment
+launchctl kickstart -k gui/$(id -u)/ai.hermes.hermes-studio  # the supported restart (stop then start)
 tail -f /tmp/agentus-server.log                        # the job's stdout/stderr
 ```
 
-`scripts/relaunch.sh --launchd ai.hermes.agentus` is the same thing wrapped with a health check and
+`scripts/relaunch.sh --launchd ai.hermes.hermes-studio` is the same thing wrapped with a health check and
 a pid-moved assertion, and that is what `promote` uses. Launchd's `KeepAlive` restarts it on any
 exit, so a crash self-heals; a **manual** `kill` therefore no longer restarts live, it just makes
 launchd respawn it.

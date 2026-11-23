@@ -74,12 +74,12 @@ async function boot(port, dataDir, extraEnv = {}) {
     env: {
       ...process.env,
       NODE_ENV: "development",
-      AGENTUS_PORT: String(port),
-      AGENTUS_DATA: dataDir,
-      AGENTUS_USERNAME: USER,
-      AGENTUS_PASSWORD: PASSWORD,
-      AGENTUS_LOGIN_MAX_FAILS: "3",
-      AGENTUS_LOGIN_LOCK_MS: "1200",
+      HERMES_STUDIO_PORT: String(port),
+      HERMES_STUDIO_DATA: dataDir,
+      HERMES_STUDIO_USERNAME: USER,
+      HERMES_STUDIO_PASSWORD: PASSWORD,
+      HERMES_STUDIO_LOGIN_MAX_FAILS: "3",
+      HERMES_STUDIO_LOGIN_LOCK_MS: "1200",
       ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -188,7 +188,7 @@ check("GET /api/sessions with cookie -> 200", status(await fetch(`${a.base}/api/
 const tampered = cookie.replace(/.$/, (c) => (c === "A" ? "B" : "A"));
 check("tampered cookie -> 401", status(await fetch(`${a.base}/api/sessions`, { headers: { cookie: tampered } })) === 401);
 const forged = `v1.${Buffer.from(JSON.stringify({ u: USER, iat: 1, exp: 4102444800, jti: "deadbeef" })).toString("base64url")}.AAAA`;
-check("hand-forged cookie -> 401", status(await fetch(`${a.base}/api/sessions`, { headers: { cookie: `agentus_session=${forged}` } })) === 401);
+check("hand-forged cookie -> 401", status(await fetch(`${a.base}/api/sessions`, { headers: { cookie: `hermes_studio_session=${forged}` } })) === 401);
 
 // 7. the cookie also authorises the socket
 check("WS with cookie -> hello event", await (async () => {
@@ -231,7 +231,7 @@ await sleep(300);
 const dataB = mkdtempSync(path.join(tmpdir(), "agentus-authB-"));
 // exp is stamped in SECONDS (JWT-style), so a sub-second TTL can expire inside the
 // same second it was minted — keep this comfortably above the granularity.
-const b = await boot(8898, dataB, { AGENTUS_SESSION_TTL_MS: "2000" });
+const b = await boot(8898, dataB, { HERMES_STUDIO_SESSION_TTL_MS: "2000" });
 const loginB = await fetch(`${b.base}/api/auth/login`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ username: USER, password: PASSWORD }),
@@ -244,9 +244,9 @@ check("expired session -> 401", status(await fetch(`${b.base}/api/sessions`, { h
 b.proc.kill("SIGTERM");
 await sleep(300);
 
-// ---- server C: AGENTUS_AUTH=off is honoured (local dev escape hatch) ---------
+// ---- server C: HERMES_STUDIO_AUTH=off is honoured (local dev escape hatch) ---------
 const dataC = mkdtempSync(path.join(tmpdir(), "agentus-authC-"));
-const c = await boot(8897, dataC, { AGENTUS_AUTH: "off" });
+const c = await boot(8897, dataC, { HERMES_STUDIO_AUTH: "off" });
 check("auth off -> anonymous API works", status(await fetch(`${c.base}/api/sessions`)) === 200);
 check("auth off -> /api/auth/me says authenticated", await (async () => {
   const b2 = await (await fetch(`${c.base}/api/auth/me`)).json();
@@ -260,7 +260,7 @@ c.proc.kill("SIGTERM");
 const dataD = mkdtempSync(path.join(tmpdir(), "agentus-authD-"));
 const BASIC_USER = "outer";
 const BASIC_PASS = "outer-pass";
-const d = await boot(8896, dataD, { AGENTUS_BASIC_AUTH: `${BASIC_USER}:${BASIC_PASS}`, AGENTUS_AUTH: "off" });
+const d = await boot(8896, dataD, { HERMES_STUDIO_BASIC_AUTH: `${BASIC_USER}:${BASIC_PASS}`, HERMES_STUDIO_AUTH: "off" });
 const basicHeader = { authorization: `Basic ${Buffer.from(`${BASIC_USER}:${BASIC_PASS}`).toString("base64")}` };
 
 check("basic: anon /healthz -> 401", status(await fetch(`${d.base}/healthz`)) === 401);
@@ -303,7 +303,7 @@ await sleep(300);
 // turn the lock off. That is the regression this section guards.
 const dataE = mkdtempSync(path.join(tmpdir(), "agentus-authE-"));
 const ONLY_PW = "pw-only-fixture";
-const e = await boot(8895, dataE, { AGENTUS_BASIC_AUTH: `:${ONLY_PW}`, AGENTUS_AUTH: "off" });
+const e = await boot(8895, dataE, { HERMES_STUDIO_BASIC_AUTH: `:${ONLY_PW}`, HERMES_STUDIO_AUTH: "off" });
 const pw = (user) => ({ authorization: `Basic ${Buffer.from(`${user}:${ONLY_PW}`).toString("base64")}` });
 
 check("pw-only: anon still 401 (config did NOT silently disable the lock)", status(await fetch(`${e.base}/healthz`)) === 401);
@@ -328,7 +328,7 @@ await sleep(300);
 
 // ---- server F: the bare "pass" form (no colon at all) ---------------------------
 const dataF = mkdtempSync(path.join(tmpdir(), "agentus-authF-"));
-const f = await boot(8894, dataF, { AGENTUS_BASIC_AUTH: ONLY_PW, AGENTUS_AUTH: "off" });
+const f = await boot(8894, dataF, { HERMES_STUDIO_BASIC_AUTH: ONLY_PW, HERMES_STUDIO_AUTH: "off" });
 check("bare form: anon 401", status(await fetch(`${f.base}/healthz`)) === 401);
 check("bare form: any user + password -> 200", status(await fetch(`${f.base}/healthz`, { headers: pw("admin") })) === 200);
 f.proc.kill("SIGTERM");
@@ -357,7 +357,7 @@ const gLogin = await jsonLogin(g.base, USER, PASSWORD);
 const callerCookie = cookieOf(gLogin);
 const otherLogin = await jsonLogin(g.base, USER, PASSWORD);
 const otherCookie = cookieOf(otherLogin);
-check("creds: two sessions to start with", callerCookie.startsWith("agentus_session=") && otherCookie.startsWith("agentus_session=") && otherCookie !== callerCookie);
+check("creds: two sessions to start with", callerCookie.startsWith("hermes_studio_session=") && otherCookie.startsWith("hermes_studio_session=") && otherCookie !== callerCookie);
 
 check("creds: anonymous -> 401", (await change(g.base, "", { currentPassword: PASSWORD, newPassword: "brand-new-pass" })).status === 401);
 check("creds: wrong current password -> 401", (await change(g.base, callerCookie, { currentPassword: "not-it", newPassword: "brand-new-pass" })).status === 401);
@@ -369,7 +369,7 @@ check("creds: still nothing applied (old password logs in)", (await jsonLogin(g.
 const okChange = await change(g.base, callerCookie, { currentPassword: PASSWORD, username: "operator", newPassword: "long-enough-pass" });
 check("creds: change accepted -> 200", okChange.status === 200, `got ${okChange.status}`);
 const freshCookie = cookieOf(okChange);
-check("creds: caller is handed a fresh cookie", freshCookie.startsWith("agentus_session=") && freshCookie !== callerCookie);
+check("creds: caller is handed a fresh cookie", freshCookie.startsWith("hermes_studio_session=") && freshCookie !== callerCookie);
 
 const credFile = path.join(dataG, "credentials.json");
 check("creds: credentials.json written", fs.existsSync(credFile));
@@ -447,7 +447,7 @@ check("sessions: the revoked cookie is dead (me reports anonymous)",
 check("sessions: the caller is untouched", status(await fetch(`${h.base}/api/sessions`, { headers: { cookie: ckA } })) === 200);
 const registry = path.join(dataH, "sessions.json");
 check("sessions: registry file is 0600", fs.existsSync(registry) && (fs.statSync(registry).mode & 0o777) === 0o600);
-check("sessions: registry holds no token material", fs.existsSync(registry) && !fs.readFileSync(registry, "utf8").includes("agentus_session"));
+check("sessions: registry holds no token material", fs.existsSync(registry) && !fs.readFileSync(registry, "utf8").includes("hermes_studio_session"));
 
 // log out everywhere
 await hLogin();

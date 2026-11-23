@@ -88,23 +88,23 @@ browser sweeps, promote it to live, and what to do when live breaks. Written for
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is
-stale, then serves. Use `AGENTUS_PORT=9000 npm start` to move the port.
+stale, then serves. Use `HERMES_STUDIO_PORT=9000 npm start` to move the port.
 
 ### Where your state lives
 
-`~/.agentus` by default — `agentus.sqlite` (sessions and transcript), `credentials.json`,
+`~/.hermes-studio` by default — `hermes-studio.sqlite` (sessions and transcript), `credentials.json`,
 `auth.token` (the machine credential), `auth.secret`, `settings.json`. It is
 created 0700 on first boot, and the boot log prints it **and why that directory won**:
 
 | order | rule |
 |---|---|
-| 1 | `AGENTUS_DATA` when it is set — every launcher and dev/QA instance pins this |
-| 2 | `~/.agentus` once it holds something, or when there is no repo-side data yet |
+| 1 | `HERMES_STUDIO_DATA` when it is set — every launcher and dev/QA instance pins this |
+| 2 | `~/.hermes-studio` once it holds something, or when there is no repo-side data yet |
 | 3 | `<repo>/packages/server/.data` — an existing checkout that predates this layout |
 
 Rule 3 is not a nicety: an install that quietly switched directories would come up with an
 empty session list, which reads exactly like "my sessions are gone". To move such a
-checkout over, boot it once with `AGENTUS_DATA=~/.agentus`. `hermes-studio --where` prints what
+checkout over, boot it once with `HERMES_STUDIO_DATA=~/.hermes-studio`. `hermes-studio --where` prints what
 the server resolved, rather than making you guess.
 
 ### Backends
@@ -122,25 +122,25 @@ layer never changes.
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
-| `AGENTUS_DATA` | `~/.agentus` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
-| `AGENTUS_TITLE` | `Hermes Studio` | this instance's own name: the browser tab title and the PWA/home-screen label. Set it when one person runs several cockpits (`AGENTUS_TITLE="Hermes Studio（pre-betabox）"`) |
-| `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
-| `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
-| `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
-| `AGENTUS_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
-| `AGENTUS_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
-| `AGENTUS_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
-| `AGENTUS_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
-| `AGENTUS_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
-| `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
-| `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
-| `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
+| `HERMES_STUDIO_PORT` | `8788` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
+| `HERMES_STUDIO_DATA` | `~/.hermes-studio` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
+| `HERMES_STUDIO_TITLE` | `Hermes Studio` | this instance's own name: the browser tab title and the PWA/home-screen label. Set it when one person runs several cockpits (`HERMES_STUDIO_TITLE="Hermes Studio（pre-betabox）"`) |
+| `HERMES_STUDIO_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
+| `HERMES_STUDIO_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
+| `HERMES_STUDIO_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
+| `HERMES_STUDIO_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
+| `HERMES_STUDIO_HISTORY_PAGE` | `500` | transcript page size (also set small in tests to exercise paging) |
+| `HERMES_STUDIO_TERM_PTY` | unset | `1` = run the workspace terminal through Python's stdlib `pty` (real tty; needs `python3`) instead of pipes |
+| `HERMES_STUDIO_TERM_CMD` | unset | override the terminal command line entirely (e.g. `socat …`), space-separated |
+| `HERMES_STUDIO_TTS_BASE_URL` | unset | OpenAI-compatible base for **server** speech synthesis (`…/v1`). Unset = browser voices only |
+| `HERMES_STUDIO_TTS_API_KEY` / `HERMES_STUDIO_TTS_MODEL` / `HERMES_STUDIO_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
+| `HERMES_STUDIO_STT_BASE_URL` | unset | OpenAI-compatible base for **server** transcription. Unset = browser recognition only |
+| `HERMES_STUDIO_STT_API_KEY` / `HERMES_STUDIO_STT_MODEL` / `HERMES_STUDIO_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) credentials. Read from the process env **and** from `~/.hermes/.env`, because the server is usually started from a plain shell |
 
 The voice/theme variables are a **bootstrap only**: the settings page (⚙ in the rail)
 owns the provider, endpoint, key, models, hotword list and the palette, and stores them
-in `<AGENTUS_DATA>/settings.json` (0600, key never sent back to the browser). What the
+in `<HERMES_STUDIO_DATA>/settings.json` (0600, key never sent back to the browser). What the
 page says wins; the env is what makes a fresh checkout work before anyone opens it.
 
 ## Login
@@ -159,7 +159,7 @@ hash — no plaintext on disk). Changing the password invalidates every other se
 device that made the change is handed a fresh cookie, so it stays signed in. The current
 password is required for any change, including a username-only one.
 
-`AGENTUS_USERNAME` / `AGENTUS_PASSWORD` / `AGENTUS_PASSWORD_HASH` still work as the
+`HERMES_STUDIO_USERNAME` / `HERMES_STUDIO_PASSWORD` / `HERMES_STUDIO_PASSWORD_HASH` still work as the
 bootstrap: they are what the app starts from, and once you save something in the 账号 card
 the file wins from then on (the same "settings file > env" order voice and theme use). A
 password-only change pins today's password as a hash, so an env value can never quietly
@@ -202,19 +202,19 @@ Auth environment:
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_AUTH` | `on` | `off` = no login at all (local hacking; the boot log will scold you) |
-| `AGENTUS_USERNAME` | `admin` | operator name |
-| `AGENTUS_PASSWORD` | `123456` | operator password (plaintext in env) |
-| `AGENTUS_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `AGENTUS_PASSWORD` if set |
-| `AGENTUS_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
-| `AGENTUS_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
-| `AGENTUS_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
-| `AGENTUS_LOGIN_MAX_FAILS` / `AGENTUS_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
-| `AGENTUS_BASIC_AUTH` | — | an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). `user:pass` checks both; `:pass` (or a bare `pass`) checks **only the password** and accepts any username. This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
+| `HERMES_STUDIO_AUTH` | `on` | `off` = no login at all (local hacking; the boot log will scold you) |
+| `HERMES_STUDIO_USERNAME` | `admin` | operator name |
+| `HERMES_STUDIO_PASSWORD` | `123456` | operator password (plaintext in env) |
+| `HERMES_STUDIO_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `HERMES_STUDIO_PASSWORD` if set |
+| `HERMES_STUDIO_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
+| `HERMES_STUDIO_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
+| `HERMES_STUDIO_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token (0600, auto-minted) |
+| `HERMES_STUDIO_LOGIN_MAX_FAILS` / `HERMES_STUDIO_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
+| `HERMES_STUDIO_BASIC_AUTH` | — | an HTTP Basic challenge in front of **everything** (including `/healthz` and the WS upgrade). `user:pass` checks both; `:pass` (or a bare `pass`) checks **only the password** and accepts any username. This is the outer lock you want before exposing a tunnel; see "Exposing it publicly". |
 
 ### Exposing it publicly (tunnel / reverse proxy)
 
-Put `AGENTUS_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
+Put `HERMES_STUDIO_BASIC_AUTH=:pass` in the server's environment, then point the tunnel at
 `<lan-ip>:8788`. That gives you two independent locks — Basic at the edge of the app, the
 operator login inside it — and scripts can still get in (`curl -u :pass` plus the machine
 token).
@@ -231,7 +231,7 @@ Pick one outer lock, not both:
   IP is remembered after that, and the WebSocket keeps working through it (both measured
   end to end). Zero config on this side; the cost is that machines cannot get in without
   the extra authorisation dance (`POST /v4/tunnel/auth`).
-- **`AGENTUS_BASIC_AUTH`**, when the tunnel has no gate, is a plain TCP forward, or you
+- **`HERMES_STUDIO_BASIC_AUTH`**, when the tunnel has no gate, is a plain TCP forward, or you
   want scriptable access (`curl -u :pass`). A real 401 challenge is understood by every
   browser, proxy and HTTP client — unlike some tunnel "access auth" flavours, which answer
   HTTP **200** with an authorise-your-IP page and are invisible to `curl`.
@@ -257,7 +257,7 @@ speak plain HTTP:
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
+| `HERMES_STUDIO_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
 
 Certificate lifecycle (issuing, rotation, SAN) stays in that front layer and never touches the
 app, and the LAN path stays warning-free. Nothing is lost on the cookie side either: the handler
@@ -278,7 +278,7 @@ credentials, memory and session list.
 
 An *inherited* `HERMES_HOME` is ignored (a Hermes-launched shell leaks its own down), so
 where a slot writes is always something you chose — on the row, or in
-`AGENTUS_HERMES_HOME`.
+`HERMES_STUDIO_HERMES_HOME`.
 
 To keep one slot's data separate (a clean session list, a different profile, a throwaway
 experiment), name a directory in that row's HERMES_HOME — no permission needed. The
@@ -299,23 +299,23 @@ asked them all live in the cockpit, not in the agent's prompt. `hermes-studio co
 channel that lets an agent read that — and, if you allow it, hand a message to another session:
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" capabilities                    # the contract, self-describing (start here)
-"$AGENTUS_COCKPIT_BIN" session list --here             # …narrowed: my workspace, newest activity first
-"$AGENTUS_COCKPIT_BIN" session list --waiting --table  # …the operator's approval queue, as a table
-"$AGENTUS_COCKPIT_BIN" session rename <id> "…name…"    # name a session (the row records who did it)
-"$AGENTUS_COCKPIT_BIN" session show <id>               # one session, + what it is waiting on
-"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" session plan <id>
-"$AGENTUS_COCKPIT_BIN" session send <id> "…a message…"  # operator-gated, off by default
-"$AGENTUS_COCKPIT_BIN" skill                           # this CLI's own manual, from the package
+"$HERMES_STUDIO_COCKPIT_BIN" capabilities                    # the contract, self-describing (start here)
+"$HERMES_STUDIO_COCKPIT_BIN" session list --here             # …narrowed: my workspace, newest activity first
+"$HERMES_STUDIO_COCKPIT_BIN" session list --waiting --table  # …the operator's approval queue, as a table
+"$HERMES_STUDIO_COCKPIT_BIN" session rename <id> "…name…"    # name a session (the row records who did it)
+"$HERMES_STUDIO_COCKPIT_BIN" session show <id>               # one session, + what it is waiting on
+"$HERMES_STUDIO_COCKPIT_BIN" session messages <id> --tail 20
+"$HERMES_STUDIO_COCKPIT_BIN" session plan <id>
+"$HERMES_STUDIO_COCKPIT_BIN" session send <id> "…a message…"  # operator-gated, off by default
+"$HERMES_STUDIO_COCKPIT_BIN" skill                           # this CLI's own manual, from the package
 ```
 
 The shape is noun-then-verb (`hermes-studio session send <id> …`) because every one of these acts on the
 same object; the session id is a positional argument, options stay options.
 
-The cockpit hands `AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
+The cockpit hands `HERMES_STUDIO_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
 the CLI needs no arguments, no port and no config — and the token never appears on a command
-line. `AGENTUS_COCKPIT_BIN` is this same `hermes-studio` launcher, so there is one command with one
+line. `HERMES_STUDIO_COCKPIT_BIN` is this same `hermes-studio` launcher, so there is one command with one
 name; `hermes-studio cockpit …` at your own shell is the identical thing. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
 *received* it, never that it read or agreed; a busy target refuses with `target_busy` and saw
 nothing.
@@ -394,8 +394,8 @@ with `hermes-studio cockpit skill`, which is also why the document is never past
   persisted — never the bytes
 - **voice, both directions, browser-first**: read any reply aloud (per-message button
   plus an auto-read toggle, voice picker, speed), dictate a prompt (live interim words).
-  A server endpoint is optional and only a proxy (`AGENTUS_TTS_BASE_URL` /
-  `AGENTUS_STT_BASE_URL`); with nothing configured, the browser does the work and the
+  A server endpoint is optional and only a proxy (`HERMES_STUDIO_TTS_BASE_URL` /
+  `HERMES_STUDIO_STT_BASE_URL`); with nothing configured, the browser does the work and the
   UI says so
 - **voice call mode** (📞 in the chat header): a full-screen call with the session — a canvas
   orb that rides real audio, one colour per phase (listening / thinking / speaking / error,
@@ -469,7 +469,7 @@ npm run backend-smoke                     # 42: the backend registry, spawn env,
 npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
 npm run package-smoke                     # packs, installs into a throwaway prefix + HOME, boots
-                                          # that install, drives a mock turn, checks ~/.agentus
+                                          # that install, drives a mock turn, checks ~/.hermes-studio
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent
 ```
 
@@ -477,7 +477,7 @@ Every suite boots its own server on a scratch port with a throwaway data dir, so
 anywhere (CI included):
 
 - `auth-smoke` — anonymous REST/WS refusal, brute-force lockout, cookie signing and tamper
-  detection, expiry, WS-via-cookie, the machine token, logout revocation, `AGENTUS_AUTH=off`.
+  detection, expiry, WS-via-cookie, the machine token, logout revocation, `HERMES_STUDIO_AUTH=off`.
 - `workspace-smoke` — the per-session workspace, the read-only file API, the PTY shell,
   attachments on a prompt, the voice endpoint guards.
 - `voice-smoke` — the settings/theme contract (validation, masking, 0600 file), the voice

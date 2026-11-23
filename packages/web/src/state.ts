@@ -128,7 +128,7 @@ export interface BackendView {
   cwd?: string | null;
   notes?: string;
   builtin?: boolean;
-  /** Which channel carries this backend's plan: `none` = the cockpit injects the agentus-plan MCP
+  /** Which channel carries this backend's plan: `none` = the cockpit injects the hermes-studio-plan MCP
    *  tool at handshake time (every backend's default — the card renders the cockpit's object, which
    *  survives a restart), `acp` = an escape hatch that renders the agent's own plan frames instead. */
   nativePlanSource?: "acp" | "none";
@@ -425,7 +425,7 @@ class AuthRequired extends Error {
 
 /** The operator's hand-set unread marks, kept across sessions of the page (AionUi keeps its manual
  *  set in localStorage for the same reason). One key, a list of ids — a Set is not JSON. */
-const UNREAD_KEY = "agentus.unread";
+const UNREAD_KEY = "hermes-studio.unread";
 /** How long a submitted approval answer may wait for the server's word before the surface stops
  *  claiming it was delivered and offers the click again (see `permAnswer`). */
 export const PERM_ACK_MS = 8000;
@@ -531,8 +531,8 @@ export class Cockpit {
    *  lands back where they were instead of the oldest session (QA#7). */
   #rememberActive(id: string | null): void {
     try {
-      if (id) localStorage.setItem("agentus.active", id);
-      else localStorage.removeItem("agentus.active");
+      if (id) localStorage.setItem("hermes-studio.active", id);
+      else localStorage.removeItem("hermes-studio.active");
     } catch {
       /* private mode / storage disabled — not worth failing over */
     }
@@ -591,7 +591,7 @@ export class Cockpit {
       return target;
     }
     try {
-      return localStorage.getItem("agentus.active");
+      return localStorage.getItem("hermes-studio.active");
     } catch {
       return null;
     }
@@ -1121,7 +1121,7 @@ export class Cockpit {
   // it just waits its turn. The queue is the operator's, so it is rendered with its own buttons and
   // persisted — a reload (a deploy, a phone waking up) must not eat a message he already wrote.
 
-  #queueKey(id: string): string { return `agentus.queue.${id}`; }
+  #queueKey(id: string): string { return `hermes-studio.queue.${id}`; }
 
   /** The raw stored rows — no registration, so a read never has a side effect on the map. `inflight`
    *  is dropped on the way in: a page that just loaded has nothing in flight, and a row stuck in
@@ -1160,10 +1160,10 @@ export class Cockpit {
       const keys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k?.startsWith("agentus.queue.")) keys.push(k);
+        if (k?.startsWith("hermes-studio.queue.")) keys.push(k);
       }
       for (const key of keys) {
-        const sid = key.slice("agentus.queue.".length);
+        const sid = key.slice("hermes-studio.queue.".length);
         this.#loadQueue(sid);
         // Only a slot that can actually ACCEPT these frames. A slot still `spawning` throws
         // "session not ready" for `set-mode`/`set-config` (session-manager) and has no agent to take
@@ -1195,7 +1195,7 @@ export class Cockpit {
     this.bump();
   }
 
-  #setupKey(id: string): string { return `agentus.setup.${id}`; }
+  #setupKey(id: string): string { return `hermes-studio.setup.${id}`; }
 
   /** The picks a RELOAD has to remember. The queue is persisted (a message filed while a slot was
    *  spawning survives a refresh), and the picks ride with the same slot: without them a reload
@@ -2862,8 +2862,8 @@ export const cockpit = new Cockpit();
  * has to be right there in the reply.
  */
 if (typeof window !== "undefined") {
-  const w = window as unknown as { __agentusOpenSession?: (id: string) => boolean };
-  w.__agentusOpenSession = (id: string): boolean => {
+  const w = window as unknown as { __hermesStudioOpenSession?: (id: string) => boolean };
+  w.__hermesStudioOpenSession = (id: string): boolean => {
     const key = String(id ?? "").trim();
     if (!key) return false;
     if (!cockpit.byId.has(key)) return false;

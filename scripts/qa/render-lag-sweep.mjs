@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: a turn must reach its FINISHED shape on its own — no stale live window, no lingering
 // 「turn in progress」 — and it must do so while the transcript is BIG.
 //
@@ -17,7 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";
-const QADB = process.env.AGENTUS_DATA ? `${process.env.AGENTUS_DATA}/agentus.sqlite` : "/tmp/agentus-qa-account/agentus.sqlite";
+const QADB = process.env.HERMES_STUDIO_DATA ? `${process.env.HERMES_STUDIO_DATA}/hermes-studio.sqlite` : "/tmp/agentus-qa-account/hermes-studio.sqlite";
 const SEED = Number(process.env.SEED ?? 300);   // rows of history before the measured turn
 const BATCH = Number(process.env.BATCH ?? 4);   // how many turns to check
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";

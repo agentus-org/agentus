@@ -1,4 +1,4 @@
-package app.agentus.companion;
+package app.hermesstudio.companion;
 
 import android.content.Context;
 import android.content.res.ColorStateList;

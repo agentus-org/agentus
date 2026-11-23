@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 /**
  * hermes 定时作业的只读门面 + CLI 转发（issue #92）。
  *
@@ -243,7 +244,7 @@ function installHermesCandidates(): string[] {
 function cliCandidates(t: CronTarget): string[] {
   const seen = new Set<string>();
   const list = [
-    process.env.AGENTUS_HERMES_CLI || "",
+    process.env.HERMES_STUDIO_HERMES_CLI || "",
     t.cmd,
     ...installHermesCandidates(),
     path.join(process.env.HOME || "", ".local", "bin", "hermes-dev"),
@@ -283,7 +284,7 @@ export async function runCronVerb(t: CronTarget, verb: CronVerb, jobId: string, 
     return {
       ok: false, code: 127,
       out: `找不到能跑 \`hermes cron\` 的可执行文件（试过：${cliCandidates(t).join(" / ")}）。`
-        + "这台机器上 PATH 的 hermes 可能缺依赖 —— 用 AGENTUS_HERMES_CLI 指定一个能用的二进制。",
+        + "这台机器上 PATH 的 hermes 可能缺依赖 —— 用 HERMES_STUDIO_HERMES_CLI 指定一个能用的二进制。",
     };
   }
   const args = ["cron", verb, jobId, ...(t.profile ? ["-p", t.profile] : [])];

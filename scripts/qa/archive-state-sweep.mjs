@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 归档 is a STORAGE STATE, not "has no process" — and 工作空间 keeps its cold rows / 已归档 keeps
 // only what the operator put there.
 //
@@ -14,17 +15,17 @@
 //   5. 取消归档并恢复 brings an archived row back to 工作空间 as a LIVE row (a real resume, real pid);
 //   6. purge removes the row from disk.
 //
-// Usage: PORT=8903 AGENTUS_DATA=/tmp/agentus-qa-arch node scripts/qa/archive-state-sweep.mjs
+// Usage: PORT=8903 HERMES_STUDIO_DATA=/tmp/agentus-qa-arch node scripts/qa/archive-state-sweep.mjs
 //        (needs a browser with --remote-debugging-port=9222)
 import { authHeaders } from "../lib/auth.mjs";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8903);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 // The PAGE needs a login (the REST calls above use the machine token); the dev/QA instance's own
 // credentials come from dev.sh, so the defaults match it.
-const U = process.env.AGENTUS_USERNAME || "scratch";
-const P = process.env.AGENTUS_PASSWORD || "scratch-pass-1";
+const U = process.env.HERMES_STUDIO_USERNAME || "scratch";
+const P = process.env.HERMES_STUDIO_PASSWORD || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -318,7 +319,7 @@ await send("Input.insertText", { text: "sweep: 发给一个没有进程的会话
 await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: "\r" });
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
 await sleep(2500);
-const woke = { queued: await ev(`localStorage.getItem('agentus.queue.${keepCold}')`), b: await buckets() };
+const woke = { queued: await ev(`localStorage.getItem('hermes-studio.queue.${keepCold}')`), b: await buckets() };
 check(woke.queued === null, "Enter on a cold session filed NOTHING in the dead queue", String(woke.queued));
 check(woke.b.live.includes(keepCold), "…it woke the slot instead (a real resume)", JSON.stringify({ cold: woke.b.cold.includes(keepCold), live: woke.b.live.includes(keepCold) }));
 check(Number(woke.b.byId.get(keepCold)?.pid) > 0, "…with a real agent process", `pid=${woke.b.byId.get(keepCold)?.pid}`);

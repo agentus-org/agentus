@@ -81,7 +81,7 @@ check("短首行的会话仍按全等认（#89 语义）", isPromptSliceText("�
 
 // ---- 存量趟 ----------------------------------------------------------------------------------
 const dir = mkdtempSync(path.join(tmpdir(), "agentus-title105-db-"));
-const dbPath = path.join(dir, "agentus.sqlite");
+const dbPath = path.join(dir, "hermes-studio.sqlite");
 const store = new Store(dbPath);
 {
   const raw = new DatabaseSync(dbPath);
@@ -157,7 +157,7 @@ store.close();
 // ---- ① 「读不到」不许被当成「没有」：不复位行、不记录，下次开机再来 -------------------------
 {
   const dir2 = mkdtempSync(path.join(tmpdir(), "agentus-title105-db2-"));
-  const db2 = path.join(dir2, "agentus.sqlite");
+  const db2 = path.join(dir2, "hermes-studio.sqlite");
   const store2 = new Store(db2);
   const raw = new DatabaseSync(db2);
   raw.prepare(
@@ -186,7 +186,7 @@ store.close();
 
 // ---- 空库首启：没有候选就不算跑过（之后拷进来的旧库才会被修） --------------------------------
 {
-  const store3 = new Store(path.join(mkdtempSync(path.join(tmpdir(), "agentus-title105-db3-")), "agentus.sqlite"));
+  const store3 = new Store(path.join(mkdtempSync(path.join(tmpdir(), "agentus-title105-db3-")), "hermes-studio.sqlite"));
   const empty = repairMisTieredTitles(store3, { lookup: () => ({ readable: true, title: null }) });
   check("空库首启不落「已跑」标记",
     empty.checked === 0 && empty.complete === false && !store3.repairRan(SLICE_TITLE_REPAIR, SLICE_TITLE_REPAIR_VERSION),

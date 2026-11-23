@@ -329,7 +329,7 @@ check("a reject reaches the agent too (nothing is written)", rejected?.ok, JSON.
 // limit 5 min)`), and answering a request on a session the server no longer has is a DIFFERENT
 // failure than answering a request it does not hold. Use a session that is live right now.
 const liveId = await ev(`fetch('/api/sessions').then(r=>r.json()).then(d=>((d.live||[]).find(s=>s.backend==='mock'&&s.status!=='starting')||{}).id||'')`);
-// Read the token of the account the PAGE logs into — never `AGENTUS_DATA`: a reviewer's shell
+// Read the token of the account the PAGE logs into — never `HERMES_STUDIO_DATA`: a reviewer's shell
 // often exports it for a different tree, and a token from another instance is rejected here
 // (the socket errors out and the check reads as a product failure).
 const qaData = process.env.QA_DATA ?? "/tmp/agentus-qa-account";

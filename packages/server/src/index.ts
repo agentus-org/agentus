@@ -1,3 +1,4 @@
+import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Hermes Studio server entry: HTTP (REST + static web build) + WebSocket relay.
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -49,21 +50,21 @@ import {
   listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
 } from "./cockpit/api.js";
 
-const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
+const PORT = Number(process.env.HERMES_STUDIO_PORT ?? 8788);
 
 // The INSTANCE's own name (issue #19). One person runs several cockpits — live, a pre-release box,
 // the one at home — and every tab plus every home-screen icon said "Hermes Studio", so the only way to
 // tell them apart was the domain. The name is not a build input: the HTML is already served
 // no-store and names the hashed bundle, so renaming it here costs nothing and needs no rebuild.
 // Unset keeps "Hermes Studio" byte for byte, so an install that never set it is unchanged.
-const TITLE = (process.env.AGENTUS_TITLE ?? "").trim() || "Hermes Studio";
+const TITLE = (process.env.HERMES_STUDIO_TITLE ?? "").trim() || "Hermes Studio";
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
 // launches from the repo root while the dev server runs from packages/server, and a
 // cwd-relative path would silently open a second database (the operator's slots would
 // "disappear"). Both entry points must land on the same store.
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/server/src
 // WHERE STATE LIVES — sqlite, credentials.json, auth.token, settings.json.
-//   1. `AGENTUS_DATA` when it is set. Every launcher and dev/QA instance pins it, so the
+//   1. `HERMES_STUDIO_DATA` when it is set. Every launcher and dev/QA instance pins it, so the
 //      rules below can never move a running install's data out from under it.
 //   2. `~/.agentus` once it holds something, or when there is no repo-side data yet.
 //   3. the in-repo `<repo>/packages/server/.data`, if it exists and ~/.agentus does not —
@@ -73,21 +74,37 @@ const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/serve
 // NOTHING may write inside node_modules: for an installed package
 // `<pkg>/packages/server/.data` is deleted by the next `npm i -g hermes-studio`, taking the
 // transcript and the login with it.
-const DEFAULT_DATA_DIR = path.join(homedir(), ".agentus");
+const NEW_DEFAULT_DATA_DIR = path.join(homedir(), ".hermes-studio");
+const LEGACY_DEFAULT_DATA_DIR = path.join(homedir(), ".agentus");
 const REPO_DATA_DIR = path.resolve(HERE, "../.data");
 const hasData = (dir: string): boolean => {
   try { return fs.statSync(dir).isDirectory() && fs.readdirSync(dir).length > 0; } catch { return false; }
 };
-// An empty AGENTUS_DATA counts as unset (a launcher that clears a variable writes
-// `AGENTUS_DATA=`), otherwise it would resolve to the shell's cwd.
-const ENV_DATA_DIR = process.env.AGENTUS_DATA?.trim() || null;
+// An empty HERMES_STUDIO_DATA counts as unset (a launcher that clears a variable writes
+// `HERMES_STUDIO_DATA=`), otherwise it would resolve to the shell's cwd.
+const ENV_DATA_DIR = process.env.HERMES_STUDIO_DATA?.trim() || null;
+// ONE-TIME MIGRATION (Agentus -> Hermes Studio): an existing default-directory install keeps its
+// sessions/credentials under ~/.agentus. The new default is ~/.hermes-studio. When the new one is
+// absent and the legacy one holds data, rename the whole directory BEFORE resolving DATA_DIR so an
+// upgrade keeps every session/login instead of silently starting empty. An explicit
+// HERMES_STUDIO_DATA pin (launcher/launchd/dev) owns its own directory and is never migrated.
+let migratedFromLegacy = false;
+if (!ENV_DATA_DIR && !fs.existsSync(NEW_DEFAULT_DATA_DIR) && hasData(LEGACY_DEFAULT_DATA_DIR)) {
+  try {
+    fs.renameSync(LEGACY_DEFAULT_DATA_DIR, NEW_DEFAULT_DATA_DIR);
+    migratedFromLegacy = true;
+  } catch (e) {
+    console.error(`[hermes-studio] could not migrate ${LEGACY_DEFAULT_DATA_DIR} -> ${NEW_DEFAULT_DATA_DIR}:`, e);
+  }
+}
+const DEFAULT_DATA_DIR = NEW_DEFAULT_DATA_DIR;
 const DATA_DIR = ENV_DATA_DIR
   ?? (hasData(DEFAULT_DATA_DIR) || !hasData(REPO_DATA_DIR) ? DEFAULT_DATA_DIR : REPO_DATA_DIR);
 const DATA_DIR_SOURCE = ENV_DATA_DIR
-  ? "from AGENTUS_DATA"
+  ? "from HERMES_STUDIO_DATA"
   : DATA_DIR === REPO_DATA_DIR
     ? "in-repo packages/server/.data"
-    : hasData(DEFAULT_DATA_DIR) ? "existing ~/.agentus" : "default ~/.agentus (created on this boot)";
+    : migratedFromLegacy ? "migrated from ~/.agentus" : hasData(DEFAULT_DATA_DIR) ? "existing ~/.hermes-studio" : "default ~/.hermes-studio (created on this boot)";
 // WHICH CODE THIS PROCESS IS RUNNING — resolved once, at boot, on purpose.
 //
 // The live server has no watcher, so the only thing that decides "is this release live?" is what
@@ -105,13 +122,13 @@ const BOOT_COMMIT = (() => {
     return out || null;
   } catch { return null; } // a published install has no .git — nothing to name
 })();
-const WEB_DIST = process.env.AGENTUS_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
+const WEB_DIST = process.env.HERMES_STUDIO_WEB_DIST ?? path.resolve(HERE, "../../web/dist");
 // The Android companion artifact (/notify links to it, /agentus-companion.apk streams it).
 // First candidate is relative to THIS FILE (src → packages/server → packages → repo root,
 // i.e. a checkout that built the APK); a published install has no android/ tree, so the
 // data dir is the place to drop a downloaded artifact. Missing file is not fatal — the
 // routes answer 404 and the panel says 尚未构建.
-const APK_FILE = process.env.AGENTUS_APK
+const APK_FILE = process.env.HERMES_STUDIO_APK
   ?? [
     path.resolve(HERE, "../../../android/artifacts/agentus-companion.apk"),
     path.join(DATA_DIR, "agentus-companion.apk"),
@@ -124,7 +141,7 @@ const APK_FILE = process.env.AGENTUS_APK
 // never read here, and the file this points at holds the certificate alone.
 // Candidates: an explicit pin (a Caddy/safe-nat root lives outside any checkout), then the data
 // dir for a self-contained install, then the Caddy default. Absent is not fatal: the card says so.
-const CA_FILE = process.env.AGENTUS_CA_FILE
+const CA_FILE = process.env.HERMES_STUDIO_CA_FILE
   ?? [
     path.join(DATA_DIR, "tls", "ca.pem"),
     path.join(homedir(), ".config", "caddy", "tls", "ca.pem"),
@@ -134,7 +151,7 @@ const CA_FILE = process.env.AGENTUS_CA_FILE
 // what it decided, then exits — before any listener, store or subprocess exists. Print and
 // exit here rather than re-deriving the same rules in the CLI: "where is my data" must not
 // have two answers.
-if (process.env.AGENTUS_PRINT_PATHS) {
+if (process.env.HERMES_STUDIO_PRINT_PATHS) {
   const has = (p: string) => (fs.existsSync(p) ? "present" : "MISSING");
   console.log(`[hermes-studio] node          ${process.versions.node}`);
   console.log(`[hermes-studio] data dir      ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
@@ -162,7 +179,7 @@ if (!instanceLock.ok) {
   }
   console.error(`[hermes-studio]   reason:   ${instanceLock.why}`);
   console.error(`[hermes-studio]   two servers on one data dir reclaim each other's agents — stop that instance first,`);
-  console.error(`[hermes-studio]   or give this one its own directory:  AGENTUS_DATA=/some/other/dir`);
+  console.error(`[hermes-studio]   or give this one its own directory:  HERMES_STUDIO_DATA=/some/other/dir`);
   process.exit(1);
 }
 if (instanceLock.tookOver) {
@@ -173,7 +190,16 @@ if (instanceLock.tookOver) {
   );
 }
 
-const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
+// ONE-TIME MIGRATION: rename the sqlite file (and its WAL/SHM/JOURNAL siblings) to the new name
+// before the store opens. Idempotent — after the first boot the legacy names are simply absent.
+for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+  const from = path.join(DATA_DIR, "agentus.sqlite" + suffix);
+  const to = path.join(DATA_DIR, "hermes-studio.sqlite" + suffix);
+  if (fs.existsSync(from) && !fs.existsSync(to)) {
+    try { fs.renameSync(from, to); } catch (e) { console.error(`[hermes-studio] sqlite migration ${from} -> ${to}:`, e); }
+  }
+}
+const store = new Store(path.join(DATA_DIR, "hermes-studio.sqlite"));
 // M6: an existing cockpit must behave exactly as before, so the registry starts as a copy of
 // the builtin (env-driven) rows and the operator edits from there. Seeding is one-shot: an
 // empty registry means "first boot", a non-empty one means the operator owns those rows.
@@ -549,9 +575,9 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
 //
 // The threshold is read on every tick, so changing it in 设置 applies immediately (no restart — a
 // restart would kill exactly the slots this feature exists to keep alive cheaply). Two env knobs for
-// QA: AGENTUS_IDLE_KILL_MIN accepts a FRACTION of a minute, which is how the reclaim path is
+// QA: HERMES_STUDIO_IDLE_KILL_MIN accepts a FRACTION of a minute, which is how the reclaim path is
 // exercised in seconds instead of in five minutes (AionUi made its own timeouts env-configurable for
-// the same reason), and AGENTUS_IDLE_SWEEP_MS moves the tick.
+// the same reason), and HERMES_STUDIO_IDLE_SWEEP_MS moves the tick.
 {
   // ABSENT must mean "follow 设置", not 0 — `Number("")` is 0, which would silently disable the
   // reaper on every instance that never sets the env (measured: the startup line said 「0 min」 on an
@@ -562,16 +588,16 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
     const n = Number(s);
     return Number.isFinite(n) && n >= 0 ? n : null;
   };
-  const envIdle = envNum(process.env.AGENTUS_IDLE_KILL_MIN);
+  const envIdle = envNum(process.env.HERMES_STUDIO_IDLE_KILL_MIN);
   const envIdleMs = envIdle != null ? envIdle * 60_000 : null;
   // 热备 (warm slots): same ABSENT≠0 discipline as above. The TTL takes a FRACTION of a minute so the
   // warm-EXPIRY path can be exercised in seconds rather than by waiting out a day.
-  const envWarm = envNum(process.env.AGENTUS_WARM_SLOTS);
-  const envWarmTtlMin = envNum(process.env.AGENTUS_WARM_TTL_MIN);
+  const envWarm = envNum(process.env.HERMES_STUDIO_WARM_SLOTS);
+  const envWarmTtlMin = envNum(process.env.HERMES_STUDIO_WARM_TTL_MIN);
   const envWarmTtlMs = envWarmTtlMin != null ? envWarmTtlMin * 60_000 : null;
-  const envSweep = envNum(process.env.AGENTUS_IDLE_SWEEP_MS);
+  const envSweep = envNum(process.env.HERMES_STUDIO_IDLE_SWEEP_MS);
   const sweepMs = envSweep != null && envSweep >= 1000 ? envSweep : 30_000;
-  const source = envIdleMs != null ? "AGENTUS_IDLE_KILL_MIN" : "settings.agent.idleKillMin";
+  const source = envIdleMs != null ? "HERMES_STUDIO_IDLE_KILL_MIN" : "settings.agent.idleKillMin";
   console.log(
     `[hermes-studio] idle reclaim: ${
       envIdleMs != null ? envIdle : agentSettings().idleKillMin
@@ -583,7 +609,7 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   console.log(
     `[hermes-studio] warm slots: ${envWarm ?? agentSettings().warmSlots} kept up to ${
       envWarmTtlMs != null ? envWarmTtlMs / 3_600_000 : agentSettings().warmTtlHours
-    } h untouched (${envWarm != null || envWarmTtlMs != null ? "AGENTUS_WARM_*" : "settings.agent"}), 0 = off / never`,
+    } h untouched (${envWarm != null || envWarmTtlMs != null ? "HERMES_STUDIO_WARM_*" : "settings.agent"}), 0 = off / never`,
   );
   // The plan-tool hint: read per prompt, so the 设置 switch applies to the next turn with nothing
   // to restart (the session's own plan card is what it fills).
@@ -731,7 +757,7 @@ function send(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** Escape the one instance name that reaches HTML — an operator's `AGENTUS_TITLE` is not markup. */
+/** Escape the one instance name that reaches HTML — an operator's `HERMES_STUDIO_TITLE` is not markup. */
 function htmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -791,7 +817,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
       "content-type": types[ext] ?? "text/plain",
       // Same rule as below: the HTML names the hashed bundle, so it must never be cached. The
       // manifest carries the instance name, which an operator changes by restarting with a new
-      // AGENTUS_TITLE — a cached copy would keep the old label on the home screen for a year.
+      // HERMES_STUDIO_TITLE — a cached copy would keep the old label on the home screen for a year.
       "cache-control": "no-cache, must-revalidate",
       "content-length": String(Buffer.byteLength(body)),
     });
@@ -1211,7 +1237,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const ip = clientIp(req);
       if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the plan tool is loopback-only" });
       const body = await readJson(req);
-      const token = String(req.headers["x-agentus-plan-token"] ?? "");
+      const token = String(req.headers["x-hermes-studio-plan-token"] ?? "");
       const sessionId = String(body.session ?? "");
       if (body.op === "read") {
         const out = mgr.planForMcp(sessionId, token);
@@ -1252,7 +1278,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         res.writeHead(200, {
           "content-type": "application/x-x509-ca-cert",
           "content-length": String(cert.raw.length),
-          "content-disposition": 'attachment; filename="agentus-ca.crt"',
+          "content-disposition": 'attachment; filename="hermes-studio-ca.crt"',
           "cache-control": "no-store",
         });
         return res.end(cert.raw);
@@ -1417,7 +1443,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
 
     // Web IDE bridge (issue #77). Placed AFTER the gate on purpose — that is what makes the proxy
     // inherit the operator's cookie instead of needing an auth path of its own. When
-    // AGENTUS_IDE_UPSTREAM is unset it costs one string compare and answers only /api/ide/status.
+    // HERMES_STUDIO_IDE_UPSTREAM is unset it costs one string compare and answers only /api/ide/status.
     if (await ide.handleHttp(req, res, url)) return;
 
     if (url.pathname === "/api/auth/me" && req.method === "GET") {
@@ -2237,7 +2263,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         //   before=<seq>         -> the previous page above that seq
         //   after=<seq>          -> forward replay rows from a reconnect anchor (WS path)
         // Page size is env-tunable so the paging path is testable without 500+ messages.
-        const pageSize = Number(process.env.AGENTUS_HISTORY_PAGE || 500);
+        const pageSize = Number(process.env.HERMES_STUDIO_HISTORY_PAGE || 500);
         const before = url.searchParams.get("before");
         const after = url.searchParams.get("after");
         if (before != null) {
@@ -2567,10 +2593,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       // …and `dev`: WHICH INSTANCE this is. Only two things in the UI care, and both are about
       // keeping a QA backend out of the operator's way — the mock agent shows up in the new-session
       // form on a dev instance only. The marker is the dev runner's own environment (`DEV_TREE`,
-      // written by scripts/dev.sh; also AGENTUS_DEV=1 for a launcher of one's own); the live
+      // written by scripts/dev.sh; also HERMES_STUDIO_DEV=1 for a launcher of one's own); the live
       // launcher sets neither, so live answers false. An instance-level fact, so it rides the
       // endpoint that already describes the instance rather than every backend row.
-      const dev = Boolean(process.env.DEV_TREE) || process.env.AGENTUS_DEV === "1";
+      const dev = Boolean(process.env.DEV_TREE) || process.env.HERMES_STUDIO_DEV === "1";
       // `commit`: the code THIS process booted from (see BOOT_COMMIT). It is the only honest answer
       // to "did the release actually land", because the tree can be moved under a running server.
       return send(res, 200, { asset, dev, commit: BOOT_COMMIT });
@@ -2792,7 +2818,7 @@ wss.on("connection", (ws) => {
 // 20s, not 60s: the window between "socket died" and "page knows" is exactly how long a prompt can
 // vanish, and the ack timeout on the client (8s) covers what happens inside one beat. An idle
 // cockpit costs 3 tiny frames a minute.
-const HEARTBEAT_MS = Number(process.env.AGENTUS_WS_HEARTBEAT_MS ?? "") || 20_000;
+const HEARTBEAT_MS = Number(process.env.HERMES_STUDIO_WS_HEARTBEAT_MS ?? "") || 20_000;
 const heartbeat = setInterval(() => {
   for (const [id, client] of clients) {
     const ws = client.ws as WebSocket & { isAlive?: boolean };
@@ -3080,17 +3106,17 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   // a wrong answer here reads as "my sessions are gone" and every other log line is fine.
   console.log(`[hermes-studio-server] data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`
     + (DATA_DIR === REPO_DATA_DIR
-      ? `\n[hermes-studio-server]   this install defaults to ${DEFAULT_DATA_DIR}; AGENTUS_DATA=${DEFAULT_DATA_DIR} moves it (a new dir starts with an empty session list)`
+      ? `\n[hermes-studio-server]   this install defaults to ${DEFAULT_DATA_DIR}; HERMES_STUDIO_DATA=${DEFAULT_DATA_DIR} moves it (a new dir starts with an empty session list)`
       : ""));
   // Auth state belongs in the boot log: "is this thing locked, and with which
   // password?" is the first question anyone asks when it is on a LAN.
   if (!authStatus.enabled) {
-    console.warn("[hermes-studio-server] ⚠ AGENTUS_AUTH=off — every visitor can drive your agents. Local dev only.");
+    console.warn("[hermes-studio-server] ⚠ HERMES_STUDIO_AUTH=off — every visitor can drive your agents. Local dev only.");
   } else if (authStatus.usingDefaultPassword) {
     console.warn(
       `[hermes-studio-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
       + "Anyone on this network can spawn agents in any directory.\n"
-      + "[hermes-studio-server]   set AGENTUS_PASSWORD (or AGENTUS_PASSWORD_HASH) before exposing the port.",
+      + "[hermes-studio-server]   set HERMES_STUDIO_PASSWORD (or HERMES_STUDIO_PASSWORD_HASH) before exposing the port.",
     );
   } else {
     console.log(`[hermes-studio-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
@@ -3099,7 +3125,7 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   const basic = auth.basicAuthConfig();
   console.log(basic
     ? `[hermes-studio-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
-    : "[hermes-studio-server] HTTP Basic off (set AGENTUS_BASIC_AUTH=user:pass before exposing a tunnel)");
+    : "[hermes-studio-server] HTTP Basic off (set HERMES_STUDIO_BASIC_AUTH=user:pass before exposing a tunnel)");
   // A wrong/absent dist used to fail silently: the browser's service worker served a stale
   // shell, every request looked fine, and the operator just saw a blank page (QA R36).
   // Say it out loud at boot instead.

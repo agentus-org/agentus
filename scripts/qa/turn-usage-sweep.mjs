@@ -40,7 +40,7 @@ const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-turn-usage-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -164,7 +164,7 @@ try {
   };
   await ev(`(async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'admin', password: '123456' }) });
-    localStorage.setItem('agentus.active', ${JSON.stringify(sid)}); return true; })()`);
+    localStorage.setItem('hermes-studio.active', ${JSON.stringify(sid)}); return true; })()`);
   await snd("Page.navigate", { url: BASE });
   for (let i = 0; i < 60; i += 1) {
     if (await ev("document.querySelectorAll('.turn-usage').length >= 2")) break;

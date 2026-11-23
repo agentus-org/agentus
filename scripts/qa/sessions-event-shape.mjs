@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: every `t:"sessions"` frame carries ALL THREE buckets (live / cold / archived).
 //
 // The bug this pins (2026-10-10): `SessionManager` is constructed with the same `emit` the HTTP routes
@@ -10,11 +11,11 @@
 // Trigger: DELETE a live session. That route closes it THROUGH the manager, so the frame it emits is
 // the manager's own shape — the one that was wrong.
 //
-// Usage: AGENTUS_BASE=http://127.0.0.1:8788 AGENTUS_DATA=<live data dir> node scripts/qa/sessions-event-shape.mjs
+// Usage: HERMES_STUDIO_BASE=http://127.0.0.1:8788 HERMES_STUDIO_DATA=<live data dir> node scripts/qa/sessions-event-shape.mjs
 //        exit 0 = every frame after a manager-emitted change carried all three buckets.
 import { authHeaders } from "../lib/auth.mjs";
 
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8788";
+const BASE = process.env.HERMES_STUDIO_BASE ?? "http://127.0.0.1:8788";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const api = (p, init = {}) =>
   fetch(`${BASE}${p}`, { ...init, headers: { "content-type": "application/json", ...authHeaders(), ...(init.headers || {}) } });

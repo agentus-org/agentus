@@ -112,7 +112,7 @@ const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
     detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -223,7 +223,7 @@ try {
     await fetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(settingsBody)} });
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentus.active', s.id);
+    localStorage.setItem('hermes-studio.active', s.id);
     const caps = await fetch('/api/voice').then((r) => r.json());
     return { sid: s.id, serverTts: caps?.tts?.server ?? null };
   })()`);
@@ -273,7 +273,7 @@ try {
 
   // ---- join a turn in flight and let it SPEAK (the audio-reactive path) -----------------
   const hitsBefore = upstreamHits;
-  await ev(`(async () => { const sid = localStorage.getItem('agentus.active');
+  await ev(`(async () => { const sid = localStorage.getItem('hermes-studio.active');
     await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '[slow] 用三句话介绍一下你自己。' }) });
     return true; })()`);
@@ -1110,7 +1110,7 @@ try {
   // persistence: wipe the browser's copy and reload — the numbers come back from the server
   await closeSheet();
   await ev2(`(() => { localStorage.removeItem('agentus.call');
-    localStorage.setItem('agentus.active', ${JSON.stringify(slow2.id)}); return true; })()`);
+    localStorage.setItem('hermes-studio.active', ${JSON.stringify(slow2.id)}); return true; })()`);
   await send2("Page.reload", { ignoreCache: true });
   await sleep(3200);
   await waitEl2('button[aria-label="开始语音通话"]', 12000);

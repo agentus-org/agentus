@@ -124,10 +124,10 @@ export function useIdeStatus(sessionId: string, root: string): IdeStatus | null 
  * It moves into this file rather than staying in ToolPanel because the HEAD seeds the panel's first
  * tab from it (#80): reopening the cockpit lands on the pane that was on top, and a head button that
  * says "files" must not be overruled by a restore effect that fires a moment later. */
-export const PAIR_KEY = "agentus.panel-pair";
-export const RATIO_KEY = "agentus.panel-split-ratio";
-const SPLIT_KEY = "agentus.panel-split";
-const SPLIT_IDE_TOP_KEY = "agentus.panel-split-ide-top";
+export const PAIR_KEY = "hermes-studio.panel-pair";
+export const RATIO_KEY = "hermes-studio.panel-split-ratio";
+const SPLIT_KEY = "hermes-studio.panel-split";
+const SPLIT_IDE_TOP_KEY = "hermes-studio.panel-split-ide-top";
 
 export function writePair(pair: PaneId[] | null): void {
   try {

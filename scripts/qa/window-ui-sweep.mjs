@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA sweep for the context-window UI, as the operator specified it (2026-10-06):
 //   「上面那个像电量一样的横线…这里就只写这个上下文长度…上下文的更改不要到设置里面改，
 //     就点这个上下文的地方…设置按钮就只做思考强度的事」
@@ -10,9 +11,9 @@
 //   3. a pick lands: the row's number follows the agent's reported window;
 //   4. chat settings offers thinking depth and no longer offers any context option.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 node scripts/qa/window-ui-sweep.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 node scripts/qa/window-ui-sweep.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

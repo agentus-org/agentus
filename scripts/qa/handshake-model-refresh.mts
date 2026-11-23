@@ -19,7 +19,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-handshake-refresh-"));
-const store = new Store(path.join(dir, "agentus.sqlite"));
+const store = new Store(path.join(dir, "hermes-studio.sqlite"));
 store.seedBackendsIfEmpty(seedRows());
 
 const row = store.listBackends().find((r) => r.id === "hermes");

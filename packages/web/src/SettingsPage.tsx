@@ -1066,7 +1066,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
             之后每次只收到一行触发语（「这一轮结束了，看看进展」）。
           </p>
           <p className="set-hint">
-            事实<b>全靠它自己查</b>：它用 <code>$AGENTUS_COCKPIT_BIN</code> 读会话、消息尾部、计划、待审批，
+            事实<b>全靠它自己查</b>：它用 <code>$HERMES_STUDIO_COCKPIT_BIN</code> 读会话、消息尾部、计划、待审批，
             驾驶舱<b>不塞任何现成数据</b>进去 —— 这样播报不会跟着我们的模板一起说错。
             它跑在自己的<b>草稿目录</b>里（<code>~/.hermes/agentus/observers/&lt;会话 id&gt;</code>），
             不看你的项目目录，也不出现在会话列表里。
@@ -1174,7 +1174,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
         <section className="set-card" id="set-cockpit" data-setgroup="agent">
           <h3>驾驶舱互发消息（cockpit CLI）</h3>
           <p className="set-hint">
-            每个会话里的 agent 都拿到了一个本机命令 <code>$AGENTUS_COCKPIT_BIN</code>，可以用它
+            每个会话里的 agent 都拿到了一个本机命令 <code>$HERMES_STUDIO_COCKPIT_BIN</code>，可以用它
             <b>读</b> 这个驾驶舱：有哪些会话、谁在跑、各自的消息尾部、计划、正在等哪个审批。
             数据面只做选择和截断，不做摘要、不改写 —— 会转述驾驶舱的机器就会说错驾驶舱。
           </p>

@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The workspace panel's desktop split, driven through a real browser (2026-10-30).
 //
 // The operator asked for one thing — 「电脑的时候可以把 code-server 分屏放上面，终端放下面，支持点击放上面还是下面」
@@ -11,11 +12,11 @@
 //  2. THE MODE IS A PREFERENCE. Close and reopen the panel, reload the page: the split and which pane
 //     is on top come back.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9222 node scripts/qa/panel-split-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9222 node scripts/qa/panel-split-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -77,12 +78,12 @@ const panesOf = () => ev(`JSON.stringify([...document.querySelectorAll('.panel-s
     h: Math.round(p.getBoundingClientRect().height), xterm: Boolean(p.querySelector('.xterm')),
     explorer: Boolean(p.querySelector('.explorer-col')) })).sort((a, b) => a.top - b.top))`);
 
-/* ── The no-IDE machine (AGENTUS_NO_IDE=1) ────────────────────────────────────────────────────────
+/* ── The no-IDE machine (HERMES_STUDIO_NO_IDE=1) ────────────────────────────────────────────────────────
  * 优化 2 was the operator's own report: 「现在没有ide时不能支持上下分屏吗」. A box with no
- * AGENTUS_IDE_UPSTREAM has exactly two panes — files and terminal — and the split has to work on that
+ * HERMES_STUDIO_IDE_UPSTREAM has exactly two panes — files and terminal — and the split has to work on that
  * pair. This branch runs the same kind of claims against such an instance and stops; the main body
  * below is the IDE machine's suite. */
-if (process.env.AGENTUS_NO_IDE === "1") {
+if (process.env.HERMES_STUDIO_NO_IDE === "1") {
   check("no IDE is offered here (the ide button is absent from the head)",
     await ev(`document.querySelectorAll('.chat-head [aria-label="ide"]').length === 0`),
     await ev(`[...document.querySelectorAll('.chat-head button')].map(b => b.getAttribute('aria-label') ?? b.title).join(',')`));
@@ -99,8 +100,8 @@ if (process.env.AGENTUS_NO_IDE === "1") {
   check("…and they share the height", Math.abs((noIde[0]?.h ?? 0) - (noIde[1]?.h ?? 0)) <= 8,
     `${noIde[0]?.h} vs ${noIde[1]?.h}`);
   check("the pair is stored, files first",
-    (await ev(`localStorage.getItem('agentus.panel-pair')`)) === JSON.stringify(["files", "terminal"]),
-    await ev(`localStorage.getItem('agentus.panel-pair')`));
+    (await ev(`localStorage.getItem('hermes-studio.panel-pair')`)) === JSON.stringify(["files", "terminal"]),
+    await ev(`localStorage.getItem('hermes-studio.panel-pair')`));
   const noIdePair = JSON.parse(await ev(`(() => { const vis = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane);
     return JSON.stringify({ count: vis.length, vis }); })()`));
   check("#79 still holds: exactly the pair is visible, never three rows", noIdePair.count === 2, JSON.stringify(noIdePair));
@@ -137,7 +138,7 @@ const picker = JSON.parse(await ev(`(() => { const el = document.querySelector('
   return JSON.stringify({ present: Boolean(el),
     items: el ? [...el.querySelectorAll('.pane-picker-item')].map(b => (b.textContent || '').trim()) : [],
     labeled: el ? [...el.querySelectorAll('.pane-picker-item')].map(b => b.getAttribute('aria-label')) : [],
-    pair: localStorage.getItem('agentus.panel-pair'),
+    pair: localStorage.getItem('hermes-studio.panel-pair'),
     top: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane) }); })()`));
 check("开分屏时下方是选择态（不替用户选工具）", picker.present === true, JSON.stringify(picker));
 check("…选择态里不含上方那个工具", !picker.items.includes("ide"), picker.items.join(","));
@@ -161,7 +162,7 @@ check("the two panes share the height", Math.abs((split[0]?.h ?? 0) - (split[1]?
  *
  *  Written as a COUNT plus a MEMBERSHIP test, not as "the two known panes are visible": it holds for
  *  any registry size, so it is the assertion that keeps holding when the next pane is added. */
-const inPair = JSON.parse(await ev(`(() => { const pair = JSON.parse(localStorage.getItem('agentus.panel-pair') || 'null');
+const inPair = JSON.parse(await ev(`(() => { const pair = JSON.parse(localStorage.getItem('hermes-studio.panel-pair') || 'null');
   const vis = [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => p.dataset.pane);
   return JSON.stringify({ count: vis.length, vis, pair }); })()`));
 check("in split mode the panel shows exactly the pair — a third pane cannot sneak in (#79)",
@@ -179,7 +180,7 @@ const kept = await ev(`(() => ({ iframe: document.querySelector('[data-pane="ide
   xterm: document.querySelector('[data-pane="terminal"] .xterm').dataset.mark === 'keep' }))()`);
 check("swapping does NOT reload the IDE frame (a re-mount would restart code-server)", kept.iframe === true, JSON.stringify(kept));
 check("swapping does NOT open a new pty (the terminal element survives)", kept.xterm === true, JSON.stringify(kept));
-check("the choice is remembered as a pair, terminal first", await ev(`localStorage.getItem('agentus.panel-pair')`) === JSON.stringify(["terminal","ide"]), await ev(`localStorage.getItem('agentus.panel-pair')`));
+check("the choice is remembered as a pair, terminal first", await ev(`localStorage.getItem('hermes-studio.panel-pair')`) === JSON.stringify(["terminal","ide"]), await ev(`localStorage.getItem('hermes-studio.panel-pair')`));
 
 /* #78, the geometry assertion that the old suite lacked: the divider must sit BETWEEN the two rows.
    CSS `order` is an <integer> — the 1.5 shipped in 0.15.10 was a discarded declaration, the divider
@@ -223,7 +224,7 @@ await drag(90);
 const heightAfter = await topH();
 check("dragging the divider resizes the top row", heightAfter > heightBefore + 40, `${heightBefore} → ${heightAfter}`);
 check("…and the height is remembered under THIS PAIR's key (#78 §2)",
-  Number(await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`)) > heightBefore + 40,
+  Number(await ev(`localStorage.getItem('hermes-studio.panel-split-ratio:ide+terminal')`)) > heightBefore + 40,
   await ev(`JSON.stringify(Object.keys(localStorage).filter(k=>k.includes('split-ratio')))`) );
 const sum = JSON.parse(await ev(`(() => { const st = document.querySelector('.panel-stack').getBoundingClientRect();
   const kids = [...document.querySelectorAll('.panel-stack > *')].map(e => e.getBoundingClientRect().height);
@@ -232,8 +233,8 @@ check("the rows never overflow the panel (a fixed top row + a fixed bottom row w
 await ev(`(() => { const h = document.querySelector('.row-divider .pane-handle-row');
   h.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
 await sleep(700);
-check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`) === null,
-  String(await ev(`localStorage.getItem('agentus.panel-split-ratio:ide+terminal')`)));
+check("double-click on the divider goes back to half and half", await ev(`localStorage.getItem('hermes-studio.panel-split-ratio:ide+terminal')`) === null,
+  String(await ev(`localStorage.getItem('hermes-studio.panel-split-ratio:ide+terminal')`)));
 
 /* `files` is a PANE since 2026-10-30 (「现在没有ide时不能支持上下分屏吗」): the tab bar now means the
    same thing for every entry — click = put me on top — and the way out of the split is the ⇅ toggle,
@@ -245,7 +246,7 @@ const afterFiles = JSON.parse(await ev(`(() => { const vis=[...document.querySel
   .map(p => ({ pane: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top) })).sort((a,b)=>a.top-b.top);
   return JSON.stringify({ vis, explorer: Boolean(document.querySelector('.explorer-col')),
     split: document.querySelector('${splitBtn}')?.getAttribute('aria-pressed'),
-    pair: localStorage.getItem('agentus.panel-pair') }); })()`));
+    pair: localStorage.getItem('hermes-studio.panel-pair') }); })()`));
 check("clicking the files tab shows the BROWSER full height and keeps the pair stored",
   afterFiles.split === "false" && afterFiles.explorer === true
   && afterFiles.vis.length === 1 && afterFiles.vis[0].pane === "files"
@@ -279,8 +280,8 @@ check("opening a pane after a reload lands back in the split, in the remembered 
 /* #78: the 0.15.10 preferences (two booleans + a global ratio) migrate into the pair model, so an
    operator who had the terminal on top and a dragged height keeps both after the upgrade. */
 await ev(`(() => { for (const k of Object.keys(localStorage)) if (/panel-split|panel-pair/.test(k)) localStorage.removeItem(k);
-  localStorage.setItem('agentus.panel-split','1'); localStorage.setItem('agentus.panel-split-ide-top','0');
-  localStorage.setItem('agentus.panel-split-ratio','300'); return true; })()`);
+  localStorage.setItem('hermes-studio.panel-split','1'); localStorage.setItem('hermes-studio.panel-split-ide-top','0');
+  localStorage.setItem('hermes-studio.panel-split-ratio','300'); return true; })()`);
 await goto(BASE);
 await sleep(1500);
 /* the migrated pair is now the head's SEED for the panel's first tab, so the panel opens straight
@@ -291,9 +292,9 @@ await sleep(2000);
    opened, so click through the head's terminal button. */
 await ev(`document.querySelector('.chat-head [aria-label="terminal"]').click(); true`);
 await sleep(1500);
-const migrated = JSON.parse(await ev(`JSON.stringify({pair: localStorage.getItem('agentus.panel-pair'),
+const migrated = JSON.parse(await ev(`JSON.stringify({pair: localStorage.getItem('hermes-studio.panel-pair'),
   rows: [...document.querySelectorAll('.panel-stack .stack-pane:not([hidden])')].map(p => ({cls: p.dataset.pane, top: Math.round(p.getBoundingClientRect().top), h: Math.round(p.getBoundingClientRect().height)})).sort((a,b)=>a.top-b.top),
-  perPair: localStorage.getItem('agentus.panel-split-ratio:ide+terminal')})`));
+  perPair: localStorage.getItem('hermes-studio.panel-split-ratio:ide+terminal')})`));
 check("the stored booleans migrate into a pair with the terminal on top",
   migrated.pair === JSON.stringify(["terminal","ide"]) && migrated.rows[0]?.cls === "terminal", JSON.stringify(migrated));
 check("the global ratio migrates into the pair's key", Number(migrated.perPair) === 300 || Math.abs((migrated.rows[0]?.h ?? 0) - 300) <= 80,

@@ -40,7 +40,7 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: "development", HOME: emptyHome,
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
+    HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off",
     // 每块 300ms：一轮正文要流三四秒，1Hz 的表才有得打。60ms 的默认值会在第一跳之前就说完。
     MOCK_SLOW_MS: "300",
   },

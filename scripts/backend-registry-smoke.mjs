@@ -1,7 +1,8 @@
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Backend registry (M6) — asserts that "which hermes" is a row the operator owns, and that a row
 // naming its own home gets exactly that home while a row with none falls back to the default (the
 // operator's real ~/.hermes). The early-dev isolation guard — the `blocked` state, the row's
-// `allowLiveHome` tick and AGENTUS_ALLOW_LIVE_HOME — is gone.
+// `allowLiveHome` tick and HERMES_STUDIO_ALLOW_LIVE_HOME — is gone.
 //
 //   node scripts/backend-registry-smoke.mjs
 //
@@ -31,8 +32,8 @@ import { createServer as createTcp } from "node:net";
 const ROOT = path.resolve(import.meta.dirname, "..");
 // What the QA row should run. Default = the operator's own setup on this box: the installed
 // `hermes` (Studio runtime) with PYTHONPATH at the source fork. Override on any other machine.
-const HERMES_CMD = process.env.AGENTUS_QA_HERMES_CMD || "hermes";
-const FORK = process.env.AGENTUS_QA_FORK || path.join(homedir(), "Project/hermes-agent");
+const HERMES_CMD = process.env.HERMES_STUDIO_QA_HERMES_CMD || "hermes";
+const FORK = process.env.HERMES_STUDIO_QA_FORK || path.join(homedir(), "Project/hermes-agent");
 const LIVE_HOME = path.join(homedir(), ".hermes");
 
 const killGroup = (target) => {
@@ -72,12 +73,12 @@ async function boot(port, dataDir) {
       env: {
         ...process.env,
         NODE_ENV: "development",
-        AGENTUS_PORT: String(port),
-        AGENTUS_DATA: dataDir,
-        AGENTUS_AUTH: "on",
+        HERMES_STUDIO_PORT: String(port),
+        HERMES_STUDIO_DATA: dataDir,
+        HERMES_STUDIO_AUTH: "on",
         // keep the QA server off the operator's voice endpoints
-        AGENTUS_STT_BASE_URL: "",
-        AGENTUS_TTS_BASE_URL: "",
+        HERMES_STUDIO_STT_BASE_URL: "",
+        HERMES_STUDIO_TTS_BASE_URL: "",
       },
     },
   );
@@ -136,7 +137,7 @@ function commandResolves(cmd) {
 async function modePickOf(dataDir, sessionId) {
   try {
     const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(path.join(dataDir, "agentus.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(path.join(dataDir, "hermes-studio.sqlite"), { readOnly: true });
     const row = db.prepare("select mode_id from sessions where id = ?").get(String(sessionId));
     db.close();
     return row?.mode_id ?? null;
@@ -675,7 +676,7 @@ async function main() {
     }
 
     // 5. a row aimed at the operator's REAL home is normal now — the early-dev isolation guard
-    //    (and its AGENTUS_ALLOW_LIVE_HOME / `allowLiveHome` escape hatches) is gone. Proven
+    //    (and its HERMES_STUDIO_ALLOW_LIVE_HOME / `allowLiveHome` escape hatches) is gone. Proven
     //    without touching the real state.db: the row runs the in-repo mock agent under
     //    HERMES_HOME=~/.hermes, and the mock never opens a database, so this asserts "it is no
     //    longer refused" and "the home still reaches the child" — and nothing more.

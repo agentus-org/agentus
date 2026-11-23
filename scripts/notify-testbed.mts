@@ -1,3 +1,4 @@
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Notify test bed — the contract's server half, standalone.
 //
 // Why it exists: wiring NotifyCenter into the cockpit server needs a restart, and a
@@ -28,8 +29,8 @@ function arg(name: string, fallback: string): string {
 }
 
 const DATA_DIR = path.resolve(arg("data", path.join(REPO, "packages/server/.data-notify-testbed")));
-const PORT = Number(arg("port", String(process.env.AGENTUS_NOTIFY_PORT ?? 8790)));
-const TLS_PORT = Number(arg("tls-port", String(process.env.AGENTUS_NOTIFY_TLS_PORT ?? 8791)));
+const PORT = Number(arg("port", String(process.env.HERMES_STUDIO_NOTIFY_PORT ?? 8790)));
+const TLS_PORT = Number(arg("tls-port", String(process.env.HERMES_STUDIO_NOTIFY_TLS_PORT ?? 8791)));
 const CERT = path.resolve(arg("cert", path.join(REPO, "packages/server/.data/tls/cert.pem")));
 const KEY = path.resolve(arg("key", path.join(REPO, "packages/server/.data/tls/key.pem")));
 const APK_DIR = path.resolve(arg("apk-dir", path.join(REPO, "android/artifacts")));
@@ -48,7 +49,7 @@ function operatorToken(): string {
   fs.writeFileSync(file, `${v}\n`, { mode: 0o600 });
   return v;
 }
-const TOKEN = process.env.AGENTUS_NOTIFY_TOKEN?.trim() || operatorToken();
+const TOKEN = process.env.HERMES_STUDIO_NOTIFY_TOKEN?.trim() || operatorToken();
 
 const equal = (a: string, b: string): boolean => {
   const x = Buffer.from(a);

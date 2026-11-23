@@ -5,7 +5,7 @@
 // 轮询。这个标志补的就是另一半：立即回执 + 目标回合自然结束时把一条【完成回推】投进调用方会话
 // （走 #39 那条"唤醒某会话"的链子，冷会话会被叫起来）。
 //
-// 这里全部走真路径：真 server、真 mock agent、真 CLI 进程（环境里的 AGENTUS_COCKPIT_* 身份是从
+// 这里全部走真路径：真 server、真 mock agent、真 CLI 进程（环境里的 HERMES_STUDIO_COCKPIT_* 身份是从
 // agent 进程上读出来的，和 agent 自己看到的一样）。断言：
 //   1. 带标志：调用立即返回（不等回合），回执带 reply_on_done；
 //   2. 目标回合结束后，调用方会话里真的多了一条【完成回推】，说清是谁、用了多久；
@@ -40,7 +40,7 @@ const PORT = await freePort();
 const DATA = mkdtempSync(path.join(tmpdir(), "agentus-reply-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true, cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(PORT), AGENTUS_DATA: DATA },
+  env: { ...process.env, NODE_ENV: "development", HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: DATA },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -78,7 +78,7 @@ const identityOf = (pid) => {
   const found = {};
   for (const kv of env.split(/\s+/)) {
     const at = kv.indexOf("=");
-    if (at > 0 && kv.startsWith("AGENTUS_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
+    if (at > 0 && kv.startsWith("HERMES_STUDIO_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
   }
   return found;
 };
@@ -109,7 +109,7 @@ try {
   const B = await mkSession("交付B");
   check("fixture: two sessions (a dispatcher and a worker)", Boolean(A.id && B.id), `${A.id} ${B.id}`);
   const asA = identityOf(A.pid);
-  check("the dispatcher's own cockpit identity came from its process", Boolean(asA.AGENTUS_COCKPIT_SESSION), JSON.stringify(Object.keys(asA)));
+  check("the dispatcher's own cockpit identity came from its process", Boolean(asA.HERMES_STUDIO_COCKPIT_SESSION), JSON.stringify(Object.keys(asA)));
 
   // ---- 1. 带标志：立即返回，不等回合 ------------------------------------------------
   const sent = cli(asA, ["session", "send", B.id, "[hold:6000] 帮我跑个慢活", "--reply-on-done"]);
@@ -159,7 +159,7 @@ try {
 
   // ---- 5. 操作者模式：没有 caller 就没有人接这条通知 -------------------------------
   const operator = cli(
-    { AGENTUS_ENDPOINT: BASE, AGENTUS_DATA: DATA, AGENTUS_PORT: String(PORT) },
+    { HERMES_STUDIO_ENDPOINT: BASE, HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_PORT: String(PORT) },
     ["session", "send", B.id, "我是操作者", "--reply-on-done"],
   );
   // 操作者身份没有「我的会话」，所以没人接这条回推。今天它在更早的一层就被拒（拿不到目标行），

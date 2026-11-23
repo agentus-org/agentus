@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 工作空间面板的「最大化 / 还原」（issue #91）。
 //
 // 操作者的原话：在 IDE / 终端里干活时 760px 不够用，但会话列表还要留着切会话。所以「最大化」不是
@@ -14,11 +15,11 @@
 //   ⑧ #99 标记是持久化的、面板开关不是 —— 刷新那一刻面板必然是关着的：标记还在，但聊天区不许
 //      被藏掉（否则右侧整片空白），重开同一个 pane 还得回到放大态（偏好不丢）。
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/panel-maximize-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/panel-maximize-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -53,7 +54,7 @@ const status = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'conten
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
 check("logged in", status === 200, `status ${status}`);
 await viewport(1400);
-// 按前缀清：per-pair 的 `agentus.panel-split-ratio:<a+b>` 与 `agentus.panel-split-ide-top` 也是
+// 按前缀清：per-pair 的 `hermes-studio.panel-split-ratio:<a+b>` 与 `hermes-studio.panel-split-ide-top` 也是
 // 这一族，逐个点名会漏（键名见 panes.ts 的 PAIR_KEY / RATIO_KEY / SPLIT_KEY）。
 await ev(`(() => { for (const k of Object.keys(localStorage)) if (/^hermes-studio\\.panel-/.test(k)) localStorage.removeItem(k); return true; })()`);
 await goto(BASE);
@@ -79,8 +80,8 @@ const layout = async () => JSON.parse(await ev(`(() => {
     chatW: chatRect ? Math.round(chatRect.width) : null,
     handle: (() => { const h = document.querySelector('.tool-panel > .pane-handle');
       return h ? getComputedStyle(h).display : null; })(),
-    stored: localStorage.getItem('agentus.panel-width'),
-    maxFlag: localStorage.getItem('agentus.panel-maximized'),
+    stored: localStorage.getItem('hermes-studio.panel-width'),
+    maxFlag: localStorage.getItem('hermes-studio.panel-maximized'),
     pressed: document.querySelector('${MAX}')?.getAttribute('aria-pressed') ?? null,
   });
 })()`));
@@ -104,7 +105,7 @@ check("起始不是放大态（pressed=false，聊天列可见）",
   before.pressed === "false" && before.chatDisplay !== "none", JSON.stringify({ pressed: before.pressed, chat: before.chatDisplay }));
 
 // ---- ③ 先手动设一个可识别的宽度，验证还原回到的是它 ----------------------------------------
-await ev(`localStorage.setItem('agentus.panel-width', '620'); true`);
+await ev(`localStorage.setItem('hermes-studio.panel-width', '620'); true`);
 await goto(BASE);
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
 await waitPanel();
@@ -213,7 +214,7 @@ await sleep(1000);
 check("再次放大", (await layout()).pressed === "true");
 await ev(`document.querySelector('.tool-panel [aria-label="close panel"]').click(); true`);
 await sleep(1000);
-check("放大态点 × 关面板会清掉放大标记", (await ev(`localStorage.getItem('agentus.panel-maximized')`)) === "0");
+check("放大态点 × 关面板会清掉放大标记", (await ev(`localStorage.getItem('hermes-studio.panel-maximized')`)) === "0");
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
 await sleep(1500);
 const reopened = await layout();
@@ -230,8 +231,8 @@ check("再次放大（为 ⑥b 造状态）", (await layout()).pressed === "true
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
 await sleep(1200);
 check("head 开关关面板同样清掉放大标记",
-  (await ev(`localStorage.getItem('agentus.panel-maximized')`)) === "0",
-  String(await ev(`localStorage.getItem('agentus.panel-maximized')`)));
+  (await ev(`localStorage.getItem('hermes-studio.panel-maximized')`)) === "0",
+  String(await ev(`localStorage.getItem('hermes-studio.panel-maximized')`)));
 await ev(`(() => { const b = document.querySelector('.chat-head button[aria-label="file browser"]'); if (b) b.click(); return true; })()`);
 await sleep(1500);
 const reopenedByHead = await layout();
@@ -254,7 +255,7 @@ check("手机宽度下没有「最大化」按钮（那时它已经是全屏 she
 await viewport(1400);
 
 // ---- 持久化：放大态刷新后仍然放大 ----------------------------------------------------------
-await ev(`localStorage.setItem('agentus.panel-maximized', '1'); true`);
+await ev(`localStorage.setItem('hermes-studio.panel-maximized', '1'); true`);
 await goto(BASE);
 // #99: 刷新后面板是关着的（panelOpen 是内存态），标记却还在 localStorage 里 —— 旧代码里
 // `panelMax = flag && wide` 不看面板开没开，于是聊天列被 visibility:hidden 藏掉、本该占位的
@@ -280,7 +281,7 @@ const afterReload = await layout();
 check("刷新后放大态保持（面板打开即全宽）",
   afterReload.pressed === "true" && Math.abs((afterReload.panelRight ?? -1) - afterReload.bodyRight) <= 1,
   JSON.stringify({ pressed: afterReload.pressed, w: afterReload.panelW }));
-await ev(`localStorage.setItem('agentus.panel-maximized', '0'); true`);
+await ev(`localStorage.setItem('hermes-studio.panel-maximized', '0'); true`);
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 await send("Page.close").catch(() => {});

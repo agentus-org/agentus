@@ -1,21 +1,22 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // The cockpit CLI, end to end (issue #15): identity in the environment, the read data plane, and the
 // gated `send`.
 //
 // Everything here goes through the REAL path: a mock session is spawned by the real server, its
-// `AGENTUS_COCKPIT_*` identity is read off the child process (which is exactly what an agent would
+// `HERMES_STUDIO_COCKPIT_*` identity is read off the child process (which is exactly what an agent would
 // find in its own environment), and `bin/hermes-studio-cockpit.mjs` is executed as a separate process.
 // Nothing is stubbed, so a broken token, a missing route or a wrong envelope all show up.
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/cockpit-cli-sweep.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 HERMES_STUDIO_DATA=/tmp/agentus-qa-account node scripts/qa/cockpit-cli-sweep.mjs
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8901";
+const BASE = process.env.HERMES_STUDIO_BASE ?? "http://127.0.0.1:8901";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
-const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
+const DATA = process.env.HERMES_STUDIO_DATA ?? "/tmp/agentus-qa-account";
 // ONE command: the launcher. Everything goes through `hermes-studio cockpit …`, exactly what an agent gets
-// in `$AGENTUS_COCKPIT_BIN` — there is no second binary to keep in sync (or to explain).
+// in `$HERMES_STUDIO_COCKPIT_BIN` — there is no second binary to keep in sync (or to explain).
 const BIN = path.join(REPO, "bin/hermes-studio.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,8 +59,8 @@ const check = (name, ok, detail = "") => {
 const rawCli = (env, args) => {
   const clean = { ...process.env };
   for (const k of [
-    "AGENTUS_COCKPIT_ENDPOINT", "AGENTUS_COCKPIT_TOKEN", "AGENTUS_COCKPIT_SESSION", "AGENTUS_COCKPIT_BIN",
-    "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE",
+    "HERMES_STUDIO_COCKPIT_ENDPOINT", "HERMES_STUDIO_COCKPIT_TOKEN", "HERMES_STUDIO_COCKPIT_SESSION", "HERMES_STUDIO_COCKPIT_BIN",
+    "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "HERMES_STUDIO_SESSION_ROLE",
   ]) delete clean[k];
   try {
     const out = execFileSync(process.execPath, [BIN, ...args], {
@@ -90,7 +91,7 @@ const identityOf = (pid) => {
   const found = {};
   for (const kv of env.split(/\s+/)) {
     const at = kv.indexOf("=");
-    if (at > 0 && kv.startsWith("AGENTUS_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
+    if (at > 0 && kv.startsWith("HERMES_STUDIO_COCKPIT_")) found[kv.slice(0, at)] = kv.slice(at + 1);
   }
   return found;
 };
@@ -112,7 +113,7 @@ const purge = async (id) => {
   await api(`/api/sessions/${id}`, { method: "DELETE" }); // cold → purge
 };
 
-// #40: the cockpit hands agents the PATH of this file and expects `$AGENTUS_COCKPIT_BIN session list`
+// #40: the cockpit hands agents the PATH of this file and expects `$HERMES_STUDIO_COCKPIT_BIN session list`
 // to run. In a checkout the blob was 100644, so that first command died with EACCES and the only way
 // out was spelling `node <path>` — which an agent cannot discover from the injection text.
 {
@@ -123,30 +124,30 @@ const purge = async (id) => {
   // Executed DIRECTLY (no `node` in front) — the shape the agent actually uses. The runtime markers go
   // first (#106): this harness runs inside an agent's turn, and 「missing identity is an agent」 is the
   // rule now, so what this call needs is a plain shell's environment, not the harness's.
-  const directEnv = { ...process.env, AGENTUS_DATA: DATA, AGENTUS_ENDPOINT: BASE };
-  for (const k of ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "AGENTUS_SESSION_ROLE"]) delete directEnv[k];
+  const directEnv = { ...process.env, HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_ENDPOINT: BASE };
+  for (const k of ["HERMES_SESSION_CHAT_ID", "HERMES_SESSION_ID", "HERMES_STUDIO_SESSION_ROLE"]) delete directEnv[k];
   const direct = execFileSync(BIN, ["capabilities"], { cwd: REPO, encoding: "utf8", env: directEnv });
-  check("…`$AGENTUS_COCKPIT_BIN capabilities` runs as a command, not via `node`", /schema_version/.test(direct), direct.slice(0, 60));
+  check("…`$HERMES_STUDIO_COCKPIT_BIN capabilities` runs as a command, not via `node`", /schema_version/.test(direct), direct.slice(0, 60));
 }
 
 const before = (await api("/api/settings")).body.agent?.cockpitSend ?? false;
 const src = await mkSession("cockpit-cli src（自动删除）");
 const dst = await mkSession("cockpit-cli dst（自动删除）");
 const env = identityOf(src.pid);
-const SID = env.AGENTUS_COCKPIT_SESSION;
+const SID = env.HERMES_STUDIO_COCKPIT_SESSION;
 console.log(`      src=${SID} dst=${dst.id} send was ${before ? "ON" : "OFF"}`);
 
 try {
   // ---- identity: the cockpit hands it to the child, and only to the child ----
-  check("the spawned agent carries AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION",
-    Boolean(env.AGENTUS_COCKPIT_ENDPOINT && env.AGENTUS_COCKPIT_TOKEN && SID), JSON.stringify(Object.keys(env)));
-  check("…and it is THE LAUNCHER, so `\"$AGENTUS_COCKPIT_BIN\" session <verb>` is the only spelling",
-    env.AGENTUS_COCKPIT_BIN === BIN && /bin\/agentus\.mjs$/.test(env.AGENTUS_COCKPIT_BIN), String(env.AGENTUS_COCKPIT_BIN));
+  check("the spawned agent carries HERMES_STUDIO_COCKPIT_ENDPOINT/_TOKEN/_SESSION",
+    Boolean(env.HERMES_STUDIO_COCKPIT_ENDPOINT && env.HERMES_STUDIO_COCKPIT_TOKEN && SID), JSON.stringify(Object.keys(env)));
+  check("…and it is THE LAUNCHER, so `\"$HERMES_STUDIO_COCKPIT_BIN\" session <verb>` is the only spelling",
+    env.HERMES_STUDIO_COCKPIT_BIN === BIN && /bin\/agentus\.mjs$/.test(env.HERMES_STUDIO_COCKPIT_BIN), String(env.HERMES_STUDIO_COCKPIT_BIN));
   check("…with a token minted per process (not a shared secret)",
-    env.AGENTUS_COCKPIT_TOKEN !== token, "it equals the operator's machine token");
+    env.HERMES_STUDIO_COCKPIT_TOKEN !== token, "it equals the operator's machine token");
 
   // ---- a bad token is refused as a CODE, not as an HTTP lecture ----
-  const bad = cli({ ...env, AGENTUS_COCKPIT_TOKEN: "nope" }, ["session", "list"]);
+  const bad = cli({ ...env, HERMES_STUDIO_COCKPIT_TOKEN: "nope" }, ["session", "list"]);
   check("a wrong token answers code:bad_token and exits non-zero",
     bad.code !== 0 && bad.doc?.error?.code === "bad_token", JSON.stringify(bad.doc?.error ?? bad.stderr));
 
@@ -252,23 +253,23 @@ try {
     badBy.code !== 0 && badBy.doc?.error?.code === "bad_request", JSON.stringify(badBy.doc?.error));
 
   // ---- --table: for eyes, not for pipes ----
-  const table = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "list", "--limit", "3", "--table"]);
+  const table = rawCli({ HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_PORT: "8901" }, ["session", "list", "--limit", "3", "--table"]);
   check("--table prints a HUMAN table on stdout, not the JSON envelope",
     table.code === 0 && !table.out.trimStart().startsWith("{") && /live/.test(table.out),
     table.out.split("\n").slice(0, 2).join(" | "));
 
   // ---- operator mode: a human at a shell, using the machine token already on disk ----
-  const asOperator = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "list", "--limit", "2"]);
+  const asOperator = rawCli({ HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_PORT: "8901" }, ["session", "list", "--limit", "2"]);
   const opDoc = (() => { try { return JSON.parse(asOperator.out); } catch { return null; } })();
   check("with no cockpit identity the CLI falls back to the operator (auth.token)", asOperator.code === 0 && opDoc?.success === true,
     opDoc?.error ? JSON.stringify(opDoc.error) : `code ${asOperator.code}`);
   check("…and the operator has NO self row (there is no agent to attribute to)", opDoc?.data?.self === null,
     JSON.stringify(opDoc?.data?.self ?? null));
-  const opRename = rawCli({ AGENTUS_DATA: DATA, AGENTUS_PORT: "8901" }, ["session", "rename", dst.id, "操作者改的"]);
+  const opRename = rawCli({ HERMES_STUDIO_DATA: DATA, HERMES_STUDIO_PORT: "8901" }, ["session", "rename", dst.id, "操作者改的"]);
   const opRenamed = (() => { try { return JSON.parse(opRename.out); } catch { return null; } })();
   check("…so a rename made by the operator records NO author (NULL title_by)",
     opRenamed?.data?.titleBy == null && opRenamed?.data?.name === "操作者改的", JSON.stringify(opRenamed?.data ?? opRenamed?.error));
-  const noToken = rawCli({ AGENTUS_DATA: "/tmp/does-not-exist-agentus", AGENTUS_PORT: "8901" }, ["session", "list"]);
+  const noToken = rawCli({ HERMES_STUDIO_DATA: "/tmp/does-not-exist-agentus", HERMES_STUDIO_PORT: "8901" }, ["session", "list"]);
   const noTokenDoc = (() => { try { return JSON.parse(noToken.out); } catch { return null; } })();
   check("with neither identity nor token it refuses with no_identity (never a silent empty list)",
     noToken.code !== 0 && noTokenDoc?.error?.code === "no_identity", JSON.stringify(noTokenDoc?.error));

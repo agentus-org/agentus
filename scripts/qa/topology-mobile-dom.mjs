@@ -1,12 +1,13 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // #94/#95 的手机形态：这次改动全是「多一个入口、多一层折叠、多一种拖动」，
 // 每一样在 390px 上都会换一种坏法 —— 入口够不到、折叠行点不中、手指一划页面不动、
 // 拖一下卡片就飞了。桌面 sweep 一条都测不到这些，所以单独一份。
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-mobile-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/topology-mobile-dom.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -52,7 +53,7 @@ const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content
   body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASS)}})}).then(r=>r.status)`);
 check("logged in", login === 200, `status ${login}`);
 // 上一轮 sweep 可能把折叠/位置存进了同一 origin 的 localStorage：清掉，让「默认」这条真的被测到。
-await ev(`localStorage.removeItem('agentus.topo.collapsed'); localStorage.removeItem('agentus.topo.pos'); localStorage.removeItem('agentus.topo.groupPos'); true`);
+await ev(`localStorage.removeItem('hermes-studio.topo.collapsed'); localStorage.removeItem('hermes-studio.topo.pos'); localStorage.removeItem('hermes-studio.topo.groupPos'); true`);
 await send("Page.reload");
 await sleep(2800);
 
@@ -169,7 +170,7 @@ await sleep(700);
 const scrollTop1 = await ev(`document.querySelector('[data-topo-canvas]').scrollTop`);
 check("#95 phone: swiping the canvas scrolls it (touch-action stayed auto)",
   scrollTop1 > scrollTop0 + 40, `${scrollTop0} → ${scrollTop1}`);
-const posAfterSwipe = await ev(`localStorage.getItem('agentus.topo.pos') || '{}'`);
+const posAfterSwipe = await ev(`localStorage.getItem('hermes-studio.topo.pos') || '{}'`);
 check("#95 phone: …and the swipe did not drag a card instead",
   posAfterSwipe === "{}" || Object.keys(JSON.parse(posAfterSwipe)).length === 0, posAfterSwipe);
 

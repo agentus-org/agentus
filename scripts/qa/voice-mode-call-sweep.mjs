@@ -70,9 +70,9 @@ async function start() {
     cwd: REPO,
     env: {
       PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "development",
-      AGENTUS_PORT: String(port), AGENTUS_DATA: DATA,
-      AGENTUS_USERNAME: "scratch", AGENTUS_PASSWORD: "scratch-pass-1",
-      AGENTUS_IDLE_SWEEP_MS: "0",
+      HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: DATA,
+      HERMES_STUDIO_USERNAME: "scratch", HERMES_STUDIO_PASSWORD: "scratch-pass-1",
+      HERMES_STUDIO_IDLE_SWEEP_MS: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -86,7 +86,7 @@ async function start() {
 }
 
 function db() {
-  return new DatabaseSync(path.join(DATA, "agentus.sqlite"), { readOnly: true });
+  return new DatabaseSync(path.join(DATA, "hermes-studio.sqlite"), { readOnly: true });
 }
 
 function voiceRow(sessionId) {

@@ -104,9 +104,9 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   env: {
     ...process.env, NODE_ENV: "development", HOME: emptyHome,
-    AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir,
-    AGENTUS_TTS_BASE_URL: `http://127.0.0.1:${stubPort}`,
-    AGENTUS_TTS_API_KEY: "stub", AGENTUS_TTS_MODEL: "stub-tts", AGENTUS_TTS_VOICE: "stub",
+    HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir,
+    HERMES_STUDIO_TTS_BASE_URL: `http://127.0.0.1:${stubPort}`,
+    HERMES_STUDIO_TTS_API_KEY: "stub", HERMES_STUDIO_TTS_MODEL: "stub-tts", HERMES_STUDIO_TTS_VOICE: "stub",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -176,7 +176,7 @@ try {
   // prefs are the ones in play.
   // NOTE the settings path, not the env bootstrap: a fresh install defaults to
   // provider:"dashscope", and an unconfigured dashscope resolves to the BROWSER voice
-  // (env AGENTUS_TTS_BASE_URL does not win over an explicit provider choice). The
+  // (env HERMES_STUDIO_TTS_BASE_URL does not win over an explicit provider choice). The
   // operator reaches server TTS through the settings page, so the sweep does the same.
   // The settings body is built HERE and injected as JSON: writing a credential-shaped
   // literal into a tool payload gets it redacted on the way to disk (this bit me — the file
@@ -199,7 +199,7 @@ try {
     const putText = (await putRes.text()).slice(0, 200);
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentus.active', s.id);
+    localStorage.setItem('hermes-studio.active', s.id);
     // Wait for the agent to be READY before prompting: /prompt answers 202 even when the slot is
     // still starting, the refusal only reaches the server log, and the sweep then dies on a
     // missing speaker button — a harness race that looked like a broken stop path.
@@ -317,7 +317,7 @@ try {
   const autoOn = await ev(`document.querySelector('.chat-head .icon-btn.auto-read')?.getAttribute('aria-pressed')`);
   check("the header switch reports auto-read ON", autoOn === "true", `aria-pressed=${autoOn}`);
   const sendPrompt = (text) => ev(`(async () => {
-    const sid = localStorage.getItem('agentus.active');
+    const sid = localStorage.getItem('hermes-studio.active');
     await fetch('/api/sessions/' + sid + '/prompt', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: ${JSON.stringify(text)} }) });
     return sid; })()`);

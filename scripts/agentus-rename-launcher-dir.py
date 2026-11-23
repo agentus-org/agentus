@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rename the LIVE launcher directory's own contents: AGENTSLOT_* -> AGENTUS_*.
+"""Rename the LIVE launcher directory's own contents: AGENTSLOT_* -> HERMES_STUDIO_*.
 
 Called by scripts/apply-agentus-rename-live.sh after the directory itself has been
 moved to ~/.hermes/cache/agentus.
@@ -21,7 +21,7 @@ TEXT_EXT = {".py", ".sh", ".mjs", ".mts", ".js", ".json", ".md", ".txt", ".crt",
 def convert(text: str) -> str:
     t = text.replace("worktrees/agentslot", PH)          # protect: worktree dirs keep their names
     t = t.replace("cache/agentslot", "cache/agentus")    # the launcher dir's own path
-    t = t.replace("AGENTSLOT_", "AGENTUS_")
+    t = t.replace("AGENTSLOT_", "HERMES_STUDIO_")
     t = t.replace("AgentSlot", "Hermes Studio")
     t = t.replace("agentslot", "hermes-studio")
     return t.replace(PH, "worktrees/agentslot")

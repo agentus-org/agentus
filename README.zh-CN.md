@@ -83,22 +83,22 @@ npm run hermes-studio               # the same CLI as `npx hermes-studio`, strai
 自己开发」用的。
 
 `npm start`（→ `scripts/start.sh`）会检查 Node 版本，在 `node_modules` 缺失时用 `NODE_ENV=development`
-安装依赖，在 web bundle 过期时构建，然后启动服务。用 `AGENTUS_PORT=9000 npm start` 换端口。
+安装依赖，在 web bundle 过期时构建，然后启动服务。用 `HERMES_STUDIO_PORT=9000 npm start` 换端口。
 
 ### 状态放在哪
 
-默认 `~/.agentus` —— 里面有 `agentus.sqlite`（会话与 transcript）、`credentials.json`、`auth.token`
+默认 `~/.hermes-studio` —— 里面有 `hermes-studio.sqlite`（会话与 transcript）、`credentials.json`、`auth.token`
 （机器凭证）、`auth.secret`、`settings.json`。首次启动时以 0700 创建，启动日志会打印它**以及
 这个目录获胜的原因**：
 
 | 顺序 | 规则 |
 |---|---|
-| 1 | `AGENTUS_DATA` 被设置时用它 —— 每个启动器和 dev/QA 实例都会钉住它 |
-| 2 | `~/.agentus` 一旦里面有东西，或者仓库侧还没有任何数据时用它 |
+| 1 | `HERMES_STUDIO_DATA` 被设置时用它 —— 每个启动器和 dev/QA 实例都会钉住它 |
+| 2 | `~/.hermes-studio` 一旦里面有东西，或者仓库侧还没有任何数据时用它 |
 | 3 | `<repo>/packages/server/.data` —— 早于这套布局的老 checkout |
 
 规则 3 不是锦上添花：一个悄悄换了目录的安装会以空的会话列表启动，那读起来完全就是「我的会话没了」。
-要迁移这样的 checkout，用 `AGENTUS_DATA=~/.agentus` 启动一次即可。`hermes-studio --where` 会打印服务端解析
+要迁移这样的 checkout，用 `HERMES_STUDIO_DATA=~/.hermes-studio` 启动一次即可。`hermes-studio --where` 会打印服务端解析
 出的结果，而不用你自己猜。
 
 ### 后端
@@ -115,23 +115,23 @@ npm run hermes-studio               # the same CLI as `npx hermes-studio`, strai
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `AGENTUS_PORT` | `8788` | 服务端口（从不读取裸 `PORT` —— 这个名字在共享主机上被污染） |
-| `AGENTUS_DATA` | `~/.agentus` | 状态所在；完整顺序见「状态放在哪」（已有数据的老 checkout 上是 `<repo>/packages/server/.data`） |
-| `AGENTUS_HERMES_CMD` | `hermes` | hermes 后端要拉起的二进制 |
-| `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | qoder 同上 |
-| `AGENTUS_HERMES_HOME` | `~/.hermes` | 未指定 home 的那一行所用的默认 `HERMES_HOME`（运维者自己的 home） |
-| `AGENTUS_PERM_TIMEOUT_MS` | `300000` (5 min) | 权限请求自动取消前等待多久 |
-| `AGENTUS_HISTORY_PAGE` | `500` | transcript 分页大小（测试里也会调小以覆盖分页路径） |
-| `AGENTUS_TERM_PTY` | 未设置 | `1` = 工作区终端走 Python 标准库 `pty`（真 tty；需要 `python3`）而不是管道 |
-| `AGENTUS_TERM_CMD` | 未设置 | 完全覆盖终端命令行（例如 `socat …`），空格分隔 |
-| `AGENTUS_TTS_BASE_URL` | 未设置 | **服务端**语音合成的 OpenAI 兼容 base（`…/v1`）。未设置 = 只用浏览器语音 |
-| `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | 同上 |
-| `AGENTUS_STT_BASE_URL` | 未设置 | **服务端**转写的 OpenAI 兼容 base。未设置 = 只用浏览器识别 |
-| `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | 同上 |
+| `HERMES_STUDIO_PORT` | `8788` | 服务端口（从不读取裸 `PORT` —— 这个名字在共享主机上被污染） |
+| `HERMES_STUDIO_DATA` | `~/.hermes-studio` | 状态所在；完整顺序见「状态放在哪」（已有数据的老 checkout 上是 `<repo>/packages/server/.data`） |
+| `HERMES_STUDIO_HERMES_CMD` | `hermes` | hermes 后端要拉起的二进制 |
+| `HERMES_STUDIO_QODER_CMD` | `~/.local/bin/qodercli` | qoder 同上 |
+| `HERMES_STUDIO_HERMES_HOME` | `~/.hermes` | 未指定 home 的那一行所用的默认 `HERMES_HOME`（运维者自己的 home） |
+| `HERMES_STUDIO_PERM_TIMEOUT_MS` | `300000` (5 min) | 权限请求自动取消前等待多久 |
+| `HERMES_STUDIO_HISTORY_PAGE` | `500` | transcript 分页大小（测试里也会调小以覆盖分页路径） |
+| `HERMES_STUDIO_TERM_PTY` | 未设置 | `1` = 工作区终端走 Python 标准库 `pty`（真 tty；需要 `python3`）而不是管道 |
+| `HERMES_STUDIO_TERM_CMD` | 未设置 | 完全覆盖终端命令行（例如 `socat …`），空格分隔 |
+| `HERMES_STUDIO_TTS_BASE_URL` | 未设置 | **服务端**语音合成的 OpenAI 兼容 base（`…/v1`）。未设置 = 只用浏览器语音 |
+| `HERMES_STUDIO_TTS_API_KEY` / `HERMES_STUDIO_TTS_MODEL` / `HERMES_STUDIO_TTS_VOICE` | – / `tts-1` / `alloy` | 同上 |
+| `HERMES_STUDIO_STT_BASE_URL` | 未设置 | **服务端**转写的 OpenAI 兼容 base。未设置 = 只用浏览器识别 |
+| `HERMES_STUDIO_STT_API_KEY` / `HERMES_STUDIO_STT_MODEL` / `HERMES_STUDIO_STT_LANGUAGE` | – / `whisper-1` / – | 同上 |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) 凭证。既从进程 env 读，**也**从 `~/.hermes/.env` 读，因为服务端通常是从一个普通 shell 启动的 |
 
 语音/主题变量只是**引导值**：设置页（侧栏里的 ⚙）才是 provider、endpoint、key、模型、热词表和配色的
-所有者，它把这些存进 `<AGENTUS_DATA>/settings.json`（0600，key 从不回传给浏览器）。以页面里说的为准；
+所有者，它把这些存进 `<HERMES_STUDIO_DATA>/settings.json`（0600，key 从不回传给浏览器）。以页面里说的为准；
 env 的存在只是让一个全新的 checkout 在没人打开设置页之前就能用。
 
 ## 登录
@@ -148,7 +148,7 @@ password: 123456     (default — change it)
 `<DATA_DIR>/credentials.json`（0600，scrypt 哈希 —— 磁盘上没有明文）。改密码会让其他所有会话失效；
 发起改动的那台设备会拿到一个新 cookie，所以它保持登录。任何改动都需要当前密码，包括只改用户名。
 
-`AGENTUS_USERNAME` / `AGENTUS_PASSWORD` / `AGENTUS_PASSWORD_HASH` 仍可作为引导：它们是应用的起
+`HERMES_STUDIO_USERNAME` / `HERMES_STUDIO_PASSWORD` / `HERMES_STUDIO_PASSWORD_HASH` 仍可作为引导：它们是应用的起
 点，一旦你在 账号 卡片里保存了东西，从那以后就是文件说了算（和语音、主题一样的「设置文件 > env」顺序）。
 只改密码会把当天的密码固化成哈希，这样 env 里的值就再也不能悄悄回来起作用。删掉 `credentials.json`
 即可回退到环境变量。
@@ -185,19 +185,19 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `AGENTUS_AUTH` | `on` | `off` = 完全不登录（本地折腾用；启动日志会骂你） |
-| `AGENTUS_USERNAME` | `admin` | 运维者用户名 |
-| `AGENTUS_PASSWORD` | `123456` | 运维者密码（env 里是明文） |
-| `AGENTUS_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`；设置后优先于 `AGENTUS_PASSWORD` |
-| `AGENTUS_SESSION_TTL_MS` | 604800000 (7d) | 会话有效期 |
-| `AGENTUS_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie 签名密钥（0600，自动生成） |
-| `AGENTUS_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | 机器 token（0600，自动生成） |
-| `AGENTUS_LOGIN_MAX_FAILS` / `AGENTUS_LOGIN_LOCK_MS` | `5` / `30000` | 按 IP 的暴力破解锁定 |
-| `AGENTUS_BASIC_AUTH` | — | 在**所有东西**前面加一道 HTTP Basic 质询（包括 `/healthz` 和 WS 升级）。`user:pass` 两者都校验；`:pass`（或裸 `pass`）**只校验密码**并接受任意用户名。这是你在暴露隧道之前想要的那道外层锁；见「公网暴露」。 |
+| `HERMES_STUDIO_AUTH` | `on` | `off` = 完全不登录（本地折腾用；启动日志会骂你） |
+| `HERMES_STUDIO_USERNAME` | `admin` | 运维者用户名 |
+| `HERMES_STUDIO_PASSWORD` | `123456` | 运维者密码（env 里是明文） |
+| `HERMES_STUDIO_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`；设置后优先于 `HERMES_STUDIO_PASSWORD` |
+| `HERMES_STUDIO_SESSION_TTL_MS` | 604800000 (7d) | 会话有效期 |
+| `HERMES_STUDIO_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie 签名密钥（0600，自动生成） |
+| `HERMES_STUDIO_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | 机器 token（0600，自动生成） |
+| `HERMES_STUDIO_LOGIN_MAX_FAILS` / `HERMES_STUDIO_LOGIN_LOCK_MS` | `5` / `30000` | 按 IP 的暴力破解锁定 |
+| `HERMES_STUDIO_BASIC_AUTH` | — | 在**所有东西**前面加一道 HTTP Basic 质询（包括 `/healthz` 和 WS 升级）。`user:pass` 两者都校验；`:pass`（或裸 `pass`）**只校验密码**并接受任意用户名。这是你在暴露隧道之前想要的那道外层锁；见「公网暴露」。 |
 
 ### 公网暴露（隧道 / 反向代理）
 
-把 `AGENTUS_BASIC_AUTH=:pass` 放进服务端环境，然后把隧道指向 `<lan-ip>:8788`。这样你就有了两把独立
+把 `HERMES_STUDIO_BASIC_AUTH=:pass` 放进服务端环境，然后把隧道指向 `<lan-ip>:8788`。这样你就有了两把独立
 的锁 —— 边缘的 Basic，里面的运维者登录 —— 脚本依然能进（`curl -u :pass` 加上机器 token）。
 
 这里推荐只用密码的形式（`:pass`，或裸 `pass`）：HTTP Basic 总是会让浏览器问用户名（RFC 7617 传
@@ -209,7 +209,7 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 - **隧道自带的门**，如果它有的话。SakuraFrp 的 `auth_pass` 是 IP 级授权：首次访问显示一个小页面要访问
   密码，之后记住该 IP，WebSocket 也能穿过它继续工作（两端实测过）。这一侧零配置；代价是机器想进就得
   走那套额外的授权流程（`POST /v4/tunnel/auth`）。
-- **`AGENTUS_BASIC_AUTH`**，当隧道没有门、是纯 TCP 转发，或者你想要可脚本化的访问（`curl -u :pass`）。
+- **`HERMES_STUDIO_BASIC_AUTH`**，当隧道没有门、是纯 TCP 转发，或者你想要可脚本化的访问（`curl -u :pass`）。
   真正的 401 质询被每个浏览器、代理和 HTTP 客户端理解 —— 不像某些隧道的「访问鉴权」形式，它们返回 HTTP
   **200** 加一个「授权你的 IP」页面，对 `curl` 不可见。
 
@@ -230,7 +230,7 @@ TLS：放一层反代（Caddy / nginx），或者用自带 `public_tls` 的隧�
 
 | 端口 | 讲什么 | 给谁 |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变；**唯一的监听** |
+| `HERMES_STUDIO_PORT` (8788) | 纯 HTTP | LAN、loopback、`curl`、脚本 —— 无证书警告，CI 不变；**唯一的监听** |
 
 证书的生命周期（签发、轮换、SAN）留在前置层里，永远不碰应用；LAN 这条路也就没有证书警告。cookie 这边
 也没有损失：handler 读 `X-Forwarded-Proto`（`packages/server/src/auth.ts`），所以凡是在前置层走了 TLS
@@ -245,7 +245,7 @@ home 就用它，否则用默认值 —— **你真实的 `~/.hermes`**，也就
 `state.db`。这就是预期的生产设置：一个 slot 驱动你真实的 agent，带着你的配置、凭证、记忆和会话列表。
 
 *继承来的* `HERMES_HOME` 会被忽略（一个由 Hermes 启动的 shell 会把自己的泄漏下去），所以一个 slot 往
-哪写永远是你选的东西 —— 在那一行上，或在 `AGENTUS_HERMES_HOME` 里。
+哪写永远是你选的东西 —— 在那一行上，或在 `HERMES_STUDIO_HERMES_HOME` 里。
 
 要让某个 slot 的数据单独放（干净的会话列表、不同的 profile、一次性的实验），在那一行的 HERMES_HOME 里
 命名一个目录即可 —— 不需要权限。早期开发的**隔离护栏**已经去掉了：它当初直接拒绝真实 home，是因为
@@ -263,22 +263,22 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 `hermes-studio cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
 
 ```bash
-"$AGENTUS_COCKPIT_BIN" capabilities                     # 契约本身，自述（先跑这个）
-"$AGENTUS_COCKPIT_BIN" session list --here              # 收窄：我的工作空间，按活跃时间倒序
-"$AGENTUS_COCKPIT_BIN" session list --waiting --table    # 操作者的待审批队列，打成表
-"$AGENTUS_COCKPIT_BIN" session rename <id> "…名字…"      # 给会话改名（行里会记下是谁改的）
-"$AGENTUS_COCKPIT_BIN" session show <id>                # 单个会话，外加它此刻在等什么
-"$AGENTUS_COCKPIT_BIN" session messages <id> --tail 20
-"$AGENTUS_COCKPIT_BIN" session plan <id>
-"$AGENTUS_COCKPIT_BIN" session send <id> "…一句话…"      # 需要操作者开启，默认关闭
-"$AGENTUS_COCKPIT_BIN" skill                            # 这份 CLI 的说明书，直接从包里取
+"$HERMES_STUDIO_COCKPIT_BIN" capabilities                     # 契约本身，自述（先跑这个）
+"$HERMES_STUDIO_COCKPIT_BIN" session list --here              # 收窄：我的工作空间，按活跃时间倒序
+"$HERMES_STUDIO_COCKPIT_BIN" session list --waiting --table    # 操作者的待审批队列，打成表
+"$HERMES_STUDIO_COCKPIT_BIN" session rename <id> "…名字…"      # 给会话改名（行里会记下是谁改的）
+"$HERMES_STUDIO_COCKPIT_BIN" session show <id>                # 单个会话，外加它此刻在等什么
+"$HERMES_STUDIO_COCKPIT_BIN" session messages <id> --tail 20
+"$HERMES_STUDIO_COCKPIT_BIN" session plan <id>
+"$HERMES_STUDIO_COCKPIT_BIN" session send <id> "…一句话…"      # 需要操作者开启，默认关闭
+"$HERMES_STUDIO_COCKPIT_BIN" skill                            # 这份 CLI 的说明书，直接从包里取
 ```
 
 形状是「名词 + 动词」（`hermes-studio session send <id> …`），因为这些动作都作用在同一个对象上；
 会话 id 是位置参数，选项才用 `--`。
 
-身份由驾驶舱在 spawn 时注入（`AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
-不要参数、不要端口、不要配置，token 也不会出现在命令行上。`AGENTUS_COCKPIT_BIN` 就是同一个
+身份由驾驶舱在 spawn 时注入（`HERMES_STUDIO_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
+不要参数、不要端口、不要配置，token 也不会出现在命令行上。`HERMES_STUDIO_COCKPIT_BIN` 就是同一个
 `hermes-studio` 启动器 —— 命令只有一个、名字也只有一个，你在自己 shell 里敲 `hermes-studio cockpit …` 是同一件事。互发消息（**设置 → 驾驶舱互发消息**，
 默认关闭）里的「已送达」只意味着对方 agent **收到**并开始一轮，绝不等于它读懂了或同意了；
 对方正在跑回合时会拒绝并回 `target_busy`，那条消息哪里都没进。
@@ -338,8 +338,8 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 - **附件**作为真实的 ACP content blocks：图片（`type: "image"`）、带文件名头内联的文本文件、链接作为
   `resource_link`。只有文件名被持久化 —— 从不持久化字节
 - **语音，双向，浏览器优先**：朗读任意回复（每条消息一个按钮加一个自动朗读开关、音色选择、语速），口述
-  一条 prompt（带实时中间词）。服务端端点是可选的、且只是一个代理（`AGENTUS_TTS_BASE_URL` /
-  `AGENTUS_STT_BASE_URL`）；什么都不配时，浏览器来做这件事，UI 会这样说明
+  一条 prompt（带实时中间词）。服务端端点是可选的、且只是一个代理（`HERMES_STUDIO_TTS_BASE_URL` /
+  `HERMES_STUDIO_STT_BASE_URL`）；什么都不配时，浏览器来做这件事，UI 会这样说明
 - **语音通话模式**（聊天头部里的 📞）：一个与会话的全屏通话 —— 一个随真实音频起伏的 canvas 光球，每个
   阶段一种颜色（listening / thinking / speaking / error，会向屏幕阅读器播报），回复在流式生成时逐句念
   出，以及**真正抢过话语权的 barge-in**：在回复上说话会停掉我们的播放、*取消 agent 的回合*并把麦克风
@@ -394,14 +394,14 @@ npm run backend-smoke                     # 42: the backend registry, spawn env,
 npm run workspace-smoke                   # 85: workspace field, file API, shell, attachments
 npm run voice-smoke                       # 47: settings/theme guards, voice router, 百炼 shapes
 npm run package-smoke                     # packs, installs into a throwaway prefix + HOME, boots
-                                          # that install, drives a mock turn, checks ~/.agentus
+                                          # that install, drives a mock turn, checks ~/.hermes-studio
 node scripts/smoke.mjs mock "hello"       # end-to-end against the mock agent
 ```
 
 每个测试都在一个临时端口上、用一个一次性数据目录启动自己的服务端，所以它们在哪都能跑（包括 CI）：
 
 - `auth-smoke` —— 匿名 REST/WS 拒绝、暴力破解锁定、cookie 签名与篡改检测、过期、经 cookie 的 WS、
-  机器 token、登出撤销、`AGENTUS_AUTH=off`。
+  机器 token、登出撤销、`HERMES_STUDIO_AUTH=off`。
 - `workspace-smoke` —— 每会话工作区、只读文件 API、PTY shell、prompt 上的附件、语音端点护栏。
 - `voice-smoke` —— 设置/主题契约（校验、掩码、0600 文件）、对着一个替身端点（OpenAI 兼容**和**百炼的
   原生形状）的语音路由、热词合并与封顶，以及在一个空 `$HOME` 下的 `.env` 引导。

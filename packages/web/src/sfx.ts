@@ -163,7 +163,7 @@ export function playCut(): void {
 /** 背景音电平。0.10（≈-20 dB）在手机喇叭上基本等于没有 —— 试听时打断音听得见、底音听不见，
  *  十有八九不是"没触发"，是**太轻**。默认给 0.22（≈-13 dB）当底色，并且让人自己调。
  *  存 localStorage，通话页和设置页读同一个值。 */
-const LEVEL_KEY = "agentus.sfx.bed";
+const LEVEL_KEY = "hermes-studio.sfx.bed";
 let bedLevel = (() => {
   try {
     const v = Number(localStorage.getItem(LEVEL_KEY));

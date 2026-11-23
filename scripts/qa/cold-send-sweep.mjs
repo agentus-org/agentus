@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 冷槽位唤醒 — ONE Enter wakes the session AND delivers the message.
 //
 // The operator's report (2026-10-10): 「回车的话，第一次你去回车的时候，它还没反应，要过一会儿还要再去点一次
@@ -31,7 +32,7 @@
 // assertion below is about something the operator can actually see.
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -113,8 +114,8 @@ const purge = (sid) => ev(`(async () => { await fetch(${JSON.stringify(`/api/ses
  *  profile holds the cookie for the LIVE port, so an unattended tab on a QA port renders the login
  *  wall and every step after reads as a 401-induced "product failure". Fixture credentials (the
  *  DEV_USER / DEV_PASS defaults) and overridable; the value is never printed. */
-const QA_USER = process.env.AGENTUS_QA_USER || "scratch";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "scratch-pass-1";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "scratch";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "scratch-pass-1";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

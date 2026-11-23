@@ -90,7 +90,7 @@ PORT=8901 W=390 H=844 node scripts/qa/popover-sweep.mjs
 
 Each sweep opens its **own tab** (`PUT http://127.0.0.1:9222/json/new?<BASE>`), builds its
 own page state, and defaults to the dev port (`8901`, overridable with `PORT` / `BASE`).
-Sweeps that post REST calls want the QA data dir: `AGENTUS_DATA=/tmp/agentus-qa-account`.
+Sweeps that post REST calls want the QA data dir: `HERMES_STUDIO_DATA=/tmp/agentus-qa-account`.
 
 **Rebuild before you sweep a web change.** The dev server serves `packages/web/dist`, so
 after editing web sources run `npm run build` (or `npm run build -w @hermes-studio/web`) first, or

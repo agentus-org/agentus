@@ -1,3 +1,4 @@
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA R26: two WS clients on one session — the fan-out must reach both, in order.
 // Run: node scripts/dual-client.mjs <sessionId>
 import { WebSocket } from "ws";
@@ -5,7 +6,7 @@ import { wsUrl } from "./lib/auth.mjs";
 
 const sid = process.argv[2];
 if (!sid) throw new Error("usage: node scripts/dual-client.mjs <sessionId>");
-const URL = wsUrl(process.env.AGENTUS_BASE || "http://127.0.0.1:8788");
+const URL = wsUrl(process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8788");
 
 function open(name) {
   const ws = new WebSocket(URL);

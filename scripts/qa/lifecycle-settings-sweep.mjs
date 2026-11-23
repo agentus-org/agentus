@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 设置 → 槽位回收与热备 — the agent-process knobs are editable from the page, and what they say is
 // true. Both live in settings.agent and BOTH are read by the reaper on every tick, so a number that
 // looks saved but never reaches the server is the failure this sweep exists to catch.
@@ -13,10 +14,10 @@
 //   ⑤ the defaults are put back at the end (5 slots / 24 h), so the instance is left as found.
 //
 // Usage: browser with --remote-debugging-port=9222 signed in to the instance, then
-//          PORT=8907 AGENTUS_BASE=http://localhost:8907 node scripts/qa/lifecycle-settings-sweep.mjs
+//          PORT=8907 HERMES_STUDIO_BASE=http://localhost:8907 node scripts/qa/lifecycle-settings-sweep.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -84,8 +85,8 @@ const setField = (index, value) => ev(`(() => {
  *  profile holds the cookie for the LIVE port, so an unattended tab on a QA port renders the login
  *  wall and every step after reads as a 401-induced "product failure". Fixture credentials (the
  *  DEV_USER / DEV_PASS defaults) and overridable; the value is never printed. */
-const QA_USER = process.env.AGENTUS_QA_USER || "scratch";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "scratch-pass-1";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "scratch";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "scratch-pass-1";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

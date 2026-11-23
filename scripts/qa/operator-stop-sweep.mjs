@@ -51,8 +51,8 @@ async function boot(extra = {}) {
       ...process.env, NODE_ENV: "development", HOME: home,
       // The agent home is what `busyTurnEta` reads (and what the mock writes its lease into): one
       // temp dir per instance keeps the operator's real ~/.hermes out of the sweep entirely.
-      AGENTUS_HERMES_HOME: agentHome, HERMES_HOME: agentHome,
-      AGENTUS_PORT: String(port), AGENTUS_DATA: dataDir,
+      HERMES_STUDIO_HERMES_HOME: agentHome, HERMES_HOME: agentHome,
+      HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: dataDir,
       MOCK_SLOW_MS: "15", MOCK_GATEWAY_OWNED: "1", MOCK_TURN_LEASE: "1",
       ...extra,
     },
@@ -285,8 +285,8 @@ const cliStop = (() => {
   try {
     return execFileSync(process.execPath, [path.join(ROOT, "bin/cli.mjs"), "session", "stop", lagSlot.id], {
       encoding: "utf8",
-      env: { ...process.env, AGENTUS_DATA: L.dataDir, AGENTUS_ENDPOINT: L.base,
-        HERMES_SESSION_CHAT_ID: "", HERMES_SESSION_ID: "", AGENTUS_SESSION_ROLE: "", AGENTUS_COCKPIT_TOKEN: "" },
+      env: { ...process.env, HERMES_STUDIO_DATA: L.dataDir, HERMES_STUDIO_ENDPOINT: L.base,
+        HERMES_SESSION_CHAT_ID: "", HERMES_SESSION_ID: "", HERMES_STUDIO_SESSION_ROLE: "", HERMES_STUDIO_COCKPIT_TOKEN: "" },
     });
   } catch (e) { return String(e?.stdout ?? "") + String(e?.stderr ?? ""); }
 })();
@@ -350,7 +350,7 @@ check("…and that turn finished normally (turn-usage recorded)", turnCompleted,
 // #109 之后，「送达但还没结束」和「agent 根本不认」在 2.5 s 这一刻是**同一件事**，谁也判不出来 ——
 // 硬中断要等回合边界。所以立即回执只能是 `cancel_pending`（诚实），把判负的活儿交给后台观察者：
 // 把耐心窗口压到 4 s，让它在租约一直不消失时开口写一条「它还在跑」。
-const B = await boot({ MOCK_IGNORE_CANCEL: "1", AGENTUS_STOP_WATCH_MS: "4000" });
+const B = await boot({ MOCK_IGNORE_CANCEL: "1", HERMES_STUDIO_STOP_WATCH_MS: "4000" });
 const deafSlot = await createSession(B, "agent 不认这一停");
 await B.api(`/api/sessions/${deafSlot.id}/prompt`, { method: "POST", body: JSON.stringify({ text: "[hold:30000] 停不掉的一轮" }) });
 for (let i = 0; i < 40; i++) {

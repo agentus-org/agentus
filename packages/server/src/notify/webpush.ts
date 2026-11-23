@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Web Push — the third renderer of the same notification decision.
 //
 // The three channels and why they exist:
@@ -124,7 +125,7 @@ export class WebPushService {
 
   constructor(dataDir: string, opts: { subject?: string; log?: (line: string) => void } = {}) {
     this.dir = path.join(dataDir, "notify");
-    this.subject = opts.subject ?? process.env.AGENTUS_VAPID_SUBJECT ?? "mailto:agentus@localhost";
+    this.subject = opts.subject ?? process.env.HERMES_STUDIO_VAPID_SUBJECT ?? "mailto:hermes-studio@localhost";
     this.log = opts.log ?? ((l) => console.log(l));
   }
 

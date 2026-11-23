@@ -30,8 +30,8 @@ const TEXTFILE = [{ kind: "text", name: "notes.md", mimeType: "text/markdown", t
 
 async function start(port, extraEnv = {}) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), `attach-sweep-${port}-`));
-  const env = { ...process.env, AGENTUS_PORT: String(port), AGENTUS_DATA: data, AGENTUS_DEV: "1" };
-  delete env.AGENTUS_BASE; delete env.AGENTUS_TITLE;
+  const env = { ...process.env, HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: data, HERMES_STUDIO_DEV: "1" };
+  delete env.HERMES_STUDIO_BASE; delete env.HERMES_STUDIO_TITLE;
   Object.assign(env, extraEnv);
   const child = spawn(process.execPath, ["--import", "tsx", "packages/server/src/index.ts"], {
     cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"],

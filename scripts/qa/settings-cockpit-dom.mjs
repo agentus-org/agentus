@@ -34,7 +34,7 @@ const original = (await (await fetch(`${BASE}/api/settings`, { headers: { author
 
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (HERMES_STUDIO_DATA?)`);
   await ev(`location.reload()`);
   await sleep(1500);
 

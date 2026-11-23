@@ -20,7 +20,7 @@
 // `.md-table-zoom.rot` does — the widest axis of the phone becomes the table's horizontal axis.
 import { copyText } from "./clipboard";
 
-const ENHANCED = "data-agentus-table";
+const ENHANCED = "data-hermes-studio-table";
 const MIN_ROWS_FOR_FILTER = 4;
 
 interface SortState {

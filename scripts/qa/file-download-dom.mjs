@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 文件面板的「下载」必须是下载，不是跳转（operator: 「文件下载的时候，好像是直接跳转成一个链接，
 // 而不是直接下载」）。
 //
@@ -10,15 +11,15 @@
 //      落盘的文件名就是文件自己的名字（这里故意用中文+空格，验 RFC 5987 的 filename*）；
 //   ② 预览行为没被破坏 —— `<img>` / `<iframe>` 取的还是 inline 的那条 URL，另有一颗「新标签打开」。
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/file-download-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/file-download-dom.mjs
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -87,8 +88,8 @@ await sleep(2000);
 
 // ---- 隐藏文件必须在列表里（operator: 「文件浏览器里面隐藏文件也要支持显示出来」） -------------
 // 造两个 dot-entry，再读真页面：它们得出现在列表里、排在同组末尾、带 hidden 的淡化标记。
-fs.writeFileSync("/tmp/.agentus-hidden-check.md", "hidden file body\n");
-fs.mkdirSync("/tmp/.agentus-hidden-dir", { recursive: true });
+fs.writeFileSync("/tmp/.hermes-studio-hidden-check.md", "hidden file body\n");
+fs.mkdirSync("/tmp/.hermes-studio-hidden-dir", { recursive: true });
 await ev(`(() => { const b = document.querySelector('.file-bar button[aria-label="refresh"]')
   || [...document.querySelectorAll('.file-bar button')].pop(); if (b) b.click(); return true; })()`);
 await sleep(1800);
@@ -96,12 +97,12 @@ const rows = JSON.parse(await ev(`JSON.stringify([...document.querySelectorAll('
   name: (r.querySelector('.file-name')?.textContent || '').trim(),
   hidden: r.classList.contains('hidden-file'),
 })))`));
-check("隐藏文件出现在文件浏览器里", rows.some((r) => r.name === ".agentus-hidden-check.md"),
+check("隐藏文件出现在文件浏览器里", rows.some((r) => r.name === ".hermes-studio-hidden-check.md"),
   rows.map((r) => r.name).join(","));
-check("…隐藏目录也在", rows.some((r) => r.name === ".agentus-hidden-dir"), rows.map((r) => r.name).join(","));
+check("…隐藏目录也在", rows.some((r) => r.name === ".hermes-studio-hidden-dir"), rows.map((r) => r.name).join(","));
 check("…它们带淡化的 hidden 标记（不是假装和普通文件一样）",
-  rows.filter((r) => r.name.startsWith(".agentus-hidden-")).every((r) => r.hidden === true),
-  JSON.stringify(rows.filter((r) => r.name.startsWith(".agentus-hidden-"))));
+  rows.filter((r) => r.name.startsWith(".hermes-studio-hidden-")).every((r) => r.hidden === true),
+  JSON.stringify(rows.filter((r) => r.name.startsWith(".hermes-studio-hidden-"))));
 const firstDot = rows.findIndex((r) => r.name.startsWith("."));
 check("…并且沉到列表后段（普通项先出现）",
   firstDot === -1 || rows.slice(0, firstDot).every((r) => !r.name.startsWith(".")), `first dot at ${firstDot}/${rows.length}`);

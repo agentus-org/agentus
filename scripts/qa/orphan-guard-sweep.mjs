@@ -1,6 +1,6 @@
 // QA: 孤儿回收的归属校验 + 单例锁 — incident 2026-10-22（恢复会话必 SIGKILL）的回归守卫。
 //
-// 事故：一次 promote 漏了 --launchd，第二个 server 用**同一个 AGENTUS_DATA** 起来（不同端口，所以
+// 事故：一次 promote 漏了 --launchd，第二个 server 用**同一个 HERMES_STUDIO_DATA** 起来（不同端口，所以
 // listen 不冲突），启动时的 reclaimOrphans() 把数据库里记录的 agent pid 全 SIGKILL —— 那是第一个
 // server 正在服务的槽位。launchd 每 10 秒重生一次，于是「恢复会话，历史刚恢复完就被杀」循环下去。
 //
@@ -84,12 +84,12 @@ function startInstance(dataDir, port) {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       NODE_ENV: "development",
-      AGENTUS_PORT: String(port),
-      AGENTUS_DATA: dataDir,
-      AGENTUS_USERNAME: "scratch",
-      AGENTUS_PASSWORD: "scratch-pass-1",
+      HERMES_STUDIO_PORT: String(port),
+      HERMES_STUDIO_DATA: dataDir,
+      HERMES_STUDIO_USERNAME: "scratch",
+      HERMES_STUDIO_PASSWORD: "scratch-pass-1",
       // a real ACP agent is not needed to prove who gets killed: the mock is a real child process
-      AGENTUS_IDLE_SWEEP_MS: "0",
+      HERMES_STUDIO_IDLE_SWEEP_MS: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

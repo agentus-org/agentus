@@ -51,7 +51,7 @@ const boot = async () => {
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development", HOME: emptyHome,
-      AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
+      HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off",
       MOCK_SLOW_MS: "30",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -166,7 +166,7 @@ check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空�
 // 前端写死的只是「画出来什么」；跨会话转交的信封取的是 `sessions.title`，所以名字必须在库里。
 // 三条路径都验：初始值、被 agent 改过之后的派生路径（regenerate 走同一道门）、以及转交信封。
 {
-  const db = () => new DatabaseSync(path.join(dataDir, "agentus.sqlite"), { readOnly: true });
+  const db = () => new DatabaseSync(path.join(dataDir, "hermes-studio.sqlite"), { readOnly: true });
   const titleOf = (id) => {
     const d = db();
     try {
@@ -203,7 +203,7 @@ check("文件被删掉会重建（新装/误删不至于让 Main Bot 变成空�
   }
   check("（前提）主 agent 这条有对话内容，可以走重新生成", hasUser);
   {
-    const d = new DatabaseSync(path.join(dataDir, "agentus.sqlite"));
+    const d = new DatabaseSync(path.join(dataDir, "hermes-studio.sqlite"));
     try {
       d.prepare("update sessions set title = ?, auto_title = ?, title_src = 'agent' where id = ?")
         .run("Friendly greeting #3", "Friendly greeting #3", mainId);
@@ -276,9 +276,9 @@ const identityOf = (pid) => {
   const cmd = execFileSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" });
   const pick = (k) => new RegExp(`${k}=(\\S+)`).exec(cmd)?.[1] ?? "";
   return {
-    endpoint: pick("AGENTUS_COCKPIT_ENDPOINT"),
-    token: pick("AGENTUS_COCKPIT_TOKEN"),
-    session: pick("AGENTUS_COCKPIT_SESSION"),
+    endpoint: pick("HERMES_STUDIO_COCKPIT_ENDPOINT"),
+    token: pick("HERMES_STUDIO_COCKPIT_TOKEN"),
+    session: pick("HERMES_STUDIO_COCKPIT_SESSION"),
   };
 };
 
@@ -301,10 +301,10 @@ const asAgent = (pid, args) => {
       encoding: "utf8",
       env: {
         ...process.env,
-        AGENTUS_COCKPIT_ENDPOINT: ident.endpoint,
-        AGENTUS_COCKPIT_TOKEN: ident.token,
-        AGENTUS_COCKPIT_SESSION: ident.session,
-        AGENTUS_COCKPIT_BIN: process.execPath,
+        HERMES_STUDIO_COCKPIT_ENDPOINT: ident.endpoint,
+        HERMES_STUDIO_COCKPIT_TOKEN: ident.token,
+        HERMES_STUDIO_COCKPIT_SESSION: ident.session,
+        HERMES_STUDIO_COCKPIT_BIN: process.execPath,
       },
     });
     return { code: 0, out };
@@ -554,7 +554,7 @@ const CDP = process.env.CDP ?? "http://127.0.0.1:9223";
 // 「服务启动后的首轮帧 / 下一次自动标题到达」—— 这里验的是最硬的那一半：进程启动时就不该带着
 // 旧名。写入旧名之后重启同一个数据目录，构造函数里的 repairMainBotTitles() 应当把它纠回来。
 {
-  const q = path.join(dataDir, "agentus.sqlite");
+  const q = path.join(dataDir, "hermes-studio.sqlite");
   const db = new DatabaseSync(q);
   try {
     db.prepare("update sessions set title = ?, auto_title = ?, title_src = 'agent' where role = 'main'")

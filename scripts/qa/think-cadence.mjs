@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: does the agent's THINKING arrive on screen progressively, or in one lump at the end?
 //
 // The operator's report (2026-10-08, on live, watching a long turn): 「思考展示好像卡在那里不动，我看到
@@ -17,7 +18,7 @@ import WebSocket from "ws";
 
 const CDP = process.env.CDP ?? "http://127.0.0.1:9222";
 const BASE = process.env.BASE ?? "http://127.0.0.1:8901";
-const QADB = process.env.AGENTUS_DATA ? `${process.env.AGENTUS_DATA}/agentus.sqlite` : "/tmp/agentus-qa-account/agentus.sqlite";
+const QADB = process.env.HERMES_STUDIO_DATA ? `${process.env.HERMES_STUDIO_DATA}/hermes-studio.sqlite` : "/tmp/agentus-qa-account/hermes-studio.sqlite";
 const SEED = Number(process.env.SEED ?? 1200);  // transcript size before the measured turn
 const CHUNKS = Number(process.env.CHUNKS ?? 120); // how many thinking chunks the mock streams
 const U = process.env.QA_USER ?? "scratch", P = process.env.QA_PASS ?? "scratch-pass-1";

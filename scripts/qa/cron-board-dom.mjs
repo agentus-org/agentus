@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // 定时作业面板的真页面证据（issue #92 / v0.19.1）。
 //
 // 这个面板的价值全在「点下去真的动到了 hermes 的作业」，所以断言分两半：
@@ -8,15 +9,15 @@
 // 临时 home 通过 POST /api/backends 建成一行 `cron-qa`，页面用 `?cronBackend=cron-qa` 钉到它 ——
 // 这正是那个 query 参数存在的理由（QA 与多 profile 切换）。
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/cron-board-dom.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 CDP_URL=http://127.0.0.1:9223 node scripts/qa/cron-board-dom.mjs
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
-const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
-const USER = process.env.AGENTUS_USER || "scratch";
-const PASS = process.env.AGENTUS_PASS || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || "http://127.0.0.1:8901";
+const USER = process.env.HERMES_STUDIO_USER || "scratch";
+const PASS = process.env.HERMES_STUDIO_PASS || "scratch-pass-1";
 const QA_HOME = process.env.CRON_QA_HOME || "/tmp/agentus-cron-qa";
 const QA_BACKEND = "cron-qa";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,7 +35,7 @@ const check = (name, ok, detail = "") => {
 // 而驾驶舱 spawn 用的是 installs 下那份 venv 里的 hermes。拿错二进制会让整份 sweep 假红。
 fs.rmSync(QA_HOME, { recursive: true, force: true });
 fs.mkdirSync(path.join(QA_HOME, "cron"), { recursive: true });
-const QA_DATA = process.env.AGENTUS_DATA || "/tmp/agentus-qa-account";
+const QA_DATA = process.env.HERMES_STUDIO_DATA || "/tmp/agentus-qa-account";
 let hermesCmd = "hermes";
 let hermesArgs = ["acp"];
 // 服务器可能刚被 tsx watch 重启过（这份 sweep 本身就会碰服务端文件），先等它起来。

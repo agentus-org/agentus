@@ -1,3 +1,4 @@
+import "../../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // SessionManager — one ACP client connection per session, per design.md §1.
 // Owns: subprocess lifecycle (spawn/kill/orphan-reclaim), the ACP ClientSideConnection
 // loop, event fan-out with monotonic seq, permission pending-map with timeout,
@@ -68,14 +69,14 @@ import { busyTurnEta, waitWords } from "./turn-busy.js";
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
 // package's `files`).
-// The path we hand agents as `AGENTUS_COCKPIT_BIN` is the `hermes-studio` launcher itself — there is no
+// The path we hand agents as `HERMES_STUDIO_COCKPIT_BIN` is the `hermes-studio` launcher itself — there is no
 // second command to install, and `hermes-studio cockpit <command>` is the only spelling anywhere. (The
 // implementation is `bin/cockpit.mjs`, but that file is the subcommand, not a product name: agents
 // never see it, so it must not become a second thing users have to learn.)
 const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/hermes-studio.mjs");
 
 // #40: a git checkout keeps `bin/hermes-studio.mjs` at mode 100644 (the blob has no exec bit), so the very
-// first thing an agent does with the path we hand it — `$AGENTUS_COCKPIT_BIN session list` — dies with
+// first thing an agent does with the path we hand it — `$HERMES_STUDIO_COCKPIT_BIN session list` — dies with
 // `Permission denied`, and there is no npm shim to fall back on in a checkout (that is the deployment
 // form this project recommends). Fix the mode where we resolve the path: idempotent, best effort (a
 // read-only install stays usable — the agent just has to spell `node <path>`), and it also covers the
@@ -92,7 +93,7 @@ try {
 // error (60.17s)`). A card that outlives the agent's own deadline is worse than no card: the
 // operator clicks 允许 at 70 s, the click looks accepted, and nothing happens. Expiring first means
 // the card always tells the truth.
-const PERMISSION_TIMEOUT_MS = Number(process.env.AGENTUS_PERM_TIMEOUT_MS || 45_000);
+const PERMISSION_TIMEOUT_MS = Number(process.env.HERMES_STUDIO_PERM_TIMEOUT_MS || 45_000);
 
 // ── What the request is ABOUT ─────────────────────────────────────────────────────────────────
 // An edit approval arrives as a `ToolCallUpdate` whose `content` carries a diff (path + the
@@ -160,11 +161,11 @@ function boundedDiff(path: string, oldText: string, newText: string): Permission
 // A title fork is a real model turn over a copy of the conversation: give it room, but never
 // let a stuck one hang the operator's click — the caller falls back to the derived name on
 // timeout. Env-tunable so a sweep can exercise the timeout path in seconds.
-const TITLE_FORK_TIMEOUT_MS = Number(process.env.AGENTUS_TITLE_TIMEOUT_MS || 90_000);
+const TITLE_FORK_TIMEOUT_MS = Number(process.env.HERMES_STUDIO_TITLE_TIMEOUT_MS || 90_000);
 
 // How long a cancelled turn may take to actually stop before an interrupting prompt gives up
 // (an agent that ignores session/cancel must not hang the operator's next sentence forever).
-const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTUS_SETTLE_TIMEOUT_MS || 15_000);
+const TURN_SETTLE_TIMEOUT_MS = Number(process.env.HERMES_STUDIO_SETTLE_TIMEOUT_MS || 15_000);
 
 /** How long a close/archive waits for a slot's in-flight handshake before killing it anyway.
  *
@@ -172,11 +173,11 @@ const TURN_SETTLE_TIMEOUT_MS = Number(process.env.AGENTUS_SETTLE_TIMEOUT_MS || 1
  *  closed without it can never be resumed (see `#stop`). The wait is bounded so a spawn that never
  *  answers cannot hold the operator's click open forever: past this, the slot closes with whatever it
  *  has — a broken agent is not made worse by a row we cannot wake. */
-const CLOSE_STARTUP_WAIT_MS = Number(process.env.AGENTUS_CLOSE_WAIT_MS || 30_000);
+const CLOSE_STARTUP_WAIT_MS = Number(process.env.HERMES_STUDIO_CLOSE_WAIT_MS || 30_000);
 /** How long a close waits for `session/cancel` to land on a vendor-owned session before it tears the
  *  viewer down anyway. Short on purpose: the cancel is a courtesy to the operator's wallet, and a
  *  close that hangs on an unresponsive agent is worse than a turn that outlives it. */
-const CLOSE_CANCEL_WAIT_MS = Number(process.env.AGENTUS_CLOSE_CANCEL_WAIT_MS || 3_000);
+const CLOSE_CANCEL_WAIT_MS = Number(process.env.HERMES_STUDIO_CLOSE_CANCEL_WAIT_MS || 3_000);
 /** How long a permission-mode send keeps being retried before we admit it did not land.
  *
  *  Hermes 0.23 moved session ownership into its gateway, and `session/set_mode` is a revision-fenced
@@ -185,14 +186,14 @@ const CLOSE_CANCEL_WAIT_MS = Number(process.env.AGENTUS_CLOSE_CANCEL_WAIT_MS || 
  *  the wire. A resume lands in the worst possible window for that: `session/load` has just returned and
  *  the owner has not settled yet. Measured on a 190-session library: 226 of 227 runtime policy receipts
  *  still said `ask` while every cockpit row said `dont_ask` (issue #95). */
-const MODE_SETTLE_MS = Number(process.env.AGENTUS_MODE_SETTLE_MS || 5_000);
+const MODE_SETTLE_MS = Number(process.env.HERMES_STUDIO_MODE_SETTLE_MS || 5_000);
 /** How long ONE send gets to show up as the owner's echo before it is retried.
  *
  *  `SetSessionModeResponse` carries no state, so the only read-back ACP offers is the notification: the
  *  gateway republishes the changed policy as `session.info`, the adapter projects that to
  *  `current_mode_update`, and `handleUpdate` moves `live.info.modes.currentModeId`. That echo — not the
  *  promise — is what counts as "applied". */
-const MODE_READBACK_MS = Number(process.env.AGENTUS_MODE_READBACK_MS || 900);
+const MODE_READBACK_MS = Number(process.env.HERMES_STUDIO_MODE_READBACK_MS || 900);
 
 /** How many times a resume may be retried, and how long between attempts (#234).
  *
@@ -200,17 +201,17 @@ const MODE_READBACK_MS = Number(process.env.AGENTUS_MODE_READBACK_MS || 900);
  *  `-32603 Internal error` with `data:null` — and the same click works a minute later. Three
  *  attempts over ten seconds covers that window without turning a real failure into a hang. */
 const RESUME_ATTEMPTS = 3;
-const RESUME_RETRY_MS = Number(process.env.AGENTUS_RESUME_RETRY_MS || 5000);
+const RESUME_RETRY_MS = Number(process.env.HERMES_STUDIO_RESUME_RETRY_MS || 5000);
 
 /** A `session_busy` whose lease says it will clear this soon is just a timing artefact — retry in
  *  the ordinary loop. Anything longer is a WAIT the operator deserves to be told about (#238). */
-const RESUME_BUSY_INLINE_MS = Number(process.env.AGENTUS_RESUME_BUSY_INLINE_MS || 20000);
+const RESUME_BUSY_INLINE_MS = Number(process.env.HERMES_STUDIO_RESUME_BUSY_INLINE_MS || 20000);
 /** The longest "retry by yourself" delay one `session_busy` answer may schedule. The row can go
  *  away long before it expires — the agent deletes its own lease on SIGTERM (fork 0.23 build), and
  *  a dead holder's row is reclaimed by the next acquire — so a timer parked for the whole remaining
  *  TTL would keep the cockpit waiting for a lease that is already gone. Re-check every half minute:
  *  an answer that is still busy returns without spawning anything. */
-const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETRY_MS || 30 * 1000);
+const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.HERMES_STUDIO_RESUME_BUSY_MAX_RETRY_MS || 30 * 1000);
 
 /** 按下「停」之后等这一轮真的结束多久 (#107/#108)。cancel 只是「发出去了」，租约清掉才是「停了」；
  *  过了这个窗口还没清，就老实回答 unconfirmed，不许报成功。 */
@@ -222,14 +223,14 @@ const RESUME_BUSY_MAX_RETRY_MS = Number(process.env.AGENTUS_RESUME_BUSY_MAX_RETR
  *  would park an HTTP request for ten seconds and the page's ack budget would expire meanwhile.
  *  The receipt therefore goes out after this short window, and `#watchStopSettles` keeps waiting
  *  in the background. What must NOT happen is calling that short wait a verdict. */
-const STOP_SETTLE_MS = Number(process.env.AGENTUS_STOP_SETTLE_MS || 2500);
+const STOP_SETTLE_MS = Number(process.env.HERMES_STUDIO_STOP_SETTLE_MS || 2500);
 /** How long that background watcher keeps watching for the turn boundary (~3 min covers a long
  *  tool call; past it the answer is "the agent never reached a boundary", which is a log line, not
  *  a receipt — the operator still sees a busy slot with a stop button). */
-const STOP_WATCH_MS = Number(process.env.AGENTUS_STOP_WATCH_MS || 180_000);
+const STOP_WATCH_MS = Number(process.env.HERMES_STUDIO_STOP_WATCH_MS || 180_000);
 
 /** 退出时等被打断的那一轮收尾多久。短而硬：关机不许被一个不吭声的 agent 拖住。 */
-const SHUTDOWN_CANCEL_WAIT_MS = Number(process.env.AGENTUS_SHUTDOWN_CANCEL_WAIT_MS || 1200);
+const SHUTDOWN_CANCEL_WAIT_MS = Number(process.env.HERMES_STUDIO_SHUTDOWN_CANCEL_WAIT_MS || 1200);
 
 /** resume 的两个额外开关：`replace` 是 restart 换进程，`takeover` 是操作者的「停」——后者允许越过租约
  *  闸门，因为等别人起的那一轮自然结束是无上限的，而停必须现在生效 (#107)。 */
@@ -386,7 +387,7 @@ const MAIN_BOT_AGENTS_MD = `# Main Bot
 
 ## 你能做什么
 
-- 看谁在干活：\`"$AGENTUS_COCKPIT_BIN" session list\`
+- 看谁在干活：\`"$HERMES_STUDIO_COCKPIT_BIN" session list\`
 - 读别人在聊什么：\`session show <id>\`、\`session messages <id> --tail 20\`
 - 把活派出去：\`session send <id> "<任务>" --reply-on-done\`
   这个命令只等对方开工就返回；对方干完了会自己把结果回报给你，所以你一次可以派几件事，
@@ -423,7 +424,7 @@ const MAIN_BOT_AGENTS_MD_V1 = `# Main Bot
 - 叫醒/新建：\\\`hermes-studio session wake <id>\\\`、\\\`hermes-studio session create <目录> --title "<名字>"\\\`
 - 停：\\\`hermes-studio session stop <id>\\\`（只收进程，记录留着）
 
-命令都在环境变量 \\\`$AGENTUS_COCKPIT_BIN\\\` 里，会话内用 \\\`"$AGENTUS_COCKPIT_BIN" session list\\\`。
+命令都在环境变量 \\\`$HERMES_STUDIO_COCKPIT_BIN\\\` 里，会话内用 \\\`"$HERMES_STUDIO_COCKPIT_BIN" session list\\\`。
 
 ## 怎么干活
 
@@ -536,7 +537,7 @@ interface LiveSession {
    *  out of `ps`. Lives and dies with the process that received it. */
   planToken: string;
   /** Minted per agent process and handed to the CHILD's ENVIRONMENT (issue #15): the cockpit CLI
-   *  (`$AGENTUS_COCKPIT_BIN`) reads it, so an agent can look at the rest of the cockpit without ever
+   *  (`$HERMES_STUDIO_COCKPIT_BIN`) reads it, so an agent can look at the rest of the cockpit without ever
    *  touching a port or a token itself. Scoped to this one session, like `planToken` — and dies with
    *  the process that received it, so a copied `ps` line is worth nothing later. */
   cockpitToken: string;
@@ -1186,7 +1187,7 @@ export class SessionManager {
     // self-review on the operator's tab. It rides in the child's environment — one process per
     // session, so it cannot leak into a normal one — and a runtime that ignores the variable simply
     // behaves as before.
-    if (opts.system) plan.env = { ...plan.env, AGENTUS_SESSION_ROLE: "observer" };
+    if (opts.system) plan.env = { ...plan.env, HERMES_STUDIO_SESSION_ROLE: "observer", AGENTUS_SESSION_ROLE: "observer" };
     // measured once per spawn: how long the row took to reach `ready` (or to die trying)
     const spawnStarted = Date.now();
 
@@ -1575,7 +1576,7 @@ export class SessionManager {
     const cockpitToken = randomUUID();
     plan.env = this.#cockpitEnv(plan.env, id, cockpitToken);
     // Same identity as at create time: a reaped observer that comes back is still a bystander.
-    if (row.system) plan.env = { ...plan.env, AGENTUS_SESSION_ROLE: "observer" };
+    if (row.system) plan.env = { ...plan.env, HERMES_STUDIO_SESSION_ROLE: "observer", AGENTUS_SESSION_ROLE: "observer" };
     // ── Can this slot come back AT ALL? ──────────────────────────────────────────────────────
     // A session's agent-side state lives in the home it was CREATED under; a resume hands the
     // agent whatever home the row names TODAY. If those differ, the agent is being asked about a
@@ -2925,7 +2926,7 @@ export class SessionManager {
   /** The cockpit CLI's identity, in the CHILD's environment (issue #15).
    *
    *  Handed over the same way the plan token is — per process, per session, nowhere else — so the
-   *  agent never handles a port or a secret: it runs `$AGENTUS_COCKPIT_BIN context` and the CLI reads
+   *  agent never handles a port or a secret: it runs `$HERMES_STUDIO_COCKPIT_BIN context` and the CLI reads
    *  these three. Rendering it into a prompt, an `echo`, or a `ps` line is the one thing the CLI's own
    *  `capabilities` forbids, and the token is worth nothing once this process is gone. */
   #cockpitEnv(env: NodeJS.ProcessEnv, sessionId: string, token: string): NodeJS.ProcessEnv {
@@ -2935,10 +2936,10 @@ export class SessionManager {
     const agent = agentSettings();
     return {
       ...env,
-      AGENTUS_COCKPIT_ENDPOINT: cockpitEndpoint(),
-      AGENTUS_COCKPIT_TOKEN: token,
-      AGENTUS_COCKPIT_SESSION: sessionId,
-      AGENTUS_COCKPIT_BIN: COCKPIT_BIN,
+      HERMES_STUDIO_COCKPIT_ENDPOINT: cockpitEndpoint(),
+      HERMES_STUDIO_COCKPIT_TOKEN: token,
+      HERMES_STUDIO_COCKPIT_SESSION: sessionId,
+      HERMES_STUDIO_COCKPIT_BIN: COCKPIT_BIN,
       HINDSIGHT_RECALL_ITEM_CHARS: String(agent.recallItemChars || AGENT_DEFAULT.recallItemChars),
       HINDSIGHT_RECALL_TOTAL_CHARS: String(agent.recallTotalChars || AGENT_DEFAULT.recallTotalChars),
     };
@@ -3020,20 +3021,26 @@ export class SessionManager {
    */
   #handshakeMeta(spec: BackendSpec): Record<string, unknown> | undefined {
     if (spec.kind !== "hermes") return undefined;
-    return { agentus: { disabled_toolsets: ["todo"] } } as Record<string, unknown>;
+    // Dual-send during the rename: the running gateway (old fork) reads `agentus`; a new fork
+    // reads `hermesStudio`. Both keys carry the same request, so either generation disables just
+    // `todo`. Unknown _meta keys are expanded into kwargs and ignored by the other generation.
+    return {
+      hermesStudio: { disabled_toolsets: ["todo"] },
+      agentus: { disabled_toolsets: ["todo"] },
+    } as Record<string, unknown>;
   }
 
   #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
     if (nativePlanSourceOf(spec) !== "none") return [];
     return [
       {
-        name: "agentus-plan",
+        name: "hermes-studio-plan",
         command: process.execPath,
         args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "../../mcp/plan-server.mjs")],
         env: [
-          { name: "AGENTUS_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.AGENTUS_PORT ?? 8788}` },
-          { name: "AGENTUS_PLAN_TOKEN", value: live.planToken },
-          { name: "AGENTUS_PLAN_SESSION", value: live.info.id },
+          { name: "HERMES_STUDIO_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.HERMES_STUDIO_PORT ?? 8788}` },
+          { name: "HERMES_STUDIO_PLAN_TOKEN", value: live.planToken },
+          { name: "HERMES_STUDIO_PLAN_SESSION", value: live.info.id },
         ],
       },
     ];
@@ -3054,7 +3061,7 @@ export class SessionManager {
       live.planFramesDropped = true;
       console.log(
         `[hermes-studio] plan frame ignored for ${live.info.id}: backend '${live.info.backend}' is MCP-driven ` +
-        `(the card is fed by the agentus-plan tool)`,
+        `(the card is fed by the hermes-studio-plan tool)`,
       );
     }
     return false;
@@ -3242,8 +3249,8 @@ export class SessionManager {
     body.push(
       "",
       `本驾驶舱可用 \`"${COCKPIT_BIN}" session list\`（其它会话状态/消息/计划；先 capabilities，全文 skill）。` +
-        "`$AGENTUS_COCKPIT_BIN` 与它同值；共享 gateway 里跑的运行时（0.23+）环境是 gateway 的、不是这个会话的，" +
-        "那里拿不到这个变量，就直接用上面这个绝对路径 —— 身份从 ~/.agentus/cockpit 下按会话号取。",
+        "`$HERMES_STUDIO_COCKPIT_BIN` 与它同值；共享 gateway 里跑的运行时（0.23+）环境是 gateway 的、不是这个会话的，" +
+        "那里拿不到这个变量，就直接用上面这个绝对路径 —— 身份从 ~/.hermes-studio/cockpit 下按会话号取。",
     );
 
     return {
@@ -4334,7 +4341,7 @@ export class SessionManager {
       sessionId: s.info.acpSessionId!,
       cwd: s.info.workspace || s.info.cwd,
       // Deliberately NO plan tool: this fork exists to be asked for a title and then thrown away.
-      // Injecting one would spawn a second `agentus-plan` child per title for nothing.
+      // Injecting one would spawn a second `hermes-studio-plan` child per title for nothing.
       mcpServers: [],
     });
     const forkId = (fork as { sessionId?: string } | null)?.sessionId;

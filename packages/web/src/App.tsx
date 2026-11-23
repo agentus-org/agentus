@@ -21,9 +21,9 @@ import { WorkspacePicker } from "./WorkspacePicker";
 import { WorkspaceButton } from "./WorkspaceButton";
 import { ToolPanel, readFlag, writeFlag } from "./ToolPanel";
 import type { PanelTarget } from "./ToolPanel";
-/** #91: the panel's 放大 state, stored beside the other layout preferences (`agentus.panel-width`,
- *  `agentus.rail-width`, `agentus.rail-mode`). */
-const PANEL_MAX_KEY = "agentus.panel-maximized";
+/** #91: the panel's 放大 state, stored beside the other layout preferences (`hermes-studio.panel-width`,
+ *  `hermes-studio.rail-width`, `hermes-studio.rail-mode`). */
+const PANEL_MAX_KEY = "hermes-studio.panel-maximized";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
@@ -63,17 +63,17 @@ export function App(): JSX.Element {
   // `expanded` (the full list) → `compact` (a 60px strip of backend avatars) → `hidden` (the
   // transcript gets the whole window). The drawer stays what it is on a phone (≤720px): one pane
   // at a time, opened by the same button. Persisted because a tablet user sets this ONCE and
-  // expects it to hold across reloads — the same reason `agentus.rail-width` is persisted.
+  // expects it to hold across reloads — the same reason `hermes-studio.rail-width` is persisted.
   const [railMode, setRailMode] = useState<"expanded" | "compact" | "hidden">(() => {
     try {
-      const v = localStorage.getItem("agentus.rail-mode");
+      const v = localStorage.getItem("hermes-studio.rail-mode");
       return v === "compact" || v === "hidden" ? v : "expanded";
     } catch {
       return "expanded";
     }
   });
   useEffect(() => {
-    try { localStorage.setItem("agentus.rail-mode", railMode); } catch { /* private mode */ }
+    try { localStorage.setItem("hermes-studio.rail-mode", railMode); } catch { /* private mode */ }
   }, [railMode]);
   /** The one 「sessions」 button does the right thing per form factor: on a phone it opens the
    *  drawer (there is no room for a rail), on a wide screen it cycles what the rail IS. */
@@ -128,7 +128,7 @@ export function App(): JSX.Element {
   // The clamps are carved out in order — the rail first, the panel against what the rail left —
   // so no drag can squeeze the chat column below `MIN_CHAT`. See `paneWidth.tsx`.
   const rail = usePaneWidth({
-    storage: "agentus.rail-width",
+    storage: "hermes-studio.rail-width",
     fallback: 268,
     min: 200,
     max: () => Math.min(460, window.innerWidth - MIN_CHAT - 200),
@@ -136,7 +136,7 @@ export function App(): JSX.Element {
     label: "resize the session rail",
   });
   const panel = usePaneWidth({
-    storage: "agentus.panel-width",
+    storage: "hermes-studio.panel-width",
     fallback: 760,
     min: 380,
     max: () => Math.max(380, window.innerWidth - rail.width - MIN_CHAT),
@@ -448,7 +448,7 @@ function AuthScreen(): JSX.Element {
             {authInfo?.usingDefaultPassword ? (
               <div className="auth-warn">
                 ⚠ 当前是默认口令 <code>admin / 123456</code>。够挡住误闯，挡不住同网段的人 —
-                设置 <code>AGENTUS_PASSWORD</code> 后重启即可更换。
+                设置 <code>HERMES_STUDIO_PASSWORD</code> 后重启即可更换。
               </div>
             ) : null}
             <div className="auth-foot">
@@ -860,8 +860,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   // bug he reported (AionUi persists this too, `useWorkspaceExpansionState`). Keyed by directory
   // path, namespaced per section so 工作空间 and 已归档 never collide, and PRUNED on load: a
   // directory that no longer has sessions should not hold a key forever.
-  const RAIL_CLOSED_KEY = "agentus.railClosed";
-  const RAIL_MORE_KEY = "agentus.railMore";
+  const RAIL_CLOSED_KEY = "hermes-studio.railClosed";
+  const RAIL_MORE_KEY = "hermes-studio.railMore";
   const readFoldStore = (key: string): Record<string, boolean> => {
     try {
       const raw = JSON.parse(localStorage.getItem(key) ?? "{}") as unknown;
@@ -882,7 +882,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   // A folded SECTION is a layout preference too: it survives the reload in localStorage, like the
   // palette and the voice prefs. A search query always opens them — a result you cannot see is not
   // a result.
-  const RAIL_FOLD_KEY = "agentus.railSections";
+  const RAIL_FOLD_KEY = "hermes-studio.railSections";
   const [folded, setFolded] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem(RAIL_FOLD_KEY) ?? "{}") as Record<string, boolean>; } catch { return {}; }
   });

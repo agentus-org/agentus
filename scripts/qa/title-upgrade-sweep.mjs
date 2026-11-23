@@ -50,7 +50,7 @@ const boot = async () => {
     cwd: ROOT,
     env: {
       ...process.env, NODE_ENV: "development", HOME: emptyHome,
-      AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off",
+      HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off",
       MOCK_SLOW_MS: "20", MOCK_TITLE_STAGE: "1", MOCK_TITLE_LLM: LLM_TITLE, MOCK_TITLE_LLM_MS: "700",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -83,7 +83,7 @@ const api = async (p, init = {}) => {
   check("内置 hermes 后端已临时改到 mock", status === 200 || status === 204, `HTTP ${status}`);
 }
 
-const db = () => new DatabaseSync(path.join(dataDir, "agentus.sqlite"));
+const db = () => new DatabaseSync(path.join(dataDir, "hermes-studio.sqlite"));
 const rowOf = (id) => {
   const d = db();
   try {

@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // Where the cockpit's skill lives for an agent — and, more importantly, where it does NOT.
 //
 // Issue #15 shipped by copying `skills/hermes-studio-cockpit/` into `<HERMES_HOME>/skills` at every spawn.
@@ -10,15 +11,15 @@
 //   2. nothing is written into the shared home — not on create, not on resume
 //   3. the doc the agent would read is the package's current one (no stale twin by construction)
 //
-//   AGENTUS_BASE=http://127.0.0.1:8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/skills-env-spawn.mjs
+//   HERMES_STUDIO_BASE=http://127.0.0.1:8901 HERMES_STUDIO_DATA=/tmp/agentus-qa-account node scripts/qa/skills-env-spawn.mjs
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8901";
+const BASE = process.env.HERMES_STUDIO_BASE ?? "http://127.0.0.1:8901";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
-const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
+const DATA = process.env.HERMES_STUDIO_DATA ?? "/tmp/agentus-qa-account";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();

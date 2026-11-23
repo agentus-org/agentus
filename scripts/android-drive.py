@@ -9,10 +9,10 @@ Two traps this tool exists to absorb:
      the field that still has focus (three values, one box). fill() re-checks uiautomator's focused="true"
      and clears the field first.
   2. Before trusting any screenshot, confirm the FOREGROUND package is the one you installed:
-     an emulator can carry several builds at once (app.agentslot.companion next to app.agentus.companion)
+     an emulator can carry several builds at once (app.agentslot.companion next to app.hermesstudio.companion)
      and the old one's foreground service will bring its activity back up.
 
-Shots land in $AGENTUS_SHOTS (default: ./.shots). Re-dumps the view tree before every tap, so an
+Shots land in $HERMES_STUDIO_SHOTS (default: ./.shots). Re-dumps the view tree before every tap, so an
 IME-open relayout cannot make a coordinate stale.
 """
 import re
@@ -22,7 +22,7 @@ import time
 import os
 
 ADB = os.environ.get("ADB") or os.path.expanduser("~/Library/Android/sdk/platform-tools/adb")
-SHOTS = os.environ.get("AGENTUS_SHOTS") or os.path.join(os.getcwd(), ".shots")
+SHOTS = os.environ.get("HERMES_STUDIO_SHOTS") or os.path.join(os.getcwd(), ".shots")
 
 
 def sh(*args, binary=False):

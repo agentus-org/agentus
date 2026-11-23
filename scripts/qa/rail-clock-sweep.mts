@@ -33,12 +33,12 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "rail-clock-"));
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  AGENTUS_PORT: String(PORT),
-  AGENTUS_DATA: data,
-  AGENTUS_DEV: "1",
+  HERMES_STUDIO_PORT: String(PORT),
+  HERMES_STUDIO_DATA: data,
+  HERMES_STUDIO_DEV: "1",
   MOCK_SLOW_MS: "900",
 };
-delete env.AGENTUS_BASE;
+delete env.HERMES_STUDIO_BASE;
 
 const child = spawn(process.execPath, ["--import", "tsx", "packages/server/src/index.ts"], {
   cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"],

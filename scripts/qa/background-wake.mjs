@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA (issue #22): a background process that outlives its turn — the wake, the row, and the switch.
 //
 // The failure this locks down: ACP had a producer and no consumer, so `terminal(background=true,
@@ -18,7 +19,7 @@
 // Usage: PORT=8901 node scripts/qa/background-wake.mjs
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8901);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -55,8 +56,8 @@ const until = async (expr, ms = 20000) => {
   return false;
 };
 
-const QA_USER = process.env.AGENTUS_QA_USER || "scratch";
-const QA_PASS = process.env.AGENTUS_QA_PASS || "scratch-pass-1";
+const QA_USER = process.env.HERMES_STUDIO_QA_USER || "scratch";
+const QA_PASS = process.env.HERMES_STUDIO_QA_PASS || "scratch-pass-1";
 const authed = () => ev(`fetch('/api/auth/me', { credentials: 'same-origin' }).then((r) => r.json()).then((x) => x.authenticated)`);
 if (!(await authed())) {
   const code = await ev(`fetch('/api/auth/login', { method: 'POST', credentials: 'same-origin',

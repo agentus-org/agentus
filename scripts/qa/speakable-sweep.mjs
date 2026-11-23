@@ -6,7 +6,7 @@
 //   · 长按菜单里「读整条」带时长预告；
 //   · 菜单里多了「全文总结版播报」，点下去真的会去打 /speech-summary（没配 key 时报错，而不是假装成功）。
 //
-// 自给自足：自己的 Hermes Studio（mock 后端，AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge（CDP）。
+// 自给自足：自己的 Hermes Studio（mock 后端，HERMES_STUDIO_AUTH=off）、临时数据目录、操作员的 Edge（CDP）。
 //   CDP=http://127.0.0.1:9223 node scripts/qa/speakable-sweep.mjs
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -39,7 +39,7 @@ const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/s
   cwd: ROOT,
   // AUTH off: this sweep is about the speaker, not about logging in. The instance is on loopback
   // with a throwaway data dir and dies with the sweep.
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off" },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -229,7 +229,7 @@ check("the QA instance accepts a local voice endpoint", Boolean(saved?.baseUrl) 
 
 // `key` 是库里那条消息的 block_key（浏览器用的是同一个值）；名单 API 不带它，所以直接问库。
 const key = execFileSync("sqlite3", [
-  path.join(dataDir, "agentus.sqlite"),
+  path.join(dataDir, "hermes-studio.sqlite"),
   `select block_key from messages where session_id='${sid}' and kind='agent' order by seq desc limit 1;`,
 ], { encoding: "utf8" }).trim();
 check("we found the message key the browser will ask with", /^agent:/.test(key), key);

@@ -9,7 +9,7 @@
 // messageId, so nothing can be folded by identity — only a replay WINDOW (frames that arrive between
 // a spawn/resume and the slot's next prompt are history) can catch it.
 //
-//   node scripts/qa/replay-window.mjs        (BASE/AGENTUS_DATA overridable, like the other sweeps)
+//   node scripts/qa/replay-window.mjs        (BASE/HERMES_STUDIO_DATA overridable, like the other sweeps)
 import path from "node:path";
 import { rmSync } from "node:fs";
 import { authHeaders } from "../lib/auth.mjs";

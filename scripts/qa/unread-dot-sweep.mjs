@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: 「跑完了，还没看」 — the rail's completion dot (AionUi's 未读点 + 手动未读).
 //
 // The operator's ask (2026-10-10): 「任务完成后，在会话列表右边加个点的标识表示已经完成，多会话时就知道
@@ -12,15 +13,15 @@
 //      (the manual half is persisted, the completion half is not);
 //   5. the menu says 「设为已读」 while the dot is up, and clearing it takes the dot down.
 //
-// Usage: PORT=8903 AGENTUS_DATA=/tmp/agentus-qa-unread node scripts/qa/unread-dot-sweep.mjs
+// Usage: PORT=8903 HERMES_STUDIO_DATA=/tmp/agentus-qa-unread node scripts/qa/unread-dot-sweep.mjs
 //        (needs a browser with --remote-debugging-port=9222)
 import { authHeaders } from "../lib/auth.mjs";
 
 const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 8903);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
-const U = process.env.AGENTUS_USERNAME || "scratch";
-const P = process.env.AGENTUS_PASSWORD || "scratch-pass-1";
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
+const U = process.env.HERMES_STUDIO_USERNAME || "scratch";
+const P = process.env.HERMES_STUDIO_PASSWORD || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

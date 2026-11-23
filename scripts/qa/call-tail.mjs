@@ -75,7 +75,7 @@ const emptyHome = mkdtempSync(path.join(tmpdir(), "agentus-tail-home-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir },
+  env: { ...process.env, NODE_ENV: "development", HOME: emptyHome, HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -130,7 +130,7 @@ try {
       body: JSON.stringify({ voice: ${JSON.stringify(stubVoice)}, prefs: { autoRead: false, serverTts: true, stt: "auto", rate: 1, voiceURI: "", lang: "zh-CN" }, call: { interruptMode: "button" } }) });
     const s = await fetch('/api/sessions', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ backend: 'mock', cwd: '/tmp' }) }).then((r) => r.json());
-    localStorage.setItem('agentus.active', s.id);
+    localStorage.setItem('hermes-studio.active', s.id);
     return s.id;
   })()`);
   // 播放器在无声卡的自动化环境里会一直卡在「这次还没放完」（AudioContext 挂起，buffer 永不 end），
@@ -186,7 +186,7 @@ try {
   check("the audio stack is stubbed (otherwise this sweep measures the browser)", await ev(`String(window.Audio).includes('FakeAudio')`));
   check("the turn ran to its end (second paragraph on screen)", ended === true);
   if (!ended) {
-    const raw = await ev(`fetch('/api/sessions/' + localStorage.getItem('agentus.active') + '/messages?tail=20').then(r => r.text())`);
+    const raw = await ev(`fetch('/api/sessions/' + localStorage.getItem('hermes-studio.active') + '/messages?tail=20').then(r => r.text())`);
     console.log("---- store ----\n" + raw.slice(0, 1500));
     console.log("---- phase ---- " + JSON.stringify({
       call: await ev(`document.querySelector('.call-mode')?.dataset.phase ?? 'no-call'`),

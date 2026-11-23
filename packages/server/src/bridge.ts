@@ -30,7 +30,7 @@ export interface BridgeEnvelopeInput {
   userText: string;
 }
 
-/** 命令里用的可执行名：会话内 `$AGENTUS_COCKPIT_BIN` 是 cockpit 交给 agent 的那份 CLI 的绝对路径，
+/** 命令里用的可执行名：会话内 `$HERMES_STUDIO_COCKPIT_BIN` 是 cockpit 交给 agent 的那份 CLI 的绝对路径，
  *  会话外通常就是 `hermes-studio`。两条都写上，因为目标 agent 可能两种环境都待过。 */
 const CLI = "hermes-studio";
 
@@ -55,7 +55,7 @@ export function buildBridgeEnvelope(input: BridgeEnvelopeInput): string {
     `来源工作空间：${input.fromCwd}`,
     `来源会话：${named}`,
     `读取原会话最后一条回复：${CLI} session messages ${from} --role agent --tail 1`,
-    `（在会话内用： "$AGENTUS_COCKPIT_BIN" session messages ${from} --role agent --tail 1）`,
+    `（在会话内用： "$HERMES_STUDIO_COCKPIT_BIN" session messages ${from} --role agent --tail 1）`,
     `需要更多上下文时自己按需去查：把 --tail 调大，或用 --role user 只看操作员说过的话。`,
     `说明：这里只给了会话编号，没有搬运聊天记录 —— 需要细节就按上面的命令去读原文，不要凭空推断。`,
     "",

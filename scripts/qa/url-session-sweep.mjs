@@ -47,7 +47,7 @@ const activeRow = () => ev(`document.querySelector('.session-item.active')?.data
 const cleanup = [];
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (HERMES_STUDIO_DATA?)`);
   const api = async (path, init = {}) => ev(`(async () => {
     const r = await fetch(${JSON.stringify(path)}, ${JSON.stringify({ headers: { "content-type": "application/json" }, ...init })});
     const body = await r.text();
@@ -94,14 +94,14 @@ try {
     (await ev(`history.length`)) === historyBefore, `${historyBefore} → ${await ev(`history.length`)}`);
 
   // ── the in-page hook the phone uses: move, don't reload ─────────────────────────────────────
-  const moved = await ev(`window.__agentusOpenSession ? window.__agentusOpenSession(${JSON.stringify(one)}) : 'missing'`);
-  check("window.__agentusOpenSession exists for the companion App to call", moved === true, String(moved));
+  const moved = await ev(`window.__hermesStudioOpenSession ? window.__hermesStudioOpenSession(${JSON.stringify(one)}) : 'missing'`);
+  check("window.__hermesStudioOpenSession exists for the companion App to call", moved === true, String(moved));
   await sleep(500);
   check("…it switches the view", (await activeRow()) === one, String(await activeRow()));
   check("…it updates the URL", (await sessionParam()) === one, String(await sessionParam()));
   check("…and it did NOT reload the page", (await ev(`window.__urlSweepMarker`)) === marker0);
 
-  const unknown = await ev(`window.__agentusOpenSession('sess_nope_never_heard_of')`);
+  const unknown = await ev(`window.__hermesStudioOpenSession('sess_nope_never_heard_of')`);
   check("an id this page has never seen answers false (the App then does a real load)", unknown === false, String(unknown));
   check("…and the view is untouched", (await activeRow()) === one, String(await activeRow()));
 

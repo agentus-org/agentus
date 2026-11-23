@@ -16,9 +16,9 @@
 #         (then `tail -f /tmp/agentus-restart.log` from anywhere, or just re-read it after resume)
 set -uo pipefail
 SID="${1:-}"
-PORT="${AGENTUS_PORT:-8788}"
-LOG="${AGENTUS_RESTART_LOG:-/tmp/agentus-restart.log}"
-UNIT="gui/$(id -u)/ai.hermes.agentus"
+PORT="${HERMES_STUDIO_PORT:-8788}"
+LOG="${HERMES_STUDIO_RESTART_LOG:-/tmp/agentus-restart.log}"
+UNIT="gui/$(id -u)/ai.hermes.hermes-studio"
 
 {
   echo "=== $(date '+%Y-%m-%d %H:%M:%S') restart :$PORT (session ${SID:-none}) ==="
@@ -48,7 +48,7 @@ UNIT="gui/$(id -u)/ai.hermes.agentus"
   # A restart proves nothing about WHICH code is serving; these two do. The voice data plane is the
   # cheapest witness (it is a pure read that reports its own inputs).
   TOK=""
-  for f in "$HOME/.agentus/auth.token" \
+  for f in "$HOME/.hermes-studio/auth.token" \
            "$(cd "$(dirname "$0")/../.." && pwd)/packages/server/.data/auth.token"; do
     [ -f "$f" ] && TOK=$(cat "$f") && break
   done

@@ -17,8 +17,8 @@
 //   node scripts/qa/transcript-scroll-sweep.mjs
 // 环境：SCROLL_CDP（默认 http://127.0.0.1:9222）、SCROLL_BASE（默认 http://127.0.0.1:8901）、
 //       SCROLL_DATA（默认 /tmp/agentus-qa-account）。
-// **不要**回退到裸 `PORT` 或 `AGENTUS_*`：本机 shell 导出 PORT=8648（Studio）、AGENTUS_PORT=8788
-// 与 AGENTUS_DATA=<live 树>，读它们就会打到 live 上（那里 401，读起来像鉴权坏了）。
+// **不要**回退到裸 `PORT` 或 `HERMES_STUDIO_*`：本机 shell 导出 PORT=8648（Studio）、HERMES_STUDIO_PORT=8788
+// 与 HERMES_STUDIO_DATA=<live 树>，读它们就会打到 live 上（那里 401，读起来像鉴权坏了）。
 import fs from "node:fs";
 
 const CDP = process.env.SCROLL_CDP || "http://127.0.0.1:9222";

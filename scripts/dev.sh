@@ -37,12 +37,12 @@ DEV_HERMES_HOME="${DEV_HERMES_HOME:-$HOME/.agentslot-test/home}"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # the worktree this script lives in (the DEV tree)
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"   # the tree the operator's cockpit runs
-LIVE_PORT="${LIVE_PORT:-$(sed -n 's/^AGENTUS_PORT=\([0-9]*\).*/\1/p' "$HOME/.hermes/cache/agentus/ports.env" 2>/dev/null | head -1)}"
+LIVE_PORT="${LIVE_PORT:-$(sed -n 's/^HERMES_STUDIO_PORT=\([0-9]*\).*/\1/p' "$HOME/.hermes/cache/agentus/ports.env" 2>/dev/null | head -1)}"
 LIVE_PORT="${LIVE_PORT:-8788}"
-LIVE_LAUNCHER="${AGENTUS_LAUNCHER:-$HOME/.hermes/cache/agentus/launch.py}"
+LIVE_LAUNCHER="${HERMES_STUDIO_LAUNCHER:-$HOME/.hermes/cache/agentus/launch.py}"
 # Live runs as a launchd job now, so "restart live" has to go through launchd (see relaunch.sh).
 # Empty = the job is not installed here, and relaunch.sh falls back to kill+launch.
-LIVE_LAUNCHD_LABEL="${LIVE_LAUNCHD_LABEL:-ai.hermes.agentus}"
+LIVE_LAUNCHD_LABEL="${LIVE_LAUNCHD_LABEL:-ai.hermes.hermes-studio}"
 
 pid_on_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
@@ -62,12 +62,12 @@ case "${1:-}" in
     # PORT is deliberately NOT exported: the operator's shell may hold PORT=8648 (Hermes Studio) and
     # a launcher that reads a generic PORT would try to take Studio's port (`EADDRINUSE: 8648`).
     env NODE_ENV=development \
-      AGENTUS_PORT="$DEV_PORT" AGENTUS_DATA="$DEV_DATA" \
-      AGENTUS_USERNAME="$DEV_USER" AGENTUS_PASSWORD="$DEV_PASS" \
-      AGENTUS_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
-      AGENTUS_HERMES_HOME="$DEV_HERMES_HOME" \
-      AGENTUS_ACP_V2_PLAN="${DEV_ACP_V2:-0}" \
-      ${AGENTUS_PERM_TIMEOUT_MS:+AGENTUS_PERM_TIMEOUT_MS="$AGENTUS_PERM_TIMEOUT_MS"} \
+      HERMES_STUDIO_PORT="$DEV_PORT" HERMES_STUDIO_DATA="$DEV_DATA" \
+      HERMES_STUDIO_USERNAME="$DEV_USER" HERMES_STUDIO_PASSWORD="$DEV_PASS" \
+      HERMES_STUDIO_HERMES_CMD="${DEV_HERMES_CMD:-$HOME/.hermes/cache/agentus/hermes-acp-src}" \
+      HERMES_STUDIO_HERMES_HOME="$DEV_HERMES_HOME" \
+      HERMES_STUDIO_ACP_V2_PLAN="${DEV_ACP_V2:-0}" \
+      ${HERMES_STUDIO_PERM_TIMEOUT_MS:+HERMES_STUDIO_PERM_TIMEOUT_MS="$HERMES_STUDIO_PERM_TIMEOUT_MS"} \
       DEV_TREE="$HERE" DEV_LOG_PATH="$DEV_LOG" \
       node -e '
         const { spawn } = require("node:child_process");
@@ -78,12 +78,12 @@ case "${1:-}" in
         // this tree to the pre-rename commit made the watcher read them, open the LIVE store and
         // reap 9 live agent processes (its own session included). Keep exactly the keys below —
         // which is everything dev.sh sets — and drop every other identity-shaped key.
-        const keep = new Set(["NODE_ENV", "AGENTUS_PORT", "AGENTUS_DATA", "AGENTUS_USERNAME",
-          "AGENTUS_PASSWORD", "AGENTUS_HERMES_CMD", "AGENTUS_HERMES_HOME", "AGENTUS_ACP_V2_PLAN",
+        const keep = new Set(["NODE_ENV", "HERMES_STUDIO_PORT", "HERMES_STUDIO_DATA", "HERMES_STUDIO_USERNAME",
+          "HERMES_STUDIO_PASSWORD", "HERMES_STUDIO_HERMES_CMD", "HERMES_STUDIO_HERMES_HOME", "HERMES_STUDIO_ACP_V2_PLAN",
           // QA needs to drive the approval timeout in seconds instead of minutes
-          "AGENTUS_PERM_TIMEOUT_MS",
+          "HERMES_STUDIO_PERM_TIMEOUT_MS",
           // the Web IDE bridge (#77): a dev instance proves the proxy against a real code-server
-          "AGENTUS_IDE_UPSTREAM",
+          "HERMES_STUDIO_IDE_UPSTREAM",
           "DEV_TREE", "DEV_LOG_PATH"]);
         // knobs belonging to this script: consumed here, never forwarded to the server, not worth a line.
         const quiet = new Set(["DEV_PORT", "DEV_DATA", "DEV_USER", "DEV_PASS", "DEV_LOG",
@@ -92,7 +92,7 @@ case "${1:-}" in
         // old full name and must keep finding nothing but the two migration scripts.
         for (const k of Object.keys(process.env)) {
           if (keep.has(k)) continue;
-          if (!(k.startsWith("AGENTSL") || k.startsWith("AGENTUS_") || k.startsWith("DEV_"))) continue;
+          if (!(k.startsWith("AGENTSL") || k.startsWith("HERMES_STUDIO_") || k.startsWith("DEV_"))) continue;
           if (!quiet.has(k)) console.log(`[dev] dropped inherited ${k}`);
           delete process.env[k];
         }
@@ -100,7 +100,7 @@ case "${1:-}" in
         const p = spawn(process.execPath, ["node_modules/.bin/tsx", "watch", "packages/server/src/index.ts"],
           { cwd: process.env.DEV_TREE, env: process.env, detached: true, stdio: ["ignore", log, log] });
         p.unref();
-        console.log(`[dev] pid=${p.pid} port=${process.env.AGENTUS_PORT} data=${process.env.AGENTUS_DATA} log=${process.env.DEV_LOG_PATH}`);
+        console.log(`[dev] pid=${p.pid} port=${process.env.HERMES_STUDIO_PORT} data=${process.env.HERMES_STUDIO_DATA} log=${process.env.DEV_LOG_PATH}`);
       '
     for _ in $(seq 20); do sleep 1; curl -s --noproxy '*' -m 2 "http://127.0.0.1:$DEV_PORT/healthz" | grep -q '"ok":true' && break; done
     curl -s --noproxy '*' -m 3 "http://127.0.0.1:$DEV_PORT/healthz" || { echo "[dev] did not come up — see $DEV_LOG"; exit 1; }

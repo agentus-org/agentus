@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the Android companion APK and drop it where both the cockpit server and the notify
-# test bed serve it from (/agentus-companion.apk and /dl/agentus-companion.apk).
+# test bed serve it from (/hermes-studio-companion.apk and /dl/hermes-studio-companion.apk).
 #
 #   bash scripts/build-apk.sh
 #
@@ -27,7 +27,7 @@ if [ -z "$CODE" ]; then
   echo "[apk] REFUSING: cannot read versionCode from app/build.gradle" >&2
   exit 2
 fi
-if [ "${AGENTUS_APK_ALLOW_STALE_VERSION:-0}" != "1" ]; then
+if [ "${HERMES_STUDIO_APK_ALLOW_STALE_VERSION:-0}" != "1" ]; then
   src_ts=$(git log -1 --format=%ct -- app/src 2>/dev/null || echo 0)
   bump_ts=$(git log -1 -S"versionCode $CODE" --format=%ct -- app/build.gradle 2>/dev/null || echo 0)
   dirty=$(git status --porcelain -- app/src 2>/dev/null || true)
@@ -35,7 +35,7 @@ if [ "${AGENTUS_APK_ALLOW_STALE_VERSION:-0}" != "1" ]; then
     echo "[apk] REFUSING: app/src has uncommitted changes — commit them together with a versionCode bump." >&2
     echo "$dirty" | sed 's/^/[apk]   /' >&2
     echo "[apk] Bump android/app/build.gradle (versionCode + versionName), commit both, then rerun." >&2
-    echo "[apk] (override for a throwaway build: AGENTUS_APK_ALLOW_STALE_VERSION=1)" >&2
+    echo "[apk] (override for a throwaway build: HERMES_STUDIO_APK_ALLOW_STALE_VERSION=1)" >&2
     exit 2
   fi
   if [ "$src_ts" -gt "$bump_ts" ]; then
@@ -49,7 +49,7 @@ if [ "${AGENTUS_APK_ALLOW_STALE_VERSION:-0}" != "1" ]; then
 fi
 echo "[apk] version $NAME (versionCode $CODE)"
 
-export JAVA_HOME="${AGENTUS_JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
+export JAVA_HOME="${HERMES_STUDIO_JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 echo "[apk] JAVA_HOME=$JAVA_HOME"
 echo "[apk] ANDROID_HOME=$ANDROID_HOME"
@@ -57,12 +57,12 @@ echo "[apk] ANDROID_HOME=$ANDROID_HOME"
 ./gradlew --console=plain assembleRelease
 
 mkdir -p artifacts
-cp -f app/build/outputs/apk/release/app-release.apk artifacts/agentus-companion.apk
+cp -f app/build/outputs/apk/release/app-release.apk artifacts/hermes-studio-companion.apk
 # Read the identity back out of the built file, not out of the source: the point of the gate is
 # that the artifact says what it is.
 AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | tail -1)
 if [ -n "$AAPT2" ]; then
-  "$AAPT2" dump badging artifacts/agentus-companion.apk 2>/dev/null | head -1 | sed 's/^/[apk] /'
+  "$AAPT2" dump badging artifacts/hermes-studio-companion.apk 2>/dev/null | head -1 | sed 's/^/[apk] /'
 fi
-echo "[apk] $(pwd)/artifacts/agentus-companion.apk"
-shasum -a 256 artifacts/agentus-companion.apk
+echo "[apk] $(pwd)/artifacts/hermes-studio-companion.apk"
+shasum -a 256 artifacts/hermes-studio-companion.apk

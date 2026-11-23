@@ -64,7 +64,7 @@ const api = async (p, init = {}) => ev(`(async () => {
 let backendBefore = null, sid = null, planToken = null;
 try {
   const login = await ev(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:${JSON.stringify(U)},password:${JSON.stringify(P)}})}).then(r=>r.status)`);
-  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (AGENTUS_DATA?)`);
+  if (login !== 200) throw new Error(`QA login returned ${login} — wrong instance (HERMES_STUDIO_DATA?)`);
 
   // --- 1: a session whose handshake carries the plan token --------------------------------
   const rows = (await api("/api/backends")).body ?? [];
@@ -93,7 +93,7 @@ try {
     return false;
   })();
   check("the mock wrote the handshake's plan token out (QA hook)", tokReady, TOKEN_FILE);
-  if (tokReady) planToken = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8")).AGENTUS_PLAN_TOKEN;
+  if (tokReady) planToken = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8")).HERMES_STUDIO_PLAN_TOKEN;
 
   // --- 2: the agent names its plan ---------------------------------------------------------
   const TITLE = "清空 hermes-studio 六个 issue";
@@ -105,7 +105,7 @@ try {
   const upd = await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(TITLE)}, items: ${JSON.stringify(items)} }),
     });
     return { status: r.status, body: await r.json().catch(() => null) };
@@ -137,7 +137,7 @@ try {
   const LONG = "把 hermes-studio 的任务计划面板在手机上重新排一遍包括标题和每一步的字号";
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(LONG)}, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -201,7 +201,7 @@ try {
   // --- 5: no name ⇒ the old label (no regression for agents that never send one) -----------
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: null, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -215,7 +215,7 @@ try {
   // put the name back: the next section archives THIS plan into the transcript
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(TITLE)}, items: ${JSON.stringify(items)} }) });
     return r.status;
   })()`);
@@ -240,7 +240,7 @@ try {
   const SECOND = "第二轮：换一份计划";
   const secondUpd = await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },
+      headers: { 'content-type': 'application/json', 'x-hermes-studio-plan-token': ${JSON.stringify(planToken)} },
       body: JSON.stringify({ session: ${JSON.stringify(sid)}, op: 'update', title: ${JSON.stringify(SECOND)},
         items: [{ content: '第二轮的步骤', status: 'in_progress' }] }) });
     return { status: r.status, body: await r.json().catch(() => null) };

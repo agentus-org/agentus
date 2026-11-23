@@ -1,3 +1,4 @@
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // QA: a session whose agent still OWNS A RUNNING BACKGROUND PROCESS must not be idle-reaped.
 //
 // The failure this locks down (operator's question, 2026-10-18: 「有后台进程的话，它还会被空闲回收吗？」):
@@ -17,16 +18,16 @@
 // Needs an instance whose sweep tick is short and whose 热备 floor is off (the floor would shelter the
 // positive control). Bring one up like the other reclaim sweep:
 //
-//   env AGENTUS_PORT=8906 AGENTUS_DATA=/tmp/agentus-qa-reapbg AGENTUS_USERNAME=scratch \
-//       AGENTUS_PASSWORD=scratch-pass-1 AGENTUS_IDLE_SWEEP_MS=1000 \
+//   env HERMES_STUDIO_PORT=8906 HERMES_STUDIO_DATA=/tmp/agentus-qa-reapbg HERMES_STUDIO_USERNAME=scratch \
+//       HERMES_STUDIO_PASSWORD=scratch-pass-1 HERMES_STUDIO_IDLE_SWEEP_MS=1000 \
 //       NODE_ENV=development node_modules/.bin/tsx packages/server/src/index.ts &
-//   PORT=8906 AGENTUS_DATA=/tmp/agentus-qa-reapbg node scripts/qa/reap-vs-background.mjs
+//   PORT=8906 HERMES_STUDIO_DATA=/tmp/agentus-qa-reapbg node scripts/qa/reap-vs-background.mjs
 //
 // The mock agent's `[bg:<seconds>]` fixture holds the row RUNNING that long (packages/server/mock/agent.mjs).
 import { authHeaders } from "../lib/auth.mjs";
 
 const PORT = Number(process.env.PORT || 8906);
-const BASE = process.env.AGENTUS_BASE || `http://127.0.0.1:${PORT}`;
+const BASE = process.env.HERMES_STUDIO_BASE || `http://127.0.0.1:${PORT}`;
 const THRESHOLD_MIN = Number(process.env.REAP_MIN || 0.05); // 3 s
 const HOLD_S = Number(process.env.BG_HOLD_S || 10);         // task outlives the threshold by ~3×
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

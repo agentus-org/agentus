@@ -223,7 +223,7 @@ const procs = [];
 /** Boot the server. `home` matters: settings.ts falls back to reading ~/.hermes/.env, so
  *  a test that inherits the operator's real home is not a test of the empty case. */
 async function boot(dataDir, extraEnv = {}, home = "") {
-  const port = Number(extraEnv.AGENTUS_PORT ?? PORT);
+  const port = Number(extraEnv.HERMES_STUDIO_PORT ?? PORT);
   if (await portInUse(port)) {
     throw new Error(`port ${port} is already in use — a leaked server from an earlier run? `
       + `(lsof -nP -iTCP:${port} -sTCP:LISTEN)`);
@@ -232,7 +232,7 @@ async function boot(dataDir, extraEnv = {}, home = "") {
     detached: true,
     cwd: ROOT,
     env: {
-      ...process.env, NODE_ENV: "development", AGENTUS_PORT: String(port), AGENTUS_DATA: dataDir,
+      ...process.env, NODE_ENV: "development", HERMES_STUDIO_PORT: String(port), HERMES_STUDIO_DATA: dataDir,
       ...(home ? { HOME: home } : {}),
       ...extraEnv,
     },
@@ -414,7 +414,7 @@ try {
   fs.mkdirSync(path.join(home2, ".hermes"), { recursive: true });
   fs.writeFileSync(path.join(home2, ".hermes", ".env"), `DASHSCOPE_API_KEY=sk-env-abcdef123\nDASHSCOPE_BASE_URL=http://127.0.0.1:${providerPort}/\n`);
   const dataDir2 = mkdtempSync(path.join(tmpdir(), "agentus-voice-env-"));
-  const second = await boot(dataDir2, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const second = await boot(dataDir2, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const base2 = second.base;
   const token2 = tokenFor(dataDir2);
   const H2 = { ...H, authorization: `Bea${"rer"} ${token2}` };
@@ -689,7 +689,7 @@ try {
   // They used to be a 0600 JSON beside the DB plus a browser's localStorage. Anything the
   // operator changes belongs with the rest of the data: it then survives a device change, and
   // a second tab cannot disagree with the first.
-  const dbPath = path.join(dataDir, "agentus.sqlite");
+  const dbPath = path.join(dataDir, "hermes-studio.sqlite");
   const dbMode = fs.existsSync(dbPath) ? (fs.statSync(dbPath).mode & 0o777).toString(8) : "missing";
   const db = new DatabaseSync(dbPath);
   const rows = db.prepare("select key, value from settings").all();
@@ -709,7 +709,7 @@ try {
     JSON.stringify({ theme: { mode: "dark", accent: "#123456" }, call: { bargeLevel: 0.3, minChars: 7 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const third = await boot(legacyDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const third = await boot(legacyDir, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const token3 = tokenFor(legacyDir);
   const get3 = async (p) => {
     const res = await fetch(third.base + p, { headers: { ...H, authorization: `Bearer ${token3}` } });
@@ -733,7 +733,7 @@ try {
     JSON.stringify({ call: { bargeLevel: 0.2, bargeMs: 300, silenceMs: 1200, minChars: 1 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const fourth = await boot(fossilDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const fourth = await boot(fossilDir, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const mig2 = await (async () => {
     const res = await fetch(fourth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(fossilDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -751,7 +751,7 @@ try {
     JSON.stringify({ call: { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3, wakePhrase: "" }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const fifthP = await boot(phraseDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const fifthP = await boot(phraseDir, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const mig4 = await (async () => {
     const res = await fetch(fifthP.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(phraseDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -767,7 +767,7 @@ try {
     JSON.stringify({ call: { bargeSensitivity: 60, bargeMs: 300, silenceMs: 1500, minChars: 3, wakePhrase: "小灵" }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const sixth = await boot(typedDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const sixth = await boot(typedDir, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const mig5 = await (async () => {
     const res = await fetch(sixth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(typedDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -783,7 +783,7 @@ try {
     JSON.stringify({ call: { bargeSensitivity: 85, bargeMs: 500, silenceMs: 900, minChars: 1 }, updatedAt: 1 }),
     { mode: 0o600 },
   );
-  const fifth = await boot(tunedDir, { AGENTUS_PORT: String(await freePort()) }, home2);
+  const fifth = await boot(tunedDir, { HERMES_STUDIO_PORT: String(await freePort()) }, home2);
   const mig3 = await (async () => {
     const res = await fetch(fifth.base + "/api/settings", { headers: { ...H, authorization: `Bearer ${tokenFor(tunedDir)}` } });
     return { status: res.status, body: await res.json().catch(() => null) };

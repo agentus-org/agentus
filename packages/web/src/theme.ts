@@ -18,7 +18,7 @@ export interface ThemeConfig {
 }
 
 export const THEME_DEFAULT: ThemeConfig = { mode: "system", accent: "" };
-const KEY = "agentus.theme";
+const KEY = "hermes-studio.theme";
 // The built-in default accent, mirrored from theme.css (`:root --accent`). It is only the
 // `--accent-rgb` fallback for the soft tints: the browser resolves `--accent` itself from the
 // stylesheet, per palette. Both palettes now use the same blue, so one triplet serves both — with

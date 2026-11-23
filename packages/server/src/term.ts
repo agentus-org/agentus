@@ -1,3 +1,4 @@
+import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 // A real (PTY-backed) shell for the workspace panel's Terminal tab.
 //
 // Design notes, since this is the one place the cockpit forks a process that is
@@ -9,8 +10,8 @@
 //    streams output, keeps the prompt and `cd` — everything a cockpit panel is
 //    used for — but it is *not* a tty: no job control, no colour, and full-screen
 //    programs (vim, top) will refuse to start. Two ways out, both opt-in:
-//    AGENTUS_TERM_PTY=1 wraps the shell in Python's stdlib `pty.spawn` for a
-//    real terminal, and AGENTUS_TERM_CMD overrides the whole command line.
+//    HERMES_STUDIO_TERM_PTY=1 wraps the shell in Python's stdlib `pty.spawn` for a
+//    real terminal, and HERMES_STUDIO_TERM_CMD overrides the whole command line.
 //  * **One shell per panel, killed with the socket.** The child lives in the
 //    server's own group and is killed on disconnect, on `term-close`, and in the
 //    process-exit safety net (see installSafetyNet) — an abandoned shell is
@@ -74,16 +75,16 @@ function ptyHelperPath(): string | null {
  *  whole point of the panel — a terminal emulator in front of a pipe shell is a lie (no prompt lands
  *  on screen, keystrokes are never echoed, resize means nothing).
  *
- *  Escapes: `AGENTUS_TERM_CMD` runs an arbitrary command line instead (pipes), `AGENTUS_TERM_PTY=0`
+ *  Escapes: `HERMES_STUDIO_TERM_CMD` runs an arbitrary command line instead (pipes), `HERMES_STUDIO_TERM_PTY=0`
  *  forces the old pipe shell, and a machine without python3 degrades to it automatically. Whoever
  *  gets a pipe shell is told so in the panel rather than being shown a fake terminal. */
 function shellCommand(shell: string): { cmd: string; args: string[]; tty: boolean } {
-  const override = (process.env.AGENTUS_TERM_CMD || "").trim();
+  const override = (process.env.HERMES_STUDIO_TERM_CMD || "").trim();
   if (override) {
     const parts = override.split(/\s+/);
     return { cmd: parts[0], args: parts.slice(1), tty: false };
   }
-  if (process.env.AGENTUS_TERM_PTY !== "0") {
+  if (process.env.HERMES_STUDIO_TERM_PTY !== "0") {
     const helper = ptyHelperPath();
     if (helper) return { cmd: "python3", args: [helper, shell, "-i"], tty: true };
   }
@@ -114,11 +115,11 @@ export class TermService {
         TERM: "xterm-256color",
         PYTHONUNBUFFERED: "1",
         // Let the shell know a machine is driving, so prompts stay plain.
-        AGENTUS_TERMINAL: "1",
+        HERMES_STUDIO_TERMINAL: "1",
         // The pty is sized at start because the shell reads its size when it draws the first
         // prompt — resizing afterwards still works, but a 80x24 flash on every open is not free.
-        AGENTUS_PTY_COLS: String(cols),
-        AGENTUS_PTY_ROWS: String(rows),
+        HERMES_STUDIO_PTY_COLS: String(cols),
+        HERMES_STUDIO_PTY_ROWS: String(rows),
       },
       // fd 3 is the PTY helper's control channel (resize). A pipe shell has no use for it.
       stdio: tty ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],

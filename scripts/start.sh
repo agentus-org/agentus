@@ -2,8 +2,8 @@
 # Hermes Studio one-command start.
 #
 #   ./scripts/start.sh            # install if needed, build the web app, serve
-#   AGENTUS_PORT=9000 ./scripts/start.sh
-#   AGENTUS_WATCH=1 ./scripts/start.sh   # dev only: reload server files on change
+#   HERMES_STUDIO_PORT=9000 ./scripts/start.sh
+#   HERMES_STUDIO_WATCH=1 ./scripts/start.sh   # dev only: reload server files on change
 #
 # The server runs ONCE here (no watcher): a reload would SIGTERM every live `hermes acp`
 # slot, so the normal-install path trades hot reload for an explicit restart on release.
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT="${AGENTUS_PORT:-8788}"
+PORT="${HERMES_STUDIO_PORT:-8788}"
 
 # node:sqlite (the zero-dependency store) landed in Node 22.5 — check before anything else.
 node -e '
@@ -41,19 +41,19 @@ if [ "$need_build" = 1 ]; then
 fi
 
 echo "[hermes-studio] starting on :${PORT} (open http://localhost:${PORT})"
-if [ -z "${AGENTUS_PASSWORD:-}" ] && [ "${AGENTUS_AUTH:-on}" != "off" ]; then
-  echo "[hermes-studio] login: admin / 123456 (default) — set AGENTUS_PASSWORD to change it."
+if [ -z "${HERMES_STUDIO_PASSWORD:-}" ] && [ "${HERMES_STUDIO_AUTH:-on}" != "off" ]; then
+  echo "[hermes-studio] login: admin / 123456 (default) — set HERMES_STUDIO_PASSWORD to change it."
   echo "[hermes-studio] scripts: the machine token is written to packages/server/.data/auth.token"
 fi
-export AGENTUS_PORT="$PORT"
+export HERMES_STUDIO_PORT="$PORT"
 export NODE_ENV="${NODE_ENV:-development}"
 
 # No `tsx watch` by default: a reload restarts the whole server, which SIGTERMs every live
 # `hermes acp` slot mid-turn (measured 2026-10-06 — publishing cut the operator's own
 # session). This path is the normal install one: the server runs once, and a release is an
 # explicit verified restart (scripts/relaunch.sh). Watch mode is a development convenience:
-#   AGENTUS_WATCH=1 ./scripts/start.sh
-if [ "${AGENTUS_WATCH:-0}" = "1" ]; then
+#   HERMES_STUDIO_WATCH=1 ./scripts/start.sh
+if [ "${HERMES_STUDIO_WATCH:-0}" = "1" ]; then
   echo "[hermes-studio] watch mode ON — server files reload themselves (dev only)"
   exec node_modules/.bin/tsx watch packages/server/src/index.ts
 fi

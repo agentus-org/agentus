@@ -17,7 +17,7 @@
  * decided in exactly one place (`packages/server/src/index.ts`). A second
  * implementation here would be a second answer to "where
  * did my sessions go" — the one question in this project that must never have two
- * answers. With AGENTUS_PRINT_PATHS=1 the server prints its own resolution (data dir,
+ * answers. With HERMES_STUDIO_PRINT_PATHS=1 the server prints its own resolution (data dir,
  * web bundle, companion APK, node version) and exits before it opens anything.
  */
 import { spawn } from "node:child_process";
@@ -36,9 +36,9 @@ Usage
   hermes-studio [options]
 
 Options
-  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
+  -p, --port <n>     port to listen on                 (HERMES_STUDIO_PORT, default 8788)
   -d, --data <dir>   where state lives — sqlite, login, settings
-                                                       (AGENTUS_DATA, default ~/.agentus)
+                                                       (HERMES_STUDIO_DATA, default ~/.hermes-studio)
   -o, --open         open the cockpit in your browser once it is up
       --where        print the resolved paths and exit (starts nothing)
   -h, --help         this text
@@ -55,7 +55,7 @@ Commands (client side — they need the identity the cockpit gives an agent it s
   hermes-studio capabilities                 the CLI's contract, self-describing
   hermes-studio skill [--path]               the CLI's manual, as shipped in the package
 
-  Inside a session they are called as:  "$AGENTUS_COCKPIT_BIN" session list
+  Inside a session they are called as:  "$HERMES_STUDIO_COCKPIT_BIN" session list
   The cockpit hands that path (this very file) plus endpoint/token/session in the environment.
 
 The server reads more environment variables than these (agent backends, auth,
@@ -140,11 +140,11 @@ if (loader && !fs.existsSync(fileURLToPath(loader))) loader = null;
 if (!loader) loader = "tsx"; // resolvable from PKG_ROOT/node_modules in the normal install
 
 const env = { ...process.env };
-if (opts.port !== undefined) env.AGENTUS_PORT = String(opts.port);
-if (opts.data !== undefined) env.AGENTUS_DATA = opts.data;
-if (opts.where) env.AGENTUS_PRINT_PATHS = "1";
+if (opts.port !== undefined) env.HERMES_STUDIO_PORT = String(opts.port);
+if (opts.data !== undefined) env.HERMES_STUDIO_DATA = opts.data;
+if (opts.where) env.HERMES_STUDIO_PRINT_PATHS = "1";
 
-const port = env.AGENTUS_PORT ?? "8788";
+const port = env.HERMES_STUDIO_PORT ?? "8788";
 if (!opts.where) {
   console.log(`[hermes-studio] starting — open http://localhost:${port} when it is up (Ctrl-C stops it)`);
 }

@@ -68,16 +68,16 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - **复现**：`session-manager.ts` 里 `env: { ...process.env }` → 子进程 `HERMES_HOME` 未设（或被运行时继承一个 live 值）→ 回落 `~/.hermes` → 与 gateway 同开一个 WAL 库。
 - **根因**：三点叠加 —— ① 继承 env 导致 home 不确定；② Hermes 侧链接的 SQLite 3.50.4 有 WAL-reset 损坏 bug（`errors.log` 点名）；③ 单库双写 + 版本 bug = 真损坏。（Hermes 事后对 `state.db` 自动改用 `journal_mode=DELETE` 规避。）
 - **修复**：Hermes Studio 侧 fail-closed 隔离
-  - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.agentus-test/home`；
-  - `buildSpawnEnv()` **只认显式开关** `AGENTUS_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
-  - 解析结果 == live home → 抛错拒绝 spawn，除非 `AGENTUS_ALLOW_LIVE_HOME=1`；
+  - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.hermes-studio-test/home`；
+  - `buildSpawnEnv()` **只认显式开关** `HERMES_STUDIO_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
+  - 解析结果 == live home → 抛错拒绝 spawn，除非 `HERMES_STUDIO_ALLOW_LIVE_HOME=1`；
   - 隔离 home 的 `hindsight/config.json` 若仍是共享默认实例名 → 告警；
   - `GET /api/backends` 回传 `home/warnings/blocked`，新建会话弹窗直接显示；
   - 新增 `scripts/setup-hermes-test-home.py` 生成测试床（`mcp_servers: {}`、memory 关闭、`.env` 0600 副本）。
-- **回归（证据）**：`HERMES_HOME=~/.agentus-test/home hermes acp --check` → OK；
-  子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.agentus-test/home`；
+- **回归（证据）**：`HERMES_HOME=~/.hermes-studio-test/home hermes acp --check` → OK；
+  子进程 `ps eww` 显示 `HERMES_HOME=/Users/liang/.hermes-studio-test/home`；
   `lsof -p <child>` 内 live home 命中 **0 条**，只开测试 home 的 `state.db`/`logs`；
-  显式 `AGENTUS_HERMES_HOME=~/.hermes` → 被拒。
+  显式 `HERMES_STUDIO_HERMES_HOME=~/.hermes` → 被拒。
 
 ## Bug#7 — 刷新后不记得所在会话
 - **现象**：在会话 A 里切了 mode/effort，刷新后落到了另一个（最早的）会话，看到的像是"设置丢了"。
@@ -171,9 +171,9 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 
 ## R27 — 真后端思考深度下拉（P1 联调，源码 hermes 测试床）
 
-- 测试床：`AGENTUS_HERMES_CMD=~/.hermes/cache/agentus/hermes-acp-src`（`uv run --project ~/Project/hermes-agent hermes` 的 wrapper）
+- 测试床：`HERMES_STUDIO_HERMES_CMD=~/.hermes/cache/agentus/hermes-acp-src`（`uv run --project ~/Project/hermes-agent hermes` 的 wrapper）
   指向 fork 的 `yl-dev/merge-20261002-1558`（= thinking-depth + mode-persist 合并版）。
-  `ps eww` + `lsof` 铁证：子进程跑的是源码仓 `acp_adapter`，`HERMES_HOME=~/.agentus-test/home`，live `~/.hermes` 零 fd。
+  `ps eww` + `lsof` 铁证：子进程跑的是源码仓 `acp_adapter`，`HERMES_HOME=~/.hermes-studio-test/home`，live `~/.hermes` 零 fd。
 - 后端广播（官方 0.21.5 二进制此处是空数组）：`configOptions=[{id:reasoning_effort, type:select,
   options:none..max 七档(路由裁剪), currentValue:""}]`。
 - UI：头部出现第二个下拉（aria="reasoning effort"，🧠 标签）；切到 High → WS `config` 命令 →
@@ -208,7 +208,7 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
   （同 R23–25 的记录）。
 
 ### R30 长会话分页 + 侧栏搜索 —— **抓到真 bug**
-- 造了 126 行的 mock 会话（6 轮），把页大小调成 5（`AGENTUS_HISTORY_PAGE`，便于实测）后：
+- 造了 126 行的 mock 会话（6 轮），把页大小调成 5（`HERMES_STUDIO_HISTORY_PAGE`，便于实测）后：
 - **Bug**：首屏历史用的是 `?after=-1`，语义是"从 replay 锚点**向前**取最旧的 500 行"——
   长会话打开时看到的是**最开头**的几轮，新的内容被静默丢弃；而客户端把响应的 `hasMore`
   （=还有更新的）误当成"还有更旧的"，于是"load earlier"出现一次就消失。
@@ -245,7 +245,7 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 
 **R33 修复后复验**：顶栏 select 44/44、ghost 按钮 44、发送键 46、权限卡按钮 8 个全 44；
 斜杠面板移动端 44px 行 + 40vh 上限。PWA：SW `scope=http://127.0.0.1:8787/`、`active`、
-缓存 `agentus-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。
+缓存 `hermes-studio-shell-v2`；**断网后 reload 仍出壳**（logo + "服务已断开（指令会排队）" 横幅）。
 
 ## R34–R38 — 真 hermes 回归 + 冷槽位语义连修三处（2026-10-02 下午）
 
@@ -287,7 +287,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R44 伪 Cookie（CDP 在网线上注入，JS 注入被浏览器拒掉正好证明 HttpOnly 起效）**：伪造签名段 → 首屏落回登录卡、`/api/sessions` 401、WS refused，且 **6 秒内 0 次 `/api` 请求**（客户端退避，不会对着门狂敲）。
 
-**自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`AGENTUS_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。
+**自动化矩阵** `npm run auth-smoke`（30 项，自带服务器 + 临时数据目录，已进 CI）：匿名 REST/WS 全拒、错口令 401、连续错 → 429（限流，连对的口令也先挡）、Cookie 属性（HttpOnly/SameSite；HTTP 下**不**加 Secure，否则局域网根本存不下）、篡改/手写伪造 → 401、WS 凭 Cookie 与 `?token=` 均可、机器令牌 Bearer 可用、登出吊销、短 TTL 实测过期 401、`HERMES_STUDIO_AUTH=off` 时匿名可用。另断言 `auth.token`/`auth.secret` 为 **0600**。
 
 ## R45–R45c · 公网隧道（SakuraFrp）+ 应用层 HTTP Basic
 
@@ -310,7 +310,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **动机**：HTTP Basic（RFC 7617）协议上必然带用户名，但单人服务没有用户体系 —— 每次都要填用户名是无谓摩擦。改成只验密码后用户名随便填/留空。
 
-**代码**（`auth.ts`）：`AGENTUS_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
+**代码**（`auth.ts`）：`HERMES_STUDIO_BASIC_AUTH` 支持三种形式 —— `user:pass`（都验）、`:pass` / `pass`（只验密码）。**顺带修掉一个自设的坑**：旧解析器要求冒号下标 ≥1，`:pass` 会被判为"格式错误"从而**静默关闭整层认证**（看起来"配了却没生效"，实际是裸奔）——现在只要求密码非空。
 
 **配置**：口令改为 `<REDACTED-PASS>`（与现有 nano_ssh/openclaw 等服务的 `auth_pass` 同口令，少记一个）。
 
@@ -330,7 +330,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **口径**：用户要的是「应用自身的用户名密码登录」+「SakuraFrp 的保护鉴权」两层 —— 不要应用层 Basic（能力与测试保留，只是不注入）。
 
 **改动**
-- `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("AGENTUS_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
+- `launch.py` 不再无条件注入：`basic_auth.txt` 为空或以 `#` 开头即视为关闭，并显式 `env.pop("HERMES_STUDIO_BASIC_AUTH")`（防止继承来的变量把锁"偷偷打开"）；启动时打印 `http basic: on/off`。
 - 樱花侧写回 `extra = "auth_pass = <REDACTED-PASS>\nauto_https = auto"` 并重启 frpc 单元（`extra` 二次确认）。
 
 **实测**
@@ -383,7 +383,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 头部：`h=46`、`children=[menu, title, spacer, icon, icon]`、`selects=0`（原来是 2 个下拉 + 环形用量 + 停止 + 关闭）。模式/深度/用量/停止全部移入输入区。
   - 输入区：`.usage-text = "ctx 8.4k / 1000k · 1% · 992k left"` + 细条，且 `usageAboveBox=true`（用量行在输入框上方 ✓）；`.composer-bar` 按钮 = `["attach","chat settings","dictate"]` + 发送按钮，`insideBox=true`。
   - 工作空间面板：`tabs=["files","terminal"]`、列出 11 个条目、`root=/…/worktrees/agentus`、`noHScroll=true`；文件预览 `package.json` 867 字符。
-  - 终端：`status="shell hermes-studio"`，发 `echo AGENTUS_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
+  - 终端：`status="shell hermes-studio"`，发 `echo HERMES_STUDIO_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
   - 设置弹层：4 组（permission mode / thinking depth / read replies aloud / dictation），无控制台报错。
 - **R52 附件与语音（浏览器路径）**
   - 用 CDP `DOM.setFileInputFiles` 走真实 `<input type=file>`：草稿 chip 出现（`attach-probe.txt`），发送后气泡显示附件名、草稿清空、agent 正常回复（mock 把附加文本回显出来了 → 端到端确实带着内容进了 prompt）。
@@ -586,7 +586,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 **R87 改用户名/密码：从"只能改环境变量 + 重启"变成设置页里改，立即生效**
 
-用户："支持改用户名和密码吗现在"。查下来：**不支持** —— 凭据只有一条链路 `AGENTUS_USERNAME / AGENTUS_PASSWORD(或 _HASH)`，改完必须重启；`usingDefaultPassword` 还是开机快照。已做成功能。
+用户："支持改用户名和密码吗现在"。查下来：**不支持** —— 凭据只有一条链路 `HERMES_STUDIO_USERNAME / HERMES_STUDIO_PASSWORD(或 _HASH)`，改完必须重启；`usingDefaultPassword` 还是开机快照。已做成功能。
 
 - 服务端（`auth.ts`）：凭据读取链变成 **`<DATA_DIR>/credentials.json`（0600、`scrypt:<salt>:<hex>`）> 环境变量 > 内置默认**，与 voice/theme 的"设置文件 > env"同一形状；`changeCredentials()` 要求**当前密码**，校验用户名（1–32、无空格）与密码下限（4 位）；只改用户名时会把当前密码钉成哈希，防 env 值悄悄回潮。会话载荷里加了**凭据版本号（epoch）**：改一次所有旧 cookie 立刻失效。
 - API：`POST /api/auth/credentials`（在需要登录的那半边），成功后给调用者**重签一张新 cookie**（本机不掉线，其他设备被登出）；`/api/auth/me` 改成实时状态并新增 `configuredUsername / credentialSource(saved|env|default) / minPasswordLen`。

@@ -35,7 +35,7 @@ const SID = "sess-setup-qa";
   const first = new Cockpit();
   first.queueSetup(SID, [{ kind: "model", value: "custom:lab:qwen38-27b" }, { kind: "mode", value: "accept_edits" }]);
   check("the picks are written where a reload can find them",
-    Boolean(store.get(`agentus.setup.${SID}`)), [...store.keys()].join(","));
+    Boolean(store.get(`hermes-studio.setup.${SID}`)), [...store.keys()].join(","));
 
   // A reload: brand-new store, same storage. Rendering a ready row for that slot must replay them.
   const reloaded = new Cockpit();
@@ -47,7 +47,7 @@ const SID = "sess-setup-qa";
 
   const kinds = sent.map((m) => (m as { t: string }).t).join(",");
   check("a reloaded page replays the picks when the slot comes up", kinds === "set-model,set-mode", kinds);
-  check("…and the stored copy is consumed, not replayed forever", !store.get(`agentus.setup.${SID}`),
+  check("…and the stored copy is consumed, not replayed forever", !store.get(`hermes-studio.setup.${SID}`),
     [...store.keys()].join(","));
 }
 
@@ -55,7 +55,7 @@ const SID = "sess-setup-qa";
 {
   const fresh = new Cockpit();
   fresh.queueSetup("sess-empty-qa", []);
-  check("no picks, nothing stored", !store.get("agentus.setup.sess-empty-qa"), [...store.keys()].join(","));
+  check("no picks, nothing stored", !store.get("hermes-studio.setup.sess-empty-qa"), [...store.keys()].join(","));
 }
 
 // ---- 3. prompt-held 换成更长的时钟，而不是把看门狗扔掉
@@ -69,8 +69,8 @@ const SID = "sess-setup-qa";
 {
   store.clear();
   const SID = "sess-spawning-qa";
-  store.set(`agentus.setup.${SID}`, JSON.stringify([{ kind: "model", value: "custom:lab:qwen38-27b" }]));
-  store.set(`agentus.queue.${SID}`, JSON.stringify([{ id: "q1", text: "第一句", attachments: [], at: Date.now() }]));
+  store.set(`hermes-studio.setup.${SID}`, JSON.stringify([{ kind: "model", value: "custom:lab:qwen38-27b" }]));
+  store.set(`hermes-studio.queue.${SID}`, JSON.stringify([{ id: "q1", text: "第一句", attachments: [], at: Date.now() }]));
 
   const sent: unknown[] = [];
   const c = new Cockpit();
@@ -79,7 +79,7 @@ const SID = "sess-setup-qa";
   c.apply({ t: "session", session: { id: SID, title: "x", backend: "hermes", status: "spawning", cwd: "/tmp", cold: false } } as never);
   c.drainPersistedQueues();
   check("a slot that is still spawning is left alone", sent.length === 0, sent.map((m) => (m as { t: string }).t).join(","));
-  check("…its picks are still on disk for the ready transition", Boolean(store.get(`agentus.setup.${SID}`)));
+  check("…its picks are still on disk for the ready transition", Boolean(store.get(`hermes-studio.setup.${SID}`)));
 
   const before = sent.length;
   c.apply({ t: "session", session: { id: SID, title: "x", backend: "hermes", status: "ready", cwd: "/tmp", cold: false } } as never);
@@ -93,8 +93,8 @@ const SID = "sess-setup-qa";
   const A = "sess-a-qa", B = "sess-b-qa";
   // 两个槽位都带着 picks：重放 picks 会删掉 storage 里的键，边遍历边删就会把另一个槽位跳过去。
   for (const [id, text] of [[A, "给 A 的话"], [B, "给 B 的话"]] as const) {
-    store.set(`agentus.setup.${id}`, JSON.stringify([{ kind: "model", value: `m-${id}` }]));
-    store.set(`agentus.queue.${id}`, JSON.stringify([{ id: `q-${id}`, text, attachments: [], at: Date.now() }]));
+    store.set(`hermes-studio.setup.${id}`, JSON.stringify([{ kind: "model", value: `m-${id}` }]));
+    store.set(`hermes-studio.queue.${id}`, JSON.stringify([{ id: `q-${id}`, text, attachments: [], at: Date.now() }]));
   }
   const sent: unknown[] = [];
   const c = new Cockpit();
@@ -114,7 +114,7 @@ const SID = "sess-setup-qa";
   const SID = "sess-retire-qa";
   const PID = "p-held-qa";
   // 看门狗把句子放回队列时留下的形状（unsure + pid）。
-  store.set(`agentus.queue.${SID}`, JSON.stringify([
+  store.set(`hermes-studio.queue.${SID}`, JSON.stringify([
     { id: "q-held", text: "被攥住的那句", attachments: [], at: Date.now(), unsure: true, pid: PID },
   ]));
 
@@ -128,7 +128,7 @@ const SID = "sess-setup-qa";
   check("the unsure row is in memory, unsent", sent.length === 0, sent.map((m) => (m as { t: string }).t).join(","));
 
   c.apply({ t: "turn-start", sessionId: SID, pid: PID } as never);
-  const raw = store.get(`agentus.queue.${SID}`);
+  const raw = store.get(`hermes-studio.queue.${SID}`);
   const left = raw ? (JSON.parse(raw) as { pid?: string }[]).filter((r) => r.pid === PID) : [];
   check("a turn that really starts retires the watchdog's row", left.length === 0, raw ?? "none");
 }

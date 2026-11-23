@@ -90,7 +90,7 @@ cat > ~/.local/bin/hermes-acp-src <<'WRAP'
 exec env PYTHONPATH="$HOME/Project/hermes-agent" hermes "$@"
 WRAP
 chmod +x ~/.local/bin/hermes-acp-src
-AGENTUS_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
+HERMES_STUDIO_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
 ```
 
 `PYTHONPATH` puts the checkout **ahead of** the installed package, while the installed runtime still
@@ -101,7 +101,7 @@ slot will actually run (the same check Hermes Studio suggests when a backend is 
 PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check OK
 ```
 
-For a service install, put `AGENTUS_HERMES_CMD` in the environment you hand the server — see
+For a service install, put `HERMES_STUDIO_HERMES_CMD` in the environment you hand the server — see
 "Running it as a service". Leaving it at the default (`hermes`) keeps a plain install working, so
 the fork is an upgrade, never a requirement.
 
@@ -171,21 +171,21 @@ curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/mai
 The installer (`scripts/install.sh`) checks Node, installs the published `hermes-studio` package with
 npm (globally), and falls back to a per-user prefix (`~/.local`) if the global tree is not
 writable — it never reaches for `sudo`. It prints the start command and the URL when it is done.
-It refuses to run as root unless you set `AGENTUS_ALLOW_ROOT=1`.
+It refuses to run as root unless you set `HERMES_STUDIO_ALLOW_ROOT=1`.
 
 Overrides, passed as environment variables:
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_VERSION` | `latest` | pin a package version, e.g. `0.1.0` |
-| `AGENTUS_INSTALL_DIR` | unset | install into this `npm --prefix` instead of the global one |
-| `AGENTUS_REGISTRY` | npm's own | registry to fetch from |
-| `AGENTUS_ALLOW_ROOT` | `0` | `1` permits running as root |
-| `AGENTUS_NODE_MIN` | `22.5` | override the Node floor check |
+| `HERMES_STUDIO_VERSION` | `latest` | pin a package version, e.g. `0.1.0` |
+| `HERMES_STUDIO_INSTALL_DIR` | unset | install into this `npm --prefix` instead of the global one |
+| `HERMES_STUDIO_REGISTRY` | npm's own | registry to fetch from |
+| `HERMES_STUDIO_ALLOW_ROOT` | `0` | `1` permits running as root |
+| `HERMES_STUDIO_NODE_MIN` | `22.5` | override the Node floor check |
 
 ```bash
 # pin a version and a prefix
-AGENTUS_VERSION=0.1.0 AGENTUS_INSTALL_DIR="$HOME/.local" \
+HERMES_STUDIO_VERSION=0.1.0 HERMES_STUDIO_INSTALL_DIR="$HOME/.local" \
   bash scripts/install.sh
 ```
 
@@ -201,16 +201,16 @@ npm run hermes-studio                     # the same CLI as `npx hermes-studio`,
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
 `NODE_ENV=development` when `node_modules` is missing, builds when the web bundle is stale, then
-serves once (no watcher). `AGENTUS_PORT=9000 npm start` moves the port.
+serves once (no watcher). `HERMES_STUDIO_PORT=9000 npm start` moves the port.
 
 ## CLI
 
 ```
 hermes-studio [options]
 
-  -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
+  -p, --port <n>     port to listen on                 (HERMES_STUDIO_PORT, default 8788)
   -d, --data <dir>   where state lives (sqlite, login, settings)
-                                                       (AGENTUS_DATA, default ~/.agentus)
+                                                       (HERMES_STUDIO_DATA, default ~/.hermes-studio)
   -o, --open         open the cockpit in your browser once it is up
       --where        print the resolved paths and exit (starts nothing)
   -h, --help         this text
@@ -247,34 +247,34 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT`) |
-| `AGENTUS_DATA` | `~/.agentus` | where state lives; see [Data directory](#data-directory) |
-| `AGENTUS_TITLE` | `Hermes Studio` | this instance's own name — the tab title and the PWA label, so several cockpits on one machine are told apart |
-| `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
-| `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
-| `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one |
-| `AGENTUS_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
-| `AGENTUS_HISTORY_PAGE` | `500` | transcript page size |
-| `AGENTUS_TTS_BASE_URL` | unset | OpenAI-compatible base for server speech synthesis (`…/v1`); unset = browser voices only |
-| `AGENTUS_TTS_API_KEY` / `AGENTUS_TTS_MODEL` / `AGENTUS_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
-| `AGENTUS_STT_BASE_URL` | unset | OpenAI-compatible base for server transcription; unset = browser recognition only |
-| `AGENTUS_STT_API_KEY` / `AGENTUS_STT_MODEL` / `AGENTUS_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
+| `HERMES_STUDIO_PORT` | `8788` | server port (never reads bare `PORT`) |
+| `HERMES_STUDIO_DATA` | `~/.hermes-studio` | where state lives; see [Data directory](#data-directory) |
+| `HERMES_STUDIO_TITLE` | `Hermes Studio` | this instance's own name — the tab title and the PWA label, so several cockpits on one machine are told apart |
+| `HERMES_STUDIO_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
+| `HERMES_STUDIO_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
+| `HERMES_STUDIO_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one |
+| `HERMES_STUDIO_PERM_TIMEOUT_MS` | `300000` (5 min) | how long a permission prompt waits before auto-cancelling |
+| `HERMES_STUDIO_HISTORY_PAGE` | `500` | transcript page size |
+| `HERMES_STUDIO_TTS_BASE_URL` | unset | OpenAI-compatible base for server speech synthesis (`…/v1`); unset = browser voices only |
+| `HERMES_STUDIO_TTS_API_KEY` / `HERMES_STUDIO_TTS_MODEL` / `HERMES_STUDIO_TTS_VOICE` | – / `tts-1` / `alloy` | ditto |
+| `HERMES_STUDIO_STT_BASE_URL` | unset | OpenAI-compatible base for server transcription; unset = browser recognition only |
+| `HERMES_STUDIO_STT_API_KEY` / `HERMES_STUDIO_STT_MODEL` / `HERMES_STUDIO_STT_LANGUAGE` | – / `whisper-1` / – | ditto |
 | `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` | – | 百炼 (DashScope) credentials; read from the process env **and** `~/.hermes/.env` |
-| `AGENTUS_IDE_UPSTREAM` | unset | a code-server to embed as the panel's IDE tab (`http://127.0.0.1:8133`); unset = no IDE tab at all — see [Web IDE](./web-ide-integration.md) |
+| `HERMES_STUDIO_IDE_UPSTREAM` | unset | a code-server to embed as the panel's IDE tab (`http://127.0.0.1:8133`); unset = no IDE tab at all — see [Web IDE](./web-ide-integration.md) |
 
 Auth variables:
 
 | var | default | meaning |
 |---|---|---|
-| `AGENTUS_AUTH` | `on` | `off` = no login at all (local hacking only) |
-| `AGENTUS_USERNAME` | `admin` | operator name |
-| `AGENTUS_PASSWORD` | `123456` | operator password (plaintext in env) |
-| `AGENTUS_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `AGENTUS_PASSWORD` |
-| `AGENTUS_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
-| `AGENTUS_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
-| `AGENTUS_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token for scripts (0600, auto-minted) |
-| `AGENTUS_LOGIN_MAX_FAILS` / `AGENTUS_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
-| `AGENTUS_BASIC_AUTH` | — | HTTP Basic in front of **everything** (`:pass` checks only the password) |
+| `HERMES_STUDIO_AUTH` | `on` | `off` = no login at all (local hacking only) |
+| `HERMES_STUDIO_USERNAME` | `admin` | operator name |
+| `HERMES_STUDIO_PASSWORD` | `123456` | operator password (plaintext in env) |
+| `HERMES_STUDIO_PASSWORD_HASH` | — | `scrypt:<salt>:<hex>`; wins over `HERMES_STUDIO_PASSWORD` |
+| `HERMES_STUDIO_SESSION_TTL_MS` | 604800000 (7d) | session lifetime |
+| `HERMES_STUDIO_AUTH_SECRET` | `<DATA_DIR>/auth.secret` | cookie signing key (0600, auto-minted) |
+| `HERMES_STUDIO_AUTH_TOKEN` | `<DATA_DIR>/auth.token` | machine token for scripts (0600, auto-minted) |
+| `HERMES_STUDIO_LOGIN_MAX_FAILS` / `HERMES_STUDIO_LOGIN_LOCK_MS` | `5` / `30000` | per-IP brute-force lockout |
+| `HERMES_STUDIO_BASIC_AUTH` | — | HTTP Basic in front of **everything** (`:pass` checks only the password) |
 
 The voice/theme environment variables are a **bootstrap only**: the settings page (⚙ in the rail)
 owns them afterwards and stores them under `<DATA_DIR>/settings.json` (0600). What the page says
@@ -282,19 +282,19 @@ wins; the env is what makes a fresh install work before anyone opens it.
 
 ### Data directory
 
-`~/.agentus` by default. It holds `agentus.sqlite` (sessions + transcript), `credentials.json`,
+`~/.hermes-studio` by default. It holds `hermes-studio.sqlite` (sessions + transcript), `credentials.json`,
 `auth.token`, `auth.secret`, `settings.json`. It is created `0700` on first boot, and the
 boot log prints it **and why that directory won**:
 
 | order | rule |
 |---|---|
-| 1 | `AGENTUS_DATA` when it is set — every launcher and dev/QA instance pins this |
-| 2 | `~/.agentus` once it holds something, or when there is no repo-side data yet |
+| 1 | `HERMES_STUDIO_DATA` when it is set — every launcher and dev/QA instance pins this |
+| 2 | `~/.hermes-studio` once it holds something, or when there is no repo-side data yet |
 | 3 | `<repo>/packages/server/.data` — an existing checkout that predates this layout |
 
 Rule 3 exists so an install that quietly switched directories cannot come up with an empty
 session list (which reads exactly like "my sessions are gone"). To move such a checkout over,
-boot it once with `AGENTUS_DATA=~/.agentus`. `hermes-studio --where` prints what the server resolved
+boot it once with `HERMES_STUDIO_DATA=~/.hermes-studio`. `hermes-studio --where` prints what the server resolved
 instead of making you guess.
 
 Nothing ever writes inside `node_modules`: for an installed package, `<pkg>/packages/server/.data`
@@ -304,7 +304,7 @@ would be deleted by the next `npm i -g hermes-studio`, taking the transcript and
 
 | port | speaks | for |
 |---|---|---|
-| `AGENTUS_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
+| `HERMES_STUDIO_PORT` (8788) | plain HTTP | LAN, loopback, `curl`, scripts — no cert warning, CI unchanged; **the only listener** |
 | 5173 | Vite dev server | front-end hot reload, only during `npm run dev` |
 
 TLS is terminated **in front of** this process (a reverse proxy, or a tunnel that does its own
@@ -313,10 +313,10 @@ TLS is terminated **in front of** this process (a reverse proxy, or a tunnel tha
 ### Web IDE (code-server)
 
 The workspace panel ships a file tree, a preview/editor and a terminal, but no IDE. Point
-`AGENTUS_IDE_UPSTREAM` at a code-server of your own and an `ide` tab appears beside them:
+`HERMES_STUDIO_IDE_UPSTREAM` at a code-server of your own and an `ide` tab appears beside them:
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
+HERMES_STUDIO_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
 Hermes Studio does not start it, and it must bind **loopback only** with `--auth none` — the cockpit's
@@ -333,8 +333,8 @@ The cockpit is behind a login by default. Two credentials exist:
 | machine token | `Authorization: Bearer <t>` or `?token=<t>` | scripts, CI, launchers — read it from `<DATA_DIR>/auth.token` (0600) |
 
 Sessions are stateless cookies with a server-side index at `<DATA_DIR>/sessions.json` (0600), so
-revocation and "log out everywhere" are real and survive a restart. `AGENTUS_USERNAME` /
-`AGENTUS_PASSWORD` / `AGENTUS_PASSWORD_HASH` are the bootstrap; once you save in the 账号 card the
+revocation and "log out everywhere" are real and survive a restart. `HERMES_STUDIO_USERNAME` /
+`HERMES_STUDIO_PASSWORD` / `HERMES_STUDIO_PASSWORD_HASH` are the bootstrap; once you save in the 账号 card the
 file wins. Delete `credentials.json` to fall back to the environment.
 
 ### TLS
@@ -370,29 +370,29 @@ the same `state.db` your gateway and Studio have open. That is the intended prod
 session drives your actual agent, with your config, credentials, memory and session list.
 
 An *inherited* `HERMES_HOME` is ignored, so where a session writes is always something you chose —
-on the backend row, or via `AGENTUS_HERMES_HOME`. To keep one session's data separate, name a
+on the backend row, or via `HERMES_STUDIO_HERMES_HOME`. To keep one session's data separate, name a
 directory in that row's HERMES_HOME; no permission is needed.
 
 ## Running it as a service
 
 Hermes Studio runs in the foreground by default; a service unit keeps it up across logins and reboots.
-Point the unit at the same `AGENTUS_DATA` you use interactively, or the cockpit will come up with
+Point the unit at the same `HERMES_STUDIO_DATA` you use interactively, or the cockpit will come up with
 a different session list.
 
-**macOS (launchd)** — `~/Library/LaunchAgents/org.agentus.cockpit.plist`:
+**macOS (launchd)** — `~/Library/LaunchAgents/org.hermes-studio.cockpit.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>          <string>org.agentus.cockpit</string>
+  <key>Label</key>          <string>org.hermes-studio.cockpit</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/env</string><string>hermes-studio</string><string>--port</string><string>8788</string>
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>AGENTUS_DATA</key><string>/Users/YOU/.agentus</string></dict>
+  <dict><key>HERMES_STUDIO_DATA</key><string>/Users/YOU/.hermes-studio</string></dict>
   <key>RunAtLoad</key>      <true/>
   <key>KeepAlive</key>      <true/>
   <key>StandardOutPath</key>  <string>/tmp/agentus.out.log</string>
@@ -402,8 +402,8 @@ a different session list.
 ```
 
 ```bash
-launchctl load  ~/Library/LaunchAgents/org.agentus.cockpit.plist
-launchctl kickstart -k gui/$(id -u)/org.agentus.cockpit   # restart
+launchctl load  ~/Library/LaunchAgents/org.hermes-studio.cockpit.plist
+launchctl kickstart -k gui/$(id -u)/org.hermes-studio.cockpit   # restart
 ```
 
 **Linux (systemd, user unit)** — `~/.config/systemd/user/agentus.service`:
@@ -415,7 +415,7 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/env hermes-studio --port 8788
-Environment=AGENTUS_DATA=%h/.agentus
+Environment=HERMES_STUDIO_DATA=%h/.hermes-studio
 Restart=on-failure
 
 [Install]
@@ -438,16 +438,16 @@ path to the `hermes-studio` bin if the unit fails to start.
 npm i -g hermes-studio@latest            # or: npx hermes-studio@latest … for a one-off
 ```
 
-Your state is untouched — `~/.agentus` (or wherever `AGENTUS_DATA` points) is not inside the
+Your state is untouched — `~/.hermes-studio` (or wherever `HERMES_STUDIO_DATA` points) is not inside the
 package, so an upgrade cannot delete it. If you installed into a prefix with
-`AGENTUS_INSTALL_DIR=~/.local`, upgrade with the same prefix. On startup the server adopts existing
+`HERMES_STUDIO_INSTALL_DIR=~/.local`, upgrade with the same prefix. On startup the server adopts existing
 session cookies once instead of logging every device out.
 
 ## Uninstall
 
 ```bash
 npm rm -g hermes-studio                  # remove the program (state stays)
-rm -rf ~/.agentus                  # remove state — SQLite, login, settings
+rm -rf ~/.hermes-studio                  # remove state — SQLite, login, settings
 ```
 
 If you installed into a per-user prefix, `npm rm -g --prefix ~/.local hermes-studio`. Uninstalling never
@@ -466,7 +466,7 @@ command resolves.
 **Login problems.**
 
 - Forgot the password: delete `<DATA_DIR>/credentials.json` and restart — the bootstrap from
-  `AGENTUS_USERNAME` / `AGENTUS_PASSWORD` applies again (or the defaults).
+  `HERMES_STUDIO_USERNAME` / `HERMES_STUDIO_PASSWORD` applies again (or the defaults).
 - Locked out by the brute-force limiter: **Settings → 登录失败锁定** lists the locked IPs with
   unlock / unlock all.
 - Locked out entirely (can't log in to reach Settings): delete `<DATA_DIR>/sessions.json` to drop
@@ -475,8 +475,8 @@ command resolves.
 **"My sessions are gone."** The server is reading a different data directory. Run `hermes-studio --where`
 — it prints the data dir **and which rule chose it** (top of this page). The usual cause is an
 existing checkout whose sessions live in `<repo>/packages/server/.data` while the install now
-defaults to `~/.agentus`. Boot once with `AGENTUS_DATA` set to the directory that actually holds
-them, e.g. `AGENTUS_DATA=~/.agentus hermes-studio` or `AGENTUS_DATA=<repo>/packages/server/.data hermes-studio`.
+defaults to `~/.hermes-studio`. Boot once with `HERMES_STUDIO_DATA` set to the directory that actually holds
+them, e.g. `HERMES_STUDIO_DATA=~/.hermes-studio hermes-studio` or `HERMES_STUDIO_DATA=<repo>/packages/server/.data hermes-studio`.
 
 **The page loads but says "reconnecting" forever.** A tunnel is dropping WebSocket `Upgrade`
 requests. The live stream rides on `/ws`; use a tunnel that passes WebSockets through (SakuraFrp

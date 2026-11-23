@@ -1,11 +1,12 @@
-// QA: the `agentus-plan` MCP channel (P1) — the way an agent that does NOT emit ACP plan frames
+import "../../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
+// QA: the `hermes-studio-plan` MCP channel (P1) — the way an agent that does NOT emit ACP plan frames
 // gets plan cards without a line of its own code.
 //
 //   node scripts/qa/plan-mcp-sweep.mjs
 //
 // What it proves, and why each part is here:
 //   1. the capability bit GATES injection. The mock row is `nativePlanSource: none`, so its handshake
-//      carries `agentus-plan`; flipped to `acp`, a new session's handshake carries nothing. Every
+//      carries `hermes-studio-plan`; flipped to `acp`, a new session's handshake carries nothing. Every
 //      backend — Hermes included — defaults to `none`: the cockpit renders the plan OBJECT it owns,
 //      because the agent's own todo list dies with its process (design-plan-service.md §1).
 //   2. the injected env works END TO END. The first half is a real `plan-server.mjs` child speaking
@@ -32,10 +33,10 @@ const BASE = process.env.BASE ?? "http://127.0.0.1:8901";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Which data dir belongs to the instance under test? By EVIDENCE, not by env: an inherited
-// AGENTUS_DATA (a shell that has pointed at another tree all along) must not hand this sweep the
+// HERMES_STUDIO_DATA (a shell that has pointed at another tree all along) must not hand this sweep the
 // wrong cockpit's token — the symptom is a confusing wall of "unauthorized" (measured 2026-10-08).
 const DATA = await (async () => {
-  const candidates = [...new Set([process.env.AGENTUS_DATA, "/tmp/agentus-qa-account"].filter(Boolean))];
+  const candidates = [...new Set([process.env.HERMES_STUDIO_DATA, "/tmp/agentus-qa-account"].filter(Boolean))];
   for (const dir of candidates) {
     const file = path.join(dir, "auth.token");
     if (!fs.existsSync(file)) continue;
@@ -144,7 +145,7 @@ check("the built-in hermes row is MCP-driven too (its frames are not rendered)",
 // the rows an operator's cockpit actually runs on, so assert the NULL case lands on the same default
 // (deriving it from the kind instead would report `acp` for Hermes while everything else says `none`).
 {
-  const db = new DatabaseSync(path.join(DATA, "agentus.sqlite"));
+  const db = new DatabaseSync(path.join(DATA, "hermes-studio.sqlite"));
   const stored = db.prepare("select native_plan_source from backends where id = 'hermes'").get();
   db.prepare("update backends set native_plan_source = null where id = 'hermes'").run();
   const nullRow = ((await api("/api/backends")).body ?? []).find((r) => r.id === "hermes");
@@ -166,13 +167,13 @@ let sid = s1.id;
 await say(sid, "[mcp] what did the handshake carry?");
 const declared = JSON.parse((await lastReply(sid)).replace(/^MCP\s*/, "") || "[]");
 check("a `none` backend is handed the plan tool at HANDSHAKE time (and nothing else)",
-  declared.length === 1 && declared[0].name === "agentus-plan",
+  declared.length === 1 && declared[0].name === "hermes-studio-plan",
   JSON.stringify(declared));
 check("…running this repo's own plan server, not some other binary",
   declared[0]?.command === "node" && declared[0]?.args?.[0] === "plan-server.mjs",
   JSON.stringify(declared[0]));
 check("…with the endpoint, the session and a token — and no other env",
-  JSON.stringify(declared[0]?.envNames) === JSON.stringify(["AGENTUS_PLAN_ENDPOINT", "AGENTUS_PLAN_TOKEN", "AGENTUS_PLAN_SESSION"]),
+  JSON.stringify(declared[0]?.envNames) === JSON.stringify(["HERMES_STUDIO_PLAN_ENDPOINT", "HERMES_STUDIO_PLAN_TOKEN", "HERMES_STUDIO_PLAN_SESSION"]),
   JSON.stringify(declared[0]?.envNames));
 
 // The other direction: flip the row and a NEW session must be handed nothing.
@@ -191,16 +192,16 @@ check("the mock wrote the handshake's plan token out (QA hook, so no credential 
   fs.existsSync(TOKEN_FILE), TOKEN_FILE);
 const env = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
 check("…and it names THIS session and THIS cockpit",
-  env.AGENTUS_PLAN_SESSION === sid && env.AGENTUS_PLAN_ENDPOINT === BASE,
-  `session=${env.AGENTUS_PLAN_SESSION} endpoint=${env.AGENTUS_PLAN_ENDPOINT}`);
+  env.HERMES_STUDIO_PLAN_SESSION === sid && env.HERMES_STUDIO_PLAN_ENDPOINT === BASE,
+  `session=${env.HERMES_STUDIO_PLAN_SESSION} endpoint=${env.HERMES_STUDIO_PLAN_ENDPOINT}`);
 
 const mcp = mcpChild({
-  AGENTUS_PLAN_ENDPOINT: env.AGENTUS_PLAN_ENDPOINT,
-  AGENTUS_PLAN_TOKEN: env.AGENTUS_PLAN_TOKEN,
-  AGENTUS_PLAN_SESSION: env.AGENTUS_PLAN_SESSION,
+  HERMES_STUDIO_PLAN_ENDPOINT: env.HERMES_STUDIO_PLAN_ENDPOINT,
+  HERMES_STUDIO_PLAN_TOKEN: env.HERMES_STUDIO_PLAN_TOKEN,
+  HERMES_STUDIO_PLAN_SESSION: env.HERMES_STUDIO_PLAN_SESSION,
 });
 const init = await mcp.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
-check("the plan server speaks MCP (initialize)", init?.result?.serverInfo?.name === "agentus-plan",
+check("the plan server speaks MCP (initialize)", init?.result?.serverInfo?.name === "hermes-studio-plan",
   JSON.stringify(init?.result?.serverInfo));
 mcp.notify("notifications/initialized");
 const listed = await mcp.call("tools/list");
@@ -244,9 +245,9 @@ check("read_plan round-trips what the cockpit holds",
 
 // --- 3: a bad token can write nothing -------------------------------------------------
 const rogue = mcpChild({
-  AGENTUS_PLAN_ENDPOINT: env.AGENTUS_PLAN_ENDPOINT,
-  AGENTUS_PLAN_TOKEN: "not-the-token",
-  AGENTUS_PLAN_SESSION: env.AGENTUS_PLAN_SESSION,
+  HERMES_STUDIO_PLAN_ENDPOINT: env.HERMES_STUDIO_PLAN_ENDPOINT,
+  HERMES_STUDIO_PLAN_TOKEN: "not-the-token",
+  HERMES_STUDIO_PLAN_SESSION: env.HERMES_STUDIO_PLAN_SESSION,
 });
 await rogue.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
 const rogueOut = await rogue.call("tools/call", { name: "update_plan", arguments: { items: [{ content: "rogue", status: "pending" }] } });
@@ -309,9 +310,9 @@ const s4 = await freshSession("plan mcp sweep (takeover)");
 await say(s4.id, "[mcp] what did the handshake carry?");
 const env4 = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
 const mcp4 = mcpChild({
-  AGENTUS_PLAN_ENDPOINT: env4.AGENTUS_PLAN_ENDPOINT,
-  AGENTUS_PLAN_TOKEN: env4.AGENTUS_PLAN_TOKEN,
-  AGENTUS_PLAN_SESSION: env4.AGENTUS_PLAN_SESSION,
+  HERMES_STUDIO_PLAN_ENDPOINT: env4.HERMES_STUDIO_PLAN_ENDPOINT,
+  HERMES_STUDIO_PLAN_TOKEN: env4.HERMES_STUDIO_PLAN_TOKEN,
+  HERMES_STUDIO_PLAN_SESSION: env4.HERMES_STUDIO_PLAN_SESSION,
 });
 await mcp4.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
 const owns = await mcp4.call("tools/call", {
@@ -344,9 +345,9 @@ await api("/api/backends/mock", { method: "PATCH", body: JSON.stringify({ ...bef
 
 // --- 6: the child does not outlive its session ----------------------------------------
 const dying = mcpChild({
-  AGENTUS_PLAN_ENDPOINT: env.AGENTUS_PLAN_ENDPOINT,
-  AGENTUS_PLAN_TOKEN: env.AGENTUS_PLAN_TOKEN,
-  AGENTUS_PLAN_SESSION: env.AGENTUS_PLAN_SESSION,
+  HERMES_STUDIO_PLAN_ENDPOINT: env.HERMES_STUDIO_PLAN_ENDPOINT,
+  HERMES_STUDIO_PLAN_TOKEN: env.HERMES_STUDIO_PLAN_TOKEN,
+  HERMES_STUDIO_PLAN_SESSION: env.HERMES_STUDIO_PLAN_SESSION,
 });
 await dying.call("initialize", { protocolVersion: "1", capabilities: {}, clientInfo: { name: "sweep", version: "1" } });
 dying.child.stdin.end();

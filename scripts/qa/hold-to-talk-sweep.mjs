@@ -3,7 +3,7 @@
 // 单测（hold-to-talk-units.mts）钉的是状态机；这里只证明**事件真的接到了**，而且 P0 那条核心判据成立：
 // 按住期间布局自己变化（输入框变高、状态条出现）不能断录 —— 也就是指针离开按钮边界时录音必须还在。
 //
-// 自给自足：自己的 Hermes Studio（mock 后端、AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge。
+// 自给自足：自己的 Hermes Studio（mock 后端、HERMES_STUDIO_AUTH=off）、临时数据目录、操作员的 Edge。
 //   CDP=http://127.0.0.1:9223 node scripts/qa/hold-to-talk-sweep.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -33,7 +33,7 @@ const dataDir = mkdtempSync(path.join(tmpdir(), "agentus-hold-"));
 const proc = spawn(path.join(ROOT, "node_modules/.bin/tsx"), ["packages/server/src/index.ts"], {
   detached: true,
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: "development", HOME: mkdtempSync(path.join(tmpdir(), "hold-home-")), AGENTUS_PORT: String(PORT), AGENTUS_DATA: dataDir, AGENTUS_AUTH: "off" },
+  env: { ...process.env, NODE_ENV: "development", HOME: mkdtempSync(path.join(tmpdir(), "hold-home-")), HERMES_STUDIO_PORT: String(PORT), HERMES_STUDIO_DATA: dataDir, HERMES_STUDIO_AUTH: "off" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
