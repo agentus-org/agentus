@@ -52,7 +52,7 @@ agentus/<hermes 内部版本>/merge-<YYYYMMDD-HHMM>
 tag。`agentus/` 这个前缀也把它和上游自己的 tag（`v0.23.0`、`v0.23.0+canary.*`）分开；最后一段是时间戳，
 可排序，所以「最新」就是一次 `sort -V`。
 
-**当前集成构建：`agentus/v0.23.0/merge-20261122-2027`** —— fork 上最新的那个 tag，基座 Hermes
+**当前集成构建：`agentus/v0.23.0/merge-20261123-1847`** —— fork 上最新的那个 tag，基座 Hermes
 `v0.23.0`。这行只为一眼看个大概，不是权威：下面的 `TAG=$(…)` 每次都会自己解析出最新，觉得这行过期就
 以它为准。
 
@@ -60,6 +60,10 @@ Hermes 0.23 起，一个会话的 agent 住在那个 home 的 **gateway** 里，
 所以杀掉 viewer 不再等于结束回合；把两者当成同一个进程的驾驶舱，要么把会话丢在半路，要么在它还在干活时
 报成已死。这份构建带上了那套生命周期，并且在 0.22 后端上行为不变（帧里有没有 `_meta.hermes`，就是
 两个世界的判据）。
+
+这份构建还同时接受改名后的 Hermes Studio cockpit key（`_meta.hermesStudio`、
+`HERMES_STUDIO_SESSION_ROLE`）与旧的 Agentus 名称，因此一份 fork 构建就能在改名期间和改名之后同时服务
+两代 cockpit。
 
 先正常装好 Hermes（它的安装器会带上 Python/Node 运行时，并把 `hermes` 放进 PATH），再把那份构建
 套在那个运行时上跑：
