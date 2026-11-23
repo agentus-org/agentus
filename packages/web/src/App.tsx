@@ -54,6 +54,7 @@ import { IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, I
 import { PANES, headPanes, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
+import { IMAGE_TYPES, MAX_IMAGE_BYTES, attachmentError, draftToAttachment, linkDraft, needsPathUpload, uploadAttachment, type Draft } from "./attachmentDraft";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
 export function App(): JSX.Element {
@@ -4286,23 +4287,8 @@ function ScriptNote({ id }: { id: string }): JSX.Element | null {
   );
 }
 
-/** Attachments the operator added to the next prompt. Kept client-side until send:
- *  the bytes become ACP content blocks in the server (see PromptAttachment). */
-interface Draft {
-  id: string;
-  name: string;
-  kind: "image" | "text";
-  mimeType: string;
-  /** data: URL for the thumbnail (images only) */
-  preview?: string;
-  /** base64 payload for images, the raw text for text files */
-  payload: string;
-  bytes: number;
-}
-
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
-const MAX_TEXT_BYTES = 256 * 1024;
+// Draft + the 256kB/4MB limits now live in ./attachmentDraft so both composers and their unit
+// tests read the same definition (issue #113).
 
 /** Enter while an IME is COMPOSING is 「选词」, not 「提交」 (issue #29).
  *
@@ -4325,7 +4311,7 @@ function useImeGuard(): {
   };
 }
 
-function readFileAsDraft(file: File): Promise<Draft | { error: string }> {
+async function readFileAsDraft(file: File, sessionId?: string): Promise<Draft | { error: string }> {
   const isImage = IMAGE_TYPES.includes(file.type);
   if (isImage) {
     if (file.size > MAX_IMAGE_BYTES) return Promise.resolve({ error: `${file.name}: image larger than 4MB` });
@@ -4343,7 +4329,12 @@ function readFileAsDraft(file: File): Promise<Draft | { error: string }> {
       fr.readAsDataURL(file);
     });
   }
-  if (file.size > MAX_TEXT_BYTES) return Promise.resolve({ error: `${file.name}: larger than 256kB — attach it as a path instead` });
+  // >256kB non-images used to dead-end here with "attach it as a path instead" — a channel that
+  // did not exist. Now they land on disk via /api/upload and travel as a resource_link.
+  if (needsPathUpload(file)) {
+    try { return linkDraft(file, await uploadAttachment(file, sessionId)); }
+    catch (e) { return { error: attachmentError(file.name, (e as Error).message ?? String(e)) }; }
+  }
   return new Promise((resolve) => {
     const fr = new FileReader();
     fr.onload = () => resolve({
@@ -5064,7 +5055,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   const addFiles = async (files: FileList | File[]): Promise<void> => {
     const list = Array.from(files);
     if (!list.length) return;
-    const results = await Promise.all(list.map((f) => readFileAsDraft(f)));
+    const results = await Promise.all(list.map((f) => readFileAsDraft(f, v.info.id)));
     const good: Draft[] = [];
     const bad: string[] = [];
     for (const r of results) {
@@ -5077,11 +5068,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
 
   /** What the box holds, in wire shape — shared by Enter and ⌘Enter so the two cannot disagree
    *  about what a draft attachment becomes. */
-  const attachmentsOf = (): PromptAttachment[] => drafts.map((d) => (
-    d.kind === "image"
-      ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
-      : { kind: "text", name: d.name, text: d.payload }
-  ));
+  const attachmentsOf = (): PromptAttachment[] => drafts.map(draftToAttachment);
 
   /** ↑/↓ through what was already said (#25). Returns true when the key was consumed. */
   const historyKey = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
@@ -6323,11 +6310,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
     setBusy(true); setErr("");
     try {
       if (listening) dictation.stop();
-      const attachments: PromptAttachment[] = drafts.map((d) => (
-        d.kind === "image"
-          ? { kind: "image", mimeType: d.mimeType, data: d.payload, name: d.name }
-          : { kind: "text", name: d.name, text: d.payload }
-      ));
+      const attachments: PromptAttachment[] = drafts.map(draftToAttachment);
       const id = await cockpit.createSession(backend, dir.trim(), "");
       cockpit.queueSetup(id, pickedSetup());
       cockpit.setActive(id);
