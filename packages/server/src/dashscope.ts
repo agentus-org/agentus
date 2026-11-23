@@ -63,7 +63,7 @@ async function fetchJson(url: string, init: RequestInit, label: string): Promise
 }
 
 /** Text → audio bytes. Non-streaming: the response carries a 24h OSS URL; we fetch it
- *  server-side so the browser only ever talks to Agentus (and the key never pairs with
+ *  server-side so the browser only ever talks to Hermes Studio (and the key never pairs with
  *  a cross-origin request from the client).
  *
  *  Kept as the fallback behind the streaming path (voice.ttsStream off, a provider that is
@@ -106,7 +106,7 @@ function mimeOf(format: string): string {
 
 /** Hotwords for the compat route: a compact system message. The docs describe it as
  *  "背景文本和实体词表" — exactly the context-enhancement channel, and it is what makes
- *  "Agentus"/"网关" survive instead of "安逸 slot"/"万关". */
+ *  "Hermes Studio"/"网关" survive instead of "安逸 slot"/"万关". */
 export function hotwordContext(words: string[]): string {
   if (!words.length) return "";
   return `本次语音可能涉及的词汇表（识别时可优先匹配）：${words.slice(0, 60).join("、")}。`;

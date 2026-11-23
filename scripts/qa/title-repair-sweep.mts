@@ -29,7 +29,7 @@ const check = (name: string, ok: boolean, detail = "") => {
 };
 
 const LONG_PROMPT =
-  "交办：把行情看板 :8790 打通公网 + 家里局域网 HTTPS（照 Agentus 的形状来），先给方案再动手，别改我机器上的现有配置";
+  "交办：把行情看板 :8790 打通公网 + 家里局域网 HTTPS（照 Hermes Studio 的形状来），先给方案再动手，别改我机器上的现有配置";
 /** hermes `agent/title_generator.py::derive_title` 的规则，逐字照抄：48、词边界、rstrip 标点、加 `…`。 */
 const hermesSlice = (raw: string): string => {
   const line = (raw.split("\n").map((l) => l.trim()).find((l) => l) || "").replace(/^[#>*\-\d.、\s]+/u, "").replace(/\s+/g, " ").trim();

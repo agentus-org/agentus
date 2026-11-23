@@ -165,14 +165,14 @@ final class XiaomiFocus {
 
     /** The param_v2 object, in the shape the ROM's protocol generation expects. */
     private static JSONObject payload(JSONObject a, boolean os3) throws Exception {
-        String title = clip(a.optString("title", "Agentus"), 20);
+        String title = clip(a.optString("title", "Hermes Studio"), 20);
         String subtitle = a.optString("subtitle", "");
         String body = a.optString("body", subtitle);
         String ticker = clip(subtitle.isEmpty() ? title : subtitle, 40);
         String content = clip(body.isEmpty() ? title : body, 60);
 
         JSONObject v2 = new JSONObject()
-            .put("business", "agentus")
+            .put("business", "hermes-studio")
             .put("enableFloat", false)     // an update must not yank the island open
             .put("updatable", true)        // same notification id keeps updating in place
             .put("ticker", ticker)         // status-bar line

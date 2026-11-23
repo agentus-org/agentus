@@ -10,7 +10,7 @@
 // screen). An embedded code-server (`--auth none`) fixes the login page and breaks reachability
 // instead: it binds loopback by design, because "no auth" is only safe there.
 //
-// So the request has to arrive through agentus itself, same-origin, on a path the existing gate
+// So the request has to arrive through hermes-studio itself, same-origin, on a path the existing gate
 // already covers. That is the whole design:
 //
 //  * MOUNT UNDER `/api/`  (`/api/ide/…`). `auth.ts::requiresAuth` closes everything under `/api/`
@@ -117,12 +117,12 @@ function strip(url: URL, up: IdeUpstream): string {
 /** Headers we must not forward, and why:
  *  - `host`: the upstream is not the authority the browser addressed, and code-server uses Host in
  *    redirect/websocket-origin checks.
- *  - `cookie`: the upstream runs `--auth none`; forwarding the operator's agentus cookie would hand
+ *  - `cookie`: the upstream runs `--auth none`; forwarding the operator's hermes-studio cookie would hand
  *    a password-equivalent to a third-party process for no benefit.
  *  - `connection`/`upgrade`-class hop-by-hop headers: they describe OUR socket, not the new one. */
 const HOP_BY_HOP = new Set([
   "host", "cookie", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-  "te", "trailer", "transfer-encoding", "upgrade", "authorization", "x-agentus-cockpit-token",
+  "te", "trailer", "transfer-encoding", "upgrade", "authorization", "x-hermes-studio-cockpit-token",
 ]);
 
 function forwardHeaders(req: IncomingMessage, prefix: string): http.OutgoingHttpHeaders {
@@ -137,13 +137,13 @@ function forwardHeaders(req: IncomingMessage, prefix: string): http.OutgoingHttp
   out["x-forwarded-proto"] = proto;
   out["x-forwarded-host"] = String(req.headers.host ?? "");
   // code-server (like every VS Code server) builds absolute URLs from this. Without it, redirects
-  // and asset links escape the mount point and land on agentus's SPA fallback.
+  // and asset links escape the mount point and land on hermes-studio's SPA fallback.
   out["x-forwarded-prefix"] = prefix;
   return out;
 }
 
 /** Absolute paths the upstream hands back must come back inside the mount, or the browser asks
- *  agentus for them (and gets the SPA shell — a black iframe with no error anywhere). */
+ *  hermes-studio for them (and gets the SPA shell — a black iframe with no error anywhere). */
 function rewriteLocation(value: string, prefix: string): string {
   if (value.startsWith(prefix)) return value;
   if (value.startsWith("/")) return `${prefix}${value}`;

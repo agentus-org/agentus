@@ -7,7 +7,7 @@
 - Install: `npx agentus@0.23.2` · `npm i -g agentus@0.23.2`
 - Fork build unchanged: `agentus/v0.23.0/merge-20261114-2214`. This release has no new Hermes fork build.
 - This release changes server code: restart `:8788` is required for the fix to take effect. Running sessions are interrupted and resume automatically.
-- Full changelog: https://github.com/agentus-org/agentus/compare/v0.23.1...v0.23.2
+- Full changelog: https://github.com/hermes-studio-org/hermes-studio/compare/v0.23.1...v0.23.2
 
 ---
 
@@ -17,7 +17,7 @@
 |---|---|
 | tag | `v0.23.2` → `ba757d8`，远端类型 `tag`（注解） |
 | npm | `agentus@0.23.2`，registry shasum `fad23caa1579a1a583baa5ad7a55f9b0607927e9`（与本地 npm pack 一致），`dist-tags.latest=0.23.2` |
-| Release | https://github.com/agentus-org/agentus/releases/tag/v0.23.2 · `isDraft=false`、`isPrerelease=false` |
+| Release | https://github.com/hermes-studio-org/hermes-studio/releases/tag/v0.23.2 · `isDraft=false`、`isPrerelease=false` |
 | 闸门 | `preflight.sh` 13 passed / 0 failed（1 warning），GREEN |
 | live | `:8788` pid `97893 → 4822`，`/api/version` commit `eed17ce → ba757d8`，6 个槽位 resume 全 200 |
 

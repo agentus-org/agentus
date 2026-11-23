@@ -1,17 +1,17 @@
-# Agentus brand assets
+# Hermes Studio brand assets
 
 Everything in this directory is **generated**. The one hand-provided file is the master PNG;
 the rest is produced from it by [`scripts/build-brand-assets.py`](../../scripts/build-brand-assets.py).
 
 ```
-assets/logo/source/agentus-logo-source.png   the master (1817², kept verbatim)
+assets/logo/source/hermes-studio-logo-source.png   the master (1817², kept verbatim)
       ↓  classify the two inks → denoise → potrace → rasterise at every size
-agentus-icon.svg        the mark on a square canvas — favicon/PWA/app icon geometry
-agentus-mark.svg        the mark hugging its own box (1484×880) — the UI header/login
-agentus-wordmark.svg    the "Agentus" wordmark alone
-agentus-logo.svg        the lockup: mark over wordmark, as in the master
-agentus-icon-*.svg      light-ink variants for dark surfaces
-agentus-icon-*.png      transparent raster exports (1024…16) + lockup + maskable
+hermes-studio-icon.svg        the mark on a square canvas — favicon/PWA/app icon geometry
+hermes-studio-mark.svg        the mark hugging its own box (1484×880) — the UI header/login
+hermes-studio-wordmark.svg    the "Hermes Studio" wordmark alone
+hermes-studio-logo.svg        the lockup: mark over wordmark, as in the master
+hermes-studio-icon-*.svg      light-ink variants for dark surfaces
+hermes-studio-icon-*.png      transparent raster exports (1024…16) + lockup + maskable
 packages/web/public/icons/         what the browser and the PWA actually load
 android/app/src/main/res/mipmap-*  launcher icons (adaptive + legacy + round)
 android/app/src/main/res/drawable/ic_notify.xml  monochrome notification glyph
@@ -41,7 +41,7 @@ python3 scripts/build-brand-assets.py          # writes every asset above
 python3 scripts/build-brand-assets.py --check  # verify the committed ones
 ```
 
-Then rebuild what consumes them: `npm run build -w @agentus/web` and
+Then rebuild what consumes them: `npm run build -w @hermes-studio/web` and
 `bash scripts/build-apk.sh`.
 
 ## Two things worth knowing

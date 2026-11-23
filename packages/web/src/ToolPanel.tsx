@@ -560,7 +560,7 @@ export function ToolPanel({ v, onClose, onPickWorkspace, focus, panelWidth, pane
                 </p>
                 <pre className="ide-cmd">{ide0?.start ?? ""}</pre>
                 <p className="ide-help-note">
-                  然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 agentus。
+                  然后设 <code>AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133</code> 并重启 hermes-studio。
                   只监听回环是刻意的：<code>--auth none</code> 只有在回环上才安全，鉴权由驾驶舱的 cookie 这一跳承担。
                 </p>
               </div>

@@ -55,7 +55,7 @@ check("logged in", status === 200, `status ${status}`);
 await viewport(1400);
 // 按前缀清：per-pair 的 `agentus.panel-split-ratio:<a+b>` 与 `agentus.panel-split-ide-top` 也是
 // 这一族，逐个点名会漏（键名见 panes.ts 的 PAIR_KEY / RATIO_KEY / SPLIT_KEY）。
-await ev(`(() => { for (const k of Object.keys(localStorage)) if (/^agentus\\.panel-/.test(k)) localStorage.removeItem(k); return true; })()`);
+await ev(`(() => { for (const k of Object.keys(localStorage)) if (/^hermes-studio\\.panel-/.test(k)) localStorage.removeItem(k); return true; })()`);
 await goto(BASE);
 await ev(`(() => { const row = document.querySelector('.session-item'); if (row) row.click(); return Boolean(row); })()`);
 await sleep(2000);

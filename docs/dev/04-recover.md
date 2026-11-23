@@ -24,7 +24,7 @@ empty. Triage the identity, not the liveness (see "Is it serving the wrong store
 |---|---|
 | `8788` | live HTTP |
 | `8901` | dev / QA instance |
-| `8648` | **Hermes Studio** — not Agentus, do not touch |
+| `8648` | **Hermes Studio** — not Hermes Studio, do not touch |
 
 ```bash
 lsof -nP -iTCP:8788 -sTCP:LISTEN        # who owns the port (returns the CHILD, not the supervisor)
@@ -34,7 +34,7 @@ ps -o pid,ppid,pgid,command -p <pid>    # its process group and command line
 ## "Address already in use"
 
 `EADDRINUSE` means another process holds the port — often a previous instance that never
-died, or (this box) an ambient `PORT=8648` pointed at Studio. The Agentus server reads
+died, or (this box) an ambient `PORT=8648` pointed at Studio. The Hermes Studio server reads
 `AGENTUS_PORT`, never bare `PORT`, so a script that reads the ambient value will fight for
 Studio's port. Do not just relaunch: identify the current holder, decide whether it is the
 one you want, then stop it through its own launcher.

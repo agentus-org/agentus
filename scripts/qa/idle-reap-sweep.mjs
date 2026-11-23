@@ -1,5 +1,5 @@
 // QA: 槽位空闲回收 — the reaper stops an IDLE slot's agent process to reclaim memory (AionUi parity:
-// 设置 → 系统 → 「Agent 空闲超时（分钟）」, default 5, 1–60; Agentus adds 0 = 关闭).
+// 设置 → 系统 → 「Agent 空闲超时（分钟）」, default 5, 1–60; Hermes Studio adds 0 = 关闭).
 //
 // This is the half the operator asked about (2026-10-10: 「活跃进程这个是不是要做超过几分钟没动作就自动
 // kill进程啊」) and it must be provably narrow. What this asserts:

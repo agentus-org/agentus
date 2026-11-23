@@ -35,11 +35,11 @@ final class Pairing {
         return url.replaceAll("/+$", "");
     }
 
-    /** Parse `agentus://pair?u=<base>&c=<code>`, or "<base> <code>", into {base, code}. */
+    /** Parse `hermes-studio://pair?u=<base>&c=<code>`, or "<base> <code>", into {base, code}. */
     static String[] parsePairString(String raw) {
         if (TextUtils.isEmpty(raw)) return null;
         String text = raw.trim();
-        if (text.startsWith("agentus://")) {
+        if (text.startsWith("hermes-studio://")) {
             try {
                 android.net.Uri uri = android.net.Uri.parse(text);
                 return new String[]{normalise(uri.getQueryParameter("u")), uri.getQueryParameter("c")};

@@ -10,7 +10,7 @@
 //   · a hand-written name is never overwritten by an automatic one, and clearing it restores
 //     the generated one; asking for a regeneration on purpose DOES replace it.
 //
-// Self-contained: its own Agentus instance + the user's Edge over CDP, mock agent only.
+// Self-contained: its own Hermes Studio instance + the user's Edge over CDP, mock agent only.
 //   node scripts/qa/session-title-sweep.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";

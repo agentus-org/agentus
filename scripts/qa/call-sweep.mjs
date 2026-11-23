@@ -7,7 +7,7 @@
 //     the output waveform must stop being a flat line while the server TTS plays;
 //   · the phases are colour-coded, thumb-sized on a phone, and announced to a screen reader.
 //
-// Self-contained: stub TTS upstream + its own Agentus instance + the user's Edge over CDP.
+// Self-contained: stub TTS upstream + its own Hermes Studio instance + the user's Edge over CDP.
 //   node scripts/qa/call-sweep.mjs
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -804,7 +804,7 @@ try {
   await sleep(500);
   check("an idle session is never cancelled: the server logs the refusal and does not forward it",
     log.slice(idleMark).includes("cancel ignored") && !log.slice(idleMark).includes("cancel sent"),
-    JSON.stringify((log.slice(idleMark).match(/\[agentus\] cancel [a-z]+/g) ?? [])));
+    JSON.stringify((log.slice(idleMark).match(/\[hermes-studio\] cancel [a-z]+/g) ?? [])));
   // ---- 打断方式（关键词打断 / 按键打断）：开关就在通话页上，一下切换、立即生效 ---------------
   // 语音打断 retired (2026-11-21): exactly two modes. One setting changes with the ROOM (a phone
   // on a table hears its own loudspeaker; a headset does not), so both ends live on the call itself,

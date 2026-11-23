@@ -109,19 +109,19 @@ export function App(): JSX.Element {
   // global action — and the menu closes itself on click either way.
   useEffect(() => {
     const open = (): void => { setSettings(true); setDrawer(false); };
-    window.addEventListener("agentus:open-settings", open);
-    return () => window.removeEventListener("agentus:open-settings", open);
+    window.addEventListener("hermes-studio:open-settings", open);
+    return () => window.removeEventListener("hermes-studio:open-settings", open);
   }, []);
   // 同一个模式给拓扑面板用：入口按钮在 chat head 里（它拿不到 App 的 state），一条事件最短。
   useEffect(() => {
     const open = (): void => { setTopo(true); setTopoWin(null); setDrawer(false); };
-    window.addEventListener("agentus:open-topology", open);
-    return () => window.removeEventListener("agentus:open-topology", open);
+    window.addEventListener("hermes-studio:open-topology", open);
+    return () => window.removeEventListener("hermes-studio:open-topology", open);
   }, []);
   useEffect(() => {
     const open = (): void => { setCron(true); setTopo(false); setTopoWin(null); setDrawer(false); };
-    window.addEventListener("agentus:open-cron", open);
-    return () => window.removeEventListener("agentus:open-cron", open);
+    window.addEventListener("hermes-studio:open-cron", open);
+    return () => window.removeEventListener("hermes-studio:open-cron", open);
   }, []);
 
   // ---- the two side panes, both resizable and both the operator's to size -----------------
@@ -415,7 +415,7 @@ function AuthScreen(): JSX.Element {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={submit}>
-        <div className="auth-logo"><BrandMark size={30} /> Agentus</div>
+        <div className="auth-logo"><BrandMark size={30} /> Hermes Studio</div>
         <div className="auth-sub">keep your agents on the track</div>
         {splash ? (
           <div className="auth-note">正在检查登录状态…</div>
@@ -1292,7 +1292,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
     <aside className={`sidebar ${open ? "open" : ""} ${mode}`} style={{ "--rail-w": `${mode === "compact" ? 60 : railWidth}px` } as CSSProperties}>
       {railHandle}
       <header>
-        <span className="logo"><BrandMark size={24} /> Agentus</span>
+        <span className="logo"><BrandMark size={24} /> Hermes Studio</span>
         <span className="tagline">keep your agents on the track</span>
         <button
           className={`icon-btn rail-gear ${settingsOpen ? "on" : ""}`}
@@ -1328,7 +1328,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           data-nav="topology"
           title="会话拓扑 —— 每个工作空间有哪些会话、谁把活交给了谁"
           aria-label="打开会话拓扑"
-          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-topology"))}
+          onClick={() => window.dispatchEvent(new CustomEvent("hermes-studio:open-topology"))}
         >
           <IconFork size={14} />
           <span>会话拓扑</span>
@@ -1339,7 +1339,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           data-nav="cron"
           title="定时任务 —— hermes cron 的作业、执行历史与失败账本"
           aria-label="打开定时任务"
-          onClick={() => window.dispatchEvent(new CustomEvent("agentus:open-cron"))}
+          onClick={() => window.dispatchEvent(new CustomEvent("hermes-studio:open-cron"))}
         >
           <IconClock size={14} />
           <span>定时任务</span>
@@ -1628,7 +1628,7 @@ function Main({ onMenu, settingsOpen, onCloseSettings, onPermClick, panelWidth, 
       <div className="main">
         <div className="chat-head">
           <button className="icon-btn menu-btn" onClick={onMenu} title="sessions" aria-label="sessions"><IconMenu /></button>
-          <span className="title">Agentus</span>
+          <span className="title">Hermes Studio</span>
         </div>
         <div className="empty">
           <div className="big"><BrandMark size={72} /></div>
@@ -2006,7 +2006,7 @@ function ChatHead({ v, onMenu, panelOpen, panelTab, onOpenPane, panes, wide, cal
                   setSpeakMenu(false);
                   // The numeric box lives in 设置 → 观察智能体; opening it from here is the shortest
                   // path to 「自定义」 without teaching a second place to type a number.
-                  window.dispatchEvent(new CustomEvent("agentus:open-settings", { detail: "voice" }));
+                  window.dispatchEvent(new CustomEvent("hermes-studio:open-settings", { detail: "voice" }));
                 }}
               >
                 <span className="speak-check">{customOn ? "✓" : ""}</span>

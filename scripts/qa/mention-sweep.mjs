@@ -5,7 +5,7 @@
 //   · 选完空间，同一个弹层立刻换成「新会话 + 该空间的会话」，回车选中后输入框里出现一枚胶囊；
 //   · 回车发送后，目标工作空间里真的多了一个会话，它的第一条消息是信封 + 操作员那句话。
 //
-// 自给自足：自己的 Agentus（mock 后端）、自己建的临时数据目录、操作员的 Edge（CDP :9222）。
+// 自给自足：自己的 Hermes Studio（mock 后端）、自己建的临时数据目录、操作员的 Edge（CDP :9222）。
 //   node scripts/qa/mention-sweep.mjs
 import { execSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";

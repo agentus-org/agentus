@@ -6,7 +6,7 @@
 //   · `not_found`（打错字）与 `out_of_scope`（有、但被作用域挡住）必须是两个码；
 //   · 关闭中回魂：握手没回来就关掉的槽，不能过一会显示成 ready。
 //
-// 自给自足：自己的 Agentus（mock 后端）、临时数据目录、直接 spawn `bin/cli.mjs`。
+// 自给自足：自己的 Hermes Studio（mock 后端）、临时数据目录、直接 spawn `bin/cli.mjs`。
 //   node scripts/qa/cockpit-session-verbs-sweep.mjs
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -64,7 +64,7 @@ const api = async (p, init = {}) => {
 // 收尸动词与 stop 都受「驾驶舱互发消息」开关管；这里先打开。
 await api("/api/settings", { method: "PUT", body: JSON.stringify({ agent: { cockpitSend: true } }) });
 
-/** 干净的 operator 环境：本进程自己就是跑在 Agentus 会话里的 agent，继承那三个变量会让
+/** 干净的 operator 环境：本进程自己就是跑在 Hermes Studio 会话里的 agent，继承那三个变量会让
  *  CLI 以为自己是 agent（身份优先），于是 operator 动词全被拒 —— 这一版的第一轮就是这么全红的。 */
 const OPERATOR_ENV = (() => {
   const e = { ...process.env };

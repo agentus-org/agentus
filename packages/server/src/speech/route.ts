@@ -36,7 +36,7 @@ export interface SpeechRoute {
 /** Vendors the agent supports out of the box, OpenAI-compatible only.
  *  Mirrors `hermes_cli/auth.py`'s registry rows (id, base url, key env, base-url env); keep it in
  *  sync when a vendor is added there. A vendor that is NOT here still works if it is declared in
- *  `config.yaml` → `providers.<id>` — that is the escape hatch, not a second config in Agentus. */
+ *  `config.yaml` → `providers.<id>` — that is the escape hatch, not a second config in Hermes Studio. */
 const BUILTIN: Record<string, { baseUrl: string; keys: string[]; baseEnv?: string }> = {
   deepseek: { baseUrl: "https://api.deepseek.com/v1", keys: ["DEEPSEEK_API_KEY"], baseEnv: "DEEPSEEK_BASE_URL" },
   openai: { baseUrl: "https://api.openai.com/v1", keys: ["OPENAI_API_KEY"], baseEnv: "OPENAI_BASE_URL" },

@@ -202,7 +202,7 @@ check("a restarted agent receives the plan hand-over",
   Array.isArray(handed) && handed.some((b) => b.type === "resource"), JSON.stringify(handed)?.slice(0, 240));
 const res1 = Array.isArray(handed) ? handed.find((b) => b.type === "resource") : null;
 check("…as a STRUCTURED resource block, not as fake user speech (the uri names the plan)",
-  String(res1?.resourceUri ?? "").startsWith("agentus://plan/"), `uri=${res1?.resourceUri}`);
+  String(res1?.resourceUri ?? "").startsWith("hermes-studio://plan/"), `uri=${res1?.resourceUri}`);
 check("…carrying the steps still owed",
   /patch the flaky timing assert/.test(String(res1?.body ?? "")), String(res1?.body ?? "").slice(0, 140));
 check("…tagged in `_meta` so we can tell it from the operator's own words",

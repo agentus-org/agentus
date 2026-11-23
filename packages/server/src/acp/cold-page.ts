@@ -13,7 +13,7 @@
  *  Pure on purpose: the caller decides which rows EXIST (the cockpit's own scope rule), this decides
  *  which of them survive the page. That way the rule is tested without a server or a browser. */
 
-import type { SessionInfo } from "@agentus/shared";
+import type { SessionInfo } from "@hermes-studio/shared";
 
 /** How many cold rows a single workspace keeps by default. The rail shows `RAIL_RECENT` (5) before
  *  「展开其余」, so 20 is the expand depth, not the visible depth. */

@@ -65,7 +65,7 @@ export function publishIdentity(file: IdentityFile): void {
     fs.writeFileSync(tmp, `${JSON.stringify(file)}\n`, { mode: 0o600 });
     fs.renameSync(tmp, target);
   } catch (err) {
-    console.warn(`[agentus] could not publish the cockpit identity file: ${(err as Error).message}`);
+    console.warn(`[hermes-studio] could not publish the cockpit identity file: ${(err as Error).message}`);
   }
 }
 

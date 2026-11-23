@@ -1,11 +1,11 @@
 # Running a development instance
 
-This doc answers: how do I start a dev instance of Agentus, and how is its code and data
+This doc answers: how do I start a dev instance of Hermes Studio, and how is its code and data
 kept away from the live one?
 
 ## The two-worktree model
 
-Agentus is developed in **two git worktrees of the same repository**, running as two
+Hermes Studio is developed in **two git worktrees of the same repository**, running as two
 instances:
 
 | | live | dev |
@@ -89,7 +89,7 @@ For the worktrees, the outcome is fixed by the launchers rather than by the rule
 - **dev** — `scripts/dev.sh` exports `AGENTUS_DATA=/tmp/agentus-qa-account` and
   `AGENTUS_PORT=8901`.
 
-`agentus --where` (or `AGENTUS_PRINT_PATHS=1`) prints the resolved paths and exits without
+`hermes-studio --where` (or `AGENTUS_PRINT_PATHS=1`) prints the resolved paths and exits without
 starting anything — the single source of truth for "where did my state go".
 
 ### Keeping a dev instance's data separate
@@ -138,7 +138,7 @@ names and assert the injection count before and after. See [02-verify.md](./02-v
 The web bundle is built by Vite (`packages/web`, `vite.config.ts`). The server serves the
 **built** bundle at `packages/web/dist`, not the sources, so:
 
-- for standalone front-end work: `npm run dev -w @agentus/web` (Vite dev server, `host: true`
+- for standalone front-end work: `npm run dev -w @hermes-studio/web` (Vite dev server, `host: true`
   so it is reachable over the LAN);
 - for anything the dev server or a sweep must serve: **`npm run build`** first. A sweep run
   after editing web sources but before a build measures the previous bundle and reports

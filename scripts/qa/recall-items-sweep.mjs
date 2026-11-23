@@ -89,7 +89,7 @@ rows = await notes();
 const openMem = rows.find((r) => /recalled 3 memories/.test(r.text));
 check("点开后是三条记忆", openMem?.items.length === 4, JSON.stringify(openMem?.items.map((i) => i.text.slice(0, 12))));
 check("…第一条就是原文，不是摘要", openMem?.items[0]?.text.includes("回复一律中文") === true, openMem?.items[0]?.text);
-check("…带 tags 的条目把 tags 画出来了", openMem?.items.some((i) => i.tags === "port · agentus") === true, JSON.stringify(openMem?.items.map((i) => i.tags)));
+check("…带 tags 的条目把 tags 画出来了", openMem?.items.some((i) => i.tags === "port · hermes-studio") === true, JSON.stringify(openMem?.items.map((i) => i.tags)));
 check("…最后一行说「还有更多」（truncated 不静默）", openMem?.items.some((i) => i.more) === true, JSON.stringify(openMem?.items.at(-1)));
 check("…按钮变成「收起」", openMem?.toggle === "收起", String(openMem?.toggle));
 const overflow = await ev(`(() => { const li = document.querySelectorAll('.status-note-item')[2]; if (!li) return null; const r = li.getBoundingClientRect(); return { h: Math.round(r.height), w: Math.round(r.width), panel: Math.round(document.querySelector('.status-note-items').getBoundingClientRect().width) }; })()`);

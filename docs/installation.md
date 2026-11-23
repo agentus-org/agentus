@@ -1,9 +1,9 @@
-# Installing Agentus
+# Installing Hermes Studio
 
 [中文](./installation.zh-CN.md) · [README](../README.md)
 
-Agentus is a multi-session web cockpit for ACP-speaking coding agents. One npm package
-(`agentus`) runs a Node server that serves a built React SPA and spawns agent CLIs
+Hermes Studio is a multi-session web cockpit for ACP-speaking coding agents. One npm package
+(`hermes-studio`) runs a Node server that serves a built React SPA and spawns agent CLIs
 (`hermes acp` / `qodercli --acp`) as child processes. The browser drives the sessions; the
 reasoning stays inside the CLI subprocesses.
 
@@ -11,7 +11,7 @@ reasoning stays inside the CLI subprocesses.
 
 Two things, both required:
 
-- **Node >= 22.5.** The store is `node:sqlite`, which landed in 22.5. Agentus refuses to start
+- **Node >= 22.5.** The store is `node:sqlite`, which landed in 22.5. Hermes Studio refuses to start
   on anything older, with a clear message.
 - **An ACP agent CLI on your PATH** — `hermes acp` or `qodercli --acp`. This is the one
   prerequisite npm cannot install for you. Without one the cockpit still runs and you can still
@@ -95,7 +95,7 @@ AGENTUS_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
 
 `PYTHONPATH` puts the checkout **ahead of** the installed package, while the installed runtime still
 supplies the interpreter and its dependencies — which is why step 1 is not optional. Verify what a
-slot will actually run (the same check Agentus suggests when a backend is missing):
+slot will actually run (the same check Hermes Studio suggests when a backend is missing):
 
 ```bash
 PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check OK
@@ -152,11 +152,11 @@ hermes gateway start
 ### One command — the published package (public)
 
 ```bash
-npx agentus                # run once, nothing installed globally
-npm i -g agentus           # …or install it, then run `agentus`
+npx hermes-studio                # run once, nothing installed globally
+npm i -g hermes-studio           # …or install it, then run `hermes-studio`
 ```
 
-`npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
+`npx hermes-studio` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
 children with it.
 
 ### One command — the installer script
@@ -165,10 +165,10 @@ The same install from the repository's own script, with the checks and the fallb
 (no `sudo`, ever):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
 ```
 
-The installer (`scripts/install.sh`) checks Node, installs the published `agentus` package with
+The installer (`scripts/install.sh`) checks Node, installs the published `hermes-studio` package with
 npm (globally), and falls back to a per-user prefix (`~/.local`) if the global tree is not
 writable — it never reaches for `sudo`. It prints the start command and the URL when it is done.
 It refuses to run as root unless you set `AGENTUS_ALLOW_ROOT=1`.
@@ -192,11 +192,11 @@ AGENTUS_VERSION=0.1.0 AGENTUS_INSTALL_DIR="$HOME/.local" \
 ### From source (a checkout)
 
 ```bash
-git clone https://github.com/agentus-org/agentus.git
-cd agentus
+git clone https://github.com/hermes-studio-org/hermes-studio.git
+cd hermes-studio
 npm start                           # installs if needed, builds, serves (scripts/start.sh)
-npm run dev -w @agentus/web         # front-end hot reload (Vite :5173, reachable over LAN)
-npm run agentus                     # the same CLI as `npx agentus`, straight from the checkout
+npm run dev -w @hermes-studio/web         # front-end hot reload (Vite :5173, reachable over LAN)
+npm run hermes-studio                     # the same CLI as `npx hermes-studio`, straight from the checkout
 ```
 
 `npm start` (→ `scripts/start.sh`) checks the Node version, installs dependencies with
@@ -206,7 +206,7 @@ serves once (no watcher). `AGENTUS_PORT=9000 npm start` moves the port.
 ## CLI
 
 ```
-agentus [options]
+hermes-studio [options]
 
   -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
   -d, --data <dir>   where state lives (sqlite, login, settings)
@@ -223,7 +223,7 @@ answer to "where did my data go" (see below).
 
 ## First run
 
-1. Start it: `agentus` (or `npx agentus`, or `npm start` from a checkout).
+1. Start it: `hermes-studio` (or `npx hermes-studio`, or `npm start` from a checkout).
 2. Open **http://localhost:8788** and log in. Default credentials:
 
    ```
@@ -249,7 +249,7 @@ unless the backend row names another one — see [HERMES_HOME](#hermes_home).
 |---|---|---|
 | `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT`) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see [Data directory](#data-directory) |
-| `AGENTUS_TITLE` | `Agentus` | this instance's own name — the tab title and the PWA label, so several cockpits on one machine are told apart |
+| `AGENTUS_TITLE` | `Hermes Studio` | this instance's own name — the tab title and the PWA label, so several cockpits on one machine are told apart |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one |
@@ -294,11 +294,11 @@ boot log prints it **and why that directory won**:
 
 Rule 3 exists so an install that quietly switched directories cannot come up with an empty
 session list (which reads exactly like "my sessions are gone"). To move such a checkout over,
-boot it once with `AGENTUS_DATA=~/.agentus`. `agentus --where` prints what the server resolved
+boot it once with `AGENTUS_DATA=~/.agentus`. `hermes-studio --where` prints what the server resolved
 instead of making you guess.
 
 Nothing ever writes inside `node_modules`: for an installed package, `<pkg>/packages/server/.data`
-would be deleted by the next `npm i -g agentus`, taking the transcript and the login with it.
+would be deleted by the next `npm i -g hermes-studio`, taking the transcript and the login with it.
 
 ### Ports
 
@@ -316,10 +316,10 @@ The workspace panel ships a file tree, a preview/editor and a terminal, but no I
 `AGENTUS_IDE_UPSTREAM` at a code-server of your own and an `ide` tab appears beside them:
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
-Agentus does not start it, and it must bind **loopback only** with `--auth none` — the cockpit's
+Hermes Studio does not start it, and it must bind **loopback only** with `--auth none` — the cockpit's
 cookie is the single door. Setup, the three proxy rules and the six ways it goes wrong:
 [Web IDE integration](./web-ide-integration.md).
 
@@ -375,7 +375,7 @@ directory in that row's HERMES_HOME; no permission is needed.
 
 ## Running it as a service
 
-Agentus runs in the foreground by default; a service unit keeps it up across logins and reboots.
+Hermes Studio runs in the foreground by default; a service unit keeps it up across logins and reboots.
 Point the unit at the same `AGENTUS_DATA` you use interactively, or the cockpit will come up with
 a different session list.
 
@@ -389,7 +389,7 @@ a different session list.
   <key>Label</key>          <string>org.agentus.cockpit</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8788</string>
+    <string>/usr/bin/env</string><string>hermes-studio</string><string>--port</string><string>8788</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>AGENTUS_DATA</key><string>/Users/YOU/.agentus</string></dict>
@@ -410,11 +410,11 @@ launchctl kickstart -k gui/$(id -u)/org.agentus.cockpit   # restart
 
 ```ini
 [Unit]
-Description=Agentus cockpit
+Description=Hermes Studio cockpit
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env agentus --port 8788
+ExecStart=/usr/bin/env hermes-studio --port 8788
 Environment=AGENTUS_DATA=%h/.agentus
 Restart=on-failure
 
@@ -424,18 +424,18 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now agentus
-journalctl --user -u agentus -f
+systemctl --user enable --now hermes-studio
+journalctl --user -u hermes-studio -f
 ```
 
-TODO(verify): the exact `env` resolution of `agentus` inside a launchd/systemd unit depends on
+TODO(verify): the exact `env` resolution of `hermes-studio` inside a launchd/systemd unit depends on
 where npm put the bin (a per-user prefix is not on a service's PATH by default) — use an absolute
-path to the `agentus` bin if the unit fails to start.
+path to the `hermes-studio` bin if the unit fails to start.
 
 ## Upgrade
 
 ```bash
-npm i -g agentus@latest            # or: npx agentus@latest … for a one-off
+npm i -g hermes-studio@latest            # or: npx hermes-studio@latest … for a one-off
 ```
 
 Your state is untouched — `~/.agentus` (or wherever `AGENTUS_DATA` points) is not inside the
@@ -446,17 +446,17 @@ session cookies once instead of logging every device out.
 ## Uninstall
 
 ```bash
-npm rm -g agentus                  # remove the program (state stays)
+npm rm -g hermes-studio                  # remove the program (state stays)
 rm -rf ~/.agentus                  # remove state — SQLite, login, settings
 ```
 
-If you installed into a per-user prefix, `npm rm -g --prefix ~/.local agentus`. Uninstalling never
+If you installed into a per-user prefix, `npm rm -g --prefix ~/.local hermes-studio`. Uninstalling never
 touches `~/.hermes` (your agents' own data) or any working directory.
 
 ## Troubleshooting
 
-**Port already in use.** `agentus --port 9000`, or find and stop the holder:
-`lsof -nP -iTCP:8788 -sTCP:LISTEN`. Agentus never reads bare `PORT` for exactly this reason.
+**Port already in use.** `hermes-studio --port 9000`, or find and stop the holder:
+`lsof -nP -iTCP:8788 -sTCP:LISTEN`. Hermes Studio never reads bare `PORT` for exactly this reason.
 
 **"No backend" / a session won't start.** The agent CLI is missing or not logged in. Run
 `hermes acp --check`, or `qodercli login` (a `-32000` on `newSession` means qoder is not logged
@@ -472,11 +472,11 @@ command resolves.
 - Locked out entirely (can't log in to reach Settings): delete `<DATA_DIR>/sessions.json` to drop
   the session index, or restart the server — the in-memory lockout clears on boot.
 
-**"My sessions are gone."** The server is reading a different data directory. Run `agentus --where`
+**"My sessions are gone."** The server is reading a different data directory. Run `hermes-studio --where`
 — it prints the data dir **and which rule chose it** (top of this page). The usual cause is an
 existing checkout whose sessions live in `<repo>/packages/server/.data` while the install now
 defaults to `~/.agentus`. Boot once with `AGENTUS_DATA` set to the directory that actually holds
-them, e.g. `AGENTUS_DATA=~/.agentus agentus` or `AGENTUS_DATA=<repo>/packages/server/.data agentus`.
+them, e.g. `AGENTUS_DATA=~/.agentus hermes-studio` or `AGENTUS_DATA=<repo>/packages/server/.data hermes-studio`.
 
 **The page loads but says "reconnecting" forever.** A tunnel is dropping WebSocket `Upgrade`
 requests. The live stream rides on `/ws`; use a tunnel that passes WebSockets through (SakuraFrp

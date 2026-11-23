@@ -31,7 +31,7 @@ console.log("\n[1] 三态：进入 / 每轮 / 退出");
   check(t.includes(VOICE_ENTER_TEXT), "进入边界：带「开始语音通话」那段约束");
   check(t.includes(VOICE_STEADY_TEXT), "进入边界：约束合一（同一块里带上每轮那句）");
   check(/不要表格|不要代码块/.test(t), "进入边界：明确禁止表格/代码块（TTS 会念符号）");
-  check(uriOf(enter) === "agentus://voice/sess1", "进入边界：uri 指向该会话");
+  check(uriOf(enter) === "hermes-studio://voice/sess1", "进入边界：uri 指向该会话");
   check((enter as { _meta?: Record<string, unknown> } | null)?._meta?.[VOICE_META_KEY] === true,
     "进入边界：带 agentus/voice-mode 标记（可与操作者原话区分）");
 

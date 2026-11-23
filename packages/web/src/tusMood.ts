@@ -25,7 +25,7 @@ export type TusMood =
   | "idle" | "talking" | "loading" | "sleep" | "lookLeft" | "lookRight" | "scan" | "strive"
   | "focus" | "drowsy" | "happy" | "sad" | "surprise" | "curious" | "wink" | "error"
   // ── 我们自己的两种「没有标准输出」的脸 ──────────────────────────────────────────────────
-  // OpenNomi 后端就是一个聊天机器人：它只会有「在听 / 在想 / 在说」。Agentus 的 agent 会跑工具、
+  // OpenNomi 后端就是一个聊天机器人：它只会有「在听 / 在想 / 在说」。Hermes Studio 的 agent 会跑工具、
   // 会停下来等你点授权，这些时刻**一个字都不输出**，而时长以分钟计。没有这两张脸，Tus 模式在
   // 真实会话里会有一半时间是死的（或者更糟：看起来睡着了，而它其实正在干活）。
   | "working"   // 工具执行中 —— 低头看手上的活，不焦躁

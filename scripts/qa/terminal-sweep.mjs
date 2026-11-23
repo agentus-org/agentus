@@ -26,7 +26,7 @@ const ws = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
 let id = 0;
 // Close our own tab, always: a sweeps that throws before its close leaves the tab behind, and a
-// browser full of stale Agentus tabs starts handing `/json/new` tabs that are still about:blank —
+// browser full of stale Hermes Studio tabs starts handing `/json/new` tabs that are still about:blank —
 // which then shows up as an unrelated sweep failing with "Failed to parse URL from /api/auth/me".
 const closeTab = () => { try { send("Target.closeTarget", { targetId: tab.id }); } catch {} };
 process.on("exit", closeTab);

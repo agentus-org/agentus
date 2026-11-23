@@ -14,4 +14,4 @@
 - Fork build: this release uses the existing fork tag `agentus/v0.23.0/merge-20261114-2214` — there is no new Hermes fork build in this version; all changes are in the cockpit.
 - Restart required: this release changes `packages/server` (thinking-snapshot handling). Restart `:8788` to activate it; in-running call slots disconnect and resume automatically.
 - If you are upgrading from 0.23.3, hard-refresh the page (Cmd+Shift+R) after restart to pick up the new web bundle.
-- Full changelog: https://github.com/agentus-org/agentus/compare/v0.23.3...v0.23.4
+- Full changelog: https://github.com/hermes-studio-org/hermes-studio/compare/v0.23.3...v0.23.4

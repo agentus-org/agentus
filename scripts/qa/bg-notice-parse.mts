@@ -65,7 +65,7 @@ A background fan-out unit you dispatched earlier — 2 subagent(s) — has finis
 Dispatched: 2026-10-21 21:39:50 (3m21s ago)
 Role: leaf   Model: ?   Total duration: 201.36s
 
---- ✓ TASK 1/2: 审查 Agentus 通话模式本轮改动的正确性，找出会引入新 bug 的地方。  (status=completed, api_calls=27, 200.98s) ---
+--- ✓ TASK 1/2: 审查 Hermes Studio 通话模式本轮改动的正确性，找出会引入新 bug 的地方。  (status=completed, api_calls=27, 200.98s) ---
 ## 阻断
 
 **1. 关键词模式会把自己的回合当成"听到唤醒词"，立刻自我取消** — \`CallMode.tsx:375\`
@@ -84,7 +84,7 @@ check(d?.tasks.length === 2, "one section per subagent", String(d?.tasks.length)
 check(d?.tasks[0].index === 1 && d?.tasks[0].total === 2, "task numbering");
 check(d?.tasks[0].ok === true && d?.tasks[0].status === "completed", "✓ + status=completed reads as ok");
 check(d?.tasks[0].meta === "api_calls=27, 200.98s", "meta keeps the rest, drops status", JSON.stringify(d?.tasks[0].meta));
-check(d?.tasks[0].goal.startsWith("审查 Agentus 通话模式"), "goal captured whole", d?.tasks[0].goal.slice(0, 20));
+check(d?.tasks[0].goal.startsWith("审查 Hermes Studio 通话模式"), "goal captured whole", d?.tasks[0].goal.slice(0, 20));
 check(!!d?.tasks[0].body.includes("关键词模式会把自己的回合") && !!d?.tasks[0].body.includes("---"),
   "body keeps the report, including its own rules", `${d?.tasks[0].body.length} chars`);
 check(!d?.tasks[0].body.includes("TASK 2/2"), "a section ends at the next marker");

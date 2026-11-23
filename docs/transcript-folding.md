@@ -45,7 +45,7 @@ So three things were true:
   stays one entry. Their comment is explicit that a tool/thinking interruption is allowed to keep the
   message boundary.
 
-## What Agentus does now
+## What Hermes Studio does now
 
 **1. The store writes one row per message** (`Store.appendTextChunk`, `store/store.ts`):
 

@@ -22,7 +22,7 @@ import json
 import socketserver
 import sys
 
-PAYLOAD = "agentus download test\n" + ("x" * 4096) + "\n"
+PAYLOAD = "hermes-studio download test\n" + ("x" * 4096) + "\n"
 
 PAGE = """<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>file harness</title>

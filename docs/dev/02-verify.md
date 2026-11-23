@@ -1,6 +1,6 @@
 # Verifying a change
 
-This doc answers: how do I prove a change to Agentus actually works, and which check is the
+This doc answers: how do I prove a change to Hermes Studio actually works, and which check is the
 right size for which change?
 
 ## Pick the cheapest evidence that can fail
@@ -93,7 +93,7 @@ own page state, and defaults to the dev port (`8901`, overridable with `PORT` / 
 Sweeps that post REST calls want the QA data dir: `AGENTUS_DATA=/tmp/agentus-qa-account`.
 
 **Rebuild before you sweep a web change.** The dev server serves `packages/web/dist`, so
-after editing web sources run `npm run build` (or `npm run build -w @agentus/web`) first, or
+after editing web sources run `npm run build` (or `npm run build -w @hermes-studio/web`) first, or
 the sweep measures the previous bundle.
 
 **Page-driving sweeps on `:8901` must log in themselves.** The operator's Edge profile

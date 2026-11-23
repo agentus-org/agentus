@@ -82,7 +82,7 @@ export interface BackendSpec {
    * ACP defines no skill object, so discovery is per-vendor (AionCore keys it off a per-agent
    * `native_skills_dirs`; see docs/refs/aionui-acp-rules.md). A row that names a dir gets this
    * package's skills installed there at spawn; a row that does not gets the one-line prompt hint and
-   * can still read the same document on demand (`agentus cockpit skill`). Absent ≠ broken.
+   * can still read the same document on demand (`hermes-studio cockpit skill`). Absent ≠ broken.
    */
   skillsDir?: string;
   /**
@@ -90,7 +90,7 @@ export interface BackendSpec {
    *
    * This is the first choice and `skillsDir` is the fallback: it scopes our skills to the one agent
    * process we spawn, so the operator's own `~/.hermes` (shared with Studio, the CLI and every other
-   * Hermes on the box) never learns that Agentus exists. Hermes names it
+   * Hermes on the box) never learns that Hermes Studio exists. Hermes names it
    * `HERMES_EXTERNAL_SKILLS_DIRS`, the per-process half of `skills.external_dirs` — see the upstream
    * PR draft in the workspace (`areas/upstream-prs/`), because stock Hermes has no such variable yet.
    */
@@ -122,7 +122,7 @@ export const BACKENDS: Record<string, BackendSpec> = {
     // `hermes skill_view` scans <HERMES_HOME>/skills/<name>/SKILL.md at session start — writing there
     // would land in the operator's REAL home, which Studio and every terminal `hermes` also read. So
     // we hand the child one more root for its own lifetime instead (no copy, no stale twin, nothing
-    // outside Agentus sees it). `skillsDir` stays as the documented fallback for vendors that only
+    // outside Hermes Studio sees it). `skillsDir` stays as the documented fallback for vendors that only
     // know how to scan their home.
     skillsEnv: "HERMES_EXTERNAL_SKILLS_DIRS",
   },
@@ -231,7 +231,7 @@ export function buildSpawnEnv(spec: BackendSpec): SpawnPlan {
           warnings.push(
             `Hindsight instance name is the shared default "hermes" — this home ` +
               `would reuse the live memory daemon (${path.join(homedir(), ".pg0/instances/hindsight-embed-hermes")}). ` +
-              `Set {"profile":"agentus"} in ${cfgPath} or disable memory.`,
+              `Set {"profile":"hermes-studio"} in ${cfgPath} or disable memory.`,
           );
         }
       }

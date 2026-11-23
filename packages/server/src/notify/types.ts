@@ -1,4 +1,4 @@
-// Notify contract v0.1 — the wire types shared by the Agentus server and the
+// Notify contract v0.1 — the wire types shared by the Hermes Studio server and the
 // Android companion app. See docs/android-notify-contract.md at the workspace root
 // (tasks/20261001-agentus/android-notify-contract.md) for the rationale.
 //
@@ -141,7 +141,7 @@ export interface ActivityObject {
    *  The split is deliberate. The SENDER knows the destination; only the RECEIVER knows what is
    *  installed and which origins it trusts, so `prefer` is a hint and the device keeps the policy
    *  (see docs/android-notify-contract.md §5.2). This is also what lets a third party push a
-   *  notification through the same contract: a sender that knows nothing about Agentus sends
+   *  notification through the same contract: a sender that knows nothing about Hermes Studio sends
    *  `{ url, prefer: "web" }` and gets a plain link, while our own server asks for its cockpit. */
   open?: OpenTarget | null;
   staleAt?: number;

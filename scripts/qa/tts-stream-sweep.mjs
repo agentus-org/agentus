@@ -8,7 +8,7 @@
 // asking, and that a stop leaves nothing playing and tells the upstream to stop billing.
 //
 // Self-contained: its own stand-in provider (HTTP + the /api-ws/v1/inference socket), its own
-// Agentus server on a free port, and the operator's Edge over raw CDP.
+// Hermes Studio server on a free port, and the operator's Edge over raw CDP.
 //   node scripts/qa/tts-stream-sweep.mjs
 import { spawn } from "node:child_process";
 import http from "node:http";
@@ -150,7 +150,7 @@ upstream.on("connection", (sock) => {
   });
 });
 
-// ------------------------------------------------------------------ Agentus server
+// ------------------------------------------------------------------ Hermes Studio server
 const freePort = () => new Promise((res, rej) => {
   const s = createTcp();
   s.on("error", rej);

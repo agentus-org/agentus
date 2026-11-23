@@ -1,4 +1,4 @@
-// Agentus server entry: HTTP (REST + static web build) + WebSocket relay.
+// Hermes Studio server entry: HTTP (REST + static web build) + WebSocket relay.
 // The browser never talks to CLI subprocesses directly (design.md §1).
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -52,11 +52,11 @@ import {
 const PORT = Number(process.env.AGENTUS_PORT ?? 8788);
 
 // The INSTANCE's own name (issue #19). One person runs several cockpits — live, a pre-release box,
-// the one at home — and every tab plus every home-screen icon said "Agentus", so the only way to
+// the one at home — and every tab plus every home-screen icon said "Hermes Studio", so the only way to
 // tell them apart was the domain. The name is not a build input: the HTML is already served
 // no-store and names the hashed bundle, so renaming it here costs nothing and needs no rebuild.
-// Unset keeps "Agentus" byte for byte, so an install that never set it is unchanged.
-const TITLE = (process.env.AGENTUS_TITLE ?? "").trim() || "Agentus";
+// Unset keeps "Hermes Studio" byte for byte, so an install that never set it is unchanged.
+const TITLE = (process.env.AGENTUS_TITLE ?? "").trim() || "Hermes Studio";
 // Data + web build resolve against THIS FILE, not the shell's cwd: `scripts/start.sh`
 // launches from the repo root while the dev server runs from packages/server, and a
 // cwd-relative path would silently open a second database (the operator's slots would
@@ -71,7 +71,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url)); // …/packages/serve
 //      failure mode looks exactly like "all my sessions vanished"; the boot log says which
 //      directory won and how to move).
 // NOTHING may write inside node_modules: for an installed package
-// `<pkg>/packages/server/.data` is deleted by the next `npm i -g agentus`, taking the
+// `<pkg>/packages/server/.data` is deleted by the next `npm i -g hermes-studio`, taking the
 // transcript and the login with it.
 const DEFAULT_DATA_DIR = path.join(homedir(), ".agentus");
 const REPO_DATA_DIR = path.resolve(HERE, "../.data");
@@ -130,18 +130,18 @@ const CA_FILE = process.env.AGENTUS_CA_FILE
     path.join(homedir(), ".config", "caddy", "tls", "ca.pem"),
   ].find((p) => fs.existsSync(p))
   ?? path.join(DATA_DIR, "tls", "ca.pem");
-// `agentus --where` (bin/agentus.mjs) asks the ONE place that decides these paths to say
+// `hermes-studio --where` (bin/hermes-studio.mjs) asks the ONE place that decides these paths to say
 // what it decided, then exits — before any listener, store or subprocess exists. Print and
 // exit here rather than re-deriving the same rules in the CLI: "where is my data" must not
 // have two answers.
 if (process.env.AGENTUS_PRINT_PATHS) {
   const has = (p: string) => (fs.existsSync(p) ? "present" : "MISSING");
-  console.log(`[agentus] node          ${process.versions.node}`);
-  console.log(`[agentus] data dir      ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
-  console.log(`[agentus] web bundle    ${WEB_DIST}  (${has(path.join(WEB_DIST, "index.html"))})`);
-  console.log(`[agentus] companion apk ${APK_FILE}  (${has(APK_FILE)})`);
-  console.log(`[agentus] http port     ${PORT}`);
-  console.log(`[agentus] instance name ${TITLE}`);
+  console.log(`[hermes-studio] node          ${process.versions.node}`);
+  console.log(`[hermes-studio] data dir      ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
+  console.log(`[hermes-studio] web bundle    ${WEB_DIST}  (${has(path.join(WEB_DIST, "index.html"))})`);
+  console.log(`[hermes-studio] companion apk ${APK_FILE}  (${has(APK_FILE)})`);
+  console.log(`[hermes-studio] http port     ${PORT}`);
+  console.log(`[hermes-studio] instance name ${TITLE}`);
   process.exit(0);
 }
 
@@ -155,20 +155,20 @@ fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); // 0700: credentials l
 const instanceLock = acquireInstanceLock(DATA_DIR, { port: PORT });
 if (!instanceLock.ok) {
   const h = instanceLock.holder;
-  console.error(`[agentus] refusing to start: this data directory already has an owner`);
-  console.error(`[agentus]   data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
+  console.error(`[hermes-studio] refusing to start: this data directory already has an owner`);
+  console.error(`[hermes-studio]   data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`);
   if (h) {
-    console.error(`[agentus]   owner:    pid ${h.pid}${h.port ? ` on port ${h.port}` : ""}, up ${humanAge(Date.now() - h.startedAt)}`);
+    console.error(`[hermes-studio]   owner:    pid ${h.pid}${h.port ? ` on port ${h.port}` : ""}, up ${humanAge(Date.now() - h.startedAt)}`);
   }
-  console.error(`[agentus]   reason:   ${instanceLock.why}`);
-  console.error(`[agentus]   two servers on one data dir reclaim each other's agents — stop that instance first,`);
-  console.error(`[agentus]   or give this one its own directory:  AGENTUS_DATA=/some/other/dir`);
+  console.error(`[hermes-studio]   reason:   ${instanceLock.why}`);
+  console.error(`[hermes-studio]   two servers on one data dir reclaim each other's agents — stop that instance first,`);
+  console.error(`[hermes-studio]   or give this one its own directory:  AGENTUS_DATA=/some/other/dir`);
   process.exit(1);
 }
 if (instanceLock.tookOver) {
   const prev = instanceLock.tookOver;
   console.log(
-    `[agentus] instance lock: took over ${DATA_DIR} from pid ${prev.pid}`
+    `[hermes-studio] instance lock: took over ${DATA_DIR} from pid ${prev.pid}`
     + ` (gone or recycled; up ${humanAge(Date.now() - (prev.startedAt || Date.now()))})`,
   );
 }
@@ -179,23 +179,23 @@ const store = new Store(path.join(DATA_DIR, "agentus.sqlite"));
 // empty registry means "first boot", a non-empty one means the operator owns those rows.
 {
   const seeded = store.seedBackendsIfEmpty(seedRows());
-  if (seeded) console.log(`[agentus] backend registry seeded with ${seeded} row(s)`);
+  if (seeded) console.log(`[hermes-studio] backend registry seeded with ${seeded} row(s)`);
 }
 
 // Issue #105: rows whose name was LOCKED to a slice of the operator's own message get one shot at
 // the model title the agent still holds, before any slot is resumed and can write the row back.
 // One-time (its own `repairs` row), never touches a manual rename, never invents a name.
 try {
-  const rep = repairMisTieredTitles(store, { log: (line) => console.log(`[agentus] ${line}`) });
+  const rep = repairMisTieredTitles(store, { log: (line) => console.log(`[hermes-studio] ${line}`) });
   if (rep.checked) {
     console.log(
-      `[agentus] title repair: ${rep.checked} candidate(s) → ${rep.repaired} renamed,`
+      `[hermes-studio] title repair: ${rep.checked} candidate(s) → ${rep.repaired} renamed,`
       + ` ${rep.refiled} re-filed, ${rep.skipped} left alone, ${rep.unreadable} unreadable`
       + (rep.complete ? "" : " (not recorded, will retry)"),
     );
   }
 } catch (e) {
-  console.warn(`[agentus] title repair skipped: ${e instanceof Error ? e.message : e}`);
+  console.warn(`[hermes-studio] title repair skipped: ${e instanceof Error ? e.message : e}`);
 }
 // #106: identity files are only valid while the slot that minted them is in the live map, so anything
 // this process did not write is already worthless — a cheap sweep keeps a home from filling up with
@@ -210,7 +210,7 @@ setTimeout(() => {
     try {
       store.recordBackendCheck(row.id, startupCheck(row));
     } catch (e) {
-      console.warn(`[agentus] startup check failed for ${row.id}: ${e instanceof Error ? e.message : e}`);
+      console.warn(`[hermes-studio] startup check failed for ${row.id}: ${e instanceof Error ? e.message : e}`);
     }
   }
 }, 1200);
@@ -369,7 +369,7 @@ function topologyView(since: number, includeArchived: boolean): TopologyView {
 // into the project is an observer that changes what it is watching, and the rail groups by cwd: the
 // ghost row next to the real one is issue #13 all over again).
 hub = new ObserverHub({
-  home: path.join(homedir(), ".hermes", "agentus"),
+  home: path.join(homedir(), ".hermes", "hermes-studio"),
   settings: observerSettings,
   // 工作播报 is the operator's third speaker position; in the other two the cockpit says nothing, so
   // no observer is spawned and no tokens are spent.
@@ -404,7 +404,7 @@ hub = new ObserverHub({
       const wanted = options.find((m) => /read[-_ ]?only|readonly|plan/i.test(m.id) || /只读|规划/.test(m.name));
       if (wanted) {
         void mgr.setMode(id, wanted.id).catch((e: unknown) =>
-          console.warn(`[agentus] observer ${id}: could not switch to the read-only mode "${wanted.id}": ${String((e as Error)?.message ?? e)}`),
+          console.warn(`[hermes-studio] observer ${id}: could not switch to the read-only mode "${wanted.id}": ${String((e as Error)?.message ?? e)}`),
         );
         return;
       }
@@ -413,7 +413,7 @@ hub = new ObserverHub({
       // that is `accept_edits` with the full tool set — and 「只读兜底」 reads as done in the code
       // while being a no-op in production.
       console.warn(
-        `[agentus] observer ${id}: this runtime offers no read-only/plan mode ` +
+        `[hermes-studio] observer ${id}: this runtime offers no read-only/plan mode ` +
         `(${options.map((m) => m.id).join(", ") || "none advertised"}); the observer keeps its default mode. ` +
         "Its only containment is the scratch directory it runs in.",
       );
@@ -573,7 +573,7 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   const sweepMs = envSweep != null && envSweep >= 1000 ? envSweep : 30_000;
   const source = envIdleMs != null ? "AGENTUS_IDLE_KILL_MIN" : "settings.agent.idleKillMin";
   console.log(
-    `[agentus] idle reclaim: ${
+    `[hermes-studio] idle reclaim: ${
       envIdleMs != null ? envIdle : agentSettings().idleKillMin
     } min (${source}), sweep ${Math.round(sweepMs / 1000)}s, 0 = off`,
   );
@@ -581,7 +581,7 @@ setHotwordSource((sessionId) => hotwordsFor(store, sessionId).map((h) => h.word)
   // NEVER inferred from the idle value: 「最近 N 个即使空闲也保留」 and 「其余空闲多久收」 are two
   // answers. Printing both with their sources is what turns 「为什么它被收了」 into one glance.
   console.log(
-    `[agentus] warm slots: ${envWarm ?? agentSettings().warmSlots} kept up to ${
+    `[hermes-studio] warm slots: ${envWarm ?? agentSettings().warmSlots} kept up to ${
       envWarmTtlMs != null ? envWarmTtlMs / 3_600_000 : agentSettings().warmTtlHours
     } h untouched (${envWarm != null || envWarmTtlMs != null ? "AGENTUS_WARM_*" : "settings.agent"}), 0 = off / never`,
   );
@@ -648,14 +648,14 @@ function runPrompt(
   // 副本 —— 让它跑会得到两条一样的消息（或两条互相打断的回合）。只在拒绝路径上注销：那句被拒的话
   // 并没有进 transcript，重排队那一份必须还能跑。
   if (rowId && isDuplicateRow(sessionId, rowId)) {
-    console.log(`[agentus] prompt for ${sessionId}: queue row ${rowId} was already delivered — not running it twice`);
+    console.log(`[hermes-studio] prompt for ${sessionId}: queue row ${rowId} was already delivered — not running it twice`);
     if (pid) emit({ t: "prompt-duplicate", sessionId, pid, rowId });
     return;
   }
   void mgr.prompt(sessionId, text, attachments, { interrupt, pid }).catch((e: unknown) => {
     const msg = describeAcpError(e);
     const tail = mgr.stderrTail(sessionId);
-    console.error(`[agentus] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
+    console.error(`[hermes-studio] prompt failed for ${sessionId}: ${msg}${tail ? `\n  agent stderr tail:\n  ${tail}` : ""}`);
     // `rejectedPrompt` is the operator's own sentence, handed back with the refusal so the client can
     // put it back in line instead of losing it with the red bubble (see state.ts, case "message").
     // Only for the refusals that mean 「你的话我还没收到，不是它失败了」: a busy agent, and an agent that
@@ -691,10 +691,10 @@ function runPrompt(
 // zombie with no listener (QA#22).
 function installSafetyNet(): void {
   process.on("unhandledRejection", (reason) => {
-    console.error("[agentus] unhandled rejection (kept alive):", reason);
+    console.error("[hermes-studio] unhandled rejection (kept alive):", reason);
   });
   process.on("uncaughtException", (err) => {
-    console.error("[agentus] uncaught exception (kept alive):", err);
+    console.error("[hermes-studio] uncaught exception (kept alive):", err);
   });
 }
 
@@ -702,7 +702,7 @@ function installSafetyNet(): void {
 // process is the single owner of DATA_DIR, and only killing agents that receipt proves are ours
 // (incident 2026-10-22: a second instance used to execute the live cockpit's slots here, every 10 s).
 const killed = mgr.reclaimOrphans();
-if (killed) console.log(`[agentus] reclaimed ${killed} orphan agent process(es)`);
+if (killed) console.log(`[hermes-studio] reclaimed ${killed} orphan agent process(es)`);
 
 // ---- REST ----
 /** Raw body for uploads (audio for /api/stt). Capped: a dictation clip is small,
@@ -739,7 +739,7 @@ function htmlEscape(s: string): string {
 /** Put the instance name in the tab title. A body without a `<title>` is left alone rather than
  *  guessed at: a release that changes index.html will fail the sweep, not silently ship a title. */
 function withTitle(html: string): string {
-  if (TITLE === "Agentus") return html; // never set → the built file is the answer, byte for byte
+  if (TITLE === "Hermes Studio") return html; // never set → the built file is the answer, byte for byte
   return html.replace(/<title>[^<]*<\/title>/i, `<title>${htmlEscape(TITLE)}</title>`);
 }
 
@@ -747,7 +747,7 @@ function withTitle(html: string): string {
  *  most launchers; `short_name` is what actually fits under the icon, and Android truncates it
  *  itself — inventing our own abbreviation produced names nobody chose. */
 function withManifestName(text: string): string {
-  if (TITLE === "Agentus") return text;
+  if (TITLE === "Hermes Studio") return text;
   try {
     const j = JSON.parse(text) as Record<string, unknown>;
     j.name = TITLE;
@@ -762,7 +762,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   // SPA fallback for web build; only GET
   if (!fs.existsSync(WEB_DIST)) {
     res.writeHead(404);
-    res.end("web build not found (run `npm run build -w @agentus/web`)");
+    res.end("web build not found (run `npm run build -w @hermes-studio/web`)");
     return;
   }
   const url = new URL(req.url ?? "/", "http://x");
@@ -834,7 +834,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (url.pathname.startsWith("/api/cockpit/")) {
       const ip = clientIp(req);
       if (!LOOPBACK_IPS.has(ip)) return send(res, 403, { error: "the cockpit channel is loopback-only" });
-      const caller = mgr.cockpitCaller(String(req.headers["x-agentus-cockpit-token"] ?? ""));
+      const caller = mgr.cockpitCaller(String(req.headers["x-hermes-studio-cockpit-token"] ?? ""));
       // Operator mode: the machine token in <DATA>/auth.token is already the credential that lets
       // scripts act as the operator, so a human at a shell can use the same CLI. `caller` stays the
       // empty string — there is no agent to attribute to, so `self` is null and a rename this way
@@ -1157,7 +1157,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // 叫起来过就该广播：rail 要靠它知道多了一个 live 槽位，哪怕这一停没确认（review D8）。
         if (outcome.status === "stopped" || outcome.woke) emit(sessionsEvent());
         if (outcome.status !== "stopped") {
-          console.log(`[agentus] cockpit stop ${id}: ${outcome.status}${outcome.woke ? " (woke the slot first)" : ""}`);
+          console.log(`[hermes-studio] cockpit stop ${id}: ${outcome.status}${outcome.woke ? " (woke the slot first)" : ""}`);
         }
         return send(res, 200, {
           schema_version: COCKPIT_SCHEMA_VERSION,
@@ -1232,7 +1232,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // tunnel's own "auth_pass" does not necessarily gate HTTP (see auth.ts).
     if (!auth.verifyBasic(req.headers.authorization)) {
       res.writeHead(401, auth.basicChallenge());
-      return res.end("Agentus: authentication required\n");
+      return res.end("Hermes Studio: authentication required\n");
     }
 
     // ---- the root CA, behind the operator login too -------------------------------------
@@ -1365,7 +1365,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         || String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
       const host = String(req.headers.host ?? "localhost");
       const origin = `${secure ? "https" : "http"}://${host}`;
-      const pairUri = `agentus://pair?u=${encodeURIComponent(origin)}&c=${notify.code}`;
+      const pairUri = `hermes-studio://pair?u=${encodeURIComponent(origin)}&c=${notify.code}`;
       const apkPath = APK_FILE;
       const apkSize = fs.existsSync(apkPath) ? `${(fs.statSync(apkPath).size / 1048576).toFixed(1)} MB` : "尚未构建";
       const rows = notify.devices().map((d) =>
@@ -1374,7 +1374,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       return res.end(`<!doctype html><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agentus 手机通知</title>
+<title>Hermes Studio 手机通知</title>
 <style>body{font:15px/1.6 -apple-system,system-ui,sans-serif;margin:24px auto;max-width:40em;padding:0 16px}
 code{background:#f2f2ef;padding:3px 7px;border-radius:5px;word-break:break-all;font-size:13px}
 button{font:inherit;padding:7px 12px;margin:4px 6px 4px 0;border-radius:8px;border:1px solid #ccc;background:#fff}
@@ -1452,13 +1452,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         auth.recordLoginFailure(ip);
         const left = auth.loginLimits().maxFails;
         const after = auth.loginAllowed(ip);
-        console.warn(`[agentus] failed login for "${username}" from ${ip}${after.allowed ? "" : " (locked out)"}`);
+        console.warn(`[hermes-studio] failed login for "${username}" from ${ip}${after.allowed ? "" : " (locked out)"}`);
         return send(res, 401, { error: "bad_credentials", hint: `username/password rejected (limit ${left} tries per IP)` });
       }
       auth.recordLoginSuccess(ip);
       const st = auth.status();
       const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip, ua: String(req.headers["user-agent"] ?? "") });
-      console.log(`[agentus] login ok: ${st.username} from ${ip}`);
+      console.log(`[hermes-studio] login ok: ${st.username} from ${ip}`);
       res.writeHead(200, {
         "content-type": "application/json",
         "set-cookie": auth.sessionCookie(value, Math.floor(st.sessionTtlMs / 1000), secure),
@@ -1476,7 +1476,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         newPassword: body.newPassword === undefined || body.newPassword === null ? undefined : String(body.newPassword),
       });
       if (!out.ok) return send(res, out.status, { error: out.error });
-      console.log(`[agentus] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
+      console.log(`[hermes-studio] credentials changed: user "${out.username}" (epoch ${out.epoch}) from ${clientIp(req)}`);
       // every older cookie is dead now (the epoch moved) — hand this caller a fresh one
       const st = auth.status();
       const { value, expiresAt } = auth.issueSession(st.username, Date.now(), { ip: clientIp(req), ua: String(req.headers["user-agent"] ?? "") });
@@ -1509,13 +1509,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         return send(res, 400, { error: "that is this session — use log out" });
       }
       if (!auth.revokeSessionById(jti)) return send(res, 404, { error: "no such session" });
-      console.log(`[agentus] session revoked: ${jti} from ${clientIp(req)}`);
+      console.log(`[hermes-studio] session revoked: ${jti} from ${clientIp(req)}`);
       return send(res, 200, { ok: true });
     }
     if (url.pathname === "/api/auth/sessions/revoke-others" && req.method === "POST") {
       const who = (req as IncomingMessage & { principal?: auth.AuthPrincipal }).principal;
       const count = auth.revokeOtherSessions(who?.jti);
-      console.log(`[agentus] logged out ${count} other session(s), asked by ${clientIp(req)}`);
+      console.log(`[hermes-studio] logged out ${count} other session(s), asked by ${clientIp(req)}`);
       return send(res, 200, { ok: true, count });
     }
     if (url.pathname === "/api/auth/locked-ips" && req.method === "GET") {
@@ -1526,18 +1526,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
       if (ip) {
         const known = auth.unlockIp(ip);
         if (!known) return send(res, 404, { error: "that IP is not locked" });
-        console.log(`[agentus] lock lifted for ${ip} (asked by ${clientIp(req)})`);
+        console.log(`[hermes-studio] lock lifted for ${ip} (asked by ${clientIp(req)})`);
         return send(res, 200, { ok: true, ip });
       }
       const count = auth.unlockAllIps();
-      console.log(`[agentus] all login locks lifted (${count}) by ${clientIp(req)}`);
+      console.log(`[hermes-studio] all login locks lifted (${count}) by ${clientIp(req)}`);
       return send(res, 200, { ok: true, count });
     }
     if (url.pathname === "/api/auth/logout" && req.method === "POST") {
       // Revoke, don't just clear: see auth.revokeSession
       const cookie = auth.parseCookies(String(req.headers.cookie ?? ""))[auth.AUTH_COOKIE_NAME];
       const revoked = auth.revokeSession(cookie);
-      console.log(`[agentus] logout from ${clientIp(req)}${revoked ? "" : " (no live session)"}`);
+      console.log(`[hermes-studio] logout from ${clientIp(req)}${revoked ? "" : " (no live session)"}`);
       res.writeHead(200, { "content-type": "application/json", "set-cookie": auth.clearedCookie(auth.isSecureRequest(req.headers)) });
       return res.end(JSON.stringify({ ok: true, revoked }));
     }
@@ -1898,7 +1898,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           // Leave a trace, or the only symptom is a voice that changed mid-reply (the client falls
           // back to the browser voice for that sentence). Measured cause so far: 429
           // Throttling.RateQuota from 百炼 when more than three clips are asked for at once.
-          console.error(`[agentus] tts failed: ${e.code} ${e.message.slice(0, 160)}`);
+          console.error(`[hermes-studio] tts failed: ${e.code} ${e.message.slice(0, 160)}`);
           return send(res, e.code === "not_configured" ? 501 : 502, { error: e.message, code: e.code });
         }
         throw e;
@@ -2038,7 +2038,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
         // 回合已经开起来了：从这里往后的失败由目标会话自己的转录呈现，这边不再替它负责。
         void turn.catch((e: unknown) => {
-          console.error(`[agentus] bridge turn in ${targetId} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+          console.error(`[hermes-studio] bridge turn in ${targetId} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
         });
         return send(res, 200, { id: targetId, created, cwd: targetCwd });
       };
@@ -2182,7 +2182,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         // 起的），再把这个槽位接管过来。两件事必须是同一个请求：分开做的那段窗口正是「停也停不了、恢复
         // 也恢复不了」——先是租约挡着 resume，停完槽位又还空着。
         const stop = await mgr.stopTurn(id);
-        console.log(`[agentus] takeover ${id}: stop ${stop.status}${stop.woke ? " (woke the slot first)" : ""}`);
+        console.log(`[hermes-studio] takeover ${id}: stop ${stop.status}${stop.woke ? " (woke the slot first)" : ""}`);
         try {
           const info = await mgr.resume(id, { takeover: stop.status !== "stopped" });
           emit(sessionsEvent());
@@ -2646,7 +2646,7 @@ const handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
   if (!auth.verifyBasic(req.headers.authorization)) {
     // Same outer lock as HTTP: browsers resend cached Basic credentials on the
     // handshake, so a logged-in browser passes; anything else gets nothing.
-    socket.write("HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"Agentus\"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+    socket.write("HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Basic realm=\"Hermes Studio\"\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
     socket.destroy();
     return;
   }
@@ -3064,10 +3064,10 @@ ttsWss.on("connection", (ws: WebSocket, _req: IncomingMessage) => {
 // ---- graceful exit: SIGTERM children before we die (design.md §8-1) ----
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
-    console.log(`[agentus] ${sig}: shutting down sessions`);
+    console.log(`[hermes-studio] ${sig}: shutting down sessions`);
     await mgr.shutdown();
     const shells = terms.killAll();
-    if (shells) console.log(`[agentus] killed ${shells} terminal shell(s)`);
+    if (shells) console.log(`[hermes-studio] killed ${shells} terminal shell(s)`);
     store.close();
     process.exit(0);
   });
@@ -3075,44 +3075,44 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   installSafetyNet(); // we own the port: from here on, survive per-request errors
-  console.log(`[agentus-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
+  console.log(`[hermes-studio-server] http://0.0.0.0:${PORT} (web dist: ${WEB_DIST})`);
   // Which directory a boot actually opened is the one fact that must never be guessed:
   // a wrong answer here reads as "my sessions are gone" and every other log line is fine.
-  console.log(`[agentus-server] data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`
+  console.log(`[hermes-studio-server] data dir: ${DATA_DIR}  (${DATA_DIR_SOURCE})`
     + (DATA_DIR === REPO_DATA_DIR
-      ? `\n[agentus-server]   this install defaults to ${DEFAULT_DATA_DIR}; AGENTUS_DATA=${DEFAULT_DATA_DIR} moves it (a new dir starts with an empty session list)`
+      ? `\n[hermes-studio-server]   this install defaults to ${DEFAULT_DATA_DIR}; AGENTUS_DATA=${DEFAULT_DATA_DIR} moves it (a new dir starts with an empty session list)`
       : ""));
   // Auth state belongs in the boot log: "is this thing locked, and with which
   // password?" is the first question anyone asks when it is on a LAN.
   if (!authStatus.enabled) {
-    console.warn("[agentus-server] ⚠ AGENTUS_AUTH=off — every visitor can drive your agents. Local dev only.");
+    console.warn("[hermes-studio-server] ⚠ AGENTUS_AUTH=off — every visitor can drive your agents. Local dev only.");
   } else if (authStatus.usingDefaultPassword) {
     console.warn(
-      `[agentus-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
+      `[hermes-studio-server] ⚠ auth ON with the DEFAULT password (${auth.AUTH_DEFAULT_USERNAME}/${auth.AUTH_DEFAULT_PASSWORD}). `
       + "Anyone on this network can spawn agents in any directory.\n"
-      + "[agentus-server]   set AGENTUS_PASSWORD (or AGENTUS_PASSWORD_HASH) before exposing the port.",
+      + "[hermes-studio-server]   set AGENTUS_PASSWORD (or AGENTUS_PASSWORD_HASH) before exposing the port.",
     );
   } else {
-    console.log(`[agentus-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
+    console.log(`[hermes-studio-server] auth on: user "${authStatus.username}", ${Math.round(authStatus.sessionTtlMs / 86400000)}d sessions`);
   }
-  if (authStatus.tokenFile) console.log(`[agentus-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
+  if (authStatus.tokenFile) console.log(`[hermes-studio-server] machine token: ${authStatus.tokenFile} (curl -H "Authorization: Bearer $(cat …)")`);
   const basic = auth.basicAuthConfig();
   console.log(basic
-    ? `[agentus-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
-    : "[agentus-server] HTTP Basic off (set AGENTUS_BASIC_AUTH=user:pass before exposing a tunnel)");
+    ? `[hermes-studio-server] HTTP Basic ON (user "${basic.user}") — every path, including /healthz and the WS upgrade`
+    : "[hermes-studio-server] HTTP Basic off (set AGENTUS_BASIC_AUTH=user:pass before exposing a tunnel)");
   // A wrong/absent dist used to fail silently: the browser's service worker served a stale
   // shell, every request looked fine, and the operator just saw a blank page (QA R36).
   // Say it out loud at boot instead.
   if (!fs.existsSync(path.join(WEB_DIST, "index.html"))) {
     console.error(
-      `[agentus-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
+      `[hermes-studio-server] ⚠ web build missing at ${WEB_DIST} — the UI will 404 (API still works).\n`
       + (fs.existsSync(path.resolve(HERE, "../../web/src"))
-        ? `[agentus-server]   build it with:  NODE_ENV=development npm run build -w @agentus/web`
-        : `[agentus-server]   this package looks damaged (no prebuilt bundle) — reinstall it:  npm i -g agentus@latest`),
+        ? `[hermes-studio-server]   build it with:  NODE_ENV=development npm run build -w @hermes-studio/web`
+        : `[hermes-studio-server]   this package looks damaged (no prebuilt bundle) — reinstall it:  npm i -g agentus@latest`),
     );
   }
 });
 httpServer.on("error", (err) => {
-  console.error(`[agentus] cannot listen on ${PORT}: ${(err as Error).message}`);
+  console.error(`[hermes-studio] cannot listen on ${PORT}: ${(err as Error).message}`);
   process.exit(1); // fail fast: never linger as a listener-less zombie
 });

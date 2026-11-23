@@ -1,6 +1,6 @@
 {
-  "name": "Agentus",
-  "short_name": "Agentus",
+  "name": "Hermes Studio",
+  "short_name": "Hermes Studio",
   "description": "Multi-session web cockpit for ACP coding agents. Keep your agents on the track.",
   "start_url": "/",
   "scope": "/",
@@ -9,7 +9,7 @@
   "background_color": "#0c1116",
   "theme_color": "#0c1116",
   "icons": [
-    { "src": "/icons/agentus-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/hermes-studio-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }

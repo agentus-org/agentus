@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * `agentus <command>` — the CLI client: sessions, their transcripts and plans, and the gated
- * cross-session `send`. Dispatched by `bin/agentus.mjs`, which is also what the cockpit hands agents
+ * `hermes-studio <command>` — the CLI client: sessions, their transcripts and plans, and the gated
+ * cross-session `send`. Dispatched by `bin/hermes-studio.mjs`, which is also what the cockpit hands agents
  * as `AGENTUS_COCKPIT_BIN`, so there is exactly one command and one spelling everywhere.
  *
- * SHAPE: noun, then verb — `agentus session list|show|messages|plan|send|wake|create|stop`
+ * SHAPE: noun, then verb — `hermes-studio session list|show|messages|plan|send|wake|create|stop`
  * The five things an agent needs are all about ONE object (a session), so the noun is not decoration:
  * it keeps `list` from meaning "list what?" and leaves the top level free for the two commands that
  * are NOT about a session — `capabilities` (this CLI's contract) and `skill` (its manual). The
@@ -57,10 +57,10 @@ const SELF = ENV_SELF || FILE_IDENTITY?.session || "";
 /** A session identity is in hand (from either channel) — narrow scope, and NOT the operator. */
 const AGENT = Boolean(TOKEN && SELF);
 
-const USAGE = `agentus — read the cockpit from inside a session, and (if the operator allowed it) talk to
+const USAGE = `hermes-studio — read the cockpit from inside a session, and (if the operator allowed it) talk to
 another one
 
-  agentus session list [flags]        who you are + the sessions in scope that match
+  hermes-studio session list [flags]        who you are + the sessions in scope that match
         --here            only MY workspace (usually what you want)
         --workspace <p>   only that workspace            --status running|ready|cold
         --waiting         only sessions with an approval outstanding (the operator's queue)
@@ -70,31 +70,31 @@ another one
         --limit N         default 20, max 200    --all include 已归档   --include-self
         --by workspace    bucket the page by workspace (groups + sessions)
         --table           print a HUMAN table instead of JSON (for people, not for pipes)
-  agentus session rename <id> <title…> | --auto    name it (attributed to you)
-  agentus session show <id>           one session in detail, with any approval it is waiting on
-  agentus session messages <id> [--tail N] [--role K] [--user]
+  hermes-studio session rename <id> <title…> | --auto    name it (attributed to you)
+  hermes-studio session show <id>           one session in detail, with any approval it is waiting on
+  hermes-studio session messages <id> [--tail N] [--role K] [--user]
                                       the last N messages, each cut to the documented size.
                                       --role keeps one kind (user|agent|tool|thought|plan) and
                                       filters BEFORE taking the tail, so --user --tail 3 answers
                                       three user messages even after forty tool rows; --user is
                                       --role user. meta carries filtered = the pool it read from.
-  agentus session plan <id>           the plan object the operator's card renders
-  agentus session delete <id>         OPERATOR ONLY — close it if live, PURGE the transcript if cold
-  agentus session archive <id>        OPERATOR ONLY — hide it from the rail (live: its process stops)
-  agentus session unarchive <id>      OPERATOR ONLY — bring it back
-  agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done]
+  hermes-studio session plan <id>           the plan object the operator's card renders
+  hermes-studio session delete <id>         OPERATOR ONLY — close it if live, PURGE the transcript if cold
+  hermes-studio session archive <id>        OPERATOR ONLY — hide it from the rail (live: its process stops)
+  hermes-studio session unarchive <id>      OPERATOR ONLY — bring it back
+  hermes-studio session send <id> <text…> [--wake] [--interrupt] [--reply-on-done]
                                        deliver a message into another session (stdin if no text);
                                        --wake also starts the target when it is cold;
                                        --interrupt cancels the turn it is running first (explicit)
-  agentus session wake <id>            start a cold session's process (same switch as send)
-  agentus session create <cwd> [--backend <id>] [--title <text>]
+  hermes-studio session wake <id>            start a cold session's process (same switch as send)
+  hermes-studio session create <cwd> [--backend <id>] [--title <text>]
                                        open a NEW session in that directory and answer with its row
                                        (same switch as send — it costs one agent process)
-  agentus session stop <id> [--close]  interrupt the turn it is running; --close stops the PROCESS
+  hermes-studio session stop <id> [--close]  interrupt the turn it is running; --close stops the PROCESS
                                        (the slot goes cold, the transcript stays)
 
-  agentus capabilities                the contract: commands, fields, truncation, scope, send state
-  agentus skill [--path]              this CLI's manual, as shipped in the package
+  hermes-studio capabilities                the contract: commands, fields, truncation, scope, send state
+  hermes-studio skill [--path]              this CLI's manual, as shipped in the package
 
 Operator mode: run outside a session with AGENTUS_DATA (data dir) and AGENTUS_PORT (or
 AGENTUS_ENDPOINT) pointing at your cockpit — the CLI then authenticates with <data>/auth.token, the
@@ -158,7 +158,7 @@ function destructiveVerb() {
 
 /** One wording for the refusal, wherever it is raised from (pre-auth or in the verb's own branch). */
 function destructiveRefusal(verb) {
-  return `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。usage: agentus session ${verb} <id>`;
+  return `删历史/归档是操作员的动作，不开放给会话内的 agent —— 请以 operator 模式在终端执行（AGENTUS_DATA 指向这个驾驶舱，身份取自 auth.token）。usage: hermes-studio session ${verb} <id>`;
 }
 
 /** The rendezvous the cockpit publishes for gateway-owned runtimes — see `AGENT_SESSION_MARKERS`. */
@@ -204,7 +204,7 @@ const EP = ENDPOINT || OPERATOR?.endpoint || "";
 function headers(json = false) {
   const h = {};
   if (json) h["content-type"] = "application/json";
-  if (TOKEN) h["x-agentus-cockpit-token"] = TOKEN;
+  if (TOKEN) h["x-hermes-studio-cockpit-token"] = TOKEN;
   else if (OPERATOR) h.authorization = `Bearer ${OPERATOR.token}`;
   return h;
 }
@@ -220,7 +220,7 @@ function needAuth() {
     }
     fail(
       "no_identity",
-      "no cockpit to talk to: either run this inside an Agentus session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION, or — on a gateway-owned runtime — publishes them in ~/.agentus/cockpit/<agent-session-id>.json), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
+      "no cockpit to talk to: either run this inside an Hermes Studio session (the cockpit hands the agent AGENTUS_COCKPIT_ENDPOINT/_TOKEN/_SESSION, or — on a gateway-owned runtime — publishes them in ~/.agentus/cockpit/<agent-session-id>.json), or from a shell with AGENTUS_DATA pointing at a cockpit whose auth.token you own. Keep your own notes instead.",
     );
   }
 }
@@ -298,11 +298,11 @@ if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
 }
 
 // `skill` answers from the package, with no cockpit involved: the document ships next to this file
-// (`skills/agentus-cockpit/SKILL.md`), so an agent whose backend has no native skill discovery can still
+// (`skills/hermes-studio-cockpit/SKILL.md`), so an agent whose backend has no native skill discovery can still
 // read it on demand instead of having it pasted into every prompt. Keep it OUTSIDE the auth gate —
 // needing a token to learn how to use the token would be a locked door with the key behind it.
 if (cmd === "skill") {
-  const doc = path.join(PKG_ROOT, "skills/agentus-cockpit/SKILL.md");
+  const doc = path.join(PKG_ROOT, "skills/hermes-studio-cockpit/SKILL.md");
   if (rest.includes("--path")) {
     process.stdout.write(`${doc}\n`);
     process.exit(0);
@@ -322,11 +322,11 @@ if (cmd === "capabilities") {
 } else if (cmd === "session") {
   const [verb, ...args] = rest;
   const id = args[0];
-  // `agentus session stop --close`（漏了 id）曾经被当成 id="--close" 打到服务端，回一个 404
+  // `hermes-studio session stop --close`（漏了 id）曾经被当成 id="--close" 打到服务端，回一个 404
   // out_of_scope —— 调用方以为"被拒"，其实是自己打错了（#73）。这一类在解析阶段就拒。
   const TAKES_ID = new Set(["show", "messages", "plan", "send", "wake", "stop", "rename", "delete", "archive", "unarchive"]);
   if (id && id.startsWith("--") && TAKES_ID.has(verb)) {
-    fail("bad_request", `expected a session id, got the flag "${id}" — flags come after the id (agentus session ${verb} <id> …)`);
+    fail("bad_request", `expected a session id, got the flag "${id}" — flags come after the id (hermes-studio session ${verb} <id> …)`);
   }
 
   if (verb === "list") {
@@ -351,7 +351,7 @@ if (cmd === "capabilities") {
         if (name === "by" && v !== "workspace") fail("bad_request", `--by wants workspace, got "${v}"`);
         params.set(name.replaceAll("-", "_"), v);
       } else {
-        fail("bad_request", `unknown flag --${name} (see agentus capabilities)`);
+        fail("bad_request", `unknown flag --${name} (see hermes-studio capabilities)`);
       }
     }
     const wantTable = params.get("table") === "1";
@@ -366,7 +366,7 @@ if (cmd === "capabilities") {
       out({ success: true, data, meta: meta(data) });
     }
   } else if (verb === "rename") {
-    if (!id) fail("bad_request", "usage: agentus session rename <id> <new title…> | --auto");
+    if (!id) fail("bad_request", "usage: hermes-studio session rename <id> <new title…> | --auto");
     const auto = args.includes("--auto");
     const title = args.slice(1).filter((a) => a !== "--auto").join(" ").trim();
     if (!auto && !title) fail("bad_request", "nothing to name it: pass the title after the id, or --auto to clear it");
@@ -388,15 +388,15 @@ if (cmd === "capabilities") {
       String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
     out({ success: true, data: body, meta: meta(body) });
   } else if (verb === "show") {
-    if (!id) fail("bad_request", "usage: agentus session show <id>");
+    if (!id) fail("bad_request", "usage: hermes-studio session show <id>");
     // Nothing here ignores a stray argument: `show a b` is a typo, and a CLI that silently drops half
     // of its input is a CLI whose answers you cannot trust (AionUi's parser skips non-flag tokens;
     // that is fine for its flag-only surface, wrong for one that takes ids).
-    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: agentus session show <id>)`);
+    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: hermes-studio session show <id>)`);
     const data = await call(`/api/cockpit/session?id=${q(id)}`);
     out({ success: true, data, meta: meta(data) });
   } else if (verb === "messages") {
-    const USAGE = "usage: agentus session messages <id> [--tail N] [--role user|agent|tool|thought|plan] [--user]";
+    const USAGE = "usage: hermes-studio session messages <id> [--tail N] [--role user|agent|tool|thought|plan] [--user]";
     if (!id) fail("bad_request", USAGE);
     const at = args.indexOf("--tail");
     const tail = at >= 0 ? args[at + 1] : undefined;
@@ -420,12 +420,12 @@ if (cmd === "capabilities") {
     );
     out({ success: true, data, meta: meta(data) });
   } else if (verb === "plan") {
-    if (!id) fail("bad_request", "usage: agentus session plan <id>");
-    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: agentus session plan <id>)`);
+    if (!id) fail("bad_request", "usage: hermes-studio session plan <id>");
+    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: hermes-studio session plan <id>)`);
     const data = await call(`/api/cockpit/plan?id=${q(id)}`);
     out({ success: true, data, meta: meta(data) });
   } else if (verb === "send") {
-    if (!id) fail("bad_request", "usage: agentus session send <id> <text…>");
+    if (!id) fail("bad_request", "usage: hermes-studio session send <id> <text…>");
     // The text is the plain words after the id — an agent writing a sentence should not have to
     // build JSON to say it. With no words, stdin is accepted: either a JSON `{"message": "…"}` (what
     // older callers sent) or the raw text.
@@ -436,7 +436,7 @@ if (cmd === "capabilities") {
     const wantReply = args.includes("--reply-on-done");
     const FLAGS = new Set(["--wake", "--interrupt", "--reply-on-done"]);
     const straySend = args.slice(1).filter((a) => a.startsWith("--") && !FLAGS.has(a));
-    if (straySend.length) fail("bad_request", `unknown flag ${straySend[0]} (usage: agentus session send <id> <text…> [--wake] [--interrupt] [--reply-on-done])`);
+    if (straySend.length) fail("bad_request", `unknown flag ${straySend[0]} (usage: hermes-studio session send <id> <text…> [--wake] [--interrupt] [--reply-on-done])`);
     let message = args.slice(1).filter((a) => !FLAGS.has(a)).join(" ").trim();
     if (!message) {
       const raw = await readStdin();
@@ -492,8 +492,8 @@ if (cmd === "capabilities") {
     // #41: the explicit, gated version of what opening a cold session in the rail does. Kept separate
     // from send because it is a DECISION with a cost (a process, its memory) — an agent must be able
     // to say 「I woke it」 without also having said something.
-    if (!id) fail("bad_request", "usage: agentus session wake <id>");
-    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: agentus session wake <id>)`);
+    if (!id) fail("bad_request", "usage: hermes-studio session wake <id>");
+    if (args.length > 1) fail("bad_request", `unexpected argument "${args[1]}" (usage: hermes-studio session wake <id>)`);
     let res;
     try {
       res = await fetch(`${EP}/api/cockpit/wake`, { method: "POST", headers: headers(true), body: JSON.stringify({ id }) });
@@ -528,7 +528,7 @@ if (cmd === "capabilities") {
       cwdArg = a;
       break;
     }
-    if (!cwdArg) fail("bad_request", "usage: agentus session create <cwd> [--backend <id>] [--title <text>]");
+    if (!cwdArg) fail("bad_request", "usage: hermes-studio session create <cwd> [--backend <id>] [--title <text>]");
     const flags = { backend: undefined, title: undefined };
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -537,7 +537,7 @@ if (cmd === "capabilities") {
         const v = args[++i];
         if (v === undefined) fail("bad_request", `${a} needs a value`);
         flags[a.slice(2)] = v;
-      } else fail("bad_request", `unexpected argument "${a}" (usage: agentus session create <cwd> [--backend <id>] [--title <text>])`);
+      } else fail("bad_request", `unexpected argument "${a}" (usage: hermes-studio session create <cwd> [--backend <id>] [--title <text>])`);
     }
     let res;
     try {
@@ -566,10 +566,10 @@ if (cmd === "capabilities") {
       },
     });
   } else if (verb === "stop") {
-    if (!id) fail("bad_request", "usage: agentus session stop <id> [--close]");
+    if (!id) fail("bad_request", "usage: hermes-studio session stop <id> [--close]");
     const close = args.includes("--close");
     const leftovers = args.slice(1).filter((a) => a !== "--close");
-    if (leftovers.length) fail("bad_request", `unexpected argument "${leftovers[0]}" (usage: agentus session stop <id> [--close])`);
+    if (leftovers.length) fail("bad_request", `unexpected argument "${leftovers[0]}" (usage: hermes-studio session stop <id> [--close])`);
     let res;
     try {
       res = await fetch(`${EP}/api/cockpit/stop`, {
@@ -607,7 +607,7 @@ if (cmd === "capabilities") {
     // DELETE /api/sessions/:id"（server index.ts 的注释），因为没有任何跨会话调用方该动操作员的
     // 历史。CLI 是操作员的工具，不是 agent 的 —— 所以这里用 <data>/auth.token 直连 operator 路由，
     // 并且在 agent 身份（AGENTUS_COCKPIT_TOKEN/_SESSION 都在）时**一律拒绝**。
-    const usage = `usage: agentus session ${verb} <id>`;
+    const usage = `usage: hermes-studio session ${verb} <id>`;
     if (!id) fail("bad_request", usage);
     const leftover = args.slice(1);
     if (leftover.length) fail("bad_request", `unexpected argument "${leftover[0]}" (${usage})`);

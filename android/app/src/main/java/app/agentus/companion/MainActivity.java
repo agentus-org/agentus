@@ -67,7 +67,7 @@ import java.util.function.Consumer;
  * One screen: the saved servers, a form to add or edit one, and the live log.
  *
  * Deliberately a list rather than a single "current server": the operator runs more than one
- * Agentus (home LAN, the public tunnel, a work box), and switching must be one tap — with the
+ * Hermes Studio (home LAN, the public tunnel, a work box), and switching must be one tap — with the
  * password kept so a token the server forgot can be re-minted without anyone typing it again.
  *
  * Foldable-aware (the operator's phone is a Xiaomi MIX Fold 4): the cover screen is a normal
@@ -137,7 +137,7 @@ public final class MainActivity extends Activity {
     private final AtomicReference<String> lastMessage = new AtomicReference<>("就绪");
 
     // ---- screens -------------------------------------------------------------
-    // The app OPENS ON THE COCKPIT — the actual Agentus web UI in a WebView — because that is what
+    // The app OPENS ON THE COCKPIT — the actual Hermes Studio web UI in a WebView — because that is what
     // "install the app" is supposed to mean. The configuration screen is one tap away in the toolbar.
     // (An earlier build opened straight into the settings list; the operator's reaction to that was
     // the correct one: "为什么我打开后就是在设置界面，没有我们的这个 slot 网页".)
@@ -624,7 +624,7 @@ public final class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
-                if ("agentus".equals(scheme)) {              // a pairing link on the page
+                if ("hermes-studio".equals(scheme)) {              // a pairing link on the page
                     handleIntent(new Intent(Intent.ACTION_VIEW, u));
                     return true;
                 }
@@ -860,7 +860,7 @@ public final class MainActivity extends Activity {
         TextView adv = ui.hint("或者贴服务端页面上那行配对串：");
         adv.setPadding(0, dp(12), 0, dp(6));
         form.addView(adv);
-        fPair = ui.input("agentus://pair?u=…&c=…", false);
+        fPair = ui.input("hermes-studio://pair?u=…&c=…", false);
         form.addView(fPair, fieldLp(6));
         form.addView(ui.ghost("用配对串添加", 14f, v -> addFromPairString()), wrapLp(10));
         root.addView(form, cardLp());
@@ -1392,7 +1392,7 @@ public final class MainActivity extends Activity {
         try {
             android.content.ClipboardManager cm =
                 (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("Agentus 诊断", text));
+            if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("Hermes Studio 诊断", text));
             setMessage("诊断已复制到剪贴板（粘给谁都行）");
         } catch (Exception e) {
             setMessage("复制失败：" + e.getMessage());
@@ -1435,7 +1435,7 @@ public final class MainActivity extends Activity {
         } else {
             NotifyService.log("系统授权回来了但没有挂着的页面请求（可能页面已重载，再按一次语音即可）");
         }
-        setMessage(granted ? "麦克风已授权，语音输入可以用了" : "麦克风被拒：语音用不了，去系统设置里给 Agentus 开「录音」");
+        setMessage(granted ? "麦克风已授权，语音输入可以用了" : "麦克风被拒：语音用不了，去系统设置里给 Hermes Studio 开「录音」");
         refresh();
     }
 
@@ -1530,7 +1530,7 @@ public final class MainActivity extends Activity {
             .put("ongoing", true)
             .put("promotable", true)
             .put("title", label)
-            .put("subtitle", "Agentus")
+            .put("subtitle", "Hermes Studio")
             .put("body", "第 " + (i + 1) + "/" + steps + " 步 · 假装一个任务在跑")
             .put("channel", new JSONObject()
                 .put("id", "agentus-selftest").put("name", "上岛自检")
@@ -1577,7 +1577,7 @@ public final class MainActivity extends Activity {
         String target = intent.getStringExtra(EXTRA_OPEN_URL);
         Uri data = intent.getData();
         if ((target == null || target.isEmpty()) && data != null
-            && "agentus".equals(data.getScheme()) && "open".equals(data.getHost())) {
+            && "hermes-studio".equals(data.getScheme()) && "open".equals(data.getHost())) {
             target = data.getQueryParameter("u");
         }
         if (target != null && !target.isEmpty()) {
@@ -1590,12 +1590,12 @@ public final class MainActivity extends Activity {
             return;
         }
         if (data == null) return;
-        if (!"agentus".equals(data.getScheme())) return;
+        if (!"hermes-studio".equals(data.getScheme())) return;
         if (!"pair".equals(data.getHost())) return;
         String u = data.getQueryParameter("u");
         String c = data.getQueryParameter("c");
         if (u != null) {
-            fPair.setText("agentus://pair?u=" + u + (c != null ? "&c=" + c : ""));
+            fPair.setText("hermes-studio://pair?u=" + u + (c != null ? "&c=" + c : ""));
             addFromPairString();
         }
     }
@@ -1845,7 +1845,7 @@ public final class MainActivity extends Activity {
             if (nm == null) return;
             if (nm.getNotificationChannel(CHANNEL_DOWNLOAD) == null) {
                 nm.createNotificationChannel(new NotificationChannel(
-                    CHANNEL_DOWNLOAD, "Agentus 下载", NotificationManager.IMPORTANCE_DEFAULT));
+                    CHANNEL_DOWNLOAD, "Hermes Studio 下载", NotificationManager.IMPORTANCE_DEFAULT));
             }
             String type = (mime == null || mime.isEmpty() || mime.startsWith("multipart/"))
                 ? "application/octet-stream" : mime;

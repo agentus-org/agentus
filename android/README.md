@@ -1,6 +1,6 @@
 # Android companion (notify channel client)
 
-The phone half of the notify contract. It holds **one websocket** to your Agentus server and
+The phone half of the notify contract. It holds **one websocket** to your Hermes Studio server and
 renders whatever arrives as a notification; on Android 16 that can be a **Live Update** (the
 status-bar chip / lock-screen card people call "the island").
 
@@ -46,7 +46,7 @@ The script pins `JAVA_HOME` to Android Studio's JBR because this machine's `java
 1. On the phone, download the APK from the server (`/agentus-companion.apk`) or the test bed,
    then allow "install unknown apps" for the browser once.
 2. Open the app and paste the pairing string from the server page:
-   `agentus://pair?u=https://<host>:<port>&c=<CODE>`
+   `hermes-studio://pair?u=https://<host>:<port>&c=<CODE>`
 3. Grant notifications. On Android 16 also check the system switch it points at
    («实时动态» / Live Updates) — the server cannot turn that on for you.
 

@@ -55,7 +55,7 @@ const table = [
 
 // ---- 3. 链接：只念文字 / 域名与末段，不念协议、参数、锚点
 {
-  const r = toSpeakable("见 [那个 issue](https://github.com/agentus-org/agentus/issues/76) 里的说明。");
+  const r = toSpeakable("见 [那个 issue](https://github.com/hermes-studio-org/hermes-studio/issues/76) 里的说明。");
   check("带锚文本的链接只念文字", /见 那个 issue 里的说明/.test(r.script) && !/github/.test(r.script), r.script);
 }
 {

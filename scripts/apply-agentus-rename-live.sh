@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Agentus 改名落地（LIVE :8788）—— 只有操作者明确下令才跑。
+# Hermes Studio 改名落地（LIVE :8788）—— 只有操作者明确下令才跑。
 #
 # 为什么需要单独一步（而不是直接 promote）：这次改名同时动了三样 live 正在用的东西，
 # 任何一样漏掉都会静默出事：
@@ -10,7 +10,7 @@
 #      AGENTSLOT_* 变量改名后不再被代码读取（代码只认 AGENTUS_*）；不换 = 端口/数据目录
 #      全部回落到默认值（8788/.data 恰好同值躲过一劫，TLS 与 HERMES_CMD 不会）。
 #   3. 启动形态。dev 树里 scripts/start.sh、package.json、npm workspace 名字都变了，
-#      需要 npm install 重连 @agentus/* 链接 + 重新 build。
+#      需要 npm install 重连 @hermes-studio/* 链接 + 重新 build。
 #
 # 顺序刻意这样排：先把「不需要进程配合」的事做完（启动器改名、代码 promote + 构建），
 # 此时 live 仍用内存里的旧代码在跑、不掉线；然后才 kill -> 改库名 -> 用新启动器拉起，
@@ -26,7 +26,7 @@ DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"                       # dev 树
-# live 树：2026-10-08 起两棵 worktree 已改名为 agentus / agentus-dev（本脚本自己那轮只改了
+# live 树：2026-10-08 起两棵 worktree 已改名为 hermes-studio / agentus-dev（本脚本自己那轮只改了
 # 启动器目录与库文件名，故意没动 worktree 目录名；这次由人工序列补上）。
 LIVE="${LIVE_REPO:-$(cd "$HERE/.." && pwd)/agentus}"             # live 树
 LIVE_PORT="${LIVE_PORT:-8788}"
@@ -232,7 +232,7 @@ ck "没有后端行还指着旧启动器目录（否则 hermes 槽位起不来�
 ck "TLS 监听 $LIVE_TLS_PORT 在线" "$([ -n "$(pid_on "$LIVE_TLS_PORT")" ] && echo 1 || echo 0)"
 
 TITLE="$(curl -s --noproxy '*' -m 5 "http://127.0.0.1:$LIVE_PORT/" | grep -o '<title>[^<]*' | head -1 | sed 's/<title>//')"
-ck "页面标题是 Agentus（实得: ${TITLE:-空}）" "$(echo "$TITLE" | grep -q 'Agentus' && echo 1 || echo 0)"
+ck "页面标题是 Hermes Studio（实得: ${TITLE:-空}）" "$(echo "$TITLE" | grep -q 'Hermes Studio' && echo 1 || echo 0)"
 
 LEFT="$(grep -rl 'AGENTSLOT' "$LIVE" --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
   --exclude-dir=.data --exclude-dir=.data-notify-testbed \

@@ -3,7 +3,7 @@
 // 单测（hold-to-talk-units.mts）钉的是状态机；这里只证明**事件真的接到了**，而且 P0 那条核心判据成立：
 // 按住期间布局自己变化（输入框变高、状态条出现）不能断录 —— 也就是指针离开按钮边界时录音必须还在。
 //
-// 自给自足：自己的 Agentus（mock 后端、AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge。
+// 自给自足：自己的 Hermes Studio（mock 后端、AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge。
 //   CDP=http://127.0.0.1:9223 node scripts/qa/hold-to-talk-sweep.mjs
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";

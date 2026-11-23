@@ -1,6 +1,6 @@
 # Notify channel contract (v0.2, as built)
 
-The interface between an Agentus server and a phone app, designed so that **adding a
+The interface between an Hermes Studio server and a phone app, designed so that **adding a
 notification or an interaction never requires a new APK**.
 
 | Piece | Where |
@@ -57,7 +57,7 @@ POST /api/notify/pair          # no operator session needed: this is how a phone
   "channel": { "id": "agent_approval", "name": "权限请求", "importance": "high", "sound": true },
   "actions": [ { "id": "allow_once", "label": "仅此次", "style": "primary" } ],
   "input": { "enabled": true, "placeholder": "或直接回一句" },
-  "visibility": "private", "smallIcon": "agentus",
+  "visibility": "private", "smallIcon": "hermes-studio",
   "open": { "url": "/?session=…", "prefer": "app" },   // §5.2; `deeplink` stays as its old alias
   "deeplink": "/?session=…" }
 ```
@@ -218,9 +218,9 @@ both spellings. It goes away once no such app is in the field.
 **Where this is going for third parties** (the reason this is worth abstracting now): the same activity
 object, pushed by anyone. Today the sender is our own server; the missing pieces for a webhook sender are
 (a) a per-sender token + a `source` label so several systems can push into the same app without sharing the
-operator's credentials, and (b) the reverse direction — Agentus POSTing its own events out to a URL. With
+operator's credentials, and (b) the reverse direction — Hermes Studio POSTing its own events out to a URL. With
 `open` in place, (a) needs no change to the renderer or the tap policy: a sender that has never heard of
-Agentus sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the behaviour it expects.
+Hermes Studio sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the behaviour it expects.
 
 ## 6. Degradation: the server gates on capabilities, the app tries and falls back
 
@@ -229,7 +229,7 @@ Agentus sends `{title, body, open: {url, prefer: "web"}}` and gets exactly the b
 | `progress` | `progress: null` | plain ongoing notification, no bar |
 | `actions` | `actions: []` | tappable card only (deeplink) |
 | `remote_input` | `input: null` | no inline reply |
-| `channels` | `channel: null` | the default Agentus channel |
+| `channels` | `channel: null` | the default Hermes Studio channel |
 | `icon_url` | `iconUrl: null` | (v0.1 does not claim it: no download implemented) |
 | `live_update` | `promotable: false` | — |
 | `xiaomi_focus` | `promotable: false` | — (Xiaomi's own island, see below) |
@@ -353,7 +353,7 @@ grants focus permission).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/notify/health` | none | liveness; echoes the code only to an operator |
-| GET | `/api/notify/pair-code` | operator | the code + a ready-to-paste `agentus://pair?u=…&c=…` |
+| GET | `/api/notify/pair-code` | operator | the code + a ready-to-paste `hermes-studio://pair?u=…&c=…` |
 | POST | `/api/notify/pair-code/rotate` | operator | mint a new code |
 | POST | `/api/notify/pair` | code *or* operator | register a device, get its token |
 | GET | `/api/notify/devices` | operator | list (with `online`) |
@@ -391,7 +391,7 @@ operator-only routes inside re-check their own credential.
   something outside the workspace did not.
 - `auth-smoke` PASS and `workspace-smoke` 66/66 — the routing change (`/api/notify/*` ahead of the
   operator gate) did not disturb the existing server.
-- `npm run typecheck -w @agentus/server` clean.
+- `npm run typecheck -w @hermes-studio/server` clean.
 - APK (v0.3.0): `assembleRelease` OK; `aapt dump badging` shows `versionCode 3` / `targetSdk 36` + all
   permissions; `apksigner verify` OK (v2, debug key); `dexdump` confirms the shipped bytecode calls
   `Notification$Builder.setRequestPromotedOngoing(Z)` and `Notification$ProgressStyle`; the CA is
@@ -432,7 +432,7 @@ minutes and the app was verified on a real device instead of by inspection. Meas
 | Check | Method | Result |
 |---|---|---|
 | installs and launches | `adb install -r` + `am start` | ✅ v0.3.2 up, nothing in `logcat -b crash` |
-| a notification really appears | paired to the test bed (`10.0.2.2:8790`), posted the canned sequence | ✅ shade shows `跑完了 / 探针序列结束（end_turn）` with a 「查看」 action; the FGS notification `Agentus · 已连接 · 10.0.2.2:8790` is there too |
+| a notification really appears | paired to the test bed (`10.0.2.2:8790`), posted the canned sequence | ✅ shade shows `跑完了 / 探针序列结束（end_turn）` with a 「查看」 action; the FGS notification `Hermes Studio · 已连接 · 10.0.2.2:8790` is there too |
 | promotion (AOSP path) | `NotificationManager.canPostPromotedNotifications()` | ⚠️ false on this image (the system has it off), and the app says so: 「实时动态: 被系统/用户关闭」。A real Android 16 phone is still the judge |
 | foldable one-pane / two-pane | `adb shell wm size 1080x2520` (cover, 411dp) vs `2224x2488` | ✅ 「单栏（折叠态）」 vs 「双栏（展开态）」, servers left / form + status right |
 | fold/unfold keeps the form | typed `https://fold4.test:8443`, unfolded, folded back | ✅ the activity was recreated and the typed text **survived** — `onSaveInstanceState` genuinely works |
@@ -454,7 +454,7 @@ Two real defects the emulator caught (both looked fine in code and in a screensh
 
 | Check | Method | Result |
 |---|---|---|
-| The app opens on the cockpit | launch with a saved server | ✅ toolbar + WebView, and the page really renders (the Agentus login screen — so the SPA's JS runs, it is not a white box); 服务器 → settings, 进驾驶舱 → back to the cockpit **without reloading** |
+| The app opens on the cockpit | launch with a saved server | ✅ toolbar + WebView, and the page really renders (the Hermes Studio login screen — so the SPA's JS runs, it is not a white box); 服务器 → settings, 进驾驶舱 → back to the cockpit **without reloading** |
 | Toolbar no longer under the status bar | `uiautomator dump`, the 服务器 node's `y` | ✅ y≈10 (under the bar, taps eaten by SystemUI) → y≈116 |
 | Toolbar buttons were oversized | screenshot | ✅ replaced the platform `Button` (48dp minimum height, wide padding, raised gradient) with small rounded pills |
 | Keyboard shrinks the page | tap the page's 用户名 field; `dumpsys input_method` + the WebView's bounds | ✅ IME `mInputShown=true`, WebView **1688 px → 848 px**, and back to **1688 px** after `keyevent 4` (which dismisses the IME only — the app stayed in the foreground) |
@@ -474,7 +474,7 @@ likely reason the island was never seen, and the app's own 「上岛自检」 is
 | the island payload matches OS3 | `adb shell settings put system notification_focus_protocol 3`, then 上岛自检 and read the log | ✅ the log's 「会发出的焦点通知参数（岛模板=true）」 prints exactly `param_v2{…, islandFirstFloat, param_island{islandProperty, islandTimeout, smallIslandArea{picInfo}, bigIslandArea{imageTextInfoLeft{picInfo}, imageTextInfoRight{type:2, textInfo}}}}` — the OS3 template, chosen from the ROM's protocol rather than from `Build.VERSION` |
 | the diagnostic is readable on the phone | same run | ✅ 协议版本 3 / 超级岛特性（`persist.sys.feature.island`）/ canShowFocus / SystemUI probe / platform path — so the next "上岛没反应" is answered from the device, not from a doc |
 | the page's mic request reaches the app | `WebView` on `http://localhost:8787` (a secure origin) calling `getUserMedia` | ✅ app log: 「页面要麦克风：系统权限没有，弹系统授权（请求先挂住）」 |
-| the OS dialog appears and the grant lands | tap the dialog | ✅ 「Allow Agentus to record audio?」 → `RECORD_AUDIO: granted=true` (flags `USER_SET`) |
+| the OS dialog appears and the grant lands | tap the dialog | ✅ 「Allow Hermes Studio to record audio?」 → `RECORD_AUDIO: granted=true` (flags `USER_SET`) |
 | an http LAN origin cannot do media at all | the same probe page over `http://10.0.2.2:8787` | ✅ the page itself reports no `navigator.mediaDevices` → hence the app's own warning line (P15) |
 | ⚠️ not provable on the emulator | the page's promise after the grant | the emulator has no usable audio device, so the `getUserMedia` promise never settles there; "and then the page really gets the microphone" needs the real phone |
 
@@ -613,7 +613,7 @@ immutable（没有人往里写东西）。顺带把 `NotifyService` 里"解析 J
 
 | kind | 标题 | 正文 |
 |---|---|---|
-| 运行中 | `Agentus · 运行中` | `<会话名> · <模型> · <思考深度>` |
+| 运行中 | `Hermes Studio · 运行中` | `<会话名> · <模型> · <思考深度>` |
 | 完成 | `已完成` | `<会话名> · 用时 10s`（`turn-end.durationMs` 真量出来的） |
 | 失败 | `执行失败` | `<会话名> · <错误摘要>` |
 | 审批 | `待你确认：<工具短名>` | `<会话名> · <工具目标>` |

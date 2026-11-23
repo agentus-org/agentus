@@ -35,13 +35,13 @@ function check(name: string, cond: boolean, detail = ""): void {
   const flags = new Set([...cli.matchAll(/args\.includes\("(--[a-z-]+)"\)|args\.indexOf\("(--[a-z-]+)"\)/g)]
     .flatMap((m) => [m[1], m[2]]).filter(Boolean));
 
-  const commandLines = OBSERVER_PROMPT_DEFAULT.split("\n").filter((l) => l.includes("agentus session "));
+  const commandLines = OBSERVER_PROMPT_DEFAULT.split("\n").filter((l) => l.includes("hermes-studio session "));
   check("A the contract really carries commands", commandLines.length >= 3, `${commandLines.length}`);
   check("A the contract fits the byte budget", OBSERVER_PROMPT_DEFAULT.length <= OBSERVER_PROMPT_MAX,
     `${OBSERVER_PROMPT_DEFAULT.length}/${OBSERVER_PROMPT_MAX}`);
 
   for (const line of commandLines) {
-    const call = line.slice(line.indexOf("agentus session ")).replace(/[。；].*$/, "").trim();
+    const call = line.slice(line.indexOf("hermes-studio session ")).replace(/[。；].*$/, "").trim();
     const [, , verb] = call.split(/\s+/);
     check(`A "session ${verb}" is a real verb`, verbs.has(verb), `known: ${[...verbs].sort().join(",")}`);
     const used = [...call.matchAll(/(--[a-z-]+)/g)].map((m) => m[1]);

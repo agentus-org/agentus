@@ -122,8 +122,8 @@ const HERE = "/Users/liang/Workspace/agent-dev-workspace/";   // trailing slash 
     String(bridgeTitle("x".repeat(80), "aaaaaaaa").length));
   // 派活新建的会话：名字取**这封信让它干什么**的第一行，不是发起方的标题。
   check("a dispatched child is named after the brief, not the parent",
-    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Agentus dev 实例打通异地访问】\n\n目标…") === "← 派活：给 Agentus dev 实例打通异地访问",
-    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Agentus dev 实例打通异地访问】\n\n目标…"));
+    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Hermes Studio dev 实例打通异地访问】\n\n目标…") === "← 派活：给 Hermes Studio dev 实例打通异地访问",
+    bridgeTitle("donvito/agent-monitor看下这个项目", "aaaaaaaa", "【派活：给 Hermes Studio dev 实例打通异地访问】\n\n目标…"));
   check("a leading markdown heading is unwrapped too",
     bridgeTitle("旧标题", "aaaaaaaa", "\n\n# 修一下登录超时\n细节") === "← 修一下登录超时",
     bridgeTitle("旧标题", "aaaaaaaa", "\n\n# 修一下登录超时\n细节"));

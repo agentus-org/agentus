@@ -1,4 +1,4 @@
-# Agentus
+# Hermes Studio
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -12,7 +12,7 @@ agents: open several sessions in the browser, each one backed by a real
 > permission prompts. Reasoning lives in the CLI processes.
 
 ```
-[browser React SPA]  ──HTTP + WS──▶  [Agentus server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
+[browser React SPA]  ──HTTP + WS──▶  [Hermes Studio server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
                                          · session registry (who runs, where, pid)
                                          · ACP client (ClientSideConnection)
                                          · event fan-out → WS, commands → ACP
@@ -23,7 +23,7 @@ agents: open several sessions in the browser, each one backed by a real
 
 ```bash
 # public one-liner — the published package (Node >= 22.5; the store is node:sqlite)
-npx agentus                      # …or: npm i -g agentus, then `agentus`
+npx hermes-studio                      # …or: npm i -g hermes-studio, then `hermes-studio`
 # open http://localhost:8788 and log in (admin / 123456 — see "Login" below),
 # then "+ new session", pick a backend + a working directory
 ```
@@ -32,13 +32,13 @@ Or run the installer straight from the repository — same install, plus a Node 
 per-user fallback (`sudo` never):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
 ```
 
 Full guide — install, flags, every environment variable, login, TLS, the phone bridge:
 [`docs/installation.md`](docs/installation.md) · [中文](docs/installation.zh-CN.md).
 
-`npx agentus` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
+`npx hermes-studio` runs the cockpit in the foreground — Ctrl-C stops it, and it takes its agent
 children with it. Flags: `--port 9000`, `--data <dir>`, `--open` (open the browser once it
 is up), `--where` (print the paths the server actually resolved — data dir, web bundle,
 companion APK — and exit without starting anything).
@@ -66,7 +66,7 @@ hermes gateway install --force --start-now   # without it: no session starts (ne
 hermes sessions adopt                        # without it: old chats vanish from the cockpit
 ```
 
-Skipping the first fails every slot with `Gateway inaccessible: service_identity_unverified` (Agentus only shows `Internal error`); skipping the second leaves your conversations in the database owned by nobody, so the catalog leaves them out. Neither touches transcripts, and both are idempotent — [§ Coming from a build that ran on Hermes 0.22 or older](docs/installation.md#coming-from-a-build-that-ran-on-hermes-022-or-older).
+Skipping the first fails every slot with `Gateway inaccessible: service_identity_unverified` (Hermes Studio only shows `Internal error`); skipping the second leaves your conversations in the database owned by nobody, so the catalog leaves them out. Neither touches transcripts, and both are idempotent — [§ Coming from a build that ran on Hermes 0.22 or older](docs/installation.md#coming-from-a-build-that-ran-on-hermes-022-or-older).
 
 The first slot you start will use the Hermes home **your own agent already uses**
 (`~/.hermes`) unless the backend row names another one — see "HERMES_HOME" below.
@@ -74,14 +74,14 @@ The first slot you start will use the Hermes home **your own agent already uses*
 ### From a checkout (development)
 
 ```bash
-git clone https://github.com/agentus-org/agentus.git
-cd agentus
+git clone https://github.com/hermes-studio-org/hermes-studio.git
+cd hermes-studio
 npm start                     # installs if needed, builds, serves (scripts/start.sh)
-npm run dev -w @agentus/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
-npm run agentus               # the same CLI as `npx agentus`, straight from the checkout
+npm run dev -w @hermes-studio/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
+npm run hermes-studio               # the same CLI as `npx hermes-studio`, straight from the checkout
 ```
 
-**Working on Agentus itself?** The bootstrapping manual is in
+**Working on Hermes Studio itself?** The bootstrapping manual is in
 [`docs/dev/`](docs/dev/README.md): run a dev instance beside live, prove a change with the
 browser sweeps, promote it to live, and what to do when live breaks. Written for a human
 *and* for a coding agent you point at this repo.
@@ -104,7 +104,7 @@ created 0700 on first boot, and the boot log prints it **and why that directory 
 
 Rule 3 is not a nicety: an install that quietly switched directories would come up with an
 empty session list, which reads exactly like "my sessions are gone". To move such a
-checkout over, boot it once with `AGENTUS_DATA=~/.agentus`. `agentus --where` prints what
+checkout over, boot it once with `AGENTUS_DATA=~/.agentus`. `hermes-studio --where` prints what
 the server resolved, rather than making you guess.
 
 ### Backends
@@ -124,7 +124,7 @@ layer never changes.
 |---|---|---|
 | `AGENTUS_PORT` | `8788` | server port (never reads bare `PORT` — that name is polluted on shared hosts) |
 | `AGENTUS_DATA` | `~/.agentus` | where state lives; see "Where your state lives" for the full order (`<repo>/packages/server/.data` on a checkout that already has one) |
-| `AGENTUS_TITLE` | `Agentus` | this instance's own name: the browser tab title and the PWA/home-screen label. Set it when one person runs several cockpits (`AGENTUS_TITLE="Agentus（pre-betabox）"`) |
+| `AGENTUS_TITLE` | `Hermes Studio` | this instance's own name: the browser tab title and the PWA/home-screen label. Set it when one person runs several cockpits (`AGENTUS_TITLE="Hermes Studio（pre-betabox）"`) |
 | `AGENTUS_HERMES_CMD` | `hermes` | binary to spawn for the hermes backend |
 | `AGENTUS_QODER_CMD` | `~/.local/bin/qodercli` | ditto for qoder |
 | `AGENTUS_HERMES_HOME` | `~/.hermes` | default `HERMES_HOME` for a row that does not name one (the operator's own home) |
@@ -251,7 +251,7 @@ Two things to know about a tunnel in front of this app:
 
 A plain TCP tunnel (SakuraFrp, safe-nat, `ssh -L`, most frp setups) forwards bytes — it does
 **not** terminate TLS for you. Point one at `:8788` and the operator's password and session
-cookie would cross the internet in clear text. So terminate TLS **in front of Agentus** — a
+cookie would cross the internet in clear text. So terminate TLS **in front of Hermes Studio** — a
 reverse proxy (Caddy/nginx) or a tunnel that does its own `public_tls` — and let this process
 speak plain HTTP:
 
@@ -295,7 +295,7 @@ name `"hermes"` would attach to your production memory daemon, so the row warns 
 ## The cockpit CLI (for the agents inside it)
 
 An agent in a slot is blind: the other sessions, what they are doing, and what the operator
-asked them all live in the cockpit, not in the agent's prompt. `agentus cockpit` is the one
+asked them all live in the cockpit, not in the agent's prompt. `hermes-studio cockpit` is the one
 channel that lets an agent read that — and, if you allow it, hand a message to another session:
 
 ```bash
@@ -310,21 +310,21 @@ channel that lets an agent read that — and, if you allow it, hand a message to
 "$AGENTUS_COCKPIT_BIN" skill                           # this CLI's own manual, from the package
 ```
 
-The shape is noun-then-verb (`agentus session send <id> …`) because every one of these acts on the
+The shape is noun-then-verb (`hermes-studio session send <id> …`) because every one of these acts on the
 same object; the session id is a positional argument, options stay options.
 
 The cockpit hands `AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION` to each agent it spawns, so
 the CLI needs no arguments, no port and no config — and the token never appears on a command
-line. `AGENTUS_COCKPIT_BIN` is this same `agentus` launcher, so there is one command with one
-name; `agentus cockpit …` at your own shell is the identical thing. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
+line. `AGENTUS_COCKPIT_BIN` is this same `hermes-studio` launcher, so there is one command with one
+name; `hermes-studio cockpit …` at your own shell is the identical thing. Delivering a message (**设置 → 驾驶舱互发消息**, off by default) means the target agent
 *received* it, never that it read or agreed; a busy target refuses with `target_busy` and saw
 nothing.
 
-The manual is `skills/agentus-cockpit/SKILL.md`, shipped in the package. Backends with a native
+The manual is `skills/hermes-studio-cockpit/SKILL.md`, shipped in the package. Backends with a native
 skills directory (Hermes: `$HERMES_HOME/skills`) get it installed at spawn — idempotently, by
 content, so a release that changes it refreshes it and a spawn that would not costs nothing.
 Backends without one (Qoder) get a single line in the plan reminder and can read the same file
-with `agentus cockpit skill`, which is also why the document is never pasted into a prompt.
+with `hermes-studio cockpit skill`, which is also why the document is never pasted into a prompt.
 
 ## What it does today (M0 → M4)
 

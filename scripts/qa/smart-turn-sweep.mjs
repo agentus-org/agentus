@@ -1,6 +1,6 @@
 // Smart Turn real-page sweep: prove the model loads in a real browser and that its verdict only
 // changes HOW LONG the call waits to auto-send — never WHETHER it sends (never cuts the operator off).
-// Self-contained stub TTS + own Agentus instance + CDP.  node scripts/qa/smart-turn-sweep.mjs
+// Self-contained stub TTS + own Hermes Studio instance + CDP.  node scripts/qa/smart-turn-sweep.mjs
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { mkdtempSync } from "node:fs";

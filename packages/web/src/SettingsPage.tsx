@@ -209,7 +209,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
    *  save payload, failed the `sk-…` shape check, and took the whole voice section down with it
    *  (one PUT, all-or-nothing) — which the operator experienced as 「点了保存没反应」. */
   const [keyEdit, setKeyEdit] = useState(false);
-  const [ttsText, setTtsText] = useState("Agentus 语音合成自测：龙安欢音色。");
+  const [ttsText, setTtsText] = useState("Hermes Studio 语音合成自测：龙安欢音色。");
   // account, sessions and login locks live in Account.tsx (their own endpoints, their own
   // loading); this page only carries the identity the 账号 card prints.
   const [acc, setAcc] = useState<AccountInfo | null>(null);
@@ -1499,7 +1499,7 @@ export function SettingsPage({ onClose, sessionId }: { onClose: () => void; sess
           <textarea
             className="set-textarea"
             rows={5}
-            placeholder={"Agentus=5\nACP\nqodercli"}
+            placeholder={"Hermes Studio=5\nACP\nqodercli"}
             value={draft?.hotwordsText ?? ""}
             onChange={(e) => field("hotwordsText", e.target.value)}
             spellCheck={false}

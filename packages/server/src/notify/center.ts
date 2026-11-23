@@ -708,7 +708,7 @@ export class NotifyCenter {
         presence,
         watching: Boolean(presence.sessionId && this.watching(presence.sessionId)),
         code: this.state.code,
-        pairUri: `agentus://pair?u=${encodeURIComponent(base)}&c=${this.state.code}`,
+        pairUri: `hermes-studio://pair?u=${encodeURIComponent(base)}&c=${this.state.code}`,
         apkUrl: "/agentus-companion.apk",
         apkBytes: this.apkPath && fs.existsSync(this.apkPath) ? fs.statSync(this.apkPath).size : null,
         devices: this.state.devices.map((d) => ({
@@ -831,7 +831,7 @@ export class NotifyCenter {
       const base = `${scheme}://${host}`;
       return json(200, {
         code: this.state.code,
-        pairUri: `agentus://pair?u=${encodeURIComponent(base)}&c=${this.state.code}`,
+        pairUri: `hermes-studio://pair?u=${encodeURIComponent(base)}&c=${this.state.code}`,
         baseUrl: base,
         wsUrl: `${scheme === "https" ? "wss" : "ws"}://${host}/api/notify/ws`,
       }) && true;
@@ -1066,7 +1066,7 @@ export class NotifyCenter {
         ? { progress: { value: 0.4, segments: [{ length: 4, color: "#2f6f4f" }, { length: 6, color: "#e2e2dd" }] } }
         : {}),
       actions: [{ id: "open", label: "打开", style: "primary" }],
-      smallIcon: "agentus", ...tapTarget(deeplink, opts.openPrefer),
+      smallIcon: "hermes-studio", ...tapTarget(deeplink, opts.openPrefer),
       visibility: island ? "public" : "private",
     };
     if (opts.path) activity.path = opts.path;
@@ -1083,18 +1083,18 @@ export class NotifyCenter {
       {
         schema: 1, op: "upsert", activityId: "probe:running", revision: 1, kind: "agent_running",
         priority: "low", ongoing: true, promotable: true,
-        title: "Agentus · 运行中", body: "探针会话 · 第 1 步：读取代码",
+        title: "Hermes Studio · 运行中", body: "探针会话 · 第 1 步：读取代码",
         progress: { indeterminate: true },
         channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
-        smallIcon: "agentus", ...tapTarget(link), visibility: "public",
+        smallIcon: "hermes-studio", ...tapTarget(link), visibility: "public",
       },
       {
         schema: 1, op: "upsert", activityId: "probe:running", revision: 2, kind: "agent_running",
         priority: "low", ongoing: true, promotable: true,
-        title: "Agentus · 运行中", body: "探针会话 · 第 2 步：运行测试（进度 60%）",
+        title: "Hermes Studio · 运行中", body: "探针会话 · 第 2 步：运行测试（进度 60%）",
         progress: { value: 0.6, segments: [{ length: 6, color: "#4f8" }, { length: 4, color: "#556" }] },
         channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
-        smallIcon: "agentus", ...tapTarget(link), visibility: "public",
+        smallIcon: "hermes-studio", ...tapTarget(link), visibility: "public",
       },
       {
         schema: 1, op: "upsert", activityId: "probe:approval", revision: 1, kind: "approval",
@@ -1107,7 +1107,7 @@ export class NotifyCenter {
           { id: "reject_once", label: "拒绝", style: "danger" },
         ],
         input: { enabled: true, placeholder: "或直接回一句" },
-        smallIcon: "agentus", ...tapTarget(link), visibility: "private",
+        smallIcon: "hermes-studio", ...tapTarget(link), visibility: "private",
       },
       // A canned frame cannot know how long a real turn took, so this one carries no 「用时」: the
       // duration is measured in the real `turn-end` path (see durationText).
@@ -1117,7 +1117,7 @@ export class NotifyCenter {
         title: "已完成", body: "探针会话 · 探针序列结束",
         channel: { id: "agent_done", name: "任务完成", importance: "high", sound: true },
         actions: [{ id: "open", label: "查看", style: "primary" }],
-        smallIcon: "agentus", ...tapTarget(link), visibility: "private",
+        smallIcon: "hermes-studio", ...tapTarget(link), visibility: "private",
       },
     ];
     const [running, progress, approval, done] = steps;
@@ -1142,7 +1142,7 @@ export class NotifyCenter {
   }
 
   // ---- ACP event -> activity ----------------------------------------------
-  // The only place that knows what an Agentus event MEANS. Everything it emits
+  // The only place that knows what an Hermes Studio event MEANS. Everything it emits
   // goes back through publish(), so the contract stays the single wire format.
 
   /** Called for every ServerEvent the session manager emits. */
@@ -1157,15 +1157,15 @@ export class NotifyCenter {
         const running: ActivityObject = {
           schema: 1, op: "upsert", activityId: `turn:${evt.sessionId}`, revision: this.nextRevision(`turn:${evt.sessionId}`),
           kind: "agent_running", priority: "low", ongoing: true, promotable: true,
-          title: "Agentus · 运行中",
+          title: "Hermes Studio · 运行中",
           body: nameAndDetail(title(evt.sessionId), evt.trace?.model, evt.trace?.effort),
           progress: { indeterminate: true },
           channel: { id: "agent_running", name: "任务运行中", importance: "low", sound: false },
-          smallIcon: "agentus", ...tapTarget(link(evt.sessionId)), visibility: "public",
+          smallIcon: "hermes-studio", ...tapTarget(link(evt.sessionId)), visibility: "public",
         };
         this.notice({
           op: "upsert", noticeId: `turn:${evt.sessionId}`, kind: "agent_running",
-          // The browser card drops the `Agentus ·` prefix the phone title carries: a browser already
+          // The browser card drops the `Hermes Studio ·` prefix the phone title carries: a browser already
           // shows the origin and the icon, so the product's own name would spend the visible line.
           title: "运行中", body: running.body ?? "", open: link(evt.sessionId),
         }, "turnStart");
@@ -1219,7 +1219,7 @@ export class NotifyCenter {
             importance: "high", sound: true,
           },
           actions: [{ id: "open", label: "查看", style: "primary" }],
-          smallIcon: "agentus", ...tapTarget(link(evt.sessionId)), visibility: "private",
+          smallIcon: "hermes-studio", ...tapTarget(link(evt.sessionId)), visibility: "private",
         };
         // The page's card is keyed per SESSION (`done:<id>`), unlike the phone's per-occurrence id:
         // a browser card carries a `tag`, so one per session is what makes the newest replace the
@@ -1239,10 +1239,10 @@ export class NotifyCenter {
         // repeating something the operator is looking at is the one thing this channel must not do.
         this.publish({
           schema: 1, op: "upsert", activityId: `error:${Date.now()}`, revision: 1, kind: "error",
-          priority: "high", ongoing: false, promotable: false, title: "Agentus 报错",
+          priority: "high", ongoing: false, promotable: false, title: "Hermes Studio 报错",
           body: String(evt.error).slice(0, 160),
           channel: { id: "agent_error", name: "任务出错", importance: "high", sound: true },
-          smallIcon: "agentus", visibility: "private",
+          smallIcon: "hermes-studio", visibility: "private",
         });
         return;
       default:
@@ -1309,7 +1309,7 @@ export class NotifyCenter {
         channel: { id: "agent_approval", name: "权限请求", importance: "high", sound: true, vibration: true },
         actions: actions.length ? actions : [{ id: "open", label: "查看", style: "primary" }],
         input: { enabled: true, placeholder: "或直接回一句" },
-        smallIcon: "agentus", ...tapTarget(link), visibility: "private",
+        smallIcon: "hermes-studio", ...tapTarget(link), visibility: "private",
       },
       actionRefs,
     };

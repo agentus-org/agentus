@@ -1,4 +1,4 @@
-# Developing Agentus with a coding agent in the loop
+# Developing Hermes Studio with a coding agent in the loop
 
 This doc answers: how do I hand a task on this repository to a coding agent, and how do I
 review what it produces?
@@ -11,7 +11,7 @@ that are true of every change: where things live, the invariants, the git discip
 commands to run. It is not documentation for humans — it is the brief an agent gets before
 it touches anything.
 
-**The Agentus repository itself carries no `AGENTS.md` as of this writing** — the
+**The Hermes Studio repository itself carries no `AGENTS.md` as of this writing** — the
 conventions that govern work on it live in this `docs/dev/` set plus the operator's own
 working notes. `TODO(verify)`: a `docs/dev/`-aware root `AGENTS.md` may be added; if one
 appears it becomes the entry point an agent reads first, and this manual is what it links to.
@@ -20,12 +20,12 @@ Where `AGENTS.md` **is** load-bearing in this workspace: the operator's spoken-r
 workspace (`~/Workspace/voice-chat/AGENTS.md`) is read by both `hermes` and `qodercli`, so
 the same style rules apply whichever backend a session runs on. A running session keeps the
 prompt it booted with, so an edit to that file only shows up in a **new** session. When a
-task is about how Agentus-backed sessions should *speak*, that file — not the code — is the
+task is about how Hermes Studio-backed sessions should *speak*, that file — not the code — is the
 lever.
 
 ## Handing a task to an agent
 
-Agentus is a good target for agent work because every claim is checkable in-repo. Give the
+Hermes Studio is a good target for agent work because every claim is checkable in-repo. Give the
 agent four things and it can work without guessing.
 
 **1. The real entry points.** Name the files, do not describe them:

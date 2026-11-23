@@ -14,7 +14,7 @@ import java.util.UUID;
 /**
  * The saved servers.
  *
- * One profile = one Agentus server the phone can notify from: address, optionally the
+ * One profile = one Hermes Studio server the phone can notify from: address, optionally the
  * login (so pairing can happen again without the operator's involvement), the device token
  * this server issued, and this server's own event cursor. Cursors are per server on purpose —
  * replaying server B's events with server A's cursor would silently drop notifications.
@@ -61,7 +61,7 @@ final class Profiles {
     private int revision = 0;
 
     Profiles(Context context) {
-        this.sp = context.getApplicationContext().getSharedPreferences("agentus", Context.MODE_PRIVATE);
+        this.sp = context.getApplicationContext().getSharedPreferences("hermes-studio", Context.MODE_PRIVATE);
         load();
     }
 

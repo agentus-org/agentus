@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const BIN = path.join(ROOT, "bin/agentus.mjs");
+const BIN = path.join(ROOT, "bin/hermes-studio.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
 let fail = 0;

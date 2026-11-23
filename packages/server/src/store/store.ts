@@ -144,7 +144,7 @@ export interface SessionRow {
   cwd: string;
   title: string;
   /** the generated name, kept aside so a rename is reversible and an automatic title can
-   *  never stomp the operator's own (see the interface comment in @agentus/shared) */
+   *  never stomp the operator's own (see the interface comment in @hermes-studio/shared) */
   autoTitle?: string | null;
   /** session id of whoever renamed it through the cockpit CLI; null = the operator's own name */
   titleBy?: string | null;
@@ -673,7 +673,7 @@ export class Store {
       on conflict (origin, target, kind) do nothing
     `).run();
     this.#setRepairVersion("edges", 1);
-    console.log(`[agentus] edges backfilled: ${Number(info.changes ?? 0)} rows in ${Date.now() - started} ms`);
+    console.log(`[hermes-studio] edges backfilled: ${Number(info.changes ?? 0)} rows in ${Date.now() - started} ms`);
   }
 
   /**

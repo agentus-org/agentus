@@ -24,9 +24,9 @@ const check = (name: string, ok: unknown, detail = "") => {
 // ---- the corpus that ships ----
 check("SKILLS_ROOT points at the package's skills/ dir", SKILLS_ROOT === path.join(REPO, "skills"), SKILLS_ROOT);
 const skills = bundledSkills();
-check("the cockpit CLI skill is in the corpus", skills.some((s) => s.name === "agentus-cockpit"), JSON.stringify(skills.map((s) => s.name)));
-const doc = fs.readFileSync(path.join(SKILLS_ROOT, "agentus-cockpit/SKILL.md"), "utf8");
-check("…with the frontmatter Hermes needs to index it", /^---\nname: agentus-cockpit\ndescription: "/.test(doc), doc.slice(0, 40).replace(/\n/g, "\\n"));
+check("the cockpit CLI skill is in the corpus", skills.some((s) => s.name === "hermes-studio-cockpit"), JSON.stringify(skills.map((s) => s.name)));
+const doc = fs.readFileSync(path.join(SKILLS_ROOT, "hermes-studio-cockpit/SKILL.md"), "utf8");
+check("…with the frontmatter Hermes needs to index it", /^---\nname: hermes-studio-cockpit\ndescription: "/.test(doc), doc.slice(0, 40).replace(/\n/g, "\\n"));
 check("…and the parts an agent actually needs (commands, codes, the delivered≠read rule)",
   ["capabilities", "messages", "--tail", "sends_disabled", "target_busy", "delivered"].every((k) => doc.includes(k)) &&
     /delivered.{0,12}not.{0,12}read/s.test(doc), "");
@@ -38,13 +38,13 @@ check("package.json ships skills/ (npm pack includes it)", (pkg.files ?? []).inc
 // JSON. The file list does not depend on a fresh build — we are asking what would be HANDPACKED.
 const packed = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: REPO, encoding: "utf8" });
 const files = (JSON.parse(packed)[0]?.files ?? []).map((f: { path: string }) => f.path);
-check("…verified against npm's own file list (skills/agentus-cockpit/SKILL.md is packed)",
-  files.includes("skills/agentus-cockpit/SKILL.md"), `${files.length} files packed`);
-check("…and the launcher that serves the doc is packed too", files.includes("bin/agentus.mjs"), "");
+check("…verified against npm's own file list (skills/hermes-studio-cockpit/SKILL.md is packed)",
+  files.includes("skills/hermes-studio-cockpit/SKILL.md"), `${files.length} files packed`);
+check("…and the launcher that serves the doc is packed too", files.includes("bin/hermes-studio.mjs"), "");
 check("…and the client implementation came along (bin/cli.mjs, not a second command)",
   files.includes("bin/cli.mjs"), "");
-check("ONE command in the package: `agentus` (no second `agentus-cockpit` bin to explain)",
-  JSON.stringify(Object.keys(pkg.bin ?? {})) === '["agentus"]', JSON.stringify(pkg.bin));
+check("ONE command in the package: `hermes-studio` (no second `hermes-studio-cockpit` bin to explain)",
+  JSON.stringify(Object.keys(pkg.bin ?? {})) === '["hermes-studio"]', JSON.stringify(pkg.bin));
 
 // ---- the installer ----
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentus-skills-"));
@@ -54,24 +54,24 @@ fs.mkdirSync(path.join(dir, "agent-owned"), { recursive: true });
 fs.writeFileSync(path.join(dir, "agent-owned/SKILL.md"), "---\nname: agent-owned\n---\nmine\n");
 
 const first = installSkills(dir);
-const target = path.join(dir, "agentus-cockpit/SKILL.md");
-check("first install writes the skill", first.installed.includes("agentus-cockpit") && fs.readFileSync(target, "utf8") === doc,
+const target = path.join(dir, "hermes-studio-cockpit/SKILL.md");
+check("first install writes the skill", first.installed.includes("hermes-studio-cockpit") && fs.readFileSync(target, "utf8") === doc,
   JSON.stringify(first));
 const mtime1 = fs.statSync(target).mtimeMs;
 const second = installSkills(dir);
-check("second install is a no-op (no rewrite, no mtime churn)", second.unchanged.includes("agentus-cockpit") &&
+check("second install is a no-op (no rewrite, no mtime churn)", second.unchanged.includes("hermes-studio-cockpit") &&
   !second.installed.length && !second.updated.length && fs.statSync(target).mtimeMs === mtime1,
   JSON.stringify(second));
 
 fs.writeFileSync(target, "stale text from an older release\n");
 const third = installSkills(dir);
-check("a stale skill from an older release is REFRESHED", third.updated.includes("agentus-cockpit") &&
+check("a stale skill from an older release is REFRESHED", third.updated.includes("hermes-studio-cockpit") &&
   fs.readFileSync(target, "utf8") === doc, JSON.stringify(third));
 check("…and the agent's own skills are never touched", fs.readFileSync(path.join(dir, "agent-owned/SKILL.md"), "utf8") ===
   "---\nname: agent-owned\n---\nmine\n", "");
 check("the installer never deletes: an unrelated file next to ours survives",
-  (fs.writeFileSync(path.join(dir, "agentus-cockpit/NOTES.txt"), "keep me"), installSkills(dir),
-  fs.existsSync(path.join(dir, "agentus-cockpit/NOTES.txt"))), "");
+  (fs.writeFileSync(path.join(dir, "hermes-studio-cockpit/NOTES.txt"), "keep me"), installSkills(dir),
+  fs.existsSync(path.join(dir, "hermes-studio-cockpit/NOTES.txt"))), "");
 const empty = installSkills(path.join(tmp, "empty-corpus"), path.join(tmp, "nowhere"));
 check("a package with no skills is a silent no-op, not an error", empty.installed.length === 0 && empty.unchanged.length === 0,
   JSON.stringify(empty));
@@ -101,20 +101,20 @@ check("…and a row of a kind with no channel gets none",
   rowToSpec({ ...row, id: "qoder", kind: "qoder" as const, label: "Qoder", cmd: "qodercli", args: ["--acp"] } as never).skillsEnv ===
     undefined, "");
 check("the corpus we point at is the real one (SKILLS_ROOT holds the cockpit's own skill)",
-  fs.existsSync(path.join(SKILLS_ROOT, "agentus-cockpit/SKILL.md")), SKILLS_ROOT);
+  fs.existsSync(path.join(SKILLS_ROOT, "hermes-studio-cockpit/SKILL.md")), SKILLS_ROOT);
 
 // ---- and the CLI can hand out the same document with no cockpit, no token ----
-const LAUNCHER = path.join(REPO, "bin/agentus.mjs");
+const LAUNCHER = path.join(REPO, "bin/hermes-studio.mjs");
 const cliPath = execFileSync(process.execPath, [LAUNCHER, "skill"], {
   cwd: "/tmp", encoding: "utf8", env: { ...process.env, AGENTUS_COCKPIT_BIN: "", AGENTUS_COCKPIT_TOKEN: "", AGENTUS_COCKPIT_SESSION: "" },
 });
-check("`agentus-cockpit skill` prints the document with NO identity in the environment", cliPath === doc,
+check("`hermes-studio-cockpit skill` prints the document with NO identity in the environment", cliPath === doc,
   `${cliPath.length} bytes vs ${doc.length}`);
 const cliFile = execFileSync(process.execPath, [LAUNCHER, "skill", "--path"], {
   cwd: "/tmp", encoding: "utf8",
 });
 check("`skill --path` prints the installed path, so an agent can read it with its own file tools",
-  cliFile.trim().endsWith("skills/agentus-cockpit/SKILL.md") && fs.existsSync(cliFile.trim()), cliFile.trim());
+  cliFile.trim().endsWith("skills/hermes-studio-cockpit/SKILL.md") && fs.existsSync(cliFile.trim()), cliFile.trim());
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);

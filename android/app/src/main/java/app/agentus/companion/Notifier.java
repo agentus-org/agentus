@@ -41,7 +41,7 @@ final class Notifier {
         i.setAction(Intent.ACTION_VIEW);
         i.putExtra(MainActivity.EXTRA_OPEN_URL, url == null ? "" : url);
         i.putExtra(MainActivity.EXTRA_OPEN_SERVER, serverUrl == null ? "" : serverUrl);
-        i.setData(Uri.parse("agentus://open?u=" + Uri.encode(url == null ? "" : url)));
+        i.setData(Uri.parse("hermes-studio://open?u=" + Uri.encode(url == null ? "" : url)));
         // singleTop + NEW_TASK: an app already in the foreground gets onNewIntent instead of a second
         // instance (a second instance would mean a second WebView, i.e. a reload of the cockpit).
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -125,7 +125,7 @@ final class Notifier {
     }
 
     static void ensureServiceChannel(Context ctx) {
-        ensureChannel(ctx, SERVICE_CHANNEL, "Agentus 服务", "low", false, false);
+        ensureChannel(ctx, SERVICE_CHANNEL, "Hermes Studio 服务", "low", false, false);
     }
 
     /** Stable per activity: one activityId = one notification slot, updated in place. */
@@ -166,18 +166,18 @@ final class Notifier {
                 muted ? false : channel.optBoolean("vibration", true));
             channelId = wantId;
         } else {
-            ensureChannel(ctx, DEFAULT_CHANNEL, "Agentus", "default", true, true);
+            ensureChannel(ctx, DEFAULT_CHANNEL, "Hermes Studio", "default", true, true);
         }
 
         int revision = Math.max(1, a.optInt("revision", 1));
         boolean ongoing = a.optBoolean("ongoing", false);
-        String title = a.optString("title", "Agentus");
+        String title = a.optString("title", "Hermes Studio");
         String subtitle = a.optString("subtitle", "");
         String body = a.optString("body", "");
         String text = !body.isEmpty() ? body : subtitle;
 
         Notification.Builder b = new Notification.Builder(ctx, channelId)
-            .setSmallIcon(smallIcon(ctx, a.optString("smallIcon", "agentus")))
+            .setSmallIcon(smallIcon(ctx, a.optString("smallIcon", "hermes-studio")))
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(ongoing)
@@ -319,7 +319,7 @@ final class Notifier {
     }
 
     private static int smallIcon(Context ctx, String name) {
-        if (name != null && !name.isEmpty() && !"agentus".equals(name)) {
+        if (name != null && !name.isEmpty() && !"hermes-studio".equals(name)) {
             int id = ctx.getResources().getIdentifier(name, "drawable", ctx.getPackageName());
             if (id != 0) return id;
         }
@@ -340,7 +340,7 @@ final class Notifier {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(ctx, SERVICE_CHANNEL)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle("Agentus")
+            .setContentTitle("Hermes Studio")
             .setContentText(status)
             .setContentIntent(pi)
             .setOngoing(true)

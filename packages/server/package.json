@@ -1,5 +1,5 @@
 {
-  "name": "@agentus/server",
+  "name": "@hermes-studio/server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.5.1",
-    "@agentus/shared": "*",
+    "@hermes-studio/shared": "*",
     "ws": "^8.22.0",
     "yaml": "^2.9.1"
   },

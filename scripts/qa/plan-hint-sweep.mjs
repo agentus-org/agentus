@@ -3,12 +3,12 @@
 //   node scripts/qa/plan-hint-sweep.mjs
 //
 // Why this sweep changed shape (2026-11-22, issue #112 follow-up): the cockpit used to inject an
-// `agentus://plan/<id>` resource block into EVERY prompt (default `planHint.everyTurn=true`). That
+// `hermes-studio://plan/<id>` resource block into EVERY prompt (default `planHint.everyTurn=true`). That
 // nudge had two costs: (1) it polluted the session-title generator and Hindsight recall/ingest,
 // because Hermes' acp_adapter/content.py joins all text parts into the user message, and the block
 // rode along as text; (2) its own wording taught the model to go SEARCH for the deferred MCP tool.
 // The plan tool's discoverability now comes from its own trigger-style description + SOUL.md, and
-// the cockpit CLI comes from the `agentus-cockpit` skill (mounted at handshake). So nothing should
+// the cockpit CLI comes from the `hermes-studio-cockpit` skill (mounted at handshake). So nothing should
 // be injected on the wire any more. This sweep guards that: every prompt is the operator's own text.
 //
 // What it proves:
@@ -160,9 +160,9 @@ check("a custom instruction does not resurrect the injection", planBlockOf(b4) =
 check("custom text is not appended to the prompt",
   !/HOUSE RULE/.test(JSON.stringify(b4 ?? [])), JSON.stringify(b4 ?? []).slice(0, 240));
 
-console.log("\n== ⑤ the cockpit CLI lives in the agentus-cockpit SKILL, not in the prompt ==");
-const skill = path.resolve("skills/agentus-cockpit/SKILL.md");
-check("agentus-cockpit skill file exists", fs.existsSync(skill), skill);
+console.log("\n== ⑤ the cockpit CLI lives in the hermes-studio-cockpit SKILL, not in the prompt ==");
+const skill = path.resolve("skills/hermes-studio-cockpit/SKILL.md");
+check("hermes-studio-cockpit skill file exists", fs.existsSync(skill), skill);
 const skillText = fs.existsSync(skill) ? fs.readFileSync(skill, "utf8") : "";
 check("the skill documents the cross-session CLI (session list / send)",
   /session list/.test(skillText) && /AGENTUS_COCKPIT_BIN/.test(skillText) && /session send/.test(skillText),

@@ -1,4 +1,4 @@
-// Agentus auth — one operator, two credentials.
+// Hermes Studio auth — one operator, two credentials.
 //
 //   1. session cookie  : HttpOnly + SameSite=Lax, HMAC-SHA256 signed, minted by
 //                        POST /api/auth/login. This is what the browser carries.
@@ -682,7 +682,7 @@ function digest(value: string): string {
 /** 401 + the challenge. Without WWW-Authenticate a browser never asks. */
 export function basicChallenge(): Record<string, string> {
   return {
-    "www-authenticate": 'Basic realm="Agentus", charset="UTF-8"',
+    "www-authenticate": 'Basic realm="Hermes Studio", charset="UTF-8"',
     "content-type": "text/plain; charset=utf-8",
   };
 }

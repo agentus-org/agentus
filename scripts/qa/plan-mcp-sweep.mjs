@@ -212,7 +212,7 @@ check("…and offers exactly update_plan + read_plan",
 const updateTool = (listed?.result?.tools ?? []).find((t) => t.name === "update_plan");
 const updateDesc = updateTool?.description ?? "";
 check("…and the tool tells the agent to PREFER it (this list is what the cockpit displays)",
-  /PREFER THIS/.test(updateDesc) && /Agentus cockpit/.test(updateDesc) && /restarts/.test(updateDesc),
+  /PREFER THIS/.test(updateDesc) && /Hermes Studio cockpit/.test(updateDesc) && /restarts/.test(updateDesc),
   updateDesc.slice(0, 220));
 
 const written = await mcp.call("tools/call", {

@@ -1,4 +1,4 @@
-/* Agentus cockpit theme — original design, dark slate + a cool blue accent.
+/* Hermes Studio cockpit theme — original design, dark slate + a cool blue accent.
    The blue is the default because an accent doubles as the SELECTION/LINK/STATUS colour and has to
    get along with the terminal's own palette and the syntax colours: amber collided with the
    「warning/waiting」 half of both. It is the same family as the terminal cursor (#4aacdf). */
@@ -1884,7 +1884,7 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 /* Web IDE (issue #77). The frame fills the panel and is only ever DISPLAY:none'd, never unmounted —
    a fresh iframe restarts code-server's front end (unsaved buffers, terminal, extension host), so
    tab switching must not recreate it. The frame gets its own stacking context: code-server's own
-   z-indexes otherwise float over agentus's panels. */
+   z-indexes otherwise float over hermes-studio's panels. */
 .ide-frame { flex: 1; min-height: 0; min-width: 0; isolation: isolate; overflow: hidden; }
 .ide-iframe { flex: 1; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .ide-help { flex: 1; overflow-y: auto; padding: 14px; font-size: 12.5px; color: var(--text); }
@@ -3502,7 +3502,7 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 
 /* ---------------------------------------------------------------- Tus 模式（tus）---
    One surface, TWO partitions: portrait = the face above, the record below; landscape = the face
-   left, the record right. Why the face gets the larger share: in a real Agentus turn the agent
+   left, the record right. Why the face gets the larger share: in a real Hermes Studio turn the agent
    spends most of its time running tools or waiting for an approval, and during those minutes it
    emits no words at all — the face IS the progress indicator, the chat is the archive.
 

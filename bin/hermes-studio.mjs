@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * `agentus` — the command an npm install gives you.
+ * `hermes-studio` — the command an npm install gives you.
  *
- *   npx agentus                 # start the cockpit on :8788
- *   npx agentus --port 9000     # …somewhere else
- *   npx agentus --data ~/work   # …with its state in a directory you chose
- *   npx agentus --where         # print the resolved paths and exit (nothing starts)
+ *   npx hermes-studio                 # start the cockpit on :8788
+ *   npx hermes-studio --port 9000     # …somewhere else
+ *   npx hermes-studio --data ~/work   # …with its state in a directory you chose
+ *   npx hermes-studio --where         # print the resolved paths and exit (nothing starts)
  *
  * This file holds no product logic on purpose. It checks the one hard prerequisite
  * (Node >= 22.5 — the store is `node:sqlite`), maps flags onto the server's own
  * environment variables, and starts `packages/server/src/index.ts` through tsx. There is
  * no build step: the server runs TypeScript in place, in a checkout and in an installed
- * package alike, so `npm i -g agentus` never needs a compiler on the user's machine.
+ * package alike, so `npm i -g hermes-studio` never needs a compiler on the user's machine.
  *
  * WHY `--where` RUNS THE SERVER instead of computing paths here: where the data lives is
  * decided in exactly one place (`packages/server/src/index.ts`). A second
@@ -30,10 +30,10 @@ const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const SERVER = path.join(PKG_ROOT, "packages/server/src/index.ts");
 const require = createRequire(import.meta.url);
 
-const USAGE = `agentus — multi-session web cockpit for ACP-speaking coding agents
+const USAGE = `hermes-studio — multi-session web cockpit for ACP-speaking coding agents
 
 Usage
-  agentus [options]
+  hermes-studio [options]
 
 Options
   -p, --port <n>     port to listen on                 (AGENTUS_PORT, default 8788)
@@ -45,15 +45,15 @@ Options
   -v, --version      print the version
 
 Commands (client side — they need the identity the cockpit gives an agent it spawns)
-  agentus session list                 who you are + every session in scope
-  agentus session show <id>            one session in detail + any approval it waits on
-  agentus session messages <id> [--tail N]
-  agentus session plan <id>
-  agentus session send <id> <text…>    deliver a message into another session (operator-gated);
+  hermes-studio session list                 who you are + every session in scope
+  hermes-studio session show <id>            one session in detail + any approval it waits on
+  hermes-studio session messages <id> [--tail N]
+  hermes-studio session plan <id>
+  hermes-studio session send <id> <text…>    deliver a message into another session (operator-gated);
                                        add --wake to also start a cold target
-  agentus session wake <id>            start a cold session's process (same switch as send)
-  agentus capabilities                 the CLI's contract, self-describing
-  agentus skill [--path]               the CLI's manual, as shipped in the package
+  hermes-studio session wake <id>            start a cold session's process (same switch as send)
+  hermes-studio capabilities                 the CLI's contract, self-describing
+  hermes-studio skill [--path]               the CLI's manual, as shipped in the package
 
   Inside a session they are called as:  "$AGENTUS_COCKPIT_BIN" session list
   The cockpit hands that path (this very file) plus endpoint/token/session in the environment.
@@ -68,7 +68,7 @@ Requirements
 `;
 
 function fail(message) {
-  console.error(`agentus: ${message}`);
+  console.error(`hermes-studio: ${message}`);
   process.exit(1);
 }
 
@@ -127,7 +127,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 
 if (!fs.existsSync(SERVER)) {
-  fail(`this package is incomplete — ${SERVER} is missing. Reinstall: npm i -g agentus@latest`);
+  fail(`this package is incomplete — ${SERVER} is missing. Reinstall: npm i -g hermes-studio@latest`);
 }
 
 // tsx ships a loader entry at its package root (`exports["."] → dist/loader.mjs`); resolve
@@ -146,7 +146,7 @@ if (opts.where) env.AGENTUS_PRINT_PATHS = "1";
 
 const port = env.AGENTUS_PORT ?? "8788";
 if (!opts.where) {
-  console.log(`[agentus] starting — open http://localhost:${port} when it is up (Ctrl-C stops it)`);
+  console.log(`[hermes-studio] starting — open http://localhost:${port} when it is up (Ctrl-C stops it)`);
 }
 
 const child = spawn(process.execPath, ["--import", loader, SERVER], {

@@ -1,4 +1,4 @@
-// Agentus service worker — app-shell strategy, staleness-safe.
+// Hermes Studio service worker — app-shell strategy, staleness-safe.
 // Rules:
 //  - HTML/navigation: NETWORK FIRST (avoid stale bundles), offline => cached shell.
 //  - hashed assets (/assets/): CACHE FIRST (immutable by content hash).
@@ -91,7 +91,7 @@ self.addEventListener("notificationclick", (e) => {
         } catch {
           /* some engines refuse focus outside a gesture; the message still lands */
         }
-        for (const c of mine) c.postMessage({ t: "agentus:notify-open", open });
+        for (const c of mine) c.postMessage({ t: "hermes-studio:notify-open", open });
         return;
       }
       if (open) await self.clients.openWindow(open);
@@ -110,7 +110,7 @@ self.addEventListener("notificationclick", (e) => {
 self.addEventListener("push", (e) => {
   let data = {};
   if (e.data) {
-    try { data = e.data.json(); } catch { data = { title: "Agentus", body: e.data.text() }; }
+    try { data = e.data.json(); } catch { data = { title: "Hermes Studio", body: e.data.text() }; }
   }
 
   // A dismiss is not a notification: it takes a stale card OFF the lock screen. `approval` cards are
@@ -125,7 +125,7 @@ self.addEventListener("push", (e) => {
     return;
   }
 
-  const title = typeof data.title === "string" && data.title ? data.title : "Agentus";
+  const title = typeof data.title === "string" && data.title ? data.title : "Hermes Studio";
   e.waitUntil(
     self.registration.showNotification(title, {
       body: typeof data.body === "string" ? data.body : "",

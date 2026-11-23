@@ -1,5 +1,5 @@
 // The instance's own name (issue #19): one person runs several cockpits, and every tab + every
-// home-screen icon used to say "Agentus".
+// home-screen icon used to say "Hermes Studio".
 //
 // Two servers are started from THIS tree on spare ports — one with `AGENTUS_TITLE` unset, one with
 // it set — and the running process is asked for the two bodies that carry the name. Nothing is
@@ -56,7 +56,7 @@ const get = async (port, p) => {
 };
 
 const PLAIN = 8913, NAMED = 8914;
-const NAME = "Agentus（pre-betabox）";
+const NAME = "Hermes Studio（pre-betabox）";
 const weird = { AGENTUS_TITLE: "<b>x</b> & co" };
 const WEIRD_PORT = 8915;
 
@@ -66,8 +66,8 @@ const c = await start(WEIRD_PORT, weird);
 try {
   // ---- unset: the built file is served, unchanged ----
   const plainHtml = await get(PLAIN, "/");
-  check("no AGENTUS_TITLE → the tab still says Agentus",
-    /<title>Agentus<\/title>/i.test(plainHtml.body), (plainHtml.body.match(/<title>[^<]*<\/title>/i) ?? [""])[0]);
+  check("no AGENTUS_TITLE → the tab still says Hermes Studio",
+    /<title>Hermes Studio<\/title>/i.test(plainHtml.body), (plainHtml.body.match(/<title>[^<]*<\/title>/i) ?? [""])[0]);
   // ---- named: both surfaces follow ----
   const namedHtml = await get(NAMED, "/");
   check("AGENTUS_TITLE → the tab title is the instance name",

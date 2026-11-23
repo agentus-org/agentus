@@ -1,18 +1,18 @@
 ---
-name: agentus-cockpit
-description: "Use when you need to see other sessions in the Agentus cockpit — their state, transcript, or plan — or to hand a message to one of them. Runs as a CLI; read this before your first call."
-author: Agentus
+name: hermes-studio-cockpit
+description: "Use when you need to see other sessions in the Hermes Studio cockpit — their state, transcript, or plan — or to hand a message to one of them. Runs as a CLI; read this before your first call."
+author: Hermes Studio
 license: MIT
 version: 1.0.0
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [agentus, cockpit, cli, cross-session]
+    tags: [hermes-studio, cockpit, cli, cross-session]
 ---
 
-# The cockpit CLI (`agentus cockpit`)
+# The cockpit CLI (`hermes-studio cockpit`)
 
-You are running inside an Agentus session, which means there is a cockpit around you: the operator's
+You are running inside an Hermes Studio session, which means there is a cockpit around you: the operator's
 screen with other sessions on it. This skill is how you look at that cockpit from the inside —
 read-only, plus one gated write.
 
@@ -27,7 +27,7 @@ is right.
 [ -n "$AGENTUS_COCKPIT_BIN" ] && echo "yes: $AGENTUS_COCKPIT_BIN"
 ```
 
-It points at the `agentus` launcher itself, so a call always reads `"$AGENTUS_COCKPIT_BIN" session
+It points at the `hermes-studio` launcher itself, so a call always reads `"$AGENTUS_COCKPIT_BIN" session
 <verb>`. If the variable is empty you are not in a cockpit session (a plain terminal, a cron job,
 another agent's sub-shell) — then this skill does not apply: keep your own notes and carry on. Do not
 guess at a path or hunt for the cockpit's port, and do not try to assemble the endpoint/token by hand;
@@ -237,7 +237,7 @@ closed.
 
 Two different windows onto conversations, and mixing them up produces confident wrong answers:
 
-| | `agentus session …` (here) | `hermes sessions …` / your own session search |
+| | `hermes-studio session …` (here) | `hermes sessions …` / your own session search |
 |---|---|---|
 | store | the COCKPIT's `sessions` table (`AGENTUS_DATA`) | `$HERMES_HOME/state.db` |
 | scope | sessions this cockpit created and shows | EVERY session in that home — CLI chats, Studio, the gateway, cron |
@@ -249,6 +249,6 @@ cockpit session is invisible to you by design. The bridge between the two is the
 `acpSessionId` (the Hermes-side id) — ask the operator if you need it; do not go reading their
 `state.db` on your own.
 
-Renaming is the same story in miniature: `agentus session rename` changes the name the RAIL shows and
+Renaming is the same story in miniature: `hermes-studio session rename` changes the name the RAIL shows and
 records that you did it (`titleBy`), while `hermes sessions rename` changes the name in `state.db`.
 They will drift, by design — one writer per store.

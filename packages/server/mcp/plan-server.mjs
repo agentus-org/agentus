@@ -38,7 +38,7 @@ const TOOLS = [
     description:
       "Track a plan for multi-step work (3+ steps), and update it as you go. Call this at the START " +
       "of any multi-step task and again each time a step's status changes — a plan that is not " +
-      "updated is a plan that lies. This is the step list the operator watches in the Agentus " +
+      "updated is a plan that lies. This is the step list the operator watches in the Hermes Studio " +
       "cockpit, one progress dot per step. PREFER THIS over any checklist/todo tool of your own: " +
       "this list is the one the cockpit DISPLAYS, and it survives your restarts, while a built-in " +
       "task list dies with your process (the cockpit does not read it and will not show it). " +
@@ -94,7 +94,7 @@ async function callCockpit(op, payload) {
   if (!ENDPOINT || !TOKEN) {
     throw new Error(
       "this plan tool was started without AGENTUS_PLAN_ENDPOINT/AGENTUS_PLAN_TOKEN — it only works " +
-        "inside an Agentus session; keep your own todo list instead",
+        "inside an Hermes Studio session; keep your own todo list instead",
     );
   }
   const res = await fetch(`${ENDPOINT}/api/plan/mcp`, {

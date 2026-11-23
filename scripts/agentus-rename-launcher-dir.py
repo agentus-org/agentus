@@ -22,8 +22,8 @@ def convert(text: str) -> str:
     t = text.replace("worktrees/agentslot", PH)          # protect: worktree dirs keep their names
     t = t.replace("cache/agentslot", "cache/agentus")    # the launcher dir's own path
     t = t.replace("AGENTSLOT_", "AGENTUS_")
-    t = t.replace("AgentSlot", "Agentus")
-    t = t.replace("agentslot", "agentus")
+    t = t.replace("AgentSlot", "Hermes Studio")
+    t = t.replace("agentslot", "hermes-studio")
     return t.replace(PH, "worktrees/agentslot")
 
 

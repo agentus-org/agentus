@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build every Agentus brand asset from the master logo PNG.
+"""Build every Hermes Studio brand asset from the master logo PNG.
 
 Source of truth
 ---------------
-assets/logo/source/agentus-logo-source.png — the AI-generated master, kept verbatim so the
+assets/logo/source/hermes-studio-logo-source.png — the AI-generated master, kept verbatim so the
 whole pipeline below is reproducible. Nothing downstream is hand-edited: change the master,
 rerun, get new assets.
 
@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     sys.exit("needs pillow + numpy:  python3 -m venv .venv && .venv/bin/pip install pillow numpy")
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "assets/logo/source/agentus-logo-source.png"
+SRC = ROOT / "assets/logo/source/hermes-studio-logo-source.png"
 OUT = ROOT / "assets/logo"
 WEB_ICONS = ROOT / "packages/web/public/icons"
 WEB_PUBLIC = ROOT / "packages/web/public"
@@ -216,22 +216,22 @@ def main() -> int:
     word_vb = (word_bbox[0], word_bbox[1], word_bbox[2] - word_bbox[0], word_bbox[3] - word_bbox[1])
     lock_vb = (lock_bbox[0], lock_bbox[1], lock_bbox[2] - lock_bbox[0], lock_bbox[3] - lock_bbox[1])
     files = {
-        "agentus-icon.svg": svg_doc(icon_vb, icon_body),
-        "agentus-wordmark.svg": svg_doc(word_vb, word_body),
-        "agentus-logo.svg": svg_doc(lock_vb, icon_body + "\n" + word_body),
+        "hermes-studio-icon.svg": svg_doc(icon_vb, icon_body),
+        "hermes-studio-wordmark.svg": svg_doc(word_vb, word_body),
+        "hermes-studio-logo.svg": svg_doc(lock_vb, icon_body + "\n" + word_body),
     }
 
     # ── 3. every raster the web UI and the app need ───────────────────────────────────────
-    icon_svg = files["agentus-icon.svg"]
-    lock_svg = files["agentus-logo.svg"]
+    icon_svg = files["hermes-studio-icon.svg"]
+    lock_svg = files["hermes-studio-logo.svg"]
     if not check_only:
         for name, text in files.items():
             (OUT / name).write_text(text)
 
         # web: transparent PNG set + lockup for docs/README
         for px in (1024, 512, 256, 192, 180, 96, 48, 32, 16):
-            raster(icon_svg, OUT / f"agentus-icon-{px}.png", px)
-        raster(lock_svg, OUT / "agentus-lockup-1024.png", 1024)
+            raster(icon_svg, OUT / f"hermes-studio-icon-{px}.png", px)
+        raster(lock_svg, OUT / "hermes-studio-lockup-1024.png", 1024)
         # maskable: full-bleed brand field, mark inside the 60% safe zone
         small = centered_square(icon_bbox, fill=0.60)
         mask_body = (
@@ -241,24 +241,24 @@ def main() -> int:
             f'translate({-small[0] - small[2] / 2:.1f},{-small[1] - small[3] / 2:.1f})">'
             + icon_body + '</g>'
         )
-        raster(svg_doc(icon_vb, mask_body), OUT / "agentus-icon-maskable-512.png", 512)
+        raster(svg_doc(icon_vb, mask_body), OUT / "hermes-studio-icon-maskable-512.png", 512)
 
         # web: the served icons (same filenames the manifest already points at)
         WEB_ICONS.mkdir(parents=True, exist_ok=True)
-        (WEB_ICONS / "agentus-icon.svg").write_text(icon_svg)
+        (WEB_ICONS / "hermes-studio-icon.svg").write_text(icon_svg)
         # dark surfaces need a lighter mark — same paths, the dark-theme inks. The UI picks
         # between the two by resolved theme; a single <img> cannot recolour itself.
         inverse = icon_svg.replace(INK, INK_DARK).replace(ACCENT, ACCENT_DARK)
-        (WEB_ICONS / "agentus-icon-inverse.svg").write_text(inverse)
-        (OUT / "agentus-icon-inverse.svg").write_text(inverse)
+        (WEB_ICONS / "hermes-studio-icon-inverse.svg").write_text(inverse)
+        (OUT / "hermes-studio-icon-inverse.svg").write_text(inverse)
         # The UI wants the mark hugging its own box: the icon files are square-padded for
         # favicon/manifest, which would leave a header mark at half height in its <img>.
         mark_vb = (icon_bbox[0] - 8, icon_bbox[1] - 8,
                    icon_bbox[2] - icon_bbox[0] + 16, icon_bbox[3] - icon_bbox[1] + 16)
         mark_svg = svg_doc(mark_vb, icon_body)
-        (WEB_ICONS / "agentus-mark.svg").write_text(mark_svg)
-        (WEB_ICONS / "agentus-mark-inverse.svg").write_text(mark_svg.replace(INK, INK_DARK).replace(ACCENT, ACCENT_DARK))
-        (OUT / "agentus-mark.svg").write_text(mark_svg)
+        (WEB_ICONS / "hermes-studio-mark.svg").write_text(mark_svg)
+        (WEB_ICONS / "hermes-studio-mark-inverse.svg").write_text(mark_svg.replace(INK, INK_DARK).replace(ACCENT, ACCENT_DARK))
+        (OUT / "hermes-studio-mark.svg").write_text(mark_svg)
         raster(icon_svg, WEB_ICONS / "icon-192.png", 192)
         raster(icon_svg, WEB_ICONS / "icon-512.png", 512)
         raster(svg_doc(icon_vb, mask_body), WEB_ICONS / "icon-maskable-512.png", 512)
@@ -319,7 +319,7 @@ def main() -> int:
         drawable.mkdir(parents=True, exist_ok=True)
         (drawable / "ic_notify.xml").write_text(
             '<?xml version="1.0" encoding="utf-8"?>\n'
-            '<!-- The Agentus mark as a monochrome notification glyph (24dp, white on clear).\n'
+            '<!-- The Hermes Studio mark as a monochrome notification glyph (24dp, white on clear).\n'
             '     Generated by scripts/build-brand-assets.py — do not hand-edit. -->\n'
             '<vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
             '    android:width="24dp"\n    android:height="24dp"\n'
@@ -333,12 +333,12 @@ def main() -> int:
     for name in files:
         report(name, OUT / name)
     print("\nweb icons")
-    for name in ("agentus-icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png",
+    for name in ("hermes-studio-icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png",
                  "apple-touch-icon-180.png", "favicon.ico"):
         report(name, WEB_ICONS / name)
     print("\nmaster PNG set")
     for px in (1024, 512, 192, 32):
-        report(f"agentus-icon-{px}.png", OUT / f"agentus-icon-{px}.png")
+        report(f"hermes-studio-icon-{px}.png", OUT / f"hermes-studio-icon-{px}.png")
     print("\nandroid")
     for name, factor in densities.items():
         report(f"mipmap-{name}/ic_launcher.png", ANDROID / f"mipmap-{name}/ic_launcher.png")

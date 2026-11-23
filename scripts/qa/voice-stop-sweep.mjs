@@ -6,7 +6,7 @@
 // speak()'s catch treated every rejection as "the server voice failed" — so the documented
 // browser fallback ran on a deliberate stop.
 //
-// Self-contained: spawns a stub TTS upstream (returns a real WAV) plus its own Agentus
+// Self-contained: spawns a stub TTS upstream (returns a real WAV) plus its own Hermes Studio
 // server pointed at it, then drives the user's Edge over raw CDP.
 //   node scripts/qa/voice-stop-sweep.mjs
 import { spawn } from "node:child_process";
@@ -87,7 +87,7 @@ const stub = http.createServer((req, res) => {
 await new Promise((r) => stub.listen(0, "127.0.0.1", r));
 const stubPort = stub.address().port;
 
-// ------------------------------------------------------------------ Agentus server
+// ------------------------------------------------------------------ Hermes Studio server
 const freePort = () => new Promise((res, rej) => {
   const s = createTcp();
   s.on("error", rej);

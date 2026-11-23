@@ -1,18 +1,18 @@
 {
-  "name": "agentus",
+  "name": "hermes-studio",
   "version": "0.24.1",
   "description": "Multi-session web cockpit for ACP-speaking coding agents (Qoder CLI / Hermes). UI has no intelligence — the agent lives in spawned CLI subprocesses.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentus-org/agentus.git"
+    "url": "git+https://github.com/hermes-studio-org/hermes-studio.git"
   },
-  "homepage": "https://github.com/agentus-org/agentus#readme",
+  "homepage": "https://github.com/hermes-studio-org/hermes-studio#readme",
   "bugs": {
-    "url": "https://github.com/agentus-org/agentus/issues"
+    "url": "https://github.com/hermes-studio-org/hermes-studio/issues"
   },
   "bin": {
-    "agentus": "bin/agentus.mjs"
+    "hermes-studio": "bin/hermes-studio.mjs"
   },
   "files": [
     "skills/",
@@ -37,16 +37,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @agentus/server & npm run dev -w @agentus/web & wait",
-    "dev:server": "npm run dev -w @agentus/server",
-    "dev:web": "npm run dev -w @agentus/web",
+    "dev": "npm run dev -w @hermes-studio/server & npm run dev -w @hermes-studio/web & wait",
+    "dev:server": "npm run dev -w @hermes-studio/server",
+    "dev:web": "npm run dev -w @hermes-studio/web",
     "build": "npm run build -ws --if-present",
     "typecheck": "npm run typecheck -ws --if-present",
     "lint": "npm run lint -ws --if-present",
     "test": "npm run test -ws --if-present",
     "start": "bash scripts/start.sh",
-    "agentus": "node bin/agentus.mjs",
-    "prepack": "npm run build -w @agentus/web",
+    "hermes-studio": "node bin/hermes-studio.mjs",
+    "prepack": "npm run build -w @hermes-studio/web",
     "package-smoke": "node scripts/qa/package-install.mjs",
     "smoke": "node scripts/smoke.mjs",
     "backend-smoke": "node scripts/backend-registry-smoke.mjs",

@@ -2,7 +2,7 @@
 //
 // Why this exists: the tarball is the artifact users get, and every failure mode here is
 // invisible from inside the repo. It packed a web bundle that was never built, shipped a
-// server that needs tsx at runtime while tsx was a devDependency, resolved `@agentus/shared`
+// server that needs tsx at runtime while tsx was a devDependency, resolved `@hermes-studio/shared`
 // through a workspace link that a tarball does not have, or wrote its state into
 // node_modules where the next upgrade deletes it. A green repo (typecheck + the in-repo
 // smokes) proves none of that.
@@ -79,7 +79,7 @@ check("the tarball ships the server sources", has(/package\/packages\/server\/sr
 check("the tarball ships packages/server/package.json (type: module)", has(/package\/packages\/server\/package\.json$/));
 check("the tarball ships the mock agent and the plan MCP server",
   has(/package\/packages\/server\/mock\/agent\.mjs$/) && has(/package\/packages\/server\/mcp\/plan-server\.mjs$/));
-check("the tarball ships the CLI entry", has(/package\/bin\/agentus\.mjs$/));
+check("the tarball ships the CLI entry", has(/package\/bin\/hermes-studio\.mjs$/));
 check("the tarball carries no node_modules", !has(/node_modules\//));
 
 // ── 2. install into an isolated prefix ─────────────────────────────────────────────────
@@ -87,9 +87,9 @@ const installed = run("npm", ["install", "-g", "--prefix", prefix, tarball], {
   env: { ...process.env, HOME: fakeHome, npm_config_cache: path.join(scratch, "npmcache") },
 });
 check("the tarball installs globally", installed.status === 0, String(installed.stderr).split("\n").slice(-2).join(" "));
-const pkgDir = path.join(prefix, "lib/node_modules/agentus");
-const bin = path.join(prefix, "bin/agentus");
-check("the install exposes an `agentus` command", fs.existsSync(bin));
+const pkgDir = path.join(prefix, "lib/node_modules/hermes-studio");
+const bin = path.join(prefix, "bin/hermes-studio");
+check("the install exposes an `hermes-studio` command", fs.existsSync(bin));
 
 // ── 3. boot it with a scrubbed environment ─────────────────────────────────────────────
 // `env -i` equivalent: the agent/CI shell may carry a live instance's AGENTUS_* variables,

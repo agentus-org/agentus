@@ -1,10 +1,10 @@
-# Developing Agentus
+# Developing Hermes Studio
 
-This is the in-repo manual for working on Agentus: how to run a development instance,
+This is the in-repo manual for working on Hermes Studio: how to run a development instance,
 how to prove a change works, how to release it to the live instance, and how to recover
 when it breaks.
 
-**What Agentus is.** A multi-session web cockpit for ACP-speaking coding agents
+**What Hermes Studio is.** A multi-session web cockpit for ACP-speaking coding agents
 (`hermes acp` / `qodercli --acp`). The server spawns one child process per session and
 relays ACP JSON-RPC between the browser and that agent. The UI holds no intelligence:
 gate access → spawn → relay → stream → persist → surface permission cards. State lives in

@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# Agentus
+# Hermes Studio
 
 **让 agent 待在正轨上。** 一个面向会说 ACP 的编码 agent 的多会话 Web 驾驶舱：在浏览器里开多个会话，
 每个会话背后是一个真实的 `hermes acp` / `qodercli --acp` 子进程，你可以从任何设备驱动它们。
@@ -10,7 +10,7 @@
 > 抛出来。推理全在 CLI 进程里。
 
 ```
-[browser React SPA]  ──HTTP + WS──▶  [Agentus server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
+[browser React SPA]  ──HTTP + WS──▶  [Hermes Studio server]  ──ACP/JSON-RPC over stdio──▶  [hermes acp | qodercli --acp]
                                          · session registry (who runs, where, pid)
                                          · ACP client (ClientSideConnection)
                                          · event fan-out → WS, commands → ACP
@@ -21,7 +21,7 @@
 
 ```bash
 # 对外一条命令 —— 用 npm 上发布的包（Node >= 22.5，存储用 node:sqlite）
-npx agentus                      # 或者 npm i -g agentus 然后直接跑 `agentus`
+npx hermes-studio                      # 或者 npm i -g hermes-studio 然后直接跑 `hermes-studio`
 # 打开 http://localhost:8788，用 admin / 123456 登录（见下面「登录」），
 # 然后「+ 新建会话」，选一个后端和一个工作目录
 ```
@@ -29,13 +29,13 @@ npx agentus                      # 或者 npm i -g agentus 然后直接跑 `agen
 也可以直接从仓里跑安装脚本 —— 同一件事，多了 Node 版本检查和装到用户目录的回退（**绝不**用 `sudo`）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
 ```
 
 完整指南 —— 安装、参数、所有环境变量、登录、TLS、手机桥：
 [`docs/installation.zh-CN.md`](docs/installation.zh-CN.md) · [English](docs/installation.md)。
 
-`npx agentus` 在前台运行驾驶舱 —— Ctrl-C 停掉它，它会把 agent 子进程一起带走。参数：`--port 9000`、
+`npx hermes-studio` 在前台运行驾驶舱 —— Ctrl-C 停掉它，它会把 agent 子进程一起带走。参数：`--port 9000`、
 `--data <dir>`、`--open`（起来后自动打开浏览器）、`--where`（打印服务端实际解析出的路径 —— 数据目录、
 web bundle、配套 APK —— 然后直接退出，不启动任何东西）。
 
@@ -61,7 +61,7 @@ hermes gateway install --force --start-now   # 不做：任何会话都起不来
 hermes sessions adopt                        # 不做：老会话在驾驶舱里消失
 ```
 
-不做第一条，每个槽位都顶 `Gateway inaccessible: service_identity_unverified`（Agentus 只显示 `Internal error`）；
+不做第一条，每个槽位都顶 `Gateway inaccessible: service_identity_unverified`（Hermes Studio 只显示 `Internal error`）；
 不做第二条，你之前的对话还躺在库里但没有 owner，目录会直接略掉它们。两条都不碰 transcript，且都可重复执行 ——
 详见 [§ 从跑过 Hermes 0.22 或更早的构建升上来](docs/installation.zh-CN.md#从跑过-hermes-022-或更早的构建升上来)。
 
@@ -71,14 +71,14 @@ hermes sessions adopt                        # 不做：老会话在驾驶舱里
 ### 从 checkout 安装（开发）
 
 ```bash
-git clone https://github.com/agentus-org/agentus.git
-cd agentus
+git clone https://github.com/hermes-studio-org/hermes-studio.git
+cd hermes-studio
 npm start                     # installs if needed, builds, serves (scripts/start.sh)
-npm run dev -w @agentus/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
-npm run agentus               # the same CLI as `npx agentus`, straight from the checkout
+npm run dev -w @hermes-studio/web   # front-end hot reload (Vite :5173, host: true → reachable over LAN)
+npm run hermes-studio               # the same CLI as `npx hermes-studio`, straight from the checkout
 ```
 
-**要改 Agentus 本身？** 自举开发手册在 [`docs/dev/`](docs/dev/README.md)：怎么在 live 旁边跑一个 dev 实例、
+**要改 Hermes Studio 本身？** 自举开发手册在 [`docs/dev/`](docs/dev/README.md)：怎么在 live 旁边跑一个 dev 实例、
 怎么用浏览器 sweep 证明改动有效、怎么发到 live、live 坏了怎么救。既是给人看的，也是给「丢给 coding agent
 自己开发」用的。
 
@@ -98,7 +98,7 @@ npm run agentus               # the same CLI as `npx agentus`, straight from the
 | 3 | `<repo>/packages/server/.data` —— 早于这套布局的老 checkout |
 
 规则 3 不是锦上添花：一个悄悄换了目录的安装会以空的会话列表启动，那读起来完全就是「我的会话没了」。
-要迁移这样的 checkout，用 `AGENTUS_DATA=~/.agentus` 启动一次即可。`agentus --where` 会打印服务端解析
+要迁移这样的 checkout，用 `AGENTUS_DATA=~/.agentus` 启动一次即可。`hermes-studio --where` 会打印服务端解析
 出的结果，而不用你自己猜。
 
 ### 后端
@@ -225,7 +225,7 @@ cookie 用 `HttpOnly` 而不是 `localStorage` 里的 token，并且它会顺带
 #### TLS：在前置层终结，而不是在进程内
 
 纯 TCP 隧道（SakuraFrp、safe-nat、`ssh -L`、大多数 frp 配置）只转发字节 —— 它**不会**替你终结 TLS。
-把它指向 `:8788`，运维者的密码和 session cookie 就会以明文穿过互联网。所以要在 Agentus **前面**终结
+把它指向 `:8788`，运维者的密码和 session cookie 就会以明文穿过互联网。所以要在 Hermes Studio **前面**终结
 TLS：放一层反代（Caddy / nginx），或者用自带 `public_tls` 的隧道；本进程自己只讲纯 HTTP：
 
 | 端口 | 讲什么 | 给谁 |
@@ -260,7 +260,7 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 ## 驾驶舱 CLI（给里面的 agent 用）
 
 槽位里的 agent 是瞎子：别的会话在干什么、你让它改什么，都在驾驶舱里，不在它的 prompt 里。
-`agentus cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
+`hermes-studio cockpit` 是唯一一条让 agent 读到这些的通道 —— 以及（你允许时）把一句话传给另一个会话：
 
 ```bash
 "$AGENTUS_COCKPIT_BIN" capabilities                     # 契约本身，自述（先跑这个）
@@ -274,18 +274,18 @@ Hermes 内置的 SQLite 3.50.4（落在 WAL-reset 区间内）在两个写入者
 "$AGENTUS_COCKPIT_BIN" skill                            # 这份 CLI 的说明书，直接从包里取
 ```
 
-形状是「名词 + 动词」（`agentus session send <id> …`），因为这些动作都作用在同一个对象上；
+形状是「名词 + 动词」（`hermes-studio session send <id> …`），因为这些动作都作用在同一个对象上；
 会话 id 是位置参数，选项才用 `--`。
 
 身份由驾驶舱在 spawn 时注入（`AGENTUS_COCKPIT_BIN/_ENDPOINT/_TOKEN/_SESSION`），所以 CLI
 不要参数、不要端口、不要配置，token 也不会出现在命令行上。`AGENTUS_COCKPIT_BIN` 就是同一个
-`agentus` 启动器 —— 命令只有一个、名字也只有一个，你在自己 shell 里敲 `agentus cockpit …` 是同一件事。互发消息（**设置 → 驾驶舱互发消息**，
+`hermes-studio` 启动器 —— 命令只有一个、名字也只有一个，你在自己 shell 里敲 `hermes-studio cockpit …` 是同一件事。互发消息（**设置 → 驾驶舱互发消息**，
 默认关闭）里的「已送达」只意味着对方 agent **收到**并开始一轮，绝不等于它读懂了或同意了；
 对方正在跑回合时会拒绝并回 `target_busy`，那条消息哪里都没进。
 
-说明书就是 `skills/agentus-cockpit/SKILL.md`，随包发布。有原生技能目录的后端（Hermes：
+说明书就是 `skills/hermes-studio-cockpit/SKILL.md`，随包发布。有原生技能目录的后端（Hermes：
 `$HERMES_HOME/skills`）在 spawn 时装进去 —— 按内容幂等，所以新版本会刷新、重复 spawn 不产生写盘；
-没有原生目录的后端（Qoder）只在计划提示里拿一行，需要时用 `agentus cockpit skill` 读同一份文件，
+没有原生目录的后端（Qoder）只在计划提示里拿一行，需要时用 `hermes-studio cockpit skill` 读同一份文件，
 这也正是它永远不被塞进 prompt 的原因。
 
 ## 目前能做什么（M0 → M4）

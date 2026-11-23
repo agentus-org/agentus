@@ -10,4 +10,4 @@
 - Install: `npx agentus@0.23.3` or `npm i -g agentus@0.23.3`.
 - Fork build: this release uses the existing fork tag `agentus/v0.23.0/merge-20261114-2214` — there is no new Hermes fork build in this version; all changes are in the cockpit.
 - No restart required: this release only changes `packages/web`; the running `:8788` process needs no restart. Hard-refresh the page (Cmd+Shift+R) to pick up the new bundle.
-- Full changelog: https://github.com/agentus-org/agentus/compare/v0.23.2...v0.23.3
+- Full changelog: https://github.com/hermes-studio-org/hermes-studio/compare/v0.23.2...v0.23.3

@@ -1,7 +1,7 @@
 /**
  * 跨工作空间转交（输入框里的 `@`）。
  *
- * 传输层早就有了：`agentus session send <id> <text>` 能把一句话投进另一个会话。缺的是
+ * 传输层早就有了：`hermes-studio session send <id> <text>` 能把一句话投进另一个会话。缺的是
  * **入口**和**信封** —— 手工复制会话 ID、切工作空间、再打一段说明，是这个功能最贵的部分。
  *
  * 信封的取舍是这个功能的核心，写在这里以免以后被"顺手改得更贴心"：
@@ -31,8 +31,8 @@ export interface BridgeEnvelopeInput {
 }
 
 /** 命令里用的可执行名：会话内 `$AGENTUS_COCKPIT_BIN` 是 cockpit 交给 agent 的那份 CLI 的绝对路径，
- *  会话外通常就是 `agentus`。两条都写上，因为目标 agent 可能两种环境都待过。 */
-const CLI = "agentus";
+ *  会话外通常就是 `hermes-studio`。两条都写上，因为目标 agent 可能两种环境都待过。 */
+const CLI = "hermes-studio";
 
 /**
  * 生成注入给目标会话的正文。

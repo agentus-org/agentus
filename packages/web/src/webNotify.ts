@@ -494,7 +494,7 @@ export function installNoticeBridge(): void {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
   navigator.serviceWorker.addEventListener("message", (ev: MessageEvent) => {
     const data = ev.data as { t?: string; open?: string | null } | null;
-    if (data?.t === "agentus:notify-open") openNotice(data.open ?? null);
+    if (data?.t === "hermes-studio:notify-open") openNotice(data.open ?? null);
   });
 }
 

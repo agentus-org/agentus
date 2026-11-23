@@ -14,7 +14,7 @@
  *    `$HERMES_HOME/skills`). We install into that dir at spawn.
  *  · no `skillsDir` — nothing native exists (Qoder ships `--plugin-dir`/`AGENTS.md`, not skill
  *    folders). The agent gets one line in the plan reminder and pulls the document from the CLI
- *    itself (`agentus cockpit skill`), which is the same bytes with no prompt cost at all.
+ *    itself (`hermes-studio cockpit skill`), which is the same bytes with no prompt cost at all.
  *
  * WHAT THIS IS NOT
  * Not a package manager and not a syncer. It writes the cockpit's OWN skill directories, compares

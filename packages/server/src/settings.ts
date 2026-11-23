@@ -194,7 +194,7 @@ export const INTERRUPT_MODES: InterruptMode[] = ["voice", "button", "keyword"];
 
 /** How the cockpit treats AGENT PROCESSES — as opposed to what a conversation contains. AionUi
  *  ships the same knob in 设置 → 系统 as 「Agent 空闲超时（分钟）」 (default 5, 1–60, step 5) with the
- *  honest description 「空闲超过该时长后自动终止 Agent 进程以释放内存」. Agentus keeps that meaning
+ *  honest description 「空闲超过该时长后自动终止 Agent 进程以释放内存」. Hermes Studio keeps that meaning
  *  and adds ONE thing AionUi does not have: 0 = 关闭. A cockpit deliberately left holding a
  *  long-running slot (a build, a tunnel watcher, a call) must be able to say "never reclaim this",
  *  and "set it to 60 and hope" is not the same statement. */
@@ -213,7 +213,7 @@ export interface AgentSettings {
    *  comes back to nothing running. 0 = 不过期. */
   warmTtlHours: number;
   /** 驾驶舱互发消息 (issue #15): may an agent hand a message to ANOTHER session through the cockpit
-   *  CLI (`agentus cockpit send`)? Off by default — two agents that can talk to each other without
+   *  CLI (`hermes-studio cockpit send`)? Off by default — two agents that can talk to each other without
    *  being asked are a loop generator, and the operator pays for those tokens. Reading the cockpit
    *  (`context`/`messages`/`plan`) is NOT gated: it cannot change anything, and it is what the
    *  工作播报 observer runs on. */
@@ -311,9 +311,9 @@ export const OBSERVER_PROMPT_DEFAULT = [
   "你是这个驾驶舱里一个会话的观察员，只负责这一个会话，别的会话一律不看。",
   "",
   "取数只用下面这些命令，不要跑 --help，不要跑 session list：",
-  "1. agentus session messages <id> --user --tail 5 —— 先读用户最后发的几条，这才决定「他要什么」；",
-  "2. agentus session messages <id> --tail 20 —— 再读最近的消息，看做到哪一步，只看尾部；",
-  "3. 需要状态或卡点时 agentus session show <id>。",
+  "1. hermes-studio session messages <id> --user --tail 5 —— 先读用户最后发的几条，这才决定「他要什么」；",
+  "2. hermes-studio session messages <id> --tail 20 —— 再读最近的消息，看做到哪一步，只看尾部；",
+  "3. 需要状态或卡点时 hermes-studio session show <id>。",
   "",
   "只陈述命令读到的事实，不猜、不补、不评价；读不到就当不知道。",
   "",
@@ -569,7 +569,7 @@ export function initSettings(dataDir: string, store: Store): Settings {
         stored.voice = fromFile.voice;
         stored.theme = fromFile.theme;
         stored.call = fromFile.call;
-        console.log(`[agentus] settings: imported ${legacyFile} into the store`);
+        console.log(`[hermes-studio] settings: imported ${legacyFile} into the store`);
       }
       fs.renameSync(legacyFile, `${legacyFile}.imported`);
     } catch { /* no legacy file: nothing to migrate */ }
@@ -712,7 +712,7 @@ function persist(): void {
     db.setSetting("summary", cache.summary);
     db.setSetting("modelUsage", cache.modelUsage);
   } catch (e) {
-    console.error(`[agentus] cannot write settings: ${(e as Error).message}`);
+    console.error(`[hermes-studio] cannot write settings: ${(e as Error).message}`);
   }
 }
 
@@ -882,7 +882,7 @@ export function saveCall(patch: Record<string, unknown>): Settings {
     if (kept.length > WAKE_MAX) {
       // Truncated rather than refused, but never silently: one line in the log is the difference
       // between 「我设过这个词」 and 「它自己变短了」 when a script writes 40 characters.
-      console.warn(`[agentus] wakePhrase truncated: ${kept.length} → ${WAKE_MAX} characters`);
+      console.warn(`[hermes-studio] wakePhrase truncated: ${kept.length} → ${WAKE_MAX} characters`);
     }
     c.wakePhrase = kept.slice(0, WAKE_MAX).join("");
   }

@@ -1,6 +1,6 @@
 // Where the cockpit's skill lives for an agent — and, more importantly, where it does NOT.
 //
-// Issue #15 shipped by copying `skills/agentus-cockpit/` into `<HERMES_HOME>/skills` at every spawn.
+// Issue #15 shipped by copying `skills/hermes-studio-cockpit/` into `<HERMES_HOME>/skills` at every spawn.
 // Correct code, wrong place: that home is the operator's REAL one, shared with Studio, cron and every
 // terminal `hermes`, so the skill appeared in sessions that have nothing to do with the cockpit (and
 // went stale there between releases). Hermes has a per-process channel — `skills.external_dirs`'s
@@ -48,8 +48,8 @@ const envOf = (pid) => {
 };
 
 // The operator's real home is whatever the slot was spawned with; on this box that is `~/.hermes`.
-const sharedSkill = path.join(os.homedir(), ".hermes/skills/agentus-cockpit");
-const pkgDoc = path.join(REPO, "skills/agentus-cockpit/SKILL.md");
+const sharedSkill = path.join(os.homedir(), ".hermes/skills/hermes-studio-cockpit");
+const pkgDoc = path.join(REPO, "skills/hermes-studio-cockpit/SKILL.md");
 const pkgBytes = fs.readFileSync(pkgDoc, "utf8");
 // A leftover from the release that still copied. Removing it is the only way to tell "we no longer
 // write here" from "we wrote the same bytes again" — and if it does not belong to us, leave it alone.
@@ -84,7 +84,7 @@ try {
   // twin, nothing to go stale and nothing for Studio's sessions to trip over.
   check("nothing was written into the shared home", !fs.existsSync(sharedSkill), sharedSkill);
   const rootDoc = env.HERMES_EXTERNAL_SKILLS_DIRS
-    ? path.join(env.HERMES_EXTERNAL_SKILLS_DIRS, "agentus-cockpit/SKILL.md") : "";
+    ? path.join(env.HERMES_EXTERNAL_SKILLS_DIRS, "hermes-studio-cockpit/SKILL.md") : "";
   check("the root the agent was given holds the current document",
     Boolean(rootDoc) && fs.existsSync(rootDoc) && fs.readFileSync(rootDoc, "utf8") === pkgBytes,
     `${rootDoc} (${pkgBytes.length} bytes)`);

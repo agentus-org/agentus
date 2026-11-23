@@ -3,7 +3,7 @@
 //
 // Everything here goes through the REAL path: a mock session is spawned by the real server, its
 // `AGENTUS_COCKPIT_*` identity is read off the child process (which is exactly what an agent would
-// find in its own environment), and `bin/agentus-cockpit.mjs` is executed as a separate process.
+// find in its own environment), and `bin/hermes-studio-cockpit.mjs` is executed as a separate process.
 // Nothing is stubbed, so a broken token, a missing route or a wrong envelope all show up.
 //
 //   AGENTUS_BASE=http://127.0.0.1:8901 AGENTUS_DATA=/tmp/agentus-qa-account node scripts/qa/cockpit-cli-sweep.mjs
@@ -14,9 +14,9 @@ import path from "node:path";
 const BASE = process.env.AGENTUS_BASE ?? "http://127.0.0.1:8901";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const DATA = process.env.AGENTUS_DATA ?? "/tmp/agentus-qa-account";
-// ONE command: the launcher. Everything goes through `agentus cockpit …`, exactly what an agent gets
+// ONE command: the launcher. Everything goes through `hermes-studio cockpit …`, exactly what an agent gets
 // in `$AGENTUS_COCKPIT_BIN` — there is no second binary to keep in sync (or to explain).
-const BIN = path.join(REPO, "bin/agentus.mjs");
+const BIN = path.join(REPO, "bin/hermes-studio.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const token = fs.readFileSync(path.join(DATA, "auth.token"), "utf8").trim();
@@ -118,7 +118,7 @@ const purge = async (id) => {
 {
   const onDisk = (fs.statSync(BIN).mode & 0o111) !== 0;
   check("the cockpit bin is executable on disk (issue #40)", onDisk, `mode=${(fs.statSync(BIN).mode & 0o777).toString(8)}`);
-  const blob = execFileSync("git", ["ls-files", "-s", "bin/agentus.mjs"], { cwd: REPO, encoding: "utf8" }).split(/\s+/)[0];
+  const blob = execFileSync("git", ["ls-files", "-s", "bin/hermes-studio.mjs"], { cwd: REPO, encoding: "utf8" }).split(/\s+/)[0];
   check("…and the git blob carries the exec bit, so a fresh clone runs", blob === "100755", blob);
   // Executed DIRECTLY (no `node` in front) — the shape the agent actually uses. The runtime markers go
   // first (#106): this harness runs inside an agent's turn, and 「missing identity is an agent」 is the
@@ -166,7 +166,7 @@ try {
   // ---- the skill document: the manual an agent reads on demand, not in every prompt ----
   const skillDoc = execFileSync(process.execPath, [BIN, "skill"], { cwd: REPO, encoding: "utf8" });
   check("`skill` serves the bundled document (issue: agents need the manual, not a paste)",
-    /^---\nname: agentus-cockpit\n/.test(skillDoc) && skillDoc.includes("delivered"), `${skillDoc.length} bytes`);
+    /^---\nname: hermes-studio-cockpit\n/.test(skillDoc) && skillDoc.includes("delivered"), `${skillDoc.length} bytes`);
   const skillPath = execFileSync(process.execPath, [BIN, "skill", "--path"], { cwd: REPO, encoding: "utf8" }).trim();
   check("…from a path inside this install, which is what a native-skill backend reads",
     fs.existsSync(skillPath) && fs.readFileSync(skillPath, "utf8") === skillDoc, skillPath);

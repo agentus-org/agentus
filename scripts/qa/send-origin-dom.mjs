@@ -19,7 +19,7 @@ const CDP = process.env.CDP_URL || "http://127.0.0.1:9222";
 const BASE = process.env.AGENTUS_BASE || "http://127.0.0.1:8901";
 const DATA = process.env.AGENTUS_DATA || "/tmp/agentus-qa-account";
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
-const BIN = path.join(REPO, "bin/agentus.mjs");
+const BIN = path.join(REPO, "bin/hermes-studio.mjs");
 const U = process.env.AGENTUS_USERNAME || "scratch";
 const P = process.env.AGENTUS_PASSWORD || "scratch-pass-1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

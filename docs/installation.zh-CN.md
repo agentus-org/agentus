@@ -1,8 +1,8 @@
-# 安装 Agentus
+# 安装 Hermes Studio
 
 [English](./installation.md) · [README](../README.md)
 
-Agentus 是面向「说 ACP 协议的编码 agent」的多会话 Web 驾驶舱。一个 npm 包（`agentus`）跑起一个
+Hermes Studio 是面向「说 ACP 协议的编码 agent」的多会话 Web 驾驶舱。一个 npm 包（`hermes-studio`）跑起一个
 Node 服务：它提供构建好的 React 单页应用，并按需把 agent CLI（`hermes acp` / `qodercli --acp`）
 作为子进程拉起。浏览器负责驾驶会话，推理始终留在 CLI 子进程里。
 
@@ -10,7 +10,7 @@ Node 服务：它提供构建好的 React 单页应用，并按需把 agent CLI�
 
 必须满足两条：
 
-- **Node >= 22.5。** 存储层用的是 `node:sqlite`，它在 22.5 才落地。版本不够时 Agentus 会直接拒绝
+- **Node >= 22.5。** 存储层用的是 `node:sqlite`，它在 22.5 才落地。版本不够时 Hermes Studio 会直接拒绝
   启动，并给出明确提示。
 - **PATH 上有一个 ACP agent CLI** —— `hermes acp` 或 `qodercli --acp`。这是 npm 唯一无法替你装的
   前置项。没有它，驾驶舱照样能跑、也能登录，只是没有后端可以开会话。
@@ -84,7 +84,7 @@ AGENTUS_HERMES_CMD=~/.local/bin/hermes-acp-src npm start
 ```
 
 `PYTHONPATH` 的作用是让这份 checkout **盖在**已安装的包前面，而解释器和依赖仍由装好的运行时提供 ——
-所以第 1 步不能省。验证槽位实际会跑什么（就是 Agentus 缺后端时提示的那条自检）：
+所以第 1 步不能省。验证槽位实际会跑什么（就是 Hermes Studio 缺后端时提示的那条自检）：
 
 ```bash
 PYTHONPATH=~/Project/hermes-agent hermes acp --check     # → Hermes ACP check OK
@@ -135,21 +135,21 @@ hermes gateway start
 ### 一条命令 —— 用 npm 上发布的包（对外）
 
 ```bash
-npx agentus                # 跑一次，不往全局装
-npm i -g agentus           # 或者装上，然后直接跑 `agentus`
+npx hermes-studio                # 跑一次，不往全局装
+npm i -g hermes-studio           # 或者装上，然后直接跑 `hermes-studio`
 ```
 
-`npx agentus` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
+`npx hermes-studio` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
 
 ### 一条命令 —— 仓里的安装脚本
 
 和上面同一件事，把检查与回退写在脚本里（**绝不**用 `sudo`）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
 ```
 
-安装脚本（`scripts/install.sh`）会检查 Node、用 npm 全局装上已发布的 `agentus` 包；如果全局目录
+安装脚本（`scripts/install.sh`）会检查 Node、用 npm 全局装上已发布的 `hermes-studio` 包；如果全局目录
 不可写，它会退回到用户级前缀（`~/.local`），**绝不**动 `sudo`。装完会打印启动命令和要打开的网址。
 除非你显式设置 `AGENTUS_ALLOW_ROOT=1`，它拒绝以 root 运行。
 
@@ -169,16 +169,16 @@ AGENTUS_VERSION=0.1.0 AGENTUS_INSTALL_DIR="$HOME/.local" \
   bash scripts/install.sh
 ```
 
-`npx agentus` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
+`npx hermes-studio` 在前台运行驾驶舱 —— Ctrl-C 即停，并且会把它拉起的 agent 子进程一并带走。
 
 ### 从源码（一份 checkout）
 
 ```bash
-git clone https://github.com/agentus-org/agentus.git
-cd agentus
+git clone https://github.com/hermes-studio-org/hermes-studio.git
+cd hermes-studio
 npm start                           # 需要时自动装依赖、构建、起服务（scripts/start.sh）
-npm run dev -w @agentus/web         # 前端热更新（Vite :5173，局域网可达）
-npm run agentus                     # 与 `npx agentus` 同一个 CLI，直接从 checkout 里跑
+npm run dev -w @hermes-studio/web         # 前端热更新（Vite :5173，局域网可达）
+npm run hermes-studio                     # 与 `npx hermes-studio` 同一个 CLI，直接从 checkout 里跑
 ```
 
 `npm start`（→ `scripts/start.sh`）会检查 Node 版本，`node_modules` 缺失时以
@@ -188,7 +188,7 @@ npm run agentus                     # 与 `npx agentus` 同一个 CLI，直接�
 ## 命令行
 
 ```
-agentus [options]
+hermes-studio [options]
 
   -p, --port <n>     监听端口                        (AGENTUS_PORT，默认 8788)
   -d, --data <dir>   状态目录（sqlite、登录、设置）
@@ -204,7 +204,7 @@ Node 版本 —— 然后退出，什么都不启动。它是「我的数据去�
 
 ## 首次运行
 
-1. 启动：`agentus`（或 `npx agentus`，或 checkout 里的 `npm start`）。
+1. 启动：`hermes-studio`（或 `npx hermes-studio`，或 checkout 里的 `npm start`）。
 2. 打开 **http://localhost:8788** 登录。默认凭据：
 
    ```
@@ -271,11 +271,11 @@ Node 版本 —— 然后退出，什么都不启动。它是「我的数据去�
 | 3 | `<repo>/packages/server/.data` —— 早于这套布局的既有 checkout |
 
 规则 3 的存在是为了让「悄悄换了目录」的安装不会以空的会话列表启动（那读起来就像是「我的会话
-都不见了」）。要迁移这样的 checkout，用 `AGENTUS_DATA=~/.agentus` 启动一次即可。`agentus --where`
+都不见了」）。要迁移这样的 checkout，用 `AGENTUS_DATA=~/.agentus` 启动一次即可。`hermes-studio --where`
 会打印服务端解析的结果，不用靠猜。
 
 任何东西都不会写进 `node_modules`：对已安装的包来说，`<pkg>/packages/server/.data` 会被下一次
-`npm i -g agentus` 删掉，连带记录和登录一起没了。
+`npm i -g hermes-studio` 删掉，连带记录和登录一起没了。
 
 ### 端口
 
@@ -292,10 +292,10 @@ Node 版本 —— 然后退出，什么都不启动。它是「我的数据去�
 `AGENTUS_IDE_UPSTREAM`，侧栏就会多出一个 `ide` tab：
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
-Agentus 不负责起它，而且它必须**只绑回环** + `--auth none` —— 驾驶舱的 cookie 是唯一的门。
+Hermes Studio 不负责起它，而且它必须**只绑回环** + `--auth none` —— 驾驶舱的 cookie 是唯一的门。
 启动形态、三条代理规则、六个会踩的坑：[Web IDE 集成](./web-ide-integration.zh-CN.md)。
 
 ### 登录
@@ -346,7 +346,7 @@ Agentus 不负责起它，而且它必须**只绑回环** + `--auth none` ——
 
 ## 作为服务常驻
 
-Agentus 默认在前台跑；一个服务单元能让它跨登录、跨重启常驻。把单元指向你平时用的同一个
+Hermes Studio 默认在前台跑；一个服务单元能让它跨登录、跨重启常驻。把单元指向你平时用的同一个
 `AGENTUS_DATA`，否则驾驶舱会带着另一份会话列表起来。
 
 **macOS（launchd）** —— `~/Library/LaunchAgents/org.agentus.cockpit.plist`：
@@ -359,7 +359,7 @@ Agentus 默认在前台跑；一个服务单元能让它跨登录、跨重启常
   <key>Label</key>          <string>org.agentus.cockpit</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string><string>agentus</string><string>--port</string><string>8788</string>
+    <string>/usr/bin/env</string><string>hermes-studio</string><string>--port</string><string>8788</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>AGENTUS_DATA</key><string>/Users/YOU/.agentus</string></dict>
@@ -380,11 +380,11 @@ launchctl kickstart -k gui/$(id -u)/org.agentus.cockpit   # 重启
 
 ```ini
 [Unit]
-Description=Agentus cockpit
+Description=Hermes Studio cockpit
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env agentus --port 8788
+ExecStart=/usr/bin/env hermes-studio --port 8788
 Environment=AGENTUS_DATA=%h/.agentus
 Restart=on-failure
 
@@ -394,18 +394,18 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now agentus
-journalctl --user -u agentus -f
+systemctl --user enable --now hermes-studio
+journalctl --user -u hermes-studio -f
 ```
 
-TODO(verify)：launchd/systemd 单元里 `agentus` 能否被 `env` 解析，取决于 npm 把 bin 装到了哪
+TODO(verify)：launchd/systemd 单元里 `hermes-studio` 能否被 `env` 解析，取决于 npm 把 bin 装到了哪
 （用户级前缀默认不在服务进程的 PATH 上）—— 如果单元起不来，把 `ExecStart` / `ProgramArguments`
-改成 `agentus` bin 的绝对路径。
+改成 `hermes-studio` bin 的绝对路径。
 
 ## 升级
 
 ```bash
-npm i -g agentus@latest            # 或者：npx agentus@latest … 跑一次
+npm i -g hermes-studio@latest            # 或者：npx hermes-studio@latest … 跑一次
 ```
 
 状态不受影响 —— `~/.agentus`（或 `AGENTUS_DATA` 指向的地方）不在包内，升级不会删掉它。如果你
@@ -415,17 +415,17 @@ npm i -g agentus@latest            # 或者：npx agentus@latest … 跑一次
 ## 卸载
 
 ```bash
-npm rm -g agentus                  # 删程序（状态保留）
+npm rm -g hermes-studio                  # 删程序（状态保留）
 rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、设置
 ```
 
-装到用户级前缀的话用 `npm rm -g --prefix ~/.local agentus`。卸载**不会**碰 `~/.hermes`（你 agent
+装到用户级前缀的话用 `npm rm -g --prefix ~/.local hermes-studio`。卸载**不会**碰 `~/.hermes`（你 agent
 自己的数据），也不会碰任何工作目录。
 
 ## 排错
 
-**端口被占用。** 用 `agentus --port 9000`，或找出并停掉占用者：
-`lsof -nP -iTCP:8788 -sTCP:LISTEN`。Agentus 从不读裸 `PORT`，原因正在于此。
+**端口被占用。** 用 `hermes-studio --port 9000`，或找出并停掉占用者：
+`lsof -nP -iTCP:8788 -sTCP:LISTEN`。Hermes Studio 从不读裸 `PORT`，原因正在于此。
 
 **「没有后端」/ 会话起不来。** 缺少 agent CLI，或它没登录。跑 `hermes acp --check`，或
 `qodercli login`（`newSession` 报 `-32000` 就是 qoder 没登录）。在设置里检查后端行的命令；启动
@@ -439,11 +439,11 @@ rm -rf ~/.agentus                  # 删状态 —— SQLite、登录、设置
 - 彻底进不去（登录不了就够不到设置页）：删掉 `<DATA_DIR>/sessions.json` 丢掉会话索引，或重启
   服务 —— 内存里的锁定会在启动时清除。
 
-**「我的会话不见了。」** 服务端读的是另一个数据目录。跑 `agentus --where` —— 它会打印数据目录
+**「我的会话不见了。」** 服务端读的是另一个数据目录。跑 `hermes-studio --where` —— 它会打印数据目录
 **以及是哪条规则选中的它**（见本页开头）。常见原因是：某个既有 checkout 的会话在
 `<repo>/packages/server/.data`，而现在的安装默认到了 `~/.agentus`。用 `AGENTUS_DATA` 指向真正有
-数据的那份启动一次，例如 `AGENTUS_DATA=~/.agentus agentus` 或
-`AGENTUS_DATA=<repo>/packages/server/.data agentus`。
+数据的那份启动一次，例如 `AGENTUS_DATA=~/.agentus hermes-studio` 或
+`AGENTUS_DATA=<repo>/packages/server/.data hermes-studio`。
 
 **页面能打开但一直显示「reconnecting」。** 某条隧道丢掉了 WebSocket 的 `Upgrade`。实时流走
 `/ws`；请换成能透传 WebSocket 的隧道（SakuraFrp 的 TCP+auto-HTTPS 隧道已验证可用）。

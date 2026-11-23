@@ -1,6 +1,6 @@
 // 把"我刚选的模型"落成 agent 自己的全局默认（#62-3）。
 //
-// 为什么 server 直接改配置文件：agentus 换模型只影响当前会话，而 agent 侧的默认值住在它自己的
+// 为什么 server 直接改配置文件：hermes-studio 换模型只影响当前会话，而 agent 侧的默认值住在它自己的
 // 配置里（Hermes 是 `<HERMES_HOME>/config.yaml` 的 `model.default` + `model.provider`）。桌面/
 // 沙箱部署一人一环境，"最近一次选择 = 我想要的默认"是正确语义，所以选定即回写，不弹确认。
 //

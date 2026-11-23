@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { createServer as createTcp } from "node:net";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const BIN = path.join(ROOT, "bin/agentus.mjs");
+const BIN = path.join(ROOT, "bin/hermes-studio.mjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;

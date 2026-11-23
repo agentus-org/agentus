@@ -1,7 +1,7 @@
 // Mock ACP agent for offline development & browser QA.
 // Implements just enough of the ACP agent surface (initialize/newSession/prompt/
 // cancel/setSessionMode + permission flow) with fake streaming, so the whole
-// Agentus pipeline can be exercised without a real LLM.
+// Hermes Studio pipeline can be exercised without a real LLM.
 //
 // Env switches to simulate edge cases (append `=N` to env vars when spawning):
 //   MOCK_TOOL=1        -> prompt triggers a tool_call + requestPermission
@@ -653,7 +653,7 @@ const agent = () => ({
       const want = Math.min(Math.max(Number(recallM[1] ?? 3), 1), 60);
       const seed = [
         { text: "用户偏好：回复一律中文，技术术语可留英文" },
-        { text: "Agentus 的 live 端口是 8788，dev 是 8901，端口权威在 ~/.hermes/cache/agentus/ports.env", tags: ["port", "agentus"] },
+        { text: "Hermes Studio 的 live 端口是 8788，dev 是 8901，端口权威在 ~/.hermes/cache/agentus/ports.env", tags: ["port", "hermes-studio"] },
         { text: "发布红线：会重启 live 的改动必须等明确指令；纯前端可以直接 promote" + "（这段故意写得长一些，用来验证展开后的条目会换行而不是把行撑破）".repeat(2) },
       ];
       const items = Array.from({ length: want }, (_, i) => {

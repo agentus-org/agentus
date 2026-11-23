@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Agentus one-command installer.
+# Hermes Studio one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
 #
 # Or the equivalent npm route, if you would rather not pipe a script into a shell:
-# `npx agentus` (run once) / `npm i -g agentus` — this script is that, plus a Node check and a
+# `npx hermes-studio` (run once) / `npm i -g hermes-studio` — this script is that, plus a Node check and a
 # per-user fallback.
 #
 # What it does — and nothing else:
-#   1. checks Node is >= 22.5 (Agentus stores its state in node:sqlite, which landed in 22.5);
-#   2. installs the published `agentus` package with npm, globally by default;
+#   1. checks Node is >= 22.5 (Hermes Studio stores its state in node:sqlite, which landed in 22.5);
+#   2. installs the published `hermes-studio` package with npm, globally by default;
 #   3. if a global install is not writable (a locked-down machine, a system Node), retries into
 #      a per-user prefix instead of touching system directories;
 #   4. prints the exact command that starts the cockpit and the URL to open.
@@ -38,16 +38,16 @@ REGISTRY="${AGENTUS_REGISTRY:-}"
 ALLOW_ROOT="${AGENTUS_ALLOW_ROOT:-0}"
 NODE_MIN="${AGENTUS_NODE_MIN:-22.5}"
 
-log()  { printf 'agentus: %s\n' "$*"; }
-warn() { printf 'agentus: %s\n' "$*" >&2; }
-die()  { printf 'agentus: %s\n' "$*" >&2; exit 1; }
+log()  { printf 'hermes-studio: %s\n' "$*"; }
+warn() { printf 'hermes-studio: %s\n' "$*" >&2; }
+die()  { printf 'hermes-studio: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Agentus installer
+Hermes Studio installer
 
 Usage
-  curl -fsSL https://raw.githubusercontent.com/agentus-org/agentus/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/hermes-studio-org/hermes-studio/main/scripts/install.sh | bash
   bash scripts/install.sh [options]
 
 Options
@@ -59,8 +59,8 @@ Environment
   AGENTUS_VERSION, AGENTUS_INSTALL_DIR, AGENTUS_REGISTRY, AGENTUS_ALLOW_ROOT, AGENTUS_NODE_MIN
 
 After install:
-  agentus            # start the cockpit on http://localhost:8788
-  agentus --where    # print the paths the server resolved (data dir, web bundle) and exit
+  hermes-studio            # start the cockpit on http://localhost:8788
+  hermes-studio --where    # print the paths the server resolved (data dir, web bundle) and exit
 EOF
 }
 
@@ -94,11 +94,11 @@ const need = process.env.AGENTUS_NODE_MIN || "22.5";
 const [maj,min] = process.versions.node.split(".").map(Number);
 const [nmaj,nmin] = need.split(".").map(Number);
 if (maj < nmaj || (maj === nmaj && min < nmin)) {
-  console.error(`agentus: needs Node >= ${need} (the store is node:sqlite); this is ${process.versions.node}.`);
+  console.error(`hermes-studio: needs Node >= ${need} (the store is node:sqlite); this is ${process.versions.node}.`);
   console.error("  nvm: nvm install 22 && nvm use 22   ·   homebrew: brew install node");
   process.exit(1);
 }
-console.log(`agentus: Node ${process.versions.node} ok (need >= ${need})`);
+console.log(`hermes-studio: Node ${process.versions.node} ok (need >= ${need})`);
 ' || die "Node version check failed."
 
 # ---- npm ------------------------------------------------------------------------------------
@@ -138,20 +138,20 @@ fi
 # ---- verify it landed -----------------------------------------------------------------------
 if [ -x "${BIN_DIR}/agentus" ]; then
   log "installed: ${BIN_DIR}/agentus"
-elif command -v agentus >/dev/null 2>&1; then
-  log "installed: $(command -v agentus)"
+elif command -v hermes-studio >/dev/null 2>&1; then
+  log "installed: $(command -v hermes-studio)"
 else
-  warn "the install finished but 'agentus' was not found on PATH — check ${BIN_DIR}."
+  warn "the install finished but 'hermes-studio' was not found on PATH — check ${BIN_DIR}."
 fi
 
 # ---- the next step, exactly -----------------------------------------------------------------
 echo
 echo "  Next — start the cockpit:"
-if command -v agentus >/dev/null 2>&1; then
-  echo "      agentus"
+if command -v hermes-studio >/dev/null 2>&1; then
+  echo "      hermes-studio"
 else
-  echo "      export PATH=\"${BIN_DIR}:\$PATH\"    # once, to put agentus on PATH"
-  echo "      agentus"
+  echo "      export PATH=\"${BIN_DIR}:\$PATH\"    # once, to put hermes-studio on PATH"
+  echo "      hermes-studio"
 fi
 echo
 echo "  Then open  http://localhost:8788  and log in (admin / 123456 — change it in Settings → 账号)."

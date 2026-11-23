@@ -1,5 +1,5 @@
 // L4 false-interruption revival — real-page sweep.
-// Self-contained: stub TTS + its own Agentus instance + the QA Edge over CDP at :9223.
+// Self-contained: stub TTS + its own Hermes Studio instance + the QA Edge over CDP at :9223.
 // Proves the NEW behaviour the pure state-machine test cannot: a barge candidate that was really
 // echo/noise (mic goes quiet once we pause) RESUMES playback instead of destroying the answer.
 //

@@ -89,7 +89,7 @@ center.onNotice((n) => { pageNotices.push(n); });
 function page(req: IncomingMessage): string {
   const host = String(req.headers.host ?? `localhost:${PORT}`);
   const scheme = (req.socket as { encrypted?: boolean }).encrypted ? "https" : "http";
-  const pairUri = `agentus://pair?u=${encodeURIComponent(`${scheme}://${host}`)}&c=${center.code}`;
+  const pairUri = `hermes-studio://pair?u=${encodeURIComponent(`${scheme}://${host}`)}&c=${center.code}`;
   const apks = fs.existsSync(APK_DIR) ? fs.readdirSync(APK_DIR).filter((f) => f.endsWith(".apk")) : [];
   const devices = center
     .devices()
@@ -97,11 +97,11 @@ function page(req: IncomingMessage): string {
       `<td>${d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleTimeString() : "—"}</td></tr>`)
     .join("");
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agentus notify test bed</title>
+<title>Hermes Studio notify test bed</title>
 <style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;margin:24px;max-width:46em}
 code{background:#f2f2ef;padding:2px 6px;border-radius:4px;word-break:break-all}
 td{padding:2px 10px 2px 0;font-family:ui-monospace,monospace;font-size:12px}</style>
-<h1>Agentus · notify test bed</h1>
+<h1>Hermes Studio · notify test bed</h1>
 <p>配对串（粘进 APK 首屏即可）：</p><p><code id="uri">${pairUri}</code></p>
 <p>APK：${apks.map((f) => `<a href="/dl/${f}">${f}</a>`).join(" · ") || "<i>还没有构建产物</i>"}</p>
 <p><button onclick="fetch('/api/notify/probe?token=${TOKEN}',{method:'POST'})">发一条探针通知</button>

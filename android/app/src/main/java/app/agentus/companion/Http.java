@@ -31,7 +31,7 @@ import okhttp3.WebSocketListener;
  * verification would reject the IP against a DNS-only SAN, so this client:
  *
  *   * keeps the system trust store (so a later Let's Encrypt cert also works), and
- *   * additionally trusts the bundled Agentus root, and
+ *   * additionally trusts the bundled Hermes Studio root, and
  *   * accepts that root for whatever host the operator typed.
  *
  * That is CA pinning with a waived hostname, not "trust anything": a certificate that does
@@ -63,7 +63,7 @@ final class Http {
         return client;
     }
 
-    /** Trust = (system store ∪ the CAs the operator installed) ∪ bundled Agentus root. */
+    /** Trust = (system store ∪ the CAs the operator installed) ∪ bundled Hermes Studio root. */
     private static X509TrustManager composite(Context context) throws Exception {
         final X509TrustManager device = deviceManager();
         final X509TrustManager mine = manager(bundled(context));

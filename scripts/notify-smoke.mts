@@ -300,7 +300,7 @@ try {
 
   const s0 = await readSettings();
   check("settings: rules + devices + pairing string in one call",
-    typeof s0.rules?.turnStart === "boolean" && Array.isArray(s0.devices) && s0.pairUri.startsWith("agentus://pair"),
+    typeof s0.rules?.turnStart === "boolean" && Array.isArray(s0.devices) && s0.pairUri.startsWith("hermes-studio://pair"),
     JSON.stringify(s0).slice(0, 120));
   check("settings: defaults are all-on, quiet-when-watching on",
     s0.rules.turnStart && s0.rules.approval && s0.rules.completion && s0.rules.quietWhenWatching,
@@ -449,7 +449,7 @@ try {
   const shapeDone = framesBy("done:sess-shape")[0];
   const shapePerm = upserted("perm:req-shape");
   check("copy: the running card is a state, with the session name in the body",
-    shapeRun?.title === "Agentus · 运行中" && String(shapeRun?.body ?? "").startsWith("sess-sha"),
+    shapeRun?.title === "Hermes Studio · 运行中" && String(shapeRun?.body ?? "").startsWith("sess-sha"),
     JSON.stringify({ title: shapeRun?.title, body: shapeRun?.body }));
   check("copy: the done card is 「已完成」 and its body is the name + the MEASURED turn time",
     shapeDone?.title === "已完成" && shapeDone?.body === "sess-sha · 用时 1m 12s",
@@ -549,7 +549,7 @@ try {
   check("web: with it on, the page gets the running card (one per session — it replaces, not stacks)",
     running?.op === "upsert" && running?.kind === "agent_running" && running.title === "运行中",
     JSON.stringify(running ?? null));
-  check("web: the card drops the `Agentus ·` the phone title carries, and taps back to its session",
+  check("web: the card drops the `Hermes Studio ·` the phone title carries, and taps back to its session",
     running?.title === "运行中" && String(running?.open ?? "").includes("session=sess-web2"),
     JSON.stringify(running ?? null));
 

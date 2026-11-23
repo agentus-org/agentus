@@ -1478,7 +1478,7 @@ export function browserDictationAvailable(): boolean {
 
 /** The Android app's native microphone, injected as `window.AgentusMic`.
  *
- *  It only exists inside the Agentus companion app, and only for a page that is one of the
+ *  It only exists inside the Hermes Studio companion app, and only for a page that is one of the
  *  operator's saved servers (the app checks). When it is there, the page records with it instead of
  *  getUserMedia: Chromium's own capture never opens on that ROM, while the app's AudioRecord does. */
 interface NativeMicBridge {
@@ -1516,7 +1516,7 @@ export function micCaptureAvailable(): boolean {
  *  operator's report was exactly that error on a LAN page whose browser was fine. */
 export function micUnavailableMessage(): string {
   if (typeof window !== "undefined" && !window.isSecureContext) {
-    return "当前页面是明文 http，浏览器不允许网页录音。请改用 https 入口访问（在服务前放一层终结 TLS 的反代或隧道），或走本机 localhost；手机上也可以用 Agentus app。";
+    return "当前页面是明文 http，浏览器不允许网页录音。请改用 https 入口访问（在服务前放一层终结 TLS 的反代或隧道），或走本机 localhost；手机上也可以用 Hermes Studio app。";
   }
   return "this browser cannot record audio";
 }
@@ -2056,7 +2056,7 @@ class Dictation {
     }
     if (ctx.state !== "running") {
       this.#releaseCapture();
-      throw new Error(`浏览器的音频上下文没有启动（${ctx.state}）— 点一下页面再试一次，或改用 Agentus app`);
+      throw new Error(`浏览器的音频上下文没有启动（${ctx.state}）— 点一下页面再试一次，或改用 Hermes Studio app`);
     }
     const src = ctx.createMediaStreamSource(mic);
     // ScriptProcessor is deprecated but universally available, which matters more here

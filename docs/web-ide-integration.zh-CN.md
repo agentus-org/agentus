@@ -1,12 +1,12 @@
 # Web IDE（code-server）集成
 
-[English](./web-ide-integration.md) · [安装 Agentus](./installation.zh-CN.md) · [README](../README.zh-CN.md)
+[English](./web-ide-integration.md) · [安装 Hermes Studio](./installation.zh-CN.md) · [README](../README.zh-CN.md)
 
-「看这个工作区」的另一半 Agentus 已经有了：文件树、带冲突检测的预览/编辑器、真 PTY 终端
+「看这个工作区」的另一半 Hermes Studio 已经有了：文件树、带冲突检测的预览/编辑器、真 PTY 终端
 （`ToolPanel.tsx` / `/ws/term`）。差的是 IDE 那一半。这篇讲怎么补上：用你自己的 code-server，开在驾驶舱的侧栏里，
 不需要第二次登录，也不会被 mixed-content 拦掉。
 
-两段，按顺序：**怎么起 code-server**（以及为什么必须是那个形态），然后是**怎么把 Agentus 指过去**（三条硬规则，不是风格偏好）。
+两段，按顺序：**怎么起 code-server**（以及为什么必须是那个形态），然后是**怎么把 Hermes Studio 指过去**（三条硬规则，不是风格偏好）。
 
 ---
 
@@ -21,7 +21,7 @@ code-server --auth none \
 
 端口是示例值，机制与具体取值无关。其余几条不是可选项：
 
-- **`--auth none` 只有在只听回环时才成立。** 它的鉴权由 Agentus 的登录接过去：IDE 只能从下面那层同域代理进来，
+- **`--auth none` 只有在只听回环时才成立。** 它的鉴权由 Hermes Studio 的登录接过去：IDE 只能从下面那层同域代理进来，
   而代理站在操作者的会话 cookie 后面。`--auth none` **加上对外绑定** = 把一个完整的 IDE（终端、写文件、扩展宿主）
   敞给所有能连到这个端口的人。**永远不要把这个端口单独暴露到 ingress。**
 - **`--auth password` + 对外绑定不是「更安全」，而是把体验做碎。** 实测是 iframe 里出现 `302` 到登录页：
@@ -38,15 +38,15 @@ code-server --auth none \
   done
   ```
 
-**Agentus 不会替你起它。** 这个服务里每一处 `spawn` 起的都是 ACP agent；要端口、要持久卷、要等待 ready 的
+**Hermes Studio 不会替你起它。** 这个服务里每一处 `spawn` 起的都是 ACP agent；要端口、要持久卷、要等待 ready 的
 重量级第三方服务属于部署职责。驾驶舱只负责转发，以及如实报告上游在不在。
 
 ---
 
-## 2. 把 Agentus 指过去
+## 2. 把 Hermes Studio 指过去
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
 不设（默认）＝这个功能不存在：没有 tab、除 `GET /api/ide/status` 外没有路由、upgrade 白名单里也没有它。
@@ -96,12 +96,12 @@ if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/
 
 code-server 的编辑器、终端、文件监听全走同一条 socket。只转 HTTP、或挂载点没登记在白名单里，会产生这个集成里**最难自查的**
 半死状态：**界面出来了，但连不上后端**，而且没有任何一条请求报错可以指。只要设了 `AGENTUS_IDE_UPSTREAM`，
-Agentus 就为 `/api/ide/*` 放行 upgrade，并保持和驾驶舱自己的 socket 一样「先验 cookie 再 upgrade」的顺序。
+Hermes Studio 就为 `/api/ide/*` 放行 upgrade，并保持和驾驶舱自己的 socket 一样「先验 cookie 再 upgrade」的顺序。
 
 ### 规则 3 —— 代理路由必须排在 SPA fallback 之前
 
 `index.ts` 最后是 `serveStatic()`，任何未知路径都用 `index.html` 兜底。注册在它后面的代理永远收不到请求，
-症状很诚实但没有用：iframe 里显示的是 Agentus 自己的页面。桥接挂在鉴权闸之后、`/api/` 路由表之前，所以不会被遮住。
+症状很诚实但没有用：iframe 里显示的是 Hermes Studio 自己的页面。桥接挂在鉴权闸之后、`/api/` 路由表之前，所以不会被遮住。
 
 ### 代理对请求做了哪些改动
 
@@ -147,14 +147,14 @@ IDE 住在工作区侧栏（`ToolPanel.tsx`），和 `files`、`terminal` 并排
   不能写成 `splitActive || tab === id` —— 后者在注册表只有两个 pane 时是对的，一旦有第三个 pane，
   `tab` 可能就是那个不在 pair 里的 pane，它会以「没有 order 的一行」的形式挂在最后，变成三块。
 - 可见性 = `configured && reachable`。配了但没起来 → 直接打开 §1 那条启动命令（可复制），因为空白的 frame 会被读成
-  「Agentus 坏了」，把人引到错的地方排查。
+  「Hermes Studio 坏了」，把人引到错的地方排查。
 
 ---
 
 ## 4. 安全边界
 
 - 上游**只听回环**；代理是它唯一的门。别把这个端口单独暴露到 ingress，也别把它塞进隧道。
-- 鉴权**只有** Agentus 的 cookie 这一层 —— 这就是为什么规则 1 是安全要求而不是命名偏好。
+- 鉴权**只有** Hermes Studio 的 cookie 这一层 —— 这就是为什么规则 1 是安全要求而不是命名偏好。
 - IDE 用的是驾驶舱同一个账号权限，能开任意会话的工作目录。说白了：**驾驶舱的登录凭据 = 这台机器上的文件写权限。**
   多人共用的机器上，把驾驶舱放在可信网络内，并给 agent 的工作区单独一个用户。
 

@@ -1,10 +1,10 @@
-// Agentus shared types. Design lineage: ACP protocol (agentclientprotocol.com)
+// Hermes Studio shared types. Design lineage: ACP protocol (agentclientprotocol.com)
 // and behavioral rules studied from AionUi/hermes-studio (see docs/refs/),
 // but types are our own minimal surface for the WS envelope between
 // server <-> browser.
 //
-// WHY THERE IS NO `@agentus/shared` SPECIFIER ANYWHERE ANYMORE
-//   The cockpit ships as ONE npm package (`agentus`), not as three workspace
+// WHY THERE IS NO `@hermes-studio/shared` SPECIFIER ANYWHERE ANYMORE
+//   The cockpit ships as ONE npm package (`hermes-studio`), not as three workspace
 //   packages: a global install must not need a registry scope, and the server runs
 //   this file in place. So every consumer imports it by relative path
 //   (`../../shared/src/index.js` from packages/server/src, `../../shared/src/index`

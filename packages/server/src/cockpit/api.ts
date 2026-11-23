@@ -14,7 +14,7 @@
  * applies to the agent-facing data plane for the same reason: a machine that paraphrases the cockpit
  * is a machine that can be wrong about the cockpit.
  *
- * The CLI is `bin/agentus-cockpit.mjs`; the routes are in `index.ts` (`/api/cockpit/*`). Both are
+ * The CLI is `bin/hermes-studio-cockpit.mjs`; the routes are in `index.ts` (`/api/cockpit/*`). Both are
  * thin: every decision about WHAT may be seen lives here, so there is one answer, not three.
  */
 import type { PlanSnapshot, SessionInfo, StoredMessage } from "../../../shared/src/index.js";
@@ -105,10 +105,10 @@ export type CockpitMessageRow = {
 export function capabilities(sendEnabled: boolean): Record<string, unknown> {
   return {
     schema_version: COCKPIT_SCHEMA_VERSION,
-    bin: "agentus <noun> <verb> — sessions are the noun; capabilities/skill sit at the top level",
+    bin: "hermes-studio <noun> <verb> — sessions are the noun; capabilities/skill sit at the top level",
     commands: [
       { name: "capabilities", args: [], returns: "this object — the contract, without needing a doc" },
-      { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/agentus-cockpit/SKILL.md), served from the package with no auth" },
+      { name: "skill", args: ["--path"], returns: "the CLI's own skill document (skills/hermes-studio-cockpit/SKILL.md), served from the package with no auth" },
       {
         name: "session list",
         args: ["--here", "--workspace <path>", "--status <s>", "--waiting", "--since <when>", "--created-since <when>", "--grep <text>", "--sort last|created|name", "--limit N", "--all", "--include-self", "--by workspace", "--table"],
@@ -132,7 +132,7 @@ export function capabilities(sendEnabled: boolean): Record<string, unknown> {
       plan_items: "not truncated — a plan is short by construction (it is a step list)",
     },
     auth: {
-      how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the agentus launcher itself, so every call is \"$AGENTUS_COCKPIT_BIN\" session <verb>",
+      how: "environment only: AGENTUS_COCKPIT_ENDPOINT / AGENTUS_COCKPIT_TOKEN / AGENTUS_COCKPIT_SESSION are set by the cockpit when it spawns you; AGENTUS_COCKPIT_BIN is the hermes-studio launcher itself, so every call is \"$AGENTUS_COCKPIT_BIN\" session <verb>",
       operator: "outside a session the CLI also works for the operator: it reads <DATA_DIR>/auth.token (the machine token scripts already use) and talks to AGENTUS_ENDPOINT or 127.0.0.1:AGENTUS_PORT. In that mode there is no `self`, and a rename records no author (NULL title_by = the operator).",
       rule: "never print, echo, export or pass those variables anywhere — they identify your session",
     },

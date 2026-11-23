@@ -1,4 +1,4 @@
-# Agentus M1 浏览器自测日志（≥20 轮）
+# Hermes Studio M1 浏览器自测日志（≥20 轮）
 
 规则：每轮记 **现象 → 复现 → 根因 → 修复 → 回归**，并留下可复查的证据（curl 输出、DOM 状态、`ps`/`lsof` 结果）。
 环境：server `:8787`（tsx watch，托管 `packages/web/dist`）、Edge over CDP（用户真实浏览器）、
@@ -62,12 +62,12 @@ mock 后端做无成本流水线验证、隔离 home 下的真 `hermes acp` 做�
 - **回归**：真 LLM 回合 → `thought`×5 + `agent`「收到」。
 
 ## Bug#5 — 子进程共享 live home，把用户真 state.db 搞坏（**最严重**）
-- **现象**：Agentus 跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
+- **现象**：Hermes Studio 跑一会儿真 Hermes 会话后，用户 live runtime 的 `~/.hermes/state.db` 报
   `sqlite3.DatabaseError: database disk image is malformed`，gateway 的 `hosted_room_worker` 连续崩，
   需另一 agent 从 `state-db-backup-20261002-0503/` 恢复。
 - **复现**：`session-manager.ts` 里 `env: { ...process.env }` → 子进程 `HERMES_HOME` 未设（或被运行时继承一个 live 值）→ 回落 `~/.hermes` → 与 gateway 同开一个 WAL 库。
 - **根因**：三点叠加 —— ① 继承 env 导致 home 不确定；② Hermes 侧链接的 SQLite 3.50.4 有 WAL-reset 损坏 bug（`errors.log` 点名）；③ 单库双写 + 版本 bug = 真损坏。（Hermes 事后对 `state.db` 自动改用 `journal_mode=DELETE` 规避。）
-- **修复**：Agentus 侧 fail-closed 隔离
+- **修复**：Hermes Studio 侧 fail-closed 隔离
   - `backends.ts` 增 `isolation { homeVar, homeDefault, liveHome, allowEnv }`，hermes 默认 `~/.agentus-test/home`；
   - `buildSpawnEnv()` **只认显式开关** `AGENTUS_HERMES_HOME`，继承来的 `HERMES_HOME` 只作 warning；
   - 解析结果 == live home → 抛错拒绝 spawn，除非 `AGENTUS_ALLOW_LIVE_HOME=1`；
@@ -291,12 +291,12 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 ## R45–R45c · 公网隧道（SakuraFrp）+ 应用层 HTTP Basic
 
-**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `agentus`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `<tunnel-host>`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
+**隧道**：j 上新增 frpc 实例 `...:29355218`（隧道名 `hermes-studio`，TCP + `auto_https = auto`，本地 `192.168.0.109:8787`，公网 `<tunnel-host>`）。登记在 `~/Workspace/nat-dev-workspace/areas/sakurafrp-tunnels/README.md`。
 
 **R45a 认证分层实测**
 - j→Mac:8787 前置条件 OK（`/healthz` 200），隧道启动成功、online=true。
 - 樱花自带的 `auth_pass` 实测**不返回 401**：未认证时返回 **HTTP 200 + "访问认证"页面**（IP 白名单制）。只看状态码会误判成"没挡"（我犯过一次，随后用响应体特征词核实）。对照：`openclaw` 也是认证页，`hermes_studio`（绑域名路径）直通应用。
-- 决定分层：**移除**樱花 `auth_pass`，外层改成 Agentus 自身的 **HTTP Basic**（标准 401 + `WWW-Authenticate`，脚本可 `curl -u`），内层仍是操作者登录。
+- 决定分层：**移除**樱花 `auth_pass`，外层改成 Hermes Studio 自身的 **HTTP Basic**（标准 401 + `WWW-Authenticate`，脚本可 `curl -u`），内层仍是操作者登录。
 
 **R45b/R45c 浏览器端到端（真 Edge + CDP）**
 - 裸访问隧道 URL → 自签证书拦一次（`NET::ERR_CERT_AUTHORITY_INVALID`）。
@@ -383,7 +383,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
   - 头部：`h=46`、`children=[menu, title, spacer, icon, icon]`、`selects=0`（原来是 2 个下拉 + 环形用量 + 停止 + 关闭）。模式/深度/用量/停止全部移入输入区。
   - 输入区：`.usage-text = "ctx 8.4k / 1000k · 1% · 992k left"` + 细条，且 `usageAboveBox=true`（用量行在输入框上方 ✓）；`.composer-bar` 按钮 = `["attach","chat settings","dictate"]` + 发送按钮，`insideBox=true`。
   - 工作空间面板：`tabs=["files","terminal"]`、列出 11 个条目、`root=/…/worktrees/agentus`、`noHScroll=true`；文件预览 `package.json` 867 字符。
-  - 终端：`status="shell agentus"`，发 `echo AGENTUS_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
+  - 终端：`status="shell hermes-studio"`，发 `echo AGENTUS_TERM_OK; pwd` 后输出里能读到回显与 cwd（`sawEcho=true, showedCwd=true`）。
   - 设置弹层：4 组（permission mode / thinking depth / read replies aloud / dictation），无控制台报错。
 - **R52 附件与语音（浏览器路径）**
   - 用 CDP `DOM.setFileInputFiles` 走真实 `<input type=file>`：草稿 chip 出现（`attach-probe.txt`），发送后气泡显示附件名、草稿清空、agent 正常回复（mock 把附加文本回显出来了 → 端到端确实带着内容进了 prompt）。
@@ -449,7 +449,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 **R61–R62 工作空间默认路径 + 侧栏按工作空间分组 + 措辞去 slot + 会话 fork**
 
 - **文件/终端默认路径**：面板根目录 = 会话的 `workspace || cwd`，服务端 `sessionRoot()` 同源。实测（会话工作空间 = `/tmp/agentus-ws-b`）：文件面板 `path=/tmp/agentus-ws-b`、终端 `pwd` → `/private/tmp/agentus-ws-b`（macOS `/tmp` 是软链）。**改工作空间后终端必须重开**：`TerminalTab` 的 effect 依赖加上 `root`（shell 无法从外面 cd，只能新开一个）。实测改成 `agentus-ws-a` 后 `pwd` → `/private/tmp/agentus-ws-a`。
-- **侧栏按工作空间分组**：组名 = 文件夹名（完整路径在 tooltip），组内 live 在前、cold 在后，当前会话所在组置顶并默认展开，可折叠；搜索时强制展开。实测 8 组（`liang`/`agent-dev-workspace`/`agentus`/`agentus-ws-a`/`agentus-ws-b`/…），计数 `1/1`、折叠/展开正常。
+- **侧栏按工作空间分组**：组名 = 文件夹名（完整路径在 tooltip），组内 live 在前、cold 在后，当前会话所在组置顶并默认展开，可折叠；搜索时强制展开。实测 8 组（`liang`/`agent-dev-workspace`/`hermes-studio`/`agentus-ws-a`/`agentus-ws-b`/…），计数 `1/1`、折叠/展开正常。
 - **措辞**：`new session`（原 new slot）、`search sessions…`、冷会话按钮只说 resume/delete、头部菜单 title=sessions、"No session selected"、工作空间弹窗里的 "this session"。**侧栏整块 innerText 里 `slot` 出现 0 次**（实测正则计数）。服务端两处面向用户的错误串（"resume the slot first"）也改了；README 里用户可见的 slot 措辞改为 session，并新增 **Naming** 段说明"UI 一律说 session，slot 只是项目名，产品可能改名"。
 - **会话 fork（ACP `session/fork`）**：
   - 协议侧：请求 `{sessionId, cwd}` → 响应 `{sessionId, modes?, configOptions?}`；**SDK 类型里有（UNSTABLE）但 `AGENT_METHODS` 未路由**，所以走 `conn.request("session/fork", …)`。Hermes 公告 `sessionCapabilities.fork` 且实现了 `fork_session`（"deep-copy a session's history"）。
@@ -601,7 +601,7 @@ used/size，1M 窗口）；追踪行 `effort high · mode default`。
 
 用户："你可以参考下 hermes studio 吗，完整实现下账户管理"。
 
-先读参考（`~/.hermes/cache/studio-ref` @ `ea5bcb9f`）：studio 的账户面 = `AccountSettings.vue`（头像上传/随机/重置 + 改用户名 + 改密码，两个弹窗，当前密码必填）+ `UserManagementSettings.vue`（多用户，super admin）+ **锁定 IP 列表 + 单个/全部解锁**（`GET|DELETE /api/auth/locked-ips`，限流器 `recordPasswordFailure` 的可见面）。多用户与 Agentus 的"单操作员、一台机器一个驾驶舱"定位冲突，不做；其余全部补齐，并加一样 studio 没有但本产品必须要的东西。
+先读参考（`~/.hermes/cache/studio-ref` @ `ea5bcb9f`）：studio 的账户面 = `AccountSettings.vue`（头像上传/随机/重置 + 改用户名 + 改密码，两个弹窗，当前密码必填）+ `UserManagementSettings.vue`（多用户，super admin）+ **锁定 IP 列表 + 单个/全部解锁**（`GET|DELETE /api/auth/locked-ips`，限流器 `recordPasswordFailure` 的可见面）。多用户与 Hermes Studio 的"单操作员、一台机器一个驾驶舱"定位冲突，不做；其余全部补齐，并加一样 studio 没有但本产品必须要的东西。
 
 - **会话注册表（新）**：会话是无状态签名 cookie，因此"谁登录着"原本答不出来、偷来的 cookie 也撤不掉。现在登录即登记 `<DATA_DIR>/sessions.json`（0600）：`jti / username / ip / ua / iat / exp / lastSeen`。接口：`GET /api/auth/sessions`（带 `current` 标记）、`POST /api/auth/sessions/revoke {jti}`（撤自己返回 400 并提示"这是登出"）、`POST /api/auth/sessions/revoke-others`。注册表对读取是"提示"、对存在性是"权威"：不在表里的 cookie 一律拒绝 —— 这才让撤销与"全部登出"是真的，并且**重启后依然成立**。升级路径：首次启动若注册表文件不存在，则把仍然签名有效的旧 cookie 一次性接管，避免升级即全员掉线。
 - **锁定 IP 可见可解（新）**：`GET /api/auth/locked-ips` → `{locks:[{ip,fails,locked,retryAfterMs}], maxFails, lockMs}`；`DELETE /api/auth/locked-ips?ip=` 解一个、不带 ip 解全部（对齐 studio 的形状）。把自己锁在门外从"等 30 秒或重启"变成"点一下解锁"。

@@ -71,7 +71,7 @@ const chunk = (sessionId: string, text: string, messageId?: string, kind: "agent
     + "- `tasks/`：2 个活跃需求 + `lessons.md`（纠错登记）\n"
     + "- `areas/hindsight-memory/`：README + scripts\n"
     + "- `worktrees/agentus`：独立仓不入库\n\n"
-    + "**任务索引（TASKS.md）**\n| slug | 状态 |\n|---|---|\n| agentus | 进行中 |\n";
+    + "**任务索引（TASKS.md）**\n| slug | 状态 |\n|---|---|\n| hermes-studio | 进行中 |\n";
   const a = store.appendTextChunk(chunk("s-anon", block));
   check("an anonymous block is stored once", !!a.message.seq);
   const again = store.appendTextChunk(chunk("s-anon", `\n\n${block}`));

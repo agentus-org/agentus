@@ -96,7 +96,7 @@ try {
   if (tokReady) planToken = JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8")).AGENTUS_PLAN_TOKEN;
 
   // --- 2: the agent names its plan ---------------------------------------------------------
-  const TITLE = "清空 agentus 六个 issue";
+  const TITLE = "清空 hermes-studio 六个 issue";
   const items = [
     { content: "rail 不再出现重复行", status: "completed" },
     { content: "⌘Enter 直接插话", status: "in_progress" },
@@ -134,7 +134,7 @@ try {
     (await ev(`document.querySelectorAll('.plan-bar .plan-name').length`)) === 0);
 
   // a name longer than the line must WRAP inside the card, not widen anything
-  const LONG = "把 agentus 的任务计划面板在手机上重新排一遍包括标题和每一步的字号";
+  const LONG = "把 hermes-studio 的任务计划面板在手机上重新排一遍包括标题和每一步的字号";
   await ev(`(async () => {
     const r = await fetch('/api/plan/mcp', { method: 'POST',
       headers: { 'content-type': 'application/json', 'x-agentus-plan-token': ${JSON.stringify(planToken)} },

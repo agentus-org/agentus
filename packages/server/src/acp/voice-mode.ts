@@ -75,7 +75,7 @@ export function voiceModeBlock(sessionId: string, st: VoiceState): unknown | nul
   return {
     type: "resource",
     resource: {
-      uri: `agentus://voice/${sessionId}`,
+      uri: `hermes-studio://voice/${sessionId}`,
       mimeType: "text/plain",
       text: lines.join("\n"),
     },

@@ -1,16 +1,16 @@
-Agentus
-Copyright 2026 Agentus contributors
+Hermes Studio
+Copyright 2026 Hermes Studio contributors
 
 Licensed under the Apache License, Version 2.0 — see LICENSE. Third-party components
 keep their own licences.
 
 AionUi (https://github.com/iOfficeAI/AionUi) is credited as an INSPIRATION. Its
-published design notes and the behaviour of its interfaces were studied while Agentus
+published design notes and the behaviour of its interfaces were studied while Hermes Studio
 was designed, and some of our choices follow them. No AionUi source code was copied:
-every implementation in this repository is Agentus's own, and no file carries an
+every implementation in this repository is Hermes Studio's own, and no file carries an
 AionUi licence header because none needs one.
 
 The Hermes and Qoder brand marks under packages/web/public/coding-agents/ are the
 respective property of their owners (EKKOLearnAI / Alibaba). They are included
 unmodified, at small size, solely to identify the backend each session is talking
-to (nominative use). Agentus is not affiliated with or endorsed by either party.
+to (nominative use). Hermes Studio is not affiliated with or endorsed by either party.

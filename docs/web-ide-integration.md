@@ -1,14 +1,14 @@
 # Web IDE (code-server) integration
 
-[中文](./web-ide-integration.zh-CN.md) · [Installing Agentus](./installation.md) · [README](../README.md)
+[中文](./web-ide-integration.zh-CN.md) · [Installing Hermes Studio](./installation.md) · [README](../README.md)
 
-Agentus ships the other half of "look at this workspace": a file tree, a preview/editor with
+Hermes Studio ships the other half of "look at this workspace": a file tree, a preview/editor with
 conflict detection, and a real PTY terminal (`ToolPanel.tsx`, `/ws/term`). It ships no IDE. This page
 is how to put one in — a code-server instance of your own, opened inside the cockpit panel, with no
 second login and no mixed-content warning.
 
 Two parts, in order: **how to start code-server** (and why exactly that shape), then **how to point
-Agentus at it** (three rules that are not stylistic).
+Hermes Studio at it** (three rules that are not stylistic).
 
 ---
 
@@ -23,7 +23,7 @@ code-server --auth none \
 
 The port is an example; the mechanism does not care. The rest is not optional:
 
-- **`--auth none` is only safe on loopback.** Its authentication is replaced by Agentus's login: the
+- **`--auth none` is only safe on loopback.** Its authentication is replaced by Hermes Studio's login: the
   IDE is reachable only through the same-origin proxy below, which sits behind the operator's session
   cookie. `--auth none` **plus** a public bind hands a full IDE — terminal, file writes, extension
   host — to anyone who can reach that port. Never expose this port in your ingress.
@@ -45,23 +45,23 @@ The port is an example; the mechanism does not care. The rest is not optional:
   done
   ```
 
-**Agentus does not start it for you.** Every `spawn` in this server starts an ACP agent; a
+**Hermes Studio does not start it for you.** Every `spawn` in this server starts an ACP agent; a
 heavyweight third-party service with a port, a volume and a readiness wait belongs to the deployment.
 The cockpit only forwards, and reports whether the upstream is up.
 
 ---
 
-## 2. Point Agentus at it
+## 2. Point Hermes Studio at it
 
 ```bash
-AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 agentus
+AGENTUS_IDE_UPSTREAM=http://127.0.0.1:8133 hermes-studio
 ```
 
 Unset (the default) means the feature is absent: no tab, no routes beyond `GET /api/ide/status`, no
 upgrade path. Set it to something unreachable and the tab appears greyed, with the start command from
 §1 printed inside it — never a blank frame.
 
-What Agentus then exposes:
+What Hermes Studio then exposes:
 
 | route | what it does |
 |---|---|
@@ -107,7 +107,7 @@ if (url.pathname !== "/ws" && url.pathname !== "/ws/term" && url.pathname !== "/
 
 code-server's editor, terminal and file watching ride one socket. A proxy that forwards HTTP only,
 or a mount missing from that list, produces the worst failure mode in this integration: **the
-interface renders and connects to nothing**, with no request error to point at. Agentus registers
+interface renders and connects to nothing**, with no request error to point at. Hermes Studio registers
 `/api/ide/*` for upgrades whenever `AGENTUS_IDE_UPSTREAM` is set, and keeps the same
 "verify the cookie, then upgrade" order the cockpit's own sockets use.
 
@@ -115,7 +115,7 @@ interface renders and connects to nothing**, with no request error to point at. 
 
 `index.ts` ends with `serveStatic()`, which answers any unknown path with `index.html`. A proxy
 registered after it never sees a request, and the symptom is honest but useless: the iframe shows
-Agentus's own page. The bridge is dispatched right after the auth gate and before the `/api/` route
+Hermes Studio's own page. The bridge is dispatched right after the auth gate and before the `/api/` route
 table, so it cannot be shadowed.
 
 ### What the proxy changes to a request
@@ -177,7 +177,7 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
   move. Moving them would reload code-server's front end and open a *new* pty — the editor would lose
   unsaved buffers and the terminal its scrollback, which is the whole point of having them side by side.
 - Visibility is `configured && reachable`. Configured-but-down opens on the start command from §1
-  (copyable), because an empty frame reads as "Agentus is broken" and sends the operator looking in
+  (copyable), because an empty frame reads as "Hermes Studio is broken" and sends the operator looking in
   the wrong place.
 
 ---
@@ -186,7 +186,7 @@ The IDE lives in the workspace panel (`ToolPanel.tsx`), next to `files` and `ter
 
 - The upstream binds **loopback only**; the proxy is its single door. Do not publish that port in
   your ingress, and do not put it behind the tunnel.
-- Authentication is Agentus's cookie, **solely** — which is why Rule 1 is a security requirement and
+- Authentication is Hermes Studio's cookie, **solely** — which is why Rule 1 is a security requirement and
   not a naming preference.
 - The IDE runs with the same account as the cockpit, over any session's working directory. In plain
   terms: **the cockpit login is file-write access to this machine.** On a shared box, keep the

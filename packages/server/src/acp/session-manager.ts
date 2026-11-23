@@ -68,13 +68,13 @@ import { busyTurnEta, waitWords } from "./turn-busy.js";
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
 // package's `files`).
-// The path we hand agents as `AGENTUS_COCKPIT_BIN` is the `agentus` launcher itself — there is no
-// second command to install, and `agentus cockpit <command>` is the only spelling anywhere. (The
+// The path we hand agents as `AGENTUS_COCKPIT_BIN` is the `hermes-studio` launcher itself — there is no
+// second command to install, and `hermes-studio cockpit <command>` is the only spelling anywhere. (The
 // implementation is `bin/cockpit.mjs`, but that file is the subcommand, not a product name: agents
 // never see it, so it must not become a second thing users have to learn.)
-const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/agentus.mjs");
+const COCKPIT_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../bin/hermes-studio.mjs");
 
-// #40: a git checkout keeps `bin/agentus.mjs` at mode 100644 (the blob has no exec bit), so the very
+// #40: a git checkout keeps `bin/hermes-studio.mjs` at mode 100644 (the blob has no exec bit), so the very
 // first thing an agent does with the path we hand it — `$AGENTUS_COCKPIT_BIN session list` — dies with
 // `Permission denied`, and there is no npm shim to fall back on in a checkout (that is the deployment
 // form this project recommends). Fix the mode where we resolve the path: idempotent, best effort (a
@@ -416,12 +416,12 @@ const MAIN_BOT_AGENTS_MD_V1 = `# Main Bot
 
 ## 你能做什么
 
-- 看：\\\`agentus session list\\\`（谁在跑、谁在等我）、\\\`agentus session show <id>\\\`、
-  \\\`agentus session messages <id> --tail 20\\\`（读别人的对话）
-- 派活：\\\`agentus session send <id> "<任务>" --reply-on-done\\\`。它只等对方**回合开始**就返回，
+- 看：\\\`hermes-studio session list\\\`（谁在跑、谁在等我）、\\\`hermes-studio session show <id>\\\`、
+  \\\`hermes-studio session messages <id> --tail 20\\\`（读别人的对话）
+- 派活：\\\`hermes-studio session send <id> "<任务>" --reply-on-done\\\`。它只等对方**回合开始**就返回，
   对方回合结束时服务端会往这里投一条【完成回推】并唤醒你 —— 所以你可以一次派几件事，不用守着。
-- 叫醒/新建：\\\`agentus session wake <id>\\\`、\\\`agentus session create <目录> --title "<名字>"\\\`
-- 停：\\\`agentus session stop <id>\\\`（只收进程，记录留着）
+- 叫醒/新建：\\\`hermes-studio session wake <id>\\\`、\\\`hermes-studio session create <目录> --title "<名字>"\\\`
+- 停：\\\`hermes-studio session stop <id>\\\`（只收进程，记录留着）
 
 命令都在环境变量 \\\`$AGENTUS_COCKPIT_BIN\\\` 里，会话内用 \\\`"$AGENTUS_COCKPIT_BIN" session list\\\`。
 
@@ -798,18 +798,18 @@ export class SessionManager {
           process.kill(pid, "SIGKILL");
           killed++;
           forgetAgentOwner(this.#dataDir, pid);
-          console.log(`[agentus] reclaim: killed pid ${pid} (session ${row.id}) — ${verdict.why}`);
+          console.log(`[hermes-studio] reclaim: killed pid ${pid} (session ${row.id}) — ${verdict.why}`);
         } catch (err) {
-          console.log(`[agentus] reclaim: pid ${pid} (session ${row.id}) was gone before the kill — ${(err as Error).message}`);
+          console.log(`[hermes-studio] reclaim: pid ${pid} (session ${row.id}) was gone before the kill — ${(err as Error).message}`);
         }
       } else if (verdict.gone) {
-        console.log(`[agentus] reclaim: nothing to kill for session ${row.id} — ${verdict.why}`);
+        console.log(`[hermes-studio] reclaim: nothing to kill for session ${row.id} — ${verdict.why}`);
         forgetAgentOwner(this.#dataDir, pid);
       } else {
         // Alive but not provably ours. Do NOT kill; do drop the pid so the next boot does not
         // re-examine (and re-endanger) the same number.
         skipped++;
-        console.warn(`[agentus] reclaim: SKIPPED pid ${pid} (session ${row.id}) — ${verdict.why}`);
+        console.warn(`[hermes-studio] reclaim: SKIPPED pid ${pid} (session ${row.id}) — ${verdict.why}`);
       }
       if (row.status !== "closed") {
         // Only a turn that was ACTUALLY in flight can be reported as interrupted. A `ready` session
@@ -825,7 +825,7 @@ export class SessionManager {
     }
     if (skipped) {
       console.warn(
-        `[agentus] reclaim: ${skipped} recorded pid(s) left running — they are not this data dir's agents`
+        `[hermes-studio] reclaim: ${skipped} recorded pid(s) left running — they are not this data dir's agents`
         + ` (${this.#dataDir ?? "no data dir"})`,
       );
     }
@@ -1075,7 +1075,7 @@ export class SessionManager {
     // the process as a promise nobody keeps: log one line per waiter so the trace exists.
     for (const [target, rows] of this.#turnReplies) {
       for (const r of rows.values()) {
-        console.log(`[agentus] turn reply dropped on shutdown: ${target} -> ${r.origin}`);
+        console.log(`[hermes-studio] turn reply dropped on shutdown: ${target} -> ${r.origin}`);
       }
     }
     this.#turnReplies.clear();
@@ -1091,18 +1091,18 @@ export class SessionManager {
       (s) => s.busy && s.conn && s.info.acpSessionId && s.caps?.gatewayOwned,
     );
     if (running.length) {
-      console.log(`[agentus] shutdown: interrupting ${running.length} running turn(s) first`);
+      console.log(`[hermes-studio] shutdown: interrupting ${running.length} running turn(s) first`);
       for (const s of running) this.#dropPending(s);
       await Promise.allSettled(running.map(async (s) => {
         const id = s.info.acpSessionId as string;
         await Promise.race([
           s.conn!.cancel({ sessionId: id }).catch((err: unknown) => {
-            console.log(`[agentus] shutdown: cancel for ${s.info.id} failed (${errMessage(err)})`);
+            console.log(`[hermes-studio] shutdown: cancel for ${s.info.id} failed (${errMessage(err)})`);
           }),
           new Promise((r) => setTimeout(r, SHUTDOWN_CANCEL_WAIT_MS)),
         ]);
         const gone = await this.#awaitTurnGone(s.info.id, SHUTDOWN_CANCEL_WAIT_MS);
-        console.log(`[agentus] shutdown: ${s.info.id}: the turn ${gone ? "ended" : "is STILL running in the agent's gateway"}`);
+        console.log(`[hermes-studio] shutdown: ${s.info.id}: the turn ${gone ? "ended" : "is STILL running in the agent's gateway"}`);
       }));
     }
     const kills = [...this.#sessions.values()].map(async (s) => {
@@ -1394,10 +1394,10 @@ export class SessionManager {
     const timer = setTimeout(() => {
       this.#busyRetries.delete(id);
       if (this.#sessions.has(id)) return; // 已经活过来了（或有人先点了恢复）
-      console.log(`[agentus] session ${id}: retrying the resume after the agent's turn (waited ${Math.round(delay / 1000)}s)`);
+      console.log(`[hermes-studio] session ${id}: retrying the resume after the agent's turn (waited ${Math.round(delay / 1000)}s)`);
       this.resume(id, opts).catch((err) => {
         if (err instanceof SessionUnavailable && err.code === "busy_turn") return; // 它已经排了下一次
-        console.log(`[agentus] session ${id}: the scheduled resume still fails (${errMessage(err)})`);
+        console.log(`[hermes-studio] session ${id}: the scheduled resume still fails (${errMessage(err)})`);
         this.#emit({ t: "sessions", sessions: this.list() });
       });
     }, delay);
@@ -1428,7 +1428,7 @@ export class SessionManager {
       const holderGone = eta?.holderAlive === false;
       if (holderGone) {
         console.log(
-          `[agentus] session ${id}: the turn lease is held by a dead process (${eta?.holder}) — ` +
+          `[hermes-studio] session ${id}: the turn lease is held by a dead process (${eta?.holder}) — ` +
             `resuming now so the agent reclaims it instead of waiting out the lease`,
         );
       }
@@ -1436,7 +1436,7 @@ export class SessionManager {
       if (eta && eta.remainingMs > RESUME_BUSY_INLINE_MS && !holderGone && !opts.takeover) {
         const words = waitWords(eta.remainingMs);
         console.log(
-          `[agentus] session ${id}: the agent still holds a turn (${eta.holder || "unknown holder"}), ` +
+          `[hermes-studio] session ${id}: the agent still holds a turn (${eta.holder || "unknown holder"}), ` +
             `${words} left — not resuming yet`,
         );
         this.#scheduleBusyRetry(id, opts, eta.remainingMs);
@@ -1476,7 +1476,7 @@ export class SessionManager {
         }
         if (attempt >= RESUME_ATTEMPTS || !isTransientResumeFailure(err)) throw err;
         console.log(
-          `[agentus] session ${id}: resume refused by the agent (${errMessage(err)}) — ` +
+          `[hermes-studio] session ${id}: resume refused by the agent (${errMessage(err)}) — ` +
             `retrying in ${Math.round(RESUME_RETRY_MS / 1000)}s (attempt ${attempt}/${RESUME_ATTEMPTS})`,
         );
         await new Promise((r) => setTimeout(r, RESUME_RETRY_MS));
@@ -1523,7 +1523,7 @@ export class SessionManager {
       );
     }
     const detail = (run.stdout || run.stderr).trim().slice(0, 400);
-    console.log(`[agentus] session ${id}: discarded ${discarded} lost turn(s) — ${detail || "no output"}`);
+    console.log(`[hermes-studio] session ${id}: discarded ${discarded} lost turn(s) — ${detail || "no output"}`);
     return { discarded, detail };
   }
 
@@ -1557,7 +1557,7 @@ export class SessionManager {
     const declared = row.contextLimit && row.contextLimit > 0 ? Math.round(row.contextLimit) : null;
     const effective = declared && modelLimit && modelLimit > 0 ? Math.min(declared, Math.round(modelLimit)) : declared;
     if (declared && effective !== declared) {
-      console.log(`[agentus] context window for ${id} clamped ${declared} -> ${effective} (model remembers ${modelLimit})`);
+      console.log(`[hermes-studio] context window for ${id} clamped ${declared} -> ${effective} (model remembers ${modelLimit})`);
     }
     const shape = this.#spawnShape(row.backend, effective);
     if (!shape) throw new Error(`unknown backend: ${row.backend}`);
@@ -1826,7 +1826,7 @@ export class SessionManager {
               // Worth a line: the same "the agent was not idle yet, the write was dropped" shape that
               // ate the mode applies here, and a thinking depth that silently resets is #48 all over.
               console.log(
-                `[agentus] session ${id}: config "${cfg.id}" not replayed: ${errMessage(e)}`,
+                `[hermes-studio] session ${id}: config "${cfg.id}" not replayed: ${errMessage(e)}`,
               );
             });
         }
@@ -2013,7 +2013,7 @@ export class SessionManager {
         const live = this.#sessions.get(id);
         if (live) live.info.pendingModelId = null;
       }
-      console.log(`[agentus] pending model ${pending} for ${id} was refused: ${msg}`);
+      console.log(`[hermes-studio] pending model ${pending} for ${id} was refused: ${msg}`);
     }
   }
 
@@ -2032,13 +2032,13 @@ export class SessionManager {
       if (!r.ok) {
         // 唯一一处"操作者需要动手"的失败：set-model 已经把成功回给页面了，这句日志如果不显眼，
         // 下一次新会话会悄悄退回到旧默认（#72 的症状原样回来）。所以带上 backend 与会话，稳定可 grep。
-        console.warn(`[agentus] modelWriteBack: refused for ${info.id} (${info.backend}, picked ${modelId}): ${r.reason}`);
+        console.warn(`[hermes-studio] modelWriteBack: refused for ${info.id} (${info.backend}, picked ${modelId}): ${r.reason}`);
       }
       else if (r.changed) {
-        console.log(`[agentus] model default → ${r.model ?? modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend} (picked ${modelId})`);
+        console.log(`[hermes-studio] model default → ${r.model ?? modelId}${r.provider ? ` (provider ${r.provider})` : ""} for ${info.backend} (picked ${modelId})`);
       }
     } catch (e) {
-      console.log(`[agentus] model default write-back failed: ${errMessage(e)}`);
+      console.log(`[hermes-studio] model default write-back failed: ${errMessage(e)}`);
     }
   }
 
@@ -2073,7 +2073,7 @@ export class SessionManager {
       const desc = (s.models?.availableModels ?? []).find((m) => m.modelId === modelId)?.description ?? null;
       const providerHint = providerFromDescription(desc);
       if (!providerHint) {
-        console.warn(`[agentus] contextWindowWriteBack: no provider for ${modelId} on ${s.id} — remembered in store, config.yaml untouched`);
+        console.warn(`[hermes-studio] contextWindowWriteBack: no provider for ${modelId} on ${s.id} — remembered in store, config.yaml untouched`);
         return;
       }
       // Use the SAME authority split as writeModelDefault: splitChoiceId reads the config's named
@@ -2083,15 +2083,15 @@ export class SessionManager {
       try { configText = fs.readFileSync(file, "utf-8"); } catch { /* 交给 writeContextWindowFile 报错 */ }
       const keys = contextWriteKey(modelId, providerHint, configText);
       if (!keys) {
-        console.warn(`[agentus] contextWindowWriteBack: cannot resolve provider/model for ${modelId} on ${s.id} (unresolved endpoint) — config.yaml untouched`);
+        console.warn(`[hermes-studio] contextWindowWriteBack: cannot resolve provider/model for ${modelId} on ${s.id} (unresolved endpoint) — config.yaml untouched`);
         return;
       }
       const { provider: providerKey, model: bareModel } = keys;
       const r = writeContextWindowFile(file, providerKey, bareModel, budget);
-      if (!r.ok) console.warn(`[agentus] contextWindowWriteBack: refused for ${s.id} (${providerKey}/${bareModel}): ${r.reason}`);
-      else if (r.changed) console.log(`[agentus] context window → ${budget ?? "auto"} for ${providerKey}/${bareModel} (${s.id})`);
+      if (!r.ok) console.warn(`[hermes-studio] contextWindowWriteBack: refused for ${s.id} (${providerKey}/${bareModel}): ${r.reason}`);
+      else if (r.changed) console.log(`[hermes-studio] context window → ${budget ?? "auto"} for ${providerKey}/${bareModel} (${s.id})`);
     } catch (e) {
-      console.log(`[agentus] context window write-back failed: ${errMessage(e)}`);
+      console.log(`[hermes-studio] context window write-back failed: ${errMessage(e)}`);
     }
   }
 
@@ -2111,7 +2111,7 @@ export class SessionManager {
       o.currentValue = k;
       if (info.acpSessionId) {
         await s.conn.setSessionConfigOption({ sessionId: info.acpSessionId, configId: o.id, value: k as never }).catch((e) => {
-          console.log(`[agentus] session ${info.id}: remembered context ${k} not applied: ${errMessage(e)}`);
+          console.log(`[hermes-studio] session ${info.id}: remembered context ${k} not applied: ${errMessage(e)}`);
         });
       }
       break option;
@@ -2218,8 +2218,8 @@ export class SessionManager {
     if (!blocks.length) throw new Error("empty prompt");
     // 计划提示 / 驾驶舱 CLI 现在都由别处承载，这里一次都不注入：
     //   · 计划用法 → update_plan 工具自己的 description（首句就是触发条件）+ SOUL.md
-    //   · 跨会话 CLI → agentus-cockpit skill（握手时经 HERMES_EXTERNAL_SKILLS_DIRS 挂载）
-    // 这里曾经每轮（或首轮）往 prompt 塞一个 agentus://plan resource 块，既浪费 token，
+    //   · 跨会话 CLI → hermes-studio-cockpit skill（握手时经 HERMES_EXTERNAL_SKILLS_DIRS 挂载）
+    // 这里曾经每轮（或首轮）往 prompt 塞一个 hermes-studio://plan resource 块，既浪费 token，
     // 又会被标题生成与 Hindsight 当成用户原话吞进去（content.py 把所有 text 拼成一条）。
     // 保留 #planReminder() 与 planHint 设置仅为将来需要恢复时改一处即可，当前不接线。
     // 语音通话模式（issue #48）: entering, staying in, and leaving a call each owe the agent one
@@ -2259,7 +2259,7 @@ export class SessionManager {
     // `originKind` 的说明。写在这里而不是 append 里，是因为 prompt() 是唯一知道「这是投递」的地方。
     if (opts.origin?.sessionId && opts.originKind) {
       try { this.#store.recordEdge(opts.origin.sessionId, sessionId, opts.originKind, msg.createdAt); }
-      catch (e) { console.error(`[agentus] recordEdge failed: ${String((e as Error)?.message ?? e)}`); }
+      catch (e) { console.error(`[hermes-studio] recordEdge failed: ${String((e as Error)?.message ?? e)}`); }
     }
     this.#emit({ t: "message", message: msg });
     // A brand-new slot is called "<backend> @ <dir>" until something better exists, and the
@@ -2367,7 +2367,7 @@ export class SessionManager {
     // 开关关掉的是「后台任务跑完了把我叫醒」，那是噪音；跨会话派活的回推是调用方正在等的回执，
     // 一并关掉就是让它在另一头永远等下去（而它已经收到 delivered: true 了）。
     if (item.kind === "background" && !this.#completionWake()) {
-      console.log(`[agentus] background completion dropped for ${s.info.id}: 唤醒关闭`);
+      console.log(`[hermes-studio] background completion dropped for ${s.info.id}: 唤醒关闭`);
       return;
     }
     if (s.busy) {
@@ -2391,7 +2391,7 @@ export class SessionManager {
       // instead of throwing away the agent's own result. A merged batch goes back WHOLE (#93-4) —
       // restoring only the merged text would lose the per-job lines the next merge needs.
       s.pendingCompletions.unshift(...(batch ?? [item]));
-      console.log(`[agentus] completion held for ${s.info.id}: ${errMessage(err)}`);
+      console.log(`[hermes-studio] completion held for ${s.info.id}: ${errMessage(err)}`);
     }
   }
 
@@ -2439,7 +2439,7 @@ export class SessionManager {
         const back = this.#sessions.get(e.origin);
         if (back) this.#queueOrWakeCompletion(back, item);
       } catch (err) {
-        console.log(`[agentus] turn reply dropped for ${e.origin}: ${errMessage(err)}`);
+        console.log(`[hermes-studio] turn reply dropped for ${e.origin}: ${errMessage(err)}`);
       }
     }
   }
@@ -2533,10 +2533,10 @@ export class SessionManager {
     // talked over a reply still being read aloud: the agent's turn was already over, so the
     // barge-in's cancel landed on an idle session.
     if (!s.busy) {
-      console.log(`[agentus] cancel ignored for ${sessionId}: no turn is running`);
+      console.log(`[hermes-studio] cancel ignored for ${sessionId}: no turn is running`);
       return false;
     }
-    console.log(`[agentus] cancel sent for ${sessionId}`);
+    console.log(`[hermes-studio] cancel sent for ${sessionId}`);
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch(() => {});
     return true;
   }
@@ -2563,7 +2563,7 @@ export class SessionManager {
       // hold the request for as long as the agent's current tool call runs, so answer "delivered,
       // ending at its next step" and let the watcher report the end when it lands.
       console.log(
-        `[agentus] stop ${id}: cancel delivered; the turn is still inside its current step ` +
+        `[hermes-studio] stop ${id}: cancel delivered; the turn is still inside its current step ` +
           `after ${STOP_SETTLE_MS}ms — watching the lease instead of calling it a failure`,
       );
       this.#watchStopSettles(id);
@@ -2575,7 +2575,7 @@ export class SessionManager {
     const leaseHeld = eta !== null;
     if (!leaseHeld) {
       // 活槽位没在跑，或者根本没有槽位：两种都是「没有回合可停」，不值得区分。
-      console.log(`[agentus] stop ${id}: nothing is running`);
+      console.log(`[hermes-studio] stop ${id}: nothing is running`);
       return { status: "nothing_running", woke: false };
     }
     let woke = false;
@@ -2586,7 +2586,7 @@ export class SessionManager {
       } catch (err) {
         // `unconfirmed` keeps its narrow meaning: NOTHING was delivered. Everything that did
         // reach the agent is `stopping` at worst (#109).
-        console.log(`[agentus] stop ${id}: waking the slot failed (${errMessage(err)})`);
+        console.log(`[hermes-studio] stop ${id}: waking the slot failed (${errMessage(err)})`);
         return { status: "unconfirmed", woke: false };
       }
     }
@@ -2598,18 +2598,18 @@ export class SessionManager {
     // （`acp_adapter/gateway_server.py::_cancel_foreign_turn`，pin 在 release notes 里）。对端若还是旧
     // 适配器，结果只是 `unconfirmed`（诚实），不会误杀——驾驶舱判断不了对端版本，所以这里写清这个前提。
     console.log(
-      `[agentus] stop ${id}: interrupting a turn this cockpit did not start ` +
+      `[hermes-studio] stop ${id}: interrupting a turn this cockpit did not start ` +
         `(${eta?.holder || "unknown holder"})${woke ? ", after waking the slot" : ""}`,
     );
     let delivered = true;
     await s.conn.cancel({ sessionId: s.info.acpSessionId }).catch((err: unknown) => {
       delivered = false;
-      console.log(`[agentus] stop ${id}: session/cancel failed (${errMessage(err)})`);
+      console.log(`[hermes-studio] stop ${id}: session/cancel failed (${errMessage(err)})`);
     });
     if (!delivered) return { status: "unconfirmed", woke };
     if (await this.#awaitTurnGone(id, STOP_SETTLE_MS)) return { status: "stopped", woke };
     console.log(
-      `[agentus] stop ${id}: cancel delivered to a turn this cockpit did not start; still inside ` +
+      `[hermes-studio] stop ${id}: cancel delivered to a turn this cockpit did not start; still inside ` +
         `its current step after ${STOP_SETTLE_MS}ms — watching the lease`,
     );
     this.#watchStopSettles(id);
@@ -2646,7 +2646,7 @@ export class SessionManager {
         for (;;) {
           if (await this.#awaitTurnGone(id, 500)) {
             console.log(
-              `[agentus] stop ${id}: the turn reached its boundary and ended after ` +
+              `[hermes-studio] stop ${id}: the turn reached its boundary and ended after ` +
                 `${Math.round((Date.now() - startedAt) / 100) / 10}s`,
             );
             this.#emitSessions();
@@ -2658,7 +2658,7 @@ export class SessionManager {
             // (#108). Say it in the transcript — the receipt already said "delivered", and the
             // operator must not be left believing a stop that never happens.
             console.log(
-              `[agentus] stop ${id}: still running ${Math.round(STOP_WATCH_MS / 1000)}s after the ` +
+              `[hermes-studio] stop ${id}: still running ${Math.round(STOP_WATCH_MS / 1000)}s after the ` +
                 `cancel was delivered — the agent has not reached a turn boundary`,
             );
             // Written to the transcript, not only pushed: a stop that never happens is exactly the
@@ -2727,13 +2727,13 @@ export class SessionManager {
         // implemented" is a real case: keep the pick (replaying it on the next resume beats silently
         // reverting to the row default, which looks like the operator's choice being undone).
         if (/not found|Unsupported/i.test(msg)) {
-          console.log(`[agentus] session ${live.info.id}: mode "${wanted}" is advertised but not implemented: ${msg}`);
+          console.log(`[hermes-studio] session ${live.info.id}: mode "${wanted}" is advertised but not implemented: ${msg}`);
           return done();
         }
         // Only the not-idle-yet refusals deserve another attempt (`unknown_execution`: the owner lost the
         // turn's fence and takes no control message until it settles either).
         if (/idle|busy|unknown_execution|already running/i.test(msg)) continue;
-        console.log(`[agentus] session ${live.info.id}: mode "${wanted}" refused: ${msg}`);
+        console.log(`[hermes-studio] session ${live.info.id}: mode "${wanted}" refused: ${msg}`);
         return false;
       }
       // The promise resolved — now wait for the echo. That, and only that, is the evidence.
@@ -2747,12 +2747,12 @@ export class SessionManager {
       // signal that exists, so keep the previous behaviour instead of never recording anything.
       if (!live.caps.gatewayOwned) return done();
       console.log(
-        `[agentus] session ${live.info.id}: mode "${wanted}" accepted by the agent but never echoed back ` +
+        `[hermes-studio] session ${live.info.id}: mode "${wanted}" accepted by the agent but never echoed back ` +
           `(attempt ${attempt + 1}/${gapBefore.length})`,
       );
     }
     console.log(
-      `[agentus] session ${live.info.id}: mode "${wanted}" NOT applied after ${gapBefore.length} attempts ` +
+      `[hermes-studio] session ${live.info.id}: mode "${wanted}" NOT applied after ${gapBefore.length} attempts ` +
         `(the runtime still reports "${live.info.modes?.currentModeId ?? "unknown"}"): ` +
         `${lastErr ? errMessage(lastErr) : "no error"} — pick left unrecorded so the next resume retries`,
     );
@@ -2781,7 +2781,7 @@ export class SessionManager {
     const ids = (modes.availableModes ?? []).map((m) => m.id);
     if (!ids.includes(wanted)) {
       console.log(
-        `[agentus] session ${live.info.id}: default permission mode "${wanted}" is not advertised by ` +
+        `[hermes-studio] session ${live.info.id}: default permission mode "${wanted}" is not advertised by ` +
           `${String(live.info.backend)} (${ids.join(", ") || "no modes"}) — sending nothing`,
       );
       return;
@@ -2797,12 +2797,12 @@ export class SessionManager {
     // that could not be moved stays unrecorded and in the agent's own mode, which is the truth.
     const landed = await this.#settleMode(live, acpSessionId, wanted, true);
     if (landed) {
-      console.log(`[agentus] session ${live.info.id}: default permission mode -> ${wanted}`);
+      console.log(`[hermes-studio] session ${live.info.id}: default permission mode -> ${wanted}`);
     } else {
       // qodercli advertises modes but answered -32601 in the design probe, so "advertised but not
       // implemented" is a real case — same tolerance as setMode(), and never a failed spawn.
       console.log(
-        `[agentus] session ${live.info.id}: default permission mode "${wanted}" not applied ` +
+        `[hermes-studio] session ${live.info.id}: default permission mode "${wanted}" not applied ` +
           `(the agent keeps "${live.info.modes?.currentModeId ?? "unknown"}") — the slot is still usable`,
       );
     }
@@ -2884,7 +2884,7 @@ export class SessionManager {
       // pick the operator made. Popping "config not applied" for it is a false alarm (the hy4-flash
       // "Reasoning effort medium not applied" report). Keep it in the log for diagnostics only.
       if (opts.internal) {
-        console.log(`[agentus] internal config "${configId}"=${requested} rejected by ${sessionId} (agent runs ${actual}) — not surfacing to the operator`);
+        console.log(`[hermes-studio] internal config "${configId}"=${requested} rejected by ${sessionId} (agent runs ${actual}) — not surfacing to the operator`);
       } else {
         this.#emit({
           t: "config-rejected",
@@ -2918,7 +2918,7 @@ export class SessionManager {
    *  opted back into native frames (`nativePlanSource: "acp"`).
    *
    *  Injected rather than registered anywhere, on purpose: `mcpServers` is a per-session parameter
-   *  of `session/new` / `session/load` / `session/resume`, so the tool exists exactly while Agentus
+   *  of `session/new` / `session/load` / `session/resume`, so the tool exists exactly while Hermes Studio
    *  is driving the session and vanishes for an agent started from the CLI, cron or Studio — which
    *  is the whole difference from a `config.yaml` entry like the `ekko_studio_*` ones (§4).
    *  The token in `env` is minted for THIS session, so a copied-out command writes only its own. */
@@ -2963,7 +2963,7 @@ export class SessionManager {
    * row whose spec names `skillsDir` without one.
    *
    * Failures are WARNINGS, never session failures: a slot whose skill could not be written still runs
-   * — it just learns about the CLI from the one-line reminder and `agentus cockpit skill` instead of
+   * — it just learns about the CLI from the one-line reminder and `hermes-studio cockpit skill` instead of
    * native discovery. Turning a read-only-to-us directory (a home owned by root, a read-only mount)
    * into a dead slot would be a much worse trade than a missing manual.
    */
@@ -2973,12 +2973,12 @@ export class SessionManager {
       const r = installSkills(resolveSkillsDir(spec.skillsDir, home));
       if (r.installed.length || r.updated.length) {
         console.log(
-          `[agentus] skills → ${r.dir}: ` +
+          `[hermes-studio] skills → ${r.dir}: ` +
             [...r.installed.map((n) => `${n} (new)`), ...r.updated.map((n) => `${n} (updated)`)].join(", "),
         );
       }
     } catch (err) {
-      console.warn(`[agentus] could not install skills into ${spec.skillsDir} (${home}): ${errMessage(err)}`);
+      console.warn(`[hermes-studio] could not install skills into ${spec.skillsDir} (${home}): ${errMessage(err)}`);
     }
   }
 
@@ -3053,7 +3053,7 @@ export class SessionManager {
     if (!live.planFramesDropped) {
       live.planFramesDropped = true;
       console.log(
-        `[agentus] plan frame ignored for ${live.info.id}: backend '${live.info.backend}' is MCP-driven ` +
+        `[hermes-studio] plan frame ignored for ${live.info.id}: backend '${live.info.backend}' is MCP-driven ` +
         `(the card is fed by the agentus-plan tool)`,
       );
     }
@@ -3249,7 +3249,7 @@ export class SessionManager {
     return {
       type: "resource",
       resource: {
-        uri: `agentus://plan/${s.info.id}`,
+        uri: `hermes-studio://plan/${s.info.id}`,
         mimeType: "text/plain",
         text: body.join("\n"),
       },
@@ -3508,19 +3508,19 @@ export class SessionManager {
           // deadline does — otherwise five quiet slots are a permanent ~700 MB floor.
           if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
           console.log(
-            `[agentus] warm slot expired: ${s.info.id} (${fmt(age)} untouched, warm ttl ${fmt(warmTtlMs)})`,
+            `[hermes-studio] warm slot expired: ${s.info.id} (${fmt(age)} untouched, warm ttl ${fmt(warmTtlMs)})`,
           );
         } else if (hasBackground) {
           // Idle time is not the whole question: the agent still OWNS a running child, so the short
           // clock does not apply — only the long deadline can reclaim it.
           if (!(warmTtlMs > 0) || age < warmTtlMs) continue;
           console.log(
-            `[agentus] idle reap: ${s.info.id} (background task still running after ${fmt(age)}, hard limit ${fmt(warmTtlMs)})`,
+            `[hermes-studio] idle reap: ${s.info.id} (background task still running after ${fmt(age)}, hard limit ${fmt(warmTtlMs)})`,
           );
         } else {
           if (!(idleMs > 0) || age < idleMs) continue;
           console.log(
-            `[agentus] idle reap: ${s.info.id} (${Math.round(age / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
+            `[hermes-studio] idle reap: ${s.info.id} (${Math.round(age / 60_000)} min idle, limit ${Math.round(idleMs / 60_000)} min)`,
           );
         }
         // Fire and forget: the reaper skips `starting` slots, so there is no in-flight handshake to
@@ -3596,7 +3596,7 @@ export class SessionManager {
     if (!pending) {
       // Someone answered a request we no longer hold (our timeout fired, or the agent gave up
       // first). Silently returning false made a click look like a broken button.
-      console.log(`[agentus] permission answer dropped for ${sessionId}: request ${requestId} is not pending`);
+      console.log(`[hermes-studio] permission answer dropped for ${sessionId}: request ${requestId} is not pending`);
       return false; // already timed out / resolved / never existed
     }
     clearTimeout(pending.timer);

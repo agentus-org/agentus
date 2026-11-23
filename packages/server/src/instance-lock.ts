@@ -9,7 +9,7 @@
 //
 // So identity is claimed BEFORE anything that can touch another instance's processes:
 //   · the claim is an O_EXCL `server.pid` in the data dir (atomic on every filesystem we ship to),
-//   · a claim is only honoured while its pid is alive AND still looks like an agentus server,
+//   · a claim is only honoured while its pid is alive AND still looks like an hermes-studio server,
 //   · a dead or foreign holder is replaced (crash/SIGKILL must not brick the data dir),
 //   · nothing here kills anything — refusing to start is the whole remedy.
 
@@ -86,7 +86,7 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-/** Does this argv look like an agentus server? Deliberately narrow: a pid that is merely alive must
+/** Does this argv look like an hermes-studio server? Deliberately narrow: a pid that is merely alive must
  *  never block a restart because its number was recycled by an unrelated program. Covers the source
  *  entry (`packages/server/src/index.ts`, tsx or node), the built one (`dist/server/index.js`) and a
  *  globally installed package (`…/node_modules/agentus/…`). */
@@ -125,7 +125,7 @@ function readHolder(lockPath: string): LockHolder | null {
   }
 }
 
-/** Is the recorded holder still a live agentus server on THIS data dir? */
+/** Is the recorded holder still a live hermes-studio server on THIS data dir? */
 function judgeHolder(holder: LockHolder, dataDir: string): { alive: boolean; why: string } {
   if (holder.pid === process.pid) return { alive: false, why: `claim names this very pid (${holder.pid})` };
   if (!pidAlive(holder.pid)) return { alive: false, why: `pid ${holder.pid} is gone` };
@@ -221,7 +221,7 @@ export function acquireInstanceLock(dataDir: string, opts: AcquireOptions = {}):
       return { ok: false, holder, why: verdict.why };
     }
     tookOver = holder;
-    console.log(`[agentus] instance lock: taking over ${lockPath} — ${verdict.why}`);
+    console.log(`[hermes-studio] instance lock: taking over ${lockPath} — ${verdict.why}`);
     try { fs.unlinkSync(lockPath); } catch { /* someone else cleaned it: the next open decides */ }
   }
 }

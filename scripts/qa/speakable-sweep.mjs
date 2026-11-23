@@ -6,7 +6,7 @@
 //   · 长按菜单里「读整条」带时长预告；
 //   · 菜单里多了「全文总结版播报」，点下去真的会去打 /speech-summary（没配 key 时报错，而不是假装成功）。
 //
-// 自给自足：自己的 Agentus（mock 后端，AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge（CDP）。
+// 自给自足：自己的 Hermes Studio（mock 后端，AGENTUS_AUTH=off）、临时数据目录、操作员的 Edge（CDP）。
 //   CDP=http://127.0.0.1:9223 node scripts/qa/speakable-sweep.mjs
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
