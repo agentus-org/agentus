@@ -91,7 +91,8 @@ const ENV_DATA_DIR = process.env.HERMES_STUDIO_DATA?.trim() || null;
 let migratedFromLegacy = false;
 if (!ENV_DATA_DIR && !fs.existsSync(NEW_DEFAULT_DATA_DIR) && hasData(LEGACY_DEFAULT_DATA_DIR)) {
   try {
-    fs.renameSync(LEGACY_DEFAULT_DATA_DIR, NEW_DEFAULT_DATA_DIR);
+    // COPY, never move: the legacy ~/.agentus is the rollback path if the renamed build fails.
+    fs.cpSync(LEGACY_DEFAULT_DATA_DIR, NEW_DEFAULT_DATA_DIR, { recursive: true, force: false });
     migratedFromLegacy = true;
   } catch (e) {
     console.error(`[hermes-studio] could not migrate ${LEGACY_DEFAULT_DATA_DIR} -> ${NEW_DEFAULT_DATA_DIR}:`, e);
@@ -190,13 +191,14 @@ if (instanceLock.tookOver) {
   );
 }
 
-// ONE-TIME MIGRATION: rename the sqlite file (and its WAL/SHM/JOURNAL siblings) to the new name
-// before the store opens. Idempotent — after the first boot the legacy names are simply absent.
+// ONE-TIME MIGRATION: COPY the sqlite file (and WAL/SHM/JOURNAL siblings) to the new name before
+// the store opens. Idempotent — after the first boot the new names exist and nothing is recopied.
+// COPY, never move: the legacy agentus.sqlite* stays as the rollback path.
 for (const suffix of ["", "-wal", "-shm", "-journal"]) {
   const from = path.join(DATA_DIR, "agentus.sqlite" + suffix);
   const to = path.join(DATA_DIR, "hermes-studio.sqlite" + suffix);
   if (fs.existsSync(from) && !fs.existsSync(to)) {
-    try { fs.renameSync(from, to); } catch (e) { console.error(`[hermes-studio] sqlite migration ${from} -> ${to}:`, e); }
+    try { fs.copyFileSync(from, to); } catch (e) { console.error(`[hermes-studio] sqlite migration ${from} -> ${to}:`, e); }
   }
 }
 const store = new Store(path.join(DATA_DIR, "hermes-studio.sqlite"));

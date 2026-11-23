@@ -35,7 +35,7 @@ const home1 = path.join(scratch, "home1");
 fs.mkdirSync(path.join(home1, ".agentus", "sessions"), { recursive: true });
 fs.writeFileSync(path.join(home1, ".agentus", "sessions", "old-session.json"), "KEEPME");
 let out = where({ HOME: home1 });
-check("legacy ~/.agentus renamed to ~/.hermes-studio", fs.existsSync(path.join(home1, ".hermes-studio")) && !fs.existsSync(path.join(home1, ".agentus")));
+check("legacy ~/.agentus copied to ~/.hermes-studio (original kept for rollback)", fs.existsSync(path.join(home1, ".hermes-studio")) && fs.existsSync(path.join(home1, ".agentus")));
 check("existing data survived the rename", fs.readFileSync(path.join(home1, ".hermes-studio", "sessions", "old-session.json"), "utf8") === "KEEPME");
 check("boot resolution reports the migration", out.includes("migrated from ~/.agentus"), out.split("\n").find((l) => l.includes("data dir"))?.trim());
 
@@ -99,7 +99,7 @@ for (let i = 0; i < 60 && !up5; i++) {
 check("server boots on migrated legacy data", up5, up5 ? "" : logs.slice(-300));
 try {
   const newDb = path.join(home5, ".hermes-studio", "hermes-studio.sqlite");
-  check("legacy sqlite renamed on boot", fs.existsSync(newDb) && !fs.existsSync(legacyDb));
+  check("legacy sqlite copied on boot (original kept for rollback)", fs.existsSync(newDb) && fs.existsSync(legacyDb));
   if (fs.existsSync(newDb)) {
     const db = new DatabaseSync(newDb, { readOnly: true });
     const row = db.prepare("SELECT value FROM migration_probe").get();

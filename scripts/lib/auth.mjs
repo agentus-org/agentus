@@ -22,7 +22,8 @@ export function dataDir() {
   // Mirror the server's one-time migration (packages/server/src/index.ts). By the time a script
   // runs, the server has usually already renamed the dir; this covers scripts that run first.
   if (!fs.existsSync(def) && has(legacy)) {
-    try { fs.renameSync(legacy, def); } catch { /* server logs the reason */ }
+    // Copy, not move — keep the legacy dir as a rollback path.
+    try { fs.cpSync(legacy, def, { recursive: true, force: false }); } catch { /* server logs the reason */ }
   }
   return has(def) || !has(repo) ? def : repo;
 }
