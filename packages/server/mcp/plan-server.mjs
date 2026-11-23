@@ -1,5 +1,5 @@
-import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 #!/usr/bin/env node
+import "../../shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 /**
  * `studio-plan` — the cockpit's plan tool, as a stdio MCP server.
  *

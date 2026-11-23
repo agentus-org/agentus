@@ -1,5 +1,5 @@
-import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 #!/usr/bin/env node
+import "../packages/shared/src/env-alias.mjs"; // env-alias: mirror legacy AGENTUS_* -> HERMES_STUDIO_*
 /**
  * `hermes-studio <command>` — the CLI client: sessions, their transcripts and plans, and the gated
  * cross-session `send`. Dispatched by `bin/hermes-studio.mjs`, which is also what the cockpit hands agents
