@@ -26,4 +26,11 @@ This release changes `packages/server` (new upload endpoint). Restart `:8788` to
 ---
 
 Release readback (internal, not part of the public notes):
-- pending: fork tag / studio tag / npm shasum / CI / gate
+- fork tag: studio/v0.23.0/merge-20261123-2240 (64b5826d0c), fork Release created (non-draft)
+- studio tag: v0.26.0 -> 62e9b28 (annotated)
+- npm shasum: 640f5b181bd99ab0e22cb8305a4dffb9a1690e27 (matches publish output, staged ~6min)
+- CI: 45197063860 success (head 62e9b28)
+- gate: 13 passed, 0 failed, 1 warnings GREEN
+- package-smoke: PASS
+- live: needs restart :8788 to activate the new upload endpoint (346dddf is in tag, not promoted yet)
+- issues closed: #113, #114
