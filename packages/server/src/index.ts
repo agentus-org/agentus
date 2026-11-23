@@ -19,6 +19,7 @@ import { describeAcpError } from "./acp/errors.js";
 import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
+import { diskFileName, maxUploadBytes, parseMultipart, safeUploadName, uploadDir } from "./upload.js";
 import { acquireInstanceLock, humanAge } from "./instance-lock.js";
 import { repairMisTieredTitles } from "./title-repair.js";
 import { sweepStaleIdentities } from "./cockpit/identity-file.js";
@@ -1931,6 +1932,24 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
         throw e;
       }
+    }
+    // Multipart attachment upload (issue #113): bytes land on disk, the message carries a path.
+    // This is the missing half of the resource_link outlet in session-manager.buildPromptBlocks —
+    // no new ACP field, and the bytes never enter the transcript. Behind the same /api auth gate.
+    if (url.pathname === "/api/upload" && req.method === "POST") {
+      const cap = maxUploadBytes();
+      const capLabel = cap >= 1048576 ? `${Math.round(cap / 1048576)}MB` : `${cap} bytes`;
+      let raw: Buffer;
+      try { raw = await readBody(req, cap + 4 * 1024 * 1024); }
+      catch { return send(res, 413, { error: `file too large (> ${capLabel})` }); }
+      const part = parseMultipart(raw, String(req.headers["content-type"] ?? ""));
+      if (!part) return send(res, 400, { error: "expected multipart/form-data with a file part" });
+      if (part.bytes.length > cap) return send(res, 413, { error: `file too large (> ${capLabel})` });
+      const dir = uploadDir(DATA_DIR, url.searchParams.get("sessionId"));
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const filePath = path.join(dir, diskFileName(part.name));
+      fs.writeFileSync(filePath, part.bytes, { mode: 0o600 });
+      return send(res, 200, { name: safeUploadName(part.name), path: filePath, bytes: part.bytes.length });
     }
     if (url.pathname === "/api/stt" && req.method === "POST") {
       const audio = await readBody(req);
