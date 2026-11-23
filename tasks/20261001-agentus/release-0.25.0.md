@@ -15,7 +15,7 @@
 - Fork build: `agentus/v0.23.0/merge-20261123-1847` on LiangYang666/hermes-agent — adds the Hermes Studio key compatibility (new names with legacy fallback); without it a renamed cockpit's per-session toolset/observer settings would be ignored by the fork.
 - Restart required: this release changes `packages/server` and `packages/shared` (startup, migration, contracts). Restart `:8788` to activate it; in-running slots disconnect and resume automatically. On first start the data migration copies (does not delete) the old store, so nothing is lost.
 - Hard-refresh the browser tab (Cmd+Shift+R) after restart to pick up the new web bundle and asset hash.
-- Full changelog: https://github.com/agentus-org/agentus/compare/v0.24.1...v0.25.0
+- Full changelog: https://github.com/hermes-studio-org/hermes-studio/compare/v0.24.1...v0.25.0
 
 ---
 
