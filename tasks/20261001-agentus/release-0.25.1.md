@@ -17,4 +17,11 @@
 ---
 
 Release readback (internal, not part of the public notes):
-- pending: fork tag / agentus tag / npm shasum / CI / gate
+- fork tag: studio/v0.23.0/merge-20261123-1847 (823b953942), no new fork build, code unchanged from v0.25.0
+- repo: hermes-studio-org/hermes-studio (transferred from agentus-org/agentus; old URL 301-redirects)
+- studio tag: v0.25.1 -> c168ad1 (annotated)
+- npm shasum: c1716e4c946cb6eadc877dacac7eb84865b24a4e (matches publish output, landed after staged window)
+- CI: 45174897152 success (head c168ad1)
+- gate: 12 passed, 0 failed, 2 warnings GREEN
+- package-smoke: PASS
+- live: no restart (346dddf is ancestor of v0.25.1)
