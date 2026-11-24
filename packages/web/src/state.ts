@@ -2890,8 +2890,12 @@ if (typeof window !== "undefined") {
  * `sessions` snapshot, so it survives reconnects; `busy` still wins for the instant between our own
  * send and the status frame that confirms it.
  */
-export function busyNow(v: { busy: boolean; info: { status: string } } | null | undefined): boolean {
-  return Boolean(v && (v.busy || v.info.status === "running"));
+export function busyNow(v: { busy: boolean; info: { status: string; foreignBusy?: boolean } } | null | undefined): boolean {
+  // #115: `foreignBusy` is a turn the gateway owner admitted without our prompt() (background wake,
+  // cron, another surface). It has no send of ours to confirm and no turn-end frame of ours to wait
+  // for — it is purely a "the agent is running, show STOP" signal, so it belongs here alongside the
+  // status/busy checks and nowhere near the queue/usage/settle logic.
+  return Boolean(v && (v.busy || v.info.foreignBusy || v.info.status === "running"));
 }
 
 /** The URL that serves a local file's raw bytes (auth rides on the session cookie, same as

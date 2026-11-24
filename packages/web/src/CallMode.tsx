@@ -26,7 +26,7 @@
 //     is on the call (the ⚙ in the corner); callSettings.ts holds the values.
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { cockpit, type MsgView } from "./state";
+import { busyNow, cockpit, type MsgView } from "./state";
 import { dictation, micEchoCancelled, micInfo, pausePlayback, playbackLevel, playbackRms, playbackWave, resumePlayback, setCallActive, speaker, useSpeaker, useVoicePrefs } from "./voice";
 import { audioCtx as sfxCtx, bedAvailable, loadSfx, playCut as playCutSound, setBed, setWork, ready as sfxReadyBufs, sfxStatus, unlockAudio } from "./sfx";
 import { MiniMarkdown } from "./MiniMarkdown";
@@ -1298,7 +1298,10 @@ export function CallMode({ sessionId, onClose, onKeyboard, renderTranscript, tus
     cutKeyRef.current = rawAgentKeyRef.current || replyKeyRef.current;   // this reply is over
     cutAtRef.current = Date.now();
     speaker.stop();
-    const running = cockpit.getSnapshot().sessions.find((s) => s.id === sessionId)?.status === "running";
+    // #115: a foreign turn (admitted by the gateway owner, e.g. a background wake) has no running
+    // status of ours, so check busyNow() — which folds in foreignBusy — or a call barge-in would fail
+    // to cancel the turn actually holding the floor.
+    const running = busyNow(cockpit.byId.get(sessionId));
     if (running) cockpit.send({ t: "cancel", sessionId });
     // 确认语按「操作者确实从它手里拿走了话筒」触发，不按 cancel 发没发出去：回合可能刚好在这一瞬
     // 结束（`running` 已经是 false，于是 cancel 不发），但操作者眼前还是「思考中/正在说」——

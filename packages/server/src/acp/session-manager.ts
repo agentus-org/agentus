@@ -556,6 +556,18 @@ interface LiveSession {
    *  operator has to notice and redo by hand. Drained one at a time at turn-end — each opens its own
    *  turn, and two at once is a race the agent cannot mediate. */
   pendingCompletions: PendingCompletion[];
+  /** True when THIS manager flipped info.status to running because the agent-side turn lease says a
+   *  turn is running, but the turn was NOT submitted by our prompt() (a background wake, a cron, a
+   *  completion admitted by the gateway owner). Only such slots may be restored to ready by the
+   *  lease watchdog — a turn we submitted owns its own running state until prompt() settles it. */
+  foreignBusy?: boolean;
+  /** #115: consecutive watchdog ticks that saw no lease. We only settle a foreign turn after two in a
+   *  row — busyTurnEta() returns null both for "no row" AND for "read failed" (locked/unmigrated db), so a
+   *  single null is not enough to conclude the turn is over. */
+  noLeaseTicks?: number;
+  /** #115: our own prompt() just settled; give the agent a moment to drop its lease before the watchdog
+   *  is allowed to interpret a still-present lease as somebody else's turn. */
+  ownTurnLeaseGraceUntil?: number;
 }
 
 type Emitter = (evt: ServerEvent) => void;
@@ -569,6 +581,13 @@ export class SessionManager {
   /** Sessions whose stop was delivered but not yet confirmed — one watcher each, so repeated stops
    *  do not stack pollers. */
   #stopWatchers = new Set<string>();
+  /** Single shared 1s watchdog for "the agent has a turn running but WE never submitted one" (issue
+   *  #115): gateway-owned slots whose turn came from a background wake / cron / another surface never
+   *  pass through prompt(), so s.busy stays false and the composer keeps showing SEND. The agent-side
+   *  turn lease is the only route-independent truth. Lazy: started on first live gatewayOwned slot,
+   *  stopped when none remain, and unref'd so it never holds the process open. There is NO per-session
+   *  polling and no polling at all for in-process backends or slots with no lease ever seen. */
+  #foreignBusyTimer: NodeJS.Timeout | null = null;
   /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
    *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
    *  turn with no restart and no session to hibernate. */
@@ -709,7 +728,8 @@ export class SessionManager {
   }
 
   isBusy(id: string): boolean {
-    return this.#sessions.get(id)?.busy ?? false;
+    const s = this.#sessions.get(id);
+    return Boolean(s && (s.busy || s.foreignBusy));
   }
 
   /** The sessions `origin` has handed work to and is still waiting on — the reply registrations are
@@ -1383,6 +1403,66 @@ export class SessionManager {
     const home = buildSpawnEnv(shape.spec).home;
     // 租约键是谱系（conversation）根；本地会话通常就是 ACP id 本身，行 id 兜底。
     return busyTurnEta(home, [row.acpSessionId, id]);
+  }
+
+  /** #115: a turn the gateway owner admitted without our prompt() (background wake, cron, another
+   *  window) has a turn lease in the agent's state.db but never touches s.busy, so the composer keeps
+   *  showing SEND and the operator cannot stop what is running. Reflect the lease into info.status so
+   *  the SAME status→STOP logic that already works for our own turns applies. One shared, lazy, unref'd
+   *  timer; only gatewayOwned live slots are ever read, and only while at least one exists. */
+  #maybeStartForeignBusyWatch(): void {
+    if (this.#foreignBusyTimer) return;
+    const any = [...this.#sessions.values()].some((s) => s.caps.gatewayOwned && !s.tornDown);
+    if (!any) return;
+    const timer = setInterval(() => this.#foreignBusyTick(), 1000);
+    timer.unref?.();
+    this.#foreignBusyTimer = timer;
+  }
+
+  #foreignBusyTick(): void {
+    let anyGatewayOwned = false;
+    for (const s of [...this.#sessions.values()]) {
+      if (!s.caps.gatewayOwned || s.tornDown) continue;
+      anyGatewayOwned = true;
+      // A terminal slot stays terminal — never revive a dead/erroring viewer into "running" just
+      // because a lease lingered (# review R2). Our own in-flight turn owns its state outright.
+      if (s.busy || ["error", "closed", "reaped", "starting"].includes(s.info.status)) continue;
+      // Right after one of OUR turns settled the agent may not have dropped its lease yet; don't
+      // misread that残留 as a foreign turn (# review R1 F1).
+      if (Date.now() < (s.ownTurnLeaseGraceUntil ?? 0)) continue;
+
+      const held = this.#busyEta(s.info.id) !== null;
+      if (held) {
+        s.noLeaseTicks = 0;
+        if (!s.foreignBusy) {
+          // A turn is running in the agent that WE never submitted. Expose it as `foreignBusy` on the
+          // session info — the page's busyNow() folds it into the STOP decision. We deliberately do
+          // NOT touch info.status (that is persisted and drives recovery/plan finalization) and do
+          // NOT synthesize turn-start/turn-end frames (those carry a send pid / drive queue settle —
+          // both would be lies for a turn we did not start). #updateSession emits the `session` frame
+          // the page already renders from. s.busy stays false so turn accounting stays ours alone.
+          s.foreignBusy = true;
+          s.info.foreignBusy = true;
+          this.#updateSession(s);
+        }
+      } else if (s.foreignBusy) {
+        // busyTurnEta() null = "unknown" (db locked / unmigrated), not a definitive "no turn". Only
+        // settle after two consecutive quiet ticks so a transient SQLITE_BUSY can't flash the UI.
+        s.noLeaseTicks = (s.noLeaseTicks ?? 0) + 1;
+        if (s.noLeaseTicks >= 2) {
+          s.foreignBusy = false;
+          s.info.foreignBusy = false;
+          this.#updateSession(s);
+          // A completion that arrived during the foreign turn was held (see #queueOrWakeCompletion).
+          // Now that the floor is free, hand it back — otherwise that background result is lost.
+          this.#drainHeldCompletion(s);
+        }
+      }
+    }
+    if (!anyGatewayOwned && this.#foreignBusyTimer) {
+      clearInterval(this.#foreignBusyTimer);
+      this.#foreignBusyTimer = null;
+    }
   }
 
   /** 等那一轮跑完再自己再试一次（issue #238）。
@@ -2108,12 +2188,30 @@ export class SessionManager {
     option:
     for (const o of (info.configOptions ?? []) as ConfigOptionView[]) {
       if (o.category !== "_context_window" && !/budget|context/i.test(`${o.id} ${o.name ?? ""}`)) continue;
-      const k = `${Math.round(limit / 1024)}K`;
-      o.currentValue = k;
+      // #116: `limit` is the raw token count (524288). The old code sent the UI caption
+      // ("512K") to the agent — context_budget accepts auto/number, not the abbreviation,
+      // so every auto-apply returned invalid_params. Send the option's RAW wire value: a
+      // preset whose numeric value equals the memory (its `.value`, e.g. "524288"), else the
+      // number itself for a freeform option. Never derive the wire value from the display text.
+      const preset = (o.options ?? []).find((opt) => Number(opt.value) === limit);
+      const wire = preset ? preset.value : String(limit);
       if (info.acpSessionId) {
-        await s.conn.setSessionConfigOption({ sessionId: info.acpSessionId, configId: o.id, value: k as never }).catch((e) => {
-          console.log(`[hermes-studio] session ${info.id}: remembered context ${k} not applied: ${errMessage(e)}`);
-        });
+        try {
+          const res = (await s.conn.setSessionConfigOption({
+            sessionId: info.acpSessionId, configId: o.id, value: wire as never,
+          })) as unknown as { configOptions?: ConfigOptionView[] } | undefined;
+          // Only the agent's own rebuilt option list is the truth (same rule as setConfig()):
+          // read currentValue back from it, so a rejected write leaves the real value in place
+          // instead of painting a remembered window the agent never accepted.
+          const opts = res && Array.isArray(res.configOptions) ? res.configOptions : null;
+          if (opts) {
+            info.configOptions = normConfigOptions(opts);
+          } else {
+            o.currentValue = wire;
+          }
+        } catch (e) {
+          console.log(`[hermes-studio] session ${info.id}: remembered context ${wire} not applied: ${errMessage(e)}`);
+        }
       }
       break option;
     }
@@ -2189,8 +2287,9 @@ export class SessionManager {
     // Neither is something the cockpit could explain afterwards, so it is said now, and the running
     // turn is left alone (a refused prompt must never cancel one).
     if (attachments.some((a) => a.kind === "image") && !s.caps.image) throw new Error(IMAGE_UNSUPPORTED);
-    if (s.busy) {
-      // Someone is talking over the agent. Plain prompts are refused (the operator's send
+    if (s.busy || s.foreignBusy) {
+      // Someone is talking over the agent — either our own turn, or a foreign one the watchdog saw.
+      // Plain prompts are refused (the operator's send
       // button is a stop button), but a call utterance carries `interrupt: true`: give the
       // floor back by cancelling, then WAIT for the running turn to really end before
       // starting the new one. Without the wait, the cancel (async) races the new prompt and
@@ -2209,11 +2308,11 @@ export class SessionManager {
         if (by) s.cancelledBy = { origin: by, turnSeq: victim };
         await this.cancel(sessionId);
         const mine = s.turnSeq;
-        while (s.busy && s.turnSeq === mine && Date.now() < deadline) {
+        while ((s.busy || s.foreignBusy) && s.turnSeq === mine && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 40));
         }
-      } while (s.busy && Date.now() < deadline);
-      if (s.busy) throw new Error("上一个回合没能停下来（agent 未响应取消），请稍后再试");
+      } while ((s.busy || s.foreignBusy) && Date.now() < deadline);
+      if (s.busy || s.foreignBusy) throw new Error("上一个回合没能停下来（agent 未响应取消），请稍后再试");
     }
     const blocks = buildPromptBlocks(text, attachments);
     if (!blocks.length) throw new Error("empty prompt");
@@ -2229,6 +2328,11 @@ export class SessionManager {
     // are untouched (the transcript stores `text`, never the blocks). A background wake (`origin`)
     // is not a spoken turn and must not consume a boundary.
     const settleVoice = this.#applyVoiceMode(s, blocks, { operator: voiceAppliesToPrompt(opts) });
+    // A turn we actually submit owns its running state: clear the lease-watchdog's foreign marker so
+    // it cannot restore this slot to ready while our prompt() is in flight (#115).
+    s.foreignBusy = false;
+    s.info.foreignBusy = false;
+    s.noLeaseTicks = 0;
     s.turnSeq += 1;
     s.busy = true;
     // Read ONCE, here. A `--interrupt` prompt leaves `busy` before this turn ends, so `s.turnSeq` at
@@ -2311,6 +2415,9 @@ export class SessionManager {
       this.#settleTurnReplies(sessionId, mine, { failed: errMessage(err), failureKind: "turn", durationMs: Date.now() - turnStartedAt });
     } finally {
       s.busy = false;
+      // Our turn just ended, but the agent may not have dropped its lease yet. Hold the watchdog off
+      // for a moment so it doesn't mistake our own lingering lease for a foreign turn (# review R1 F1).
+      s.ownTurnLeaseGraceUntil = Date.now() + 2000;
       this.#meterStop(s);
       if (s.info.status === "running") {
         s.info.status = "ready";
@@ -2371,7 +2478,9 @@ export class SessionManager {
       console.log(`[hermes-studio] background completion dropped for ${s.info.id}: 唤醒关闭`);
       return;
     }
-    if (s.busy) {
+    if (s.busy || s.foreignBusy) {
+      // A foreign turn (admitted by the gateway owner) still holds the floor — injecting a completion
+      // now would race it. Hold until the watchdog sees the lease drop and drains us.
       s.pendingCompletions.push(item);
       return;
     }
@@ -2488,7 +2597,7 @@ export class SessionManager {
    *  顺序应当是到达顺序）。
    */
   #drainHeldCompletion(s: LiveSession): void {
-    if (!s.pendingCompletions.length || s.busy) return;
+    if (!s.pendingCompletions.length || s.busy || s.foreignBusy) return;
     const kind = s.pendingCompletions[0].kind;
     const batch: PendingCompletion[] = [];
     while (s.pendingCompletions.length && s.pendingCompletions[0].kind === kind) {
@@ -2533,7 +2642,7 @@ export class SessionManager {
     // rendered (and in a call, READ OUT) like an answer. The call hit this whenever the operator
     // talked over a reply still being read aloud: the agent's turn was already over, so the
     // barge-in's cancel landed on an idle session.
-    if (!s.busy) {
+    if (!s.busy && !s.foreignBusy) {
       console.log(`[hermes-studio] cancel ignored for ${sessionId}: no turn is running`);
       return false;
     }
@@ -3351,7 +3460,7 @@ export class SessionManager {
     // the gateway keeps working, and the operator's 关闭 becomes 「继续为我付钱，但我看不见」: the plan
     // card moves with nobody watching and the result lands in a transcript he just closed. So a BUSY
     // gateway-owned slot is cancelled first, bounded, and only then torn down.
-    if (live.caps.gatewayOwned && live.busy) {
+    if (live.caps.gatewayOwned && (live.busy || live.foreignBusy)) {
       await Promise.race([
         this.cancel(live.info.id).catch(() => {}),
         new Promise<void>((r) => { setTimeout(r, CLOSE_CANCEL_WAIT_MS).unref?.(); }),
@@ -3360,7 +3469,7 @@ export class SessionManager {
       // and a viewer torn down a millisecond later takes the request with it (measured 2026-11-06: the
       // cancel never reached the agent's turn). Stay alive, bounded, until the turn actually settles.
       const until = Date.now() + CLOSE_CANCEL_WAIT_MS;
-      while (live.busy && Date.now() < until) await new Promise((r) => { setTimeout(r, 100).unref?.(); });
+      while ((live.busy || live.foreignBusy) && Date.now() < until) await new Promise((r) => { setTimeout(r, 100).unref?.(); });
     }
     this.#meterStop(live); // 关槽顺手收表：不然这个定时器会绑着一个已经没有进程的会话一直转
     // A slot can be closed while its handshake is still in flight — `create()` no longer waits for it
@@ -4045,6 +4154,9 @@ export class SessionManager {
   }
 
   #updateSession(s: LiveSession): void {
+    // #115: start the lazy foreign-turn watchdog once a gateway-owned slot exists. Idempotent — the
+    // timer checks this itself and early-returns when already running.
+    this.#maybeStartForeignBusyWatch();
     // The remembered window follows the model, so it has to be refreshed whenever the
     // model (or anything else) changes — this is the one place every mutation passes.
     s.info.modelContextLimit = this.#store.getModelLimit(s.info.models?.currentModelId ?? null);
@@ -4551,7 +4663,7 @@ export class SessionManager {
     if (!this.#sessions.has(id)) await this.resume(id); // cold parent: wake it first
     const source = this.#need(id);
     if (!source.conn || !source.info.acpSessionId) throw new Error("session not ready — resume it first");
-    if (source.busy) throw new Error("the session is mid-turn — wait for it to finish before forking");
+    if (source.busy || source.foreignBusy) throw new Error("the session is mid-turn — wait for it to finish before forking");
     const cwd = source.info.workspace || source.info.cwd;
     const res = (await source.conn.request("session/fork", {
       sessionId: source.info.acpSessionId,
