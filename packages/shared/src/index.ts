@@ -69,6 +69,11 @@ export interface SessionInfo {
    *  the panels (and the next resume), not the running process. null = same as cwd. */
   workspace?: string | null;
   status: SessionStatus;
+  /** #115: a turn on this session is running in the agent but was admitted by the gateway owner
+   *  (background wake / cron / another surface) without going through our prompt(), so `busy` is
+   *  false. Live-only projection of the agent-side turn lease; the page's busyNow() folds it in so
+   *  the composer shows STOP. Never persisted — it is not part of the stored session snapshot. */
+  foreignBusy?: boolean;
   pid: number | null;
   title: string;
   /** `"main"` = this is THE 主 agent (issue #84). One per cockpit, created by `ensureMainBot()`, living
