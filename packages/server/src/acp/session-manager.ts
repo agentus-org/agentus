@@ -2188,12 +2188,30 @@ export class SessionManager {
     option:
     for (const o of (info.configOptions ?? []) as ConfigOptionView[]) {
       if (o.category !== "_context_window" && !/budget|context/i.test(`${o.id} ${o.name ?? ""}`)) continue;
-      const k = `${Math.round(limit / 1024)}K`;
-      o.currentValue = k;
+      // #116: `limit` is the raw token count (524288). The old code sent the UI caption
+      // ("512K") to the agent — context_budget accepts auto/number, not the abbreviation,
+      // so every auto-apply returned invalid_params. Send the option's RAW wire value: a
+      // preset whose numeric value equals the memory (its `.value`, e.g. "524288"), else the
+      // number itself for a freeform option. Never derive the wire value from the display text.
+      const preset = (o.options ?? []).find((opt) => Number(opt.value) === limit);
+      const wire = preset ? preset.value : String(limit);
       if (info.acpSessionId) {
-        await s.conn.setSessionConfigOption({ sessionId: info.acpSessionId, configId: o.id, value: k as never }).catch((e) => {
-          console.log(`[hermes-studio] session ${info.id}: remembered context ${k} not applied: ${errMessage(e)}`);
-        });
+        try {
+          const res = (await s.conn.setSessionConfigOption({
+            sessionId: info.acpSessionId, configId: o.id, value: wire as never,
+          })) as unknown as { configOptions?: ConfigOptionView[] } | undefined;
+          // Only the agent's own rebuilt option list is the truth (same rule as setConfig()):
+          // read currentValue back from it, so a rejected write leaves the real value in place
+          // instead of painting a remembered window the agent never accepted.
+          const opts = res && Array.isArray(res.configOptions) ? res.configOptions : null;
+          if (opts) {
+            info.configOptions = normConfigOptions(opts);
+          } else {
+            o.currentValue = wire;
+          }
+        } catch (e) {
+          console.log(`[hermes-studio] session ${info.id}: remembered context ${wire} not applied: ${errMessage(e)}`);
+        }
       }
       break option;
     }
