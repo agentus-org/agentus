@@ -64,7 +64,7 @@ import { estimateStreamTokens } from "../../../shared/src/index.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
-import { busyTurnEta, waitWords } from "./turn-busy.js";
+import { busyTurnEta, isStaleTurnLease, waitWords } from "./turn-busy.js";
 
 // The cockpit CLI an agent is handed (issue #15). Resolved from THIS module's location, so it points
 // at the same tree the server runs from — a checkout and an installed package alike (`bin/` is in the
@@ -1431,7 +1431,11 @@ export class SessionManager {
       // misread that残留 as a foreign turn (# review R1 F1).
       if (Date.now() < (s.ownTurnLeaseGraceUntil ?? 0)) continue;
 
-      const held = this.#busyEta(s.info.id) !== null;
+      const eta = this.#busyEta(s.info.id);
+      // #117: 行存在但 holder 已死 = 崩溃残留，gateway 自己按 pid 判据也认为没人在跑；不能把它
+      // 当成别处的回合置 foreignBusy，否则每条消息都会去 cancel 一个死回合、超时报错、永不自愈。
+      // 只认 holderAlive===false 这个确定信号；remainingMs 过期不算（长回合会静态过期仍在跑，#107）。
+      const held = eta !== null && !isStaleTurnLease(eta);
       if (held) {
         s.noLeaseTicks = 0;
         if (!s.foreignBusy) {
@@ -2288,31 +2292,45 @@ export class SessionManager {
     // turn is left alone (a refused prompt must never cancel one).
     if (attachments.some((a) => a.kind === "image") && !s.caps.image) throw new Error(IMAGE_UNSUPPORTED);
     if (s.busy || s.foreignBusy) {
-      // Someone is talking over the agent — either our own turn, or a foreign one the watchdog saw.
-      // Plain prompts are refused (the operator's send
-      // button is a stop button), but a call utterance carries `interrupt: true`: give the
-      // floor back by cancelling, then WAIT for the running turn to really end before
-      // starting the new one. Without the wait, the cancel (async) races the new prompt and
-      // the operator got "turn already running" for doing exactly what a call invites.
-      if (!opts.interrupt) throw new Error("turn already running");
-      // Take the floor: cancel whatever is running and wait for THE TURN WE CANCELLED to
-      // really stop. Another interrupting utterance may have started a turn meanwhile — this
-      // call is an interrupt too, so it takes that one as well rather than failing with
-      // "still running". (A plain sleep would guess; the per-turn counter knows.)
-      const deadline = Date.now() + TURN_SETTLE_TIMEOUT_MS;
-      do {
-        // #93-3: remember WHO took the floor and WHICH turn is being killed — the receipt for that
-        // turn is owed to every waiter EXCEPT this one (「我主动打断的，为什么还给我发取消通知」).
-        const victim = s.turnSeq;
-        const by = opts.origin?.sessionId ?? null;
-        if (by) s.cancelledBy = { origin: by, turnSeq: victim };
-        await this.cancel(sessionId);
-        const mine = s.turnSeq;
-        while ((s.busy || s.foreignBusy) && s.turnSeq === mine && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 40));
-        }
-      } while ((s.busy || s.foreignBusy) && Date.now() < deadline);
-      if (s.busy || s.foreignBusy) throw new Error("上一个回合没能停下来（agent 未响应取消），请稍后再试");
+      // #117: a foreign marker backed by a STALE lease (holder dead) is not a running turn. If we
+      // cancel it, the cancel hits a dead turn, the settle wait always times out, and the operator
+      // gets "上一个回合没能停下来" on every message forever. Drop that marker and let this prompt
+      // through — the agent reclaims the row on its next acquisition, same as resume() already does.
+      // Never skip our OWN turn (s.busy): that one really is running and must be cancelled first.
+      if (!s.busy && s.foreignBusy && isStaleTurnLease(this.#busyEta(sessionId))) {
+        console.log(`[hermes-studio] prompt ${sessionId}: stale lease (dead holder) — dropping foreign busy without cancelling a dead turn`);
+        s.foreignBusy = false;
+        s.info.foreignBusy = false;
+        s.noLeaseTicks = 0;
+        this.#updateSession(s);
+      }
+      if (s.busy || s.foreignBusy) {
+        // Someone is talking over the agent — either our own turn, or a foreign one the watchdog saw.
+        // Plain prompts are refused (the operator's send
+        // button is a stop button), but a call utterance carries `interrupt: true`: give the
+        // floor back by cancelling, then WAIT for the running turn to really end before
+        // starting the new one. Without the wait, the cancel (async) races the new prompt and
+        // the operator got "turn already running" for doing exactly what a call invites.
+        if (!opts.interrupt) throw new Error("turn already running");
+        // Take the floor: cancel whatever is running and wait for THE TURN WE CANCELLED to
+        // really stop. Another interrupting utterance may have started a turn meanwhile — this
+        // call is an interrupt too, so it takes that one as well rather than failing with
+        // "still running". (A plain sleep would guess; the per-turn counter knows.)
+        const deadline = Date.now() + TURN_SETTLE_TIMEOUT_MS;
+        do {
+          // #93-3: remember WHO took the floor and WHICH turn is being killed — the receipt for that
+          // turn is owed to every waiter EXCEPT this one (「我主动打断的，为什么还给我发取消通知」).
+          const victim = s.turnSeq;
+          const by = opts.origin?.sessionId ?? null;
+          if (by) s.cancelledBy = { origin: by, turnSeq: victim };
+          await this.cancel(sessionId);
+          const mine = s.turnSeq;
+          while ((s.busy || s.foreignBusy) && s.turnSeq === mine && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 40));
+          }
+        } while ((s.busy || s.foreignBusy) && Date.now() < deadline);
+        if (s.busy || s.foreignBusy) throw new Error("上一个回合没能停下来（agent 未响应取消），请稍后再试");
+      }
     }
     const blocks = buildPromptBlocks(text, attachments);
     if (!blocks.length) throw new Error("empty prompt");
