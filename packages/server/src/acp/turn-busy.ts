@@ -18,9 +18,16 @@ export interface BusyTurnEta {
   holder: string;
   /** 这一行自己声明的到期时刻（epoch ms）。 */
   expiresAt: number;
-  /** holder 的 pid 还活着吗：`true` 活着、`false` 确定已经没了、`null` 说不清（holder 没带 pid，
-   *  或不在本机的 PID 命名空间里）。`false` 才允许「不等它、直接去试」—— gateway 自己会用同一条
-   *  判据回收这行，我们去试就是让它回收；`null` 只能老老实实等，和 agent 的判断保持一致。 */
+  /** holder 的 pid 还活着吗：`true` 活着、`false` 确定已经没了（本机 kill 拿到 ESRCH）、`null` 说不清
+   *  （holder 没带 pid，或 pid 就是本进程 —— 同一进程另一轮的租约不算死）。`false` 才允许「不等它、
+   *  直接去试」—— gateway 自己会用同一条判据回收这行，我们去试就是让它回收；`null` 只能老老实实等，
+   *  和 agent 的判断保持一致。
+   *
+   *  边界：这里不做 pidns 感知。同机 / 同一 PID namespace 部署下（含 macOS，它根本没有 PID namespace）
+   *  判据与 fork 的 `_compression_lock_holder_process_is_dead` 一致。跨 namespace 拓扑里一个活的外来
+   *  holder 会读成 `false`（它的 pid 在本 namespace 不存在）—— 这是 #115 能力的边缘限制；而 #117 要
+   *  回收的残留行恰好也带外来 namespace，若照 fork 那样 defer 到 TTL，#117 就修不了。两者无法两全，
+   *  这里按 issue 的死 holder 场景优先。 */
   holderAlive: boolean | null;
   /** 这一行租约**还在**。判「agent 侧有没有一轮在跑」只认这个布尔，不认 `remainingMs`：
    *  TTL 只是一句预告（实测 540s、回合中途不续期），超过 9 分钟的回合会读到 `remainingMs === 0`
@@ -82,6 +89,15 @@ export function busyTurnEta(home: string | null, conversationIds: (string | null
   } finally {
     try { db?.close(); } catch { /* already closed */ }
   }
+}
+
+/** 残留租约：行还在，但 holder 的进程确定已经没了（容器整体 SIGKILL / 换镜像重建后的现场，#117）。
+ *  gateway 只在下一次 acquire 时回收这行，期间它自己也会按同一条 pid 判据认为「没人在跑」；
+ *  驾驶舱若只看「行在不在」就会把残留当成在跑的回合 —— 每条消息都去 cancel 一个死回合，
+ *  15 s 超时后报错，永不自愈。判据只用 holderAlive===false，不用 `remainingMs`：TTL 是静态预告、
+ *  长回合中途不续期，拿过期当判据会把任何长回合读成「没有回合」（#107 消灭过的那句谎）。 */
+export function isStaleTurnLease(eta: BusyTurnEta | null): boolean {
+  return eta !== null && eta.holderAlive === false;
 }
 
 /** 给人看的等待描述：`约 6 分 12 秒`。 */

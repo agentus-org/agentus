@@ -95,7 +95,8 @@ const writeLease = (inst, conversationId, ttlSec = 300) => {
       conversation_id TEXT PRIMARY KEY, holder TEXT NOT NULL,
       acquired_at REAL NOT NULL, expires_at REAL NOT NULL)`);
     db.prepare("INSERT OR REPLACE INTO session_turn_leases VALUES (?,?,?,?)").run(
-      conversationId, `gateway:pid=99999`, Date.now() / 1000, (Date.now() + ttlSec * 1000) / 1000);
+      // 活 holder：#117 后死 holder 不再算 foreign busy，夹具要造「真在跑的别处回合」。
+      conversationId, `gateway:pid=${process.pid}`, Date.now() / 1000, (Date.now() + ttlSec * 1000) / 1000);
   } finally { try { db.close(); } catch { /* closed */ } }
 };
 const clearLease = (inst, conversationId) => {
