@@ -192,7 +192,7 @@ export function sessionRow(
     wakeable: Boolean(info.cold) && !info.archivedAt,
     archived: Boolean(info.archivedAt),
     lastAt: info.lastAt ?? info.createdAt,
-    stage: info.stage ?? "todo",
+    stage: info.stage ?? "unclassified",
     stageSource: info.stageSource ?? null,
     stageAt: info.stageAt ?? null,
     plan: {

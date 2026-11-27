@@ -50,7 +50,7 @@ import {
   COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, MESSAGE_ROLES, capabilities, isMessageRole,
   listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
 } from "./cockpit/api.js";
-import { isSessionStage } from "../../shared/src/index.js";
+import { isSessionStage, normalizeStage } from "../../shared/src/index.js";
 
 const PORT = Number(process.env.HERMES_STUDIO_PORT ?? 8788);
 
@@ -989,15 +989,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!isSessionStage(body.stage)) {
           return send(res, 400, {
             error: COCKPIT_ERRORS.badRequest,
-            message: `stage wants todo|doing|done, got ${JSON.stringify(body.stage ?? null)}`,
+            message: `stage wants unclassified|doing|done (todo alias), got ${JSON.stringify(body.stage ?? null)}`,
           });
         }
         try {
-          const info = await mgr.setStage(id, body.stage, "cli");
+          const info = await mgr.setStage(id, normalizeStage(body.stage), "cli");
           return send(res, 200, {
             schema_version: COCKPIT_SCHEMA_VERSION,
             id,
-            stage: info.stage ?? "todo",
+            stage: info.stage ?? "unclassified",
             stageSource: info.stageSource ?? null,
             stageAt: info.stageAt ?? null,
           });
@@ -2188,10 +2188,10 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
           const body = await readJson(req);
           const stage = body.stage;
           if (!isSessionStage(stage)) {
-            return send(res, 400, { error: `stage wants todo|doing|done, got ${JSON.stringify(stage ?? null)}`, code: "bad_stage" });
+            return send(res, 400, { error: `stage wants unclassified|doing|done (todo alias), got ${JSON.stringify(stage ?? null)}`, code: "bad_stage" });
           }
           const source = body.source === "cli" ? "cli" : "manual";
-          const info = await mgr.setStage(id, stage, source);
+          const info = await mgr.setStage(id, normalizeStage(stage), source);
           return send(res, 200, info);
         } catch (e) {
           return send(res, 404, { error: String((e as Error)?.message ?? e) });

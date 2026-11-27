@@ -891,7 +891,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   useEffect(() => {
     try { localStorage.setItem(RAIL_FOLD_KEY, JSON.stringify(folded)); } catch { /* private mode: folding just won't stick */ }
   }, [folded]);
-  // 「会话」段怎么分组：工作空间（原样）或标签（待做 / 进行中 / 已完成）。A layout preference like
+  // 「会话」段怎么分组：工作空间（原样）或标签（未分类 / 进行中 / 已完成）。A layout preference like
   // the fold state — a per-device view choice, not a property of any session, so localStorage is the
   // right home for it. The LABEL itself lives on the server (see SessionInfo.stage).
   const [railGroup, setRailGroup] = useState<"workspace" | "stage">(() => {
@@ -922,7 +922,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   const stageUnder = (x: number, y: number): SessionStage | null => {
     const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-stage-drop]");
     const s = el?.dataset.stageDrop;
-    return s === "todo" || s === "doing" || s === "done" ? s : null;
+    return s === "unclassified" || s === "todo" ? "unclassified" : (s === "doing" || s === "done" ? s : null);
   };
   useEffect(() => {
     const move = (e: PointerEvent): void => {
@@ -1530,7 +1530,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                   title="按工作空间分组" aria-pressed={railGroup === "workspace"}
                   onClick={() => setRailGroup("workspace")}>工作空间</button>
           <button type="button" data-rail-group="stage" className={railGroup === "stage" ? "on" : ""}
-                  title="按标签分组（待做 / 进行中 / 已完成）" aria-pressed={railGroup === "stage"}
+                  title="按标签分组（未分类 / 进行中 / 已完成）" aria-pressed={railGroup === "stage"}
                   onClick={() => setRailGroup("stage")}>标签</button>
         </div>
         </div>

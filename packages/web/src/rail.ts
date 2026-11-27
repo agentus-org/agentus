@@ -5,14 +5,14 @@ export function groupByStage<T extends { id: string; stage?: string | null; titl
   all: readonly { s: T; cold: boolean }[],
 ): { path: string; label: string; items: { s: T; cold: boolean }[] }[] {
   return ([
-    { id: "todo", label: "待做" },
+    { id: "unclassified", label: "未分类" },
     { id: "doing", label: "进行中" },
     { id: "done", label: "已完成" },
   ] as const).map((stage) => ({
     path: `stage:${stage.id}`,
     label: stage.label,
     items: all
-      .filter(({ s }) => (s.stage ?? "todo") === stage.id)
+      .filter(({ s }) => (s.stage ?? "unclassified") === stage.id)
       .sort((a, b) => ((b.s.lastAt ?? b.s.createdAt) - (a.s.lastAt ?? a.s.createdAt))),
   }));
 }

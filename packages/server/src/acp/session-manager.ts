@@ -1253,8 +1253,8 @@ export class SessionManager {
         // issue #84: written exactly once, on the insert below — no later upsert can move it.
         ...(opts.role ? { role: opts.role } : {}),
         createdAt: now, modes: null, configOptions: [], commands: [],
-        // A brand-new session is 待做 — the one default the product sets, and only at birth.
-        stage: "todo", stageSource: "server", stageAt: now,
+        // A brand-new session is 未分类 — the one default the product sets, and only at birth.
+        stage: "unclassified", stageSource: "server", stageAt: now,
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
       approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
@@ -5083,7 +5083,7 @@ function sessionRow(i: SessionInfo, home: string | null = null) {
     // carried here only so the row type stays honest.
     archivedAt: i.archivedAt ?? null,
     // the LABEL, likewise: an upsert never moves it (its own statement is Store.setStage). Carried in
-    // the INSERT only, which is where a brand-new row gets its 待做 default.
+    // the INSERT only, which is where a brand-new row gets its 未分类 default.
     stage: i.stage ?? null, stageSource: i.stageSource ?? null, stageAt: i.stageAt ?? null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
