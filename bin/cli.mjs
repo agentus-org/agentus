@@ -80,7 +80,7 @@ another one
                                       three user messages even after forty tool rows; --user is
                                       --role user. meta carries filtered = the pool it read from.
   hermes-studio session plan <id>           the plan object the operator's card renders
-  hermes-studio session stage <id> <unclassified|doing|done>  (todo is an alias)
+  hermes-studio session stage <id> <unclassified|todo|doing|done>
                                       move this session's LABEL on the operator's rail. The label is
                                       the operator's own statement and is NEVER inferred from a run,
                                       so nothing moves by itself — this command is the only way an
@@ -268,7 +268,7 @@ function tableRow(s, now) {
     .filter(Boolean)
     .join(" ");
   const name = String(s.name ?? "").slice(0, 44);
-  const stage = { unclassified: "未分类", todo: "未分类", doing: "进行中", done: "已完成" }[s.stage] ?? "未分类";
+  const stage = { unclassified: "未分类", todo: "待办", doing: "进行中", done: "已完成" }[s.stage] ?? "未分类";
   return `${dot} ${age(now - (s.lastAt ?? now)).padStart(4)}  ${stage.padEnd(6)} ${flags.padEnd(8)} ${s.id}  ${name}`;
 }
 
@@ -612,12 +612,12 @@ if (cmd === "capabilities") {
   } else if (verb === "stage") {
     // 会话标签 —— 唯一一个 agent 也能改的写入口，因为「把本会话归到哪一组」不是破坏性动作，
     // 而且用户明确要求：只允许人拖 / 人显式叫工具改，绝不允许从运行状态隐式推断。
-    const usage = "usage: hermes-studio session stage <id> <unclassified|doing|done>";
+    const usage = "usage: hermes-studio session stage <id> <unclassified|todo|doing|done>";
     if (!id) fail("bad_request", usage);
     if (args.length !== 2) fail("bad_request", `expected a stage after the id (${usage})`);
     const stage = args[1];
     if (!["unclassified", "todo", "doing", "done"].includes(stage)) {
-      fail("bad_request", `stage wants unclassified|doing|done (todo is an alias), got "${stage}" (${usage})`);
+      fail("bad_request", `stage wants unclassified|todo|doing|done, got "${stage}" (${usage})`);
     }
     let res;
     try {

@@ -2410,6 +2410,7 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 /* Status dots on a LABEL group head: the folder icon would lie (a label is not a directory). */
 .rail-stage-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .rail-stage-dot[data-stage="unclassified"] { background: var(--text-dim); }
+.rail-stage-dot[data-stage="todo"] { background: var(--thought); }
 .rail-stage-dot[data-stage="doing"] { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
 .rail-stage-dot[data-stage="done"] { background: var(--ok); }
 .rail-group-head.drop-hover, .rail-group-body.drop-hover {

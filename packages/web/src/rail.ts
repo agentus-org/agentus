@@ -1,11 +1,12 @@
 /** The rail's second grouping: the operator's own LABEL on each session. There are always exactly
- *  three groups, including empty ones — an empty column still has to be a drop target, and a board
+ *  four groups, including empty ones — an empty column still has to be a drop target, and a board
  *  whose columns appear/disappear as you move cards is impossible to aim at. */
 export function groupByStage<T extends { id: string; stage?: string | null; title: string; createdAt: number; lastAt?: number | null }>(
   all: readonly { s: T; cold: boolean }[],
 ): { path: string; label: string; items: { s: T; cold: boolean }[] }[] {
   return ([
     { id: "unclassified", label: "未分类" },
+    { id: "todo", label: "待办" },
     { id: "doing", label: "进行中" },
     { id: "done", label: "已完成" },
   ] as const).map((stage) => ({

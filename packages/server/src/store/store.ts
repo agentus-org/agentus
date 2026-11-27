@@ -158,7 +158,7 @@ export interface SessionRow {
   /** When the OPERATOR put this session away (已归档). Null = it belongs in 工作空间. A storage
    *  state: it says nothing about whether a process is running (see SessionInfo.archivedAt). */
   archivedAt: number | null;
-  /** The operator's label (未分类/进行中/已完成) and who set it. Optional on the ROW type so every
+  /** The operator's label (未分类/待办/进行中/已完成) and who set it. Optional on the ROW type so every
    *  existing insert stays valid: an upsert that says nothing about the label must not be able to
    *  move it (same rule as `archivedAt` — a status change is not a statement about the work). */
   stage?: SessionStage | null;
@@ -439,7 +439,7 @@ export class Store {
         id text primary key, backend text not null, acp_session_id text,
         cwd text not null, title text not null, status text not null,
         pid integer, created_at integer not null, closed_at integer, home text,
-        -- The operator's own label (未分类/进行中/已完成) — the rail's second grouping. Never derived
+        -- The operator's own label (未分类/待办/进行中/已完成) — the rail's second grouping. Never derived
         -- from a run event: only a drag or the cockpit CLI writes these three columns.
         stage text, stage_source text, stage_at integer,
         -- 1 = a session the COCKPIT spawned for itself (the 工作播报 observer), never the operator's
@@ -593,7 +593,6 @@ export class Store {
         else 'unclassified' end,
         stage_source = coalesce(stage_source, 'migration'), stage_at = coalesce(stage_at, created_at)
         where stage is null`);
-    this.#db.exec(`update sessions set stage = 'unclassified' where stage = 'todo'`);
     // WHO GAVE THIS SESSION ITS NAME. `title` says what a slot is called; nothing said who called it
     // that, so another agent could quietly rename the operator's conversation to 「已完成 ✓」 and the
     // rail would show it as fact. NULL = the operator (every existing row), a session id = that

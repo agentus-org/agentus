@@ -64,10 +64,10 @@ export interface SessionModelState {
  *  到哪一步了」, and the operator is the only one allowed to move it (plus the cockpit CLI, which
  *  is the same statement made by hand from a shell — never an inference from a run event).
  *
- *  Three values, fixed on purpose. Adding a fourth ("待确认") was considered and dropped: the
+ *  Four values, fixed on purpose. A fifth ("待确认") was considered and dropped: the
  *  signals it would carry (an approval waiting, a run that ended with steps open) are already drawn
  *  ON the row (`⚿ N`, the plan ring), so a fourth group would only add upkeep. */
-export type SessionStage = "unclassified" | "doing" | "done";
+export type SessionStage = "unclassified" | "todo" | "doing" | "done";
 
 /** The rail's labels, in order. `shared` because the CLI prints them too — a second copy on the
  *  server side would be a second vocabulary for the same three strings.
@@ -75,24 +75,21 @@ export type SessionStage = "unclassified" | "doing" | "done";
  *  that a decision ("to do") would claim more than the operator said. */
 export const SESSION_STAGES: { id: SessionStage; label: string }[] = [
   { id: "unclassified", label: "未分类" },
+  { id: "todo", label: "待办" },
   { id: "doing", label: "进行中" },
   { id: "done", label: "已完成" },
 ];
 
 export const STAGE_LABEL: Record<SessionStage, string> = {
   unclassified: "未分类",
+  todo: "待办",
   doing: "进行中",
   done: "已完成",
 };
 
 export function isSessionStage(v: unknown): v is SessionStage {
-  // `todo` was the first draft's name. Accept it at the boundary so an old CLI/script does not break,
-  // but normalise on the way in — the stored vocabulary has exactly three values.
+  // `todo` came back as a real group: 未分类 = not sorted yet, 待办 = sorted but not started.
   return v === "unclassified" || v === "todo" || v === "doing" || v === "done";
-}
-
-export function normalizeStage(v: unknown): SessionStage {
-  return v === "todo" ? "unclassified" : v as SessionStage;
 }
 
 export interface SessionInfo {
