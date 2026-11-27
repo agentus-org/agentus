@@ -1622,7 +1622,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           <div className="rail-stage-hint" role="note" data-stage-hint="1">
             <div className="rail-stage-hint-text">
               <strong>按标签分组</strong>
-              <span>拖动会话（手机长按）到某个组，或在会话上右键 → 标签，就能改。标签只会你手动改，不会自动流转。</span>
+              <span>把会话拖到别的组就能改标签（电脑直接拖、手机长按），或在会话上右键 → 标签。标签只会你手动改，不会自动流转。</span>
             </div>
             <button type="button" className="rail-stage-hint-ok" onClick={dismissStageHint}>知道了</button>
           </div>
