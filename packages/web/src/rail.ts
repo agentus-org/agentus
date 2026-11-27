@@ -1,6 +1,8 @@
 /** The rail's second grouping: the operator's own LABEL on each session. There are always exactly
  *  four groups, including empty ones — an empty column still has to be a drop target, and a board
  *  whose columns appear/disappear as you move cards is impossible to aim at. */
+import { isSessionStage } from "../../shared/src/index";
+
 export function groupByStage<T extends { id: string; stage?: string | null; title: string; createdAt: number; lastAt?: number | null }>(
   all: readonly { s: T; cold: boolean }[],
 ): { path: string; label: string; items: { s: T; cold: boolean }[] }[] {
@@ -13,7 +15,7 @@ export function groupByStage<T extends { id: string; stage?: string | null; titl
     path: `stage:${stage.id}`,
     label: stage.label,
     items: all
-      .filter(({ s }) => (s.stage ?? "unclassified") === stage.id)
+      .filter(({ s }) => (isSessionStage(s.stage) ? s.stage : "unclassified") === stage.id)
       .sort((a, b) => ((b.s.lastAt ?? b.s.createdAt) - (a.s.lastAt ?? a.s.createdAt))),
   }));
 }
