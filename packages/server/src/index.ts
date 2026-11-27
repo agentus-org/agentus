@@ -51,6 +51,7 @@ import {
   listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
 } from "./cockpit/api.js";
 import { isSessionStage } from "../../shared/src/index.js";
+import { wireSessions } from "./session-wire.js";
 
 const PORT = Number(process.env.HERMES_STUDIO_PORT ?? 8788);
 
@@ -320,8 +321,8 @@ let hub: ObserverHub | null = null;
 const sessionsEvent = (): ServerEvent => ({
   t: "sessions",
   sessions: mgr.list(),
-  cold: mgr.cold(),
-  archived: mgr.archived(),
+  cold: wireSessions(mgr.cold()),
+  archived: wireSessions(mgr.archived()),
   pending: mgr.pendingPermissions(),
   // Background snapshots (issue #22) ride this frame for the same reason pending approvals do: they are
   // STATE, and a page that connects or refreshes after the agent last spoke still has to be current.
@@ -1702,7 +1703,7 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     if (url.pathname === "/api/sessions" && req.method === "GET") {
       // `pending` rides along because it is STATE, not an event: a page that loads or refreshes
       // after the request was raised never saw the event, and would otherwise show nothing.
-      return send(res, 200, { live: mgr.list(), cold: mgr.cold(), archived: mgr.archived(), pending: mgr.pendingPermissions() });
+      return send(res, 200, { live: mgr.list(), cold: wireSessions(mgr.cold()), archived: wireSessions(mgr.archived()), pending: mgr.pendingPermissions() });
     }
     // 会话拓扑面板（2026-11-03）：窗口内的会话 + 它们之间的派活/转交关系。只读，operator 认证。
     // `since` 缺省是 3 天（操作者定下的默认窗口）；`archived=1` 才把已归档的会话也画进来。
@@ -2161,6 +2162,13 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
     if (sessMatch) {
       const id = sessMatch[1];
       const sub = sessMatch[2] ?? "";
+      if (req.method === "GET" && sub === "/detail") {
+        // The rail ships slim rows for cold/archived sessions; opening one fetches its full row here
+        // in the background. Never spawns a process — this is a read of state we already hold.
+        const info = mgr.fullInfo(id);
+        if (!info) return send(res, 404, { error: `no such session: ${id}`, code: "not_found", id });
+        return send(res, 200, info);
+      }
       if (req.method === "DELETE" && sub === "") {
         // awaited on purpose: closeSession is async and a floating rejection
         // here used to kill the whole server (QA#19, unhandled rejection)

@@ -463,12 +463,32 @@ function persistUnread(ids: Iterable<string>): void {
   } catch { /* see readStoredUnread */ }
 }
 
+/** Snapshot fields a slim rail row deliberately omits. Only these are restored by a detail fetch:
+ *  liveness (status / cold / pid) must always come from the live session frame, never from a cached
+ *  detail response that was captured before a resume. */
+function snapshotFields(info: SessionInfo): Pick<SessionInfo, "configOptions" | "commands" | "modes" | "usage" | "models" | "modelContextLimit"> {
+  return {
+    configOptions: info.configOptions ?? [],
+    commands: info.commands ?? [],
+    modes: info.modes ?? null,
+    usage: info.usage ?? null,
+    models: info.models ?? null,
+    // The wire shape KEEPS pendingModelId (it is needed to resume a cold slot), so a cached detail
+    // must never overwrite a newer value that arrived in a later session frame.
+    modelContextLimit: info.modelContextLimit ?? null,
+  };
+}
+
 export class Cockpit {
   sessions: SessionInfo[] = [];
   /** On disk, no process, NOT archived: 工作空间 material, wearing `cold`. */
   cold: SessionInfo[] = [];
   archived: SessionInfo[] = [];
   byId = new Map<string, SessionView>();
+  /** Cold/archived rows arrive as slim summaries; the full row is fetched once when opened.
+   *  A failed fetch removes the id so a later open can retry. */
+  #detailLoaded = new Set<string>();
+  #details = new Map<string, SessionInfo>();
   activeId: string | null = null;
   conn: ConnState = "connecting";
   net: NetState = "ok";
@@ -687,6 +707,8 @@ export class Cockpit {
       this.cold = [];
       this.archived = [];
       this.byId.clear();
+      this.#detailLoaded.clear();
+      this.#details.clear();
       this.activeId = null;
       this.#rememberActive(null);
     }
@@ -1407,6 +1429,42 @@ export class Cockpit {
     this.bump();
     const v = this.byId.get(id);
     if (v && !v.loaded) void this.loadHistory(id);
+    // A slim cold/archived row is enough to DRAW the session immediately. Fill the full ACP snapshot
+    // in the background so the toolbar has the right model/effort — never block the click on it.
+    if (v && v.info.cold && !this.#detailLoaded.has(id)) void this.loadDetail(id);
+  }
+
+  /** Fetch the full row for a session that came in as a slim rail summary. Fire-and-forget by
+   *  design: `setActive` must return immediately so switching sessions never waits on this. */
+  async loadDetail(id: string): Promise<void> {
+    if (this.#detailLoaded.has(id)) return;
+    const before = this.byId.get(id)?.info;
+    if (!before?.cold) return; // a live row already carries its own full snapshot
+    const generation = `${before.status}|${before.pid ?? ""}|${before.cold}`;
+    this.#detailLoaded.add(id);
+    try {
+      const info = await this.#req<SessionInfo>(`/api/sessions/${id}/detail`, undefined, { timeoutMs: 10_000 });
+      const current = this.byId.get(id)?.info;
+      // A resume may have landed while this request was in flight. A cold snapshot captured earlier
+      // must never overwrite live state, and only the SNAPSHOT fields are ever merged — never
+      // status/cold/pid, which belong to the live frame.
+      if (!current?.cold || `${current.status}|${current.pid ?? ""}|${current.cold}` !== generation) {
+        this.#detailLoaded.delete(id);
+        return;
+      }
+      const fields = snapshotFields(info);
+      this.#details.set(id, info);
+      const view = this.byId.get(id);
+      if (view) view.info = { ...view.info, ...fields };
+      for (const list of [this.sessions, this.cold, this.archived]) {
+        const i = list.findIndex((s) => s.id === id);
+        if (i >= 0) list[i] = { ...list[i], ...fields };
+      }
+      this.bump();
+    } catch {
+      this.#detailLoaded.delete(id);
+      this.#details.delete(id);
+    }
   }
 
   /** 「跑完了，还没看」: a turn ended in a session the operator was not in. The whole point of the dot
@@ -2153,19 +2211,28 @@ export class Cockpit {
         // exist" is their UNION: an archived row keeps its view (the operator can leave it open and
         // read it after putting it away), and pruning by the live list alone would throw away a
         // transcript that is still perfectly readable.
-        this.sessions = e.sessions;
+        // Slim rows must NOT overwrite a detail we already fetched: without this overlay the first
+        // sessions frame after opening a cold row silently blanks its model/effort/commands, and
+        // #detailLoaded would stop us from ever retrying. A row that came back LIVE has its own full
+        // snapshot, so its cached detail is dropped there.
+        const withDetail = (s: SessionInfo): SessionInfo => {
+          if (!s.cold) { this.#details.delete(s.id); this.#detailLoaded.delete(s.id); return s; }
+          const d = this.#details.get(s.id);
+          return d ? { ...s, ...snapshotFields(d) } : s;
+        };
+        this.sessions = e.sessions.map(withDetail);
         // A missing bucket means "no news", never "empty": `?? []` deleted the operator's rows when
         // a producer omitted them, and the rail then showed only what is live (the 「刷新后只剩活跃
         // 会话」 report — the manager's own emit omitted cold/archived). The server sends all three
         // always; `[]` is a real, explicit "none", which still lands below.
-        if (e.cold) this.cold = e.cold;
-        if (e.archived) this.archived = e.archived;
+        if (e.cold) this.cold = e.cold.map(withDetail);
+        if (e.archived) this.archived = e.archived.map(withDetail);
         const live = new Set([
           ...e.sessions.map((s) => s.id),
           ...this.cold.map((s) => s.id),
           ...this.archived.map((s) => s.id),
         ]);
-        for (const s of [...e.sessions, ...this.cold, ...this.archived]) {
+        for (const s of [...this.sessions, ...this.cold, ...this.archived]) {
           const v = this.#view(s.id);
           // `cold` is the server's word for "no process" — keep it on the view's own info, or a
           // button that depends on liveness (resume vs switch) reads the wrong state.

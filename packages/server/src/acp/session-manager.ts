@@ -62,6 +62,7 @@ import type {
   UsageTotals,
 } from "../../../shared/src/index.js";
 import { estimateStreamTokens } from "../../../shared/src/index.js";
+import { wireSessions } from "../session-wire.js";
 import { acceptsToolWrite, acceptsWriteFrom, clampExplanation, clampTitle, demoteInProgress, foldPlanUpdate, hasUnfinished, normalizeItems, v2PlanEnabled } from "../plan/plan.js";
 import { PLAN_GUIDANCE_ACTIVE, PLAN_GUIDANCE_INTRO, PLAN_GUIDANCE_NATIVE } from "../../../shared/src/index.js";
 import { AGENT_DEFAULT, PREFS_DEFAULT, agentSettings, bumpModelUsage, type PlanHintSettings } from "../settings.js";
@@ -2079,6 +2080,14 @@ export class SessionManager {
     return pageCold(sorted, perWorkspace, totalMax);
   }
 
+  /** Full row for one id, regardless of liveness. The rail wire shape deliberately empties
+   *  configOptions/commands on cold rows; the session view needs them back when opened. */
+  fullInfo(id: string): SessionInfo | null {
+    const live = this.#sessions.get(id);
+    if (live) return live.info;
+    return this.#store.getSession(id) ? this.#coldInfo(id) : null;
+  }
+
   /** One row in the shape list()/cold()/archived() produce, from a stored row. */
   /** #62-3：把这次选择写进 agent 自己的配置。失败只记日志 —— 会话已经在新模型上跑起来了，
    *  配置文件没写成是"下次新会话的默认没跟上"，不该回头把一次成功的切换报成失败。 */
@@ -3721,8 +3730,8 @@ export class SessionManager {
     this.#emit({
       t: "sessions",
       sessions: this.list(),
-      cold: this.cold(),
-      archived: this.archived(),
+      cold: wireSessions(this.cold()),
+      archived: wireSessions(this.archived()),
       pending: this.pendingPermissions(),
       background: this.backgroundSnapshots(),
     });
