@@ -80,6 +80,11 @@ another one
                                       three user messages even after forty tool rows; --user is
                                       --role user. meta carries filtered = the pool it read from.
   hermes-studio session plan <id>           the plan object the operator's card renders
+  hermes-studio session stage <id> <todo|doing|done>
+                                      move this session's LABEL on the operator's rail. The label is
+                                      the operator's own statement and is NEVER inferred from a run,
+                                      so nothing moves by itself — this command is the only way an
+                                      agent may set it, and only when the operator asked.
   hermes-studio session delete <id>         OPERATOR ONLY — close it if live, PURGE the transcript if cold
   hermes-studio session archive <id>        OPERATOR ONLY — hide it from the rail (live: its process stops)
   hermes-studio session unarchive <id>      OPERATOR ONLY — bring it back
@@ -263,7 +268,8 @@ function tableRow(s, now) {
     .filter(Boolean)
     .join(" ");
   const name = String(s.name ?? "").slice(0, 44);
-  return `${dot} ${age(now - (s.lastAt ?? now)).padStart(4)}  ${flags.padEnd(8)} ${s.id}  ${name}`;
+  const stage = { todo: "待做", doing: "进行中", done: "已完成" }[s.stage] ?? "待做";
+  return `${dot} ${age(now - (s.lastAt ?? now)).padStart(4)}  ${stage.padEnd(6)} ${flags.padEnd(8)} ${s.id}  ${name}`;
 }
 
 /** Grouped when the answer has groups, flat otherwise — one renderer, so `--table` never disagrees with
@@ -325,7 +331,7 @@ if (cmd === "capabilities") {
   const id = args[0];
   // `hermes-studio session stop --close`（漏了 id）曾经被当成 id="--close" 打到服务端，回一个 404
   // out_of_scope —— 调用方以为"被拒"，其实是自己打错了（#73）。这一类在解析阶段就拒。
-  const TAKES_ID = new Set(["show", "messages", "plan", "send", "wake", "stop", "rename", "delete", "archive", "unarchive"]);
+  const TAKES_ID = new Set(["show", "messages", "plan", "send", "wake", "stop", "rename", "delete", "archive", "unarchive", "stage"]);
   if (id && id.startsWith("--") && TAKES_ID.has(verb)) {
     fail("bad_request", `expected a session id, got the flag "${id}" — flags come after the id (hermes-studio session ${verb} <id> …)`);
   }
@@ -601,6 +607,37 @@ if (cmd === "capabilities") {
               : body?.code === "cancel_unconfirmed"
               ? "the stop could NOT be delivered to the agent — the turn is still running. Retry, or close the slot."
               : "no turn was running — nothing was interrupted.",
+      },
+    });
+  } else if (verb === "stage") {
+    // 会话标签 —— 唯一一个 agent 也能改的写入口，因为「把本会话归到哪一组」不是破坏性动作，
+    // 而且用户明确要求：只允许人拖 / 人显式叫工具改，绝不允许从运行状态隐式推断。
+    const usage = "usage: hermes-studio session stage <id> <todo|doing|done>";
+    if (!id) fail("bad_request", usage);
+    if (args.length !== 2) fail("bad_request", `expected a stage after the id (${usage})`);
+    const stage = args[1];
+    if (!["todo", "doing", "done"].includes(stage)) {
+      fail("bad_request", `stage wants todo|doing|done, got "${stage}" (${usage})`);
+    }
+    let res;
+    try {
+      res = await fetch(`${EP}/api/cockpit/stage`, {
+        method: "POST",
+        headers: headers(true),
+        body: JSON.stringify({ id, stage }),
+      });
+    } catch (e) {
+      fail("unreachable", `the cockpit did not answer: ${e?.message ?? e}`);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) fail(String(body?.error ?? `http_${res.status}`),
+      String(body?.message ?? body?.error ?? `the cockpit answered HTTP ${res.status}`));
+    out({
+      success: true,
+      data: body,
+      meta: {
+        schema_version: body?.schema_version ?? 1,
+        note: "LABEL only — the session's process and transcript were not touched. Nothing moves a label automatically; this call is the explicit move.",
       },
     });
   } else if (verb === "delete" || verb === "archive" || verb === "unarchive") {

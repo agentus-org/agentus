@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { BackendId, EdgeKind, PlanSnapshot, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
+import type { BackendId, EdgeKind, PlanSnapshot, SessionStage, SessionStatus, StatusNoteItem, StoredMessage } from "../../../shared/src/index.js";
 import type { BackendHandshake, BackendHealth, BackendKind, BackendRow } from "../acp/registry.js";
 import { normalizeItems } from "../plan/plan.js";
 import { DEFAULT_NATIVE_PLAN_SOURCE } from "../acp/backends.js";
@@ -158,6 +158,12 @@ export interface SessionRow {
   /** When the OPERATOR put this session away (已归档). Null = it belongs in 工作空间. A storage
    *  state: it says nothing about whether a process is running (see SessionInfo.archivedAt). */
   archivedAt: number | null;
+  /** The operator's label (待做/进行中/已完成) and who set it. Optional on the ROW type so every
+   *  existing insert stays valid: an upsert that says nothing about the label must not be able to
+   *  move it (same rule as `archivedAt` — a status change is not a statement about the work). */
+  stage?: SessionStage | null;
+  stageSource?: string | null;
+  stageAt?: number | null;
   /** A session the COCKPIT owns rather than the operator (issue #16's observer): a real ACP
    *  session, kept out of the rail and out of the cockpit CLI's scope. Written on insert only —
    *  like `home`, it is a fact about how the row was born, not something a rename can change. */
@@ -204,6 +210,7 @@ interface RawSessionRow {
   title: string; auto_title?: string | null; title_by?: string | null; title_src?: string | null;
   status: SessionStatus; pid: number | null;
   created_at: number; closed_at: number | null; archived_at?: number | null;
+  stage?: string | null; stage_source?: string | null; stage_at?: number | null;
   modes?: string | null; config_options?: string | null;
   usage?: string | null; commands?: string | null;
   workspace?: string | null;
@@ -277,6 +284,9 @@ function rowToSession(r: RawSessionRow): SessionRow {
     title: r.title, autoTitle: r.auto_title ?? null, titleBy: r.title_by ?? null,
     titleSrc: (r.title_src as TitleSrc | null) ?? null, status: r.status, pid: r.pid,
     createdAt: r.created_at, closedAt: r.closed_at, archivedAt: r.archived_at ?? null,
+    stage: (r.stage as SessionStage | null) ?? null,
+    stageSource: r.stage_source ?? null,
+    stageAt: r.stage_at ?? null,
     modes: parseJson(r.modes), configOptions: parseJson(r.config_options) ?? [],
     usage: parseJson(r.usage), commands: parseJson(r.commands) ?? [],
     workspace: r.workspace ?? null,
@@ -429,6 +439,9 @@ export class Store {
         id text primary key, backend text not null, acp_session_id text,
         cwd text not null, title text not null, status text not null,
         pid integer, created_at integer not null, closed_at integer, home text,
+        -- The operator's own label (待做/进行中/已完成) — the rail's second grouping. Never derived
+        -- from a run event: only a drag or the cockpit CLI writes these three columns.
+        stage text, stage_source text, stage_at integer,
         -- 1 = a session the COCKPIT spawned for itself (the 工作播报 observer), never the operator's
         -- work: filtered out of the rail and out of the cockpit CLI's scope. See SessionRow.system.
         system integer not null default 0,
@@ -531,7 +544,7 @@ export class Store {
     const cols = new Set(
       (this.#db.prepare("pragma table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
     );
-    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title", "home", "forked_from"]) {
+    for (const col of ["modes", "config_options", "usage", "commands", "workspace", "models", "auto_title", "home", "forked_from", "stage", "stage_source"]) {
       if (!cols.has(col)) this.#db.exec(`alter table sessions add column ${col} text`);
     }
     // `title` is the DISPLAY title (the operator's name once they rename it);
@@ -565,6 +578,22 @@ export class Store {
     // row: nobody ever archived them, they were just dead. The 已归档 section starts empty and fills
     // with what the operator actually archives.
     if (!cols.has("archived_at")) this.#db.exec("alter table sessions add column archived_at integer");
+    // WHEN the label (stage) was last set — same shape as archived_at: an integer column, so its own
+    // migration. The label itself ("stage"/"stage_source") rides the text loop above.
+    if (!cols.has("stage_at")) this.#db.exec("alter table sessions add column stage_at integer");
+    // ONE-TIME backfill for rows born before the label existed. It is NOT an inference engine: it runs
+    // exactly once (guarded by "no row has a stage at all"), and it answers the only two facts a legacy
+    // row carries — 「有没有说过话」. A conversation with a transcript is work in flight; an empty one
+    // is a slot somebody made and never used. Everything after this is the operator's call, by hand.
+    if (!cols.has("stage")) {
+      this.#db.exec(`update sessions set stage = case
+          when exists (select 1 from messages m where m.session_id = sessions.id) then 'doing'
+          else 'todo' end,
+        stage_source = 'migration', stage_at = created_at where stage is null`);
+    } else {
+      this.#db.exec(`update sessions set stage = coalesce(stage, 'todo'), stage_source = coalesce(stage_source, 'migration'),
+        stage_at = coalesce(stage_at, created_at) where stage is null or stage_source is null or stage_at is null`);
+    }
     // WHO GAVE THIS SESSION ITS NAME. `title` says what a slot is called; nothing said who called it
     // that, so another agent could quietly rename the operator's conversation to 「已完成 ✓」 and the
     // rail would show it as fact. NULL = the operator (every existing row), a session id = that
@@ -1148,14 +1177,17 @@ export class Store {
     } else {
       this.#db
         .prepare(
-          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system, role, forked_from)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `insert into sessions (id, backend, acp_session_id, cwd, title, status, pid, created_at, closed_at, modes, config_options, usage, commands, models, auto_title, home, system, role, forked_from, stage, stage_source, stage_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(s.id, s.backend, s.acpSessionId, s.cwd, s.title, s.status, s.pid, s.createdAt, s.closedAt,
           JSON.stringify(s.modes ?? null), JSON.stringify(s.configOptions ?? []),
           JSON.stringify(s.usage ?? null), JSON.stringify(s.commands ?? []),
           JSON.stringify(s.models ?? null), s.title, s.home ?? null, s.system ? 1 : 0, s.role ?? null,
-          s.forkedFrom ?? null);
+          s.forkedFrom ?? null,
+          // A session is BORN on 待做 unless the caller says otherwise (a fork of a session that is
+          // still 进行中 is still new work — the branch does not inherit the parent's label).
+          s.stage ?? "todo", s.stageSource ?? "server", s.stageAt ?? s.createdAt);
     }
   }
 
@@ -1166,6 +1198,16 @@ export class Store {
     const info = this.#db
       .prepare("update sessions set archived_at = ? where id = ?")
       .run(at, sessionId);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  /** Set (or clear) a session's LABEL — its own statement for the same reason `setArchived` is:
+   *  a routine row upsert must not be able to move it, and nothing but a hand writes it. Returns
+   *  whether a row matched, so the caller can answer 404 honestly instead of reporting success. */
+  setStage(sessionId: string, stage: SessionStage, source: string, at: number = Date.now()): boolean {
+    const info = this.#db
+      .prepare("update sessions set stage = ?, stage_source = ?, stage_at = ? where id = ?")
+      .run(stage, source, at, sessionId);
     return Number(info.changes ?? 0) > 0;
   }
 

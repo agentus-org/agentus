@@ -2386,6 +2386,43 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .rail-placeholder-name { color: var(--text); opacity: 0.75; }
 .rail-placeholder-note { margin-left: auto; font-size: 11px; }
 
+/* ---- rail: 「会话」段的分组开关（工作空间 / 标签） ------------------------------ */
+/* The section head and the two chips share ONE row: the section is still 「会话」, and the chips
+   only choose HOW its rows are grouped. Nested buttons would be invalid, hence the wrapper. */
+.rail-section-row { display: flex; align-items: center; gap: 4px; }
+.rail-section-row .rail-section { flex: 1 1 auto; width: auto; margin-right: 0; }
+.rail-group-switch {
+  flex: 0 0 auto; display: flex; gap: 2px; padding: 1px;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 7px;
+}
+.rail-group-switch button {
+  border: none; background: transparent; color: var(--text-dim); font-family: inherit;
+  font-size: 10px; letter-spacing: 0; text-transform: none; line-height: 1.2;
+  padding: 2px 5px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.rail-group-switch button:hover { color: var(--text); }
+.rail-group-switch button.on { background: var(--accent); color: var(--on-accent); }
+/* Status dots on a LABEL group head: the folder icon would lie (a label is not a directory). */
+.rail-stage-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.rail-stage-dot[data-stage="todo"] { background: var(--text-dim); }
+.rail-stage-dot[data-stage="doing"] { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.rail-stage-dot[data-stage="done"] { background: var(--ok); }
+.rail-group-head.drop-hover, .rail-group-body.drop-hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+.rail-stage-empty { padding: 6px 8px; font-size: 11px; color: var(--text-dim); opacity: 0.75; }
+.session-item.dragging { opacity: 0.4; }
+.rail-drag-ghost {
+  position: fixed; z-index: 10000; pointer-events: none; max-width: 260px;
+  display: flex; align-items: center; gap: 6px; padding: 6px 9px;
+  background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 7px;
+  box-shadow: var(--shadow); font-size: 12px; color: var(--text);
+}
+.rail-drag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-drag-target { color: var(--accent); white-space: nowrap; }
+
 /* ---- rail: sessions grouped by the directory they work in ------------------- */
 .rail-group { margin-bottom: 2px; }
 /* The head and its 「+」 are two buttons on one line: the head keeps the whole row (clicking

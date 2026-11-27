@@ -11,6 +11,7 @@ import type {
   PromptAttachment,
   ServerEvent,
   SessionInfo,
+  SessionStage,
   StatusNoteItem,
   StoredMessage,
   TurnTrace,
@@ -1795,6 +1796,25 @@ export class Cockpit {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title }),
+    });
+    const view = this.byId.get(id);
+    if (view) view.info = { ...view.info, ...info };
+    for (const list of [this.sessions, this.archived]) {
+      const i = list.findIndex((s) => s.id === id);
+      if (i >= 0) list[i] = { ...list[i], ...info };
+    }
+    this.bump();
+    return info;
+  }
+
+  /** Move a session's LABEL (待做/进行中/已完成). Storage state only — no process is woken or
+   *  stopped, and NOBODY infers it from a run: the only callers are the rail's drag and a hand at
+   *  the CLI. The server broadcasts the new row, so every open tab agrees. */
+  async setStage(id: string, stage: SessionStage): Promise<SessionInfo> {
+    const info = await this.#req<SessionInfo>(`/api/sessions/${id}/stage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ stage, source: "manual" }),
     });
     const view = this.byId.get(id);
     if (view) view.info = { ...view.info, ...info };
