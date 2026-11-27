@@ -581,13 +581,6 @@ export class Store {
     // WHEN the label (stage) was last set — same shape as archived_at: an integer column, so its own
     // migration. The label itself ("stage"/"stage_source") rides the text loop above.
     if (!cols.has("stage_at")) this.#db.exec("alter table sessions add column stage_at integer");
-    // ONE-TIME backfill for rows born before the label existed. It touches only rows whose `stage`
-    // is still NULL. The operator's rule is that NOTHING is classified automatically: a legacy row
-    // starts in 未分类 whether or not it has a transcript. Whether work happened in it is not a
-    // statement the operator made, so it must not be inferred from messages.
-    this.#db.exec(`update sessions set stage = 'unclassified',
-        stage_source = coalesce(stage_source, 'migration'), stage_at = coalesce(stage_at, created_at)
-        where stage is null`);
     // WHO GAVE THIS SESSION ITS NAME. `title` says what a slot is called; nothing said who called it
     // that, so another agent could quietly rename the operator's conversation to 「已完成 ✓」 and the
     // rail would show it as fact. NULL = the operator (every existing row), a session id = that
@@ -664,18 +657,6 @@ export class Store {
     this.#dedupeReplayedRows();
     if (!hadActivityClock) this.#backfillActivity();
     this.#backfillEdges();
-    this.#normalizeMigrationStages();
-  }
-
-  /** Repair the earlier one-time backfill that filed every legacy row WITH a transcript under
-   *  「进行中」. That was an inference, not an operator decision, and it made a fresh rail look like
-   *  work the operator never assigned. Only rows still marked `migration` are re-filed to 未分类;
-   *  anything set by hand (drag / context menu / CLI) keeps its label. Runs once per store. */
-  #normalizeMigrationStages(): void {
-    if (this.#repairVersion("stage-migration-unclassified", 0) >= 1) return;
-    this.#db.exec(`update sessions set stage = 'unclassified'
-        where stage_source = 'migration' and coalesce(stage, '') <> 'unclassified'`);
-    this.#setRepairVersion("stage-migration-unclassified", 1);
   }
 
   /**
