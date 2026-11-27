@@ -115,17 +115,50 @@ const sessions = new Map();
  * token from somewhere, and the obvious place (a mock reply) is a transcript row: a credential in
  * the operator's UI. Opt-in instead: name a file in MOCK_PLAN_TOKEN_FILE and it lands there, 0600.
  */
-function notePlanTool(mcpServers) {
+function notePlanTool(mcpServers, acpSessionId) {
   const file = process.env.MOCK_PLAN_TOKEN_FILE;
   if (!file || !Array.isArray(mcpServers)) return;
   const tool = mcpServers.find((m) => m?.name === "studio-plan");
   if (!tool) return;
   const env = Object.fromEntries((tool.env ?? []).map((e) => [e.name, e.value]));
   try {
-    fs.writeFileSync(file, JSON.stringify({ ...env, command: tool.command, args: tool.args ?? [] }), { mode: 0o600 });
+    fs.writeFileSync(file, JSON.stringify({ ...env, command: tool.command, args: tool.args ?? [], acpSessionId }), { mode: 0o600 });
   } catch (e) {
     process.stderr.write(`[mock-agent] could not write ${file}: ${e.message}\n`);
   }
+}
+
+/** QA-only frozen-policy simulator: record the MCP list we were created with, and while a busy
+ *  marker file exists refuse a DIFFERENT list with the gateway's `session_busy`. An empty list is
+ *  always accepted (it means "keep the frozen policy"). This is the shape that broke #107. */
+function checkFrozenMcp(mcpServers) {
+  const frozenFile = process.env.MOCK_FROZEN_MCP_FILE;
+  const busyFile = process.env.MOCK_MCP_BUSY_FILE;
+  if (!frozenFile || !busyFile || !fs.existsSync(busyFile)) return;
+  // The gateway's empty selection means "keep the frozen policy" and never needs the capability
+  // that a changed list would rebind. It must adopt even while the lease marker is held.
+  if (!Array.isArray(mcpServers) || mcpServers.length === 0) return;
+  let frozen = null;
+  try { frozen = fs.readFileSync(frozenFile, "utf8"); } catch { return; }
+  if (frozen !== null && frozen !== JSON.stringify(mcpServers ?? [])) {
+    const err = new RequestError(-32603, "Internal error");
+    err.data = { details: "session_busy" };
+    throw err;
+  }
+}
+function recordFrozenMcp(mcpServers) {
+  const file = process.env.MOCK_FROZEN_MCP_FILE;
+  if (file && Array.isArray(mcpServers)) fs.writeFileSync(file, JSON.stringify(mcpServers));
+}
+/** QA knob: emulate a session created by an older build, whose frozen policy carries a random token
+ *  that has nothing to do with the cockpit's current `planTokenFor(id)`. */
+function legacyServers(mcpServers) {
+  const old = process.env.MOCK_LEGACY_PLAN_TOKEN;
+  if (!old || !Array.isArray(mcpServers)) return mcpServers;
+  return mcpServers.map((m) => m?.name === "studio-plan" ? {
+    ...m,
+    env: (m.env ?? []).map((e) => e.name === "HERMES_STUDIO_PLAN_TOKEN" ? { ...e, value: old } : e),
+  } : m);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -263,8 +296,10 @@ const agent = () => ({
     // the AGENT-side session id (#106), and two slots of this mock are two processes that both used to
     // start at `mock-1` — so the second one's identity silently replaced the first one's file.
     const sessionId = `mock-${process.pid}-${++seq}`;
-    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [], mcp: mcpServers ?? [] });
-    notePlanTool(mcpServers);
+    const effective = legacyServers(mcpServers);
+    sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, history: [], mcp: effective ?? [] });
+    notePlanTool(effective, sessionId);
+    recordFrozenMcp(effective);
     // Announce slash commands the way a real agent does (available_commands_update),
     // so the cockpit's palette path is exercised without a real backend.
     setTimeout(() => {
@@ -298,6 +333,7 @@ const agent = () => ({
   // reasoning_config). Keep the mock faithful: re-announce the SAME session instead of
   // minting a fresh one, so a resume doesn't silently reset modes/config.
   async loadSession({ sessionId, cwd, mcpServers }) {
+    checkFrozenMcp(mcpServers);
     // A turn the last restart lost leaves `session_admissions.status='unknown'` and Hermes 0.23
     // refuses every idle-only control until someone acknowledges it — the adapter runs one of those
     // under `session/load`, so the editor sees a bare -32603 with `details: unknown_execution` and
@@ -333,13 +369,35 @@ const agent = () => ({
     // session ("no such session: mock-2") fails for reasons that have nothing to do with
     // the cockpit. Register the id as the parent's stand-in instead of inventing a new one.
     if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true, history: [], mcp: mcpServers ?? [] });
+      // A resumed/forked agent is a FRESH process: the gateway keeps the plan MCP tool in its frozen
+      // policy and the cockpit now sends an empty list on load. Emulate that frozen policy from the
+      // QA token file (keyed by the ACP session id) so the empty list does not look like a clear.
+      let frozen = mcpServers ?? [];
+      if (!frozen.length && process.env.MOCK_PLAN_TOKEN_FILE) {
+        try {
+          const saved = JSON.parse(fs.readFileSync(process.env.MOCK_PLAN_TOKEN_FILE, "utf8"));
+          if (saved.acpSessionId === sessionId) {
+            frozen = [{
+              name: "studio-plan", command: saved.command, args: saved.args ?? [],
+              env: ["HERMES_STUDIO_PLAN_ENDPOINT", "HERMES_STUDIO_PLAN_TOKEN", "HERMES_STUDIO_PLAN_SESSION"]
+                .filter((k) => saved[k] !== undefined).map((k) => ({ name: k, value: saved[k] })),
+            }];
+          }
+        } catch { /* no frozen policy recorded for this id */ }
+      }
+      sessions.set(sessionId, { cwd, cancelled: false, currentModeId: "default", config: {}, used: 0, restored: true, history: [], mcp: frozen });
       process.stderr.write(`[mock-agent] loadSession ${sessionId} -> restored (not in memory)\n`);
     }
     if (sessions.has(sessionId)) {
       const s = sessions.get(sessionId);
-      s.mcp = mcpServers ?? s.mcp ?? [];
-      notePlanTool(mcpServers);
+      // Match the gateway: an EMPTY load selection keeps the session's frozen MCP servers rather
+      // than clearing them. The cockpit deliberately sends [] on resume so a foreign turn's lease
+      // does not force an idle-only rebind; a test fixture that clears here invents a regression.
+      if (mcpServers?.length) {
+        s.mcp = mcpServers;
+        notePlanTool(mcpServers, sessionId);
+        recordFrozenMcp(mcpServers);
+      }
       // ── MOCK_REPLAY=1: the REAL replay shape ────────────────────────────────────────────────
       // Hermes re-sends its whole transcript on `session/load`: complete blocks (not chunks), and
       // the reasoning ones carry NO messageId — so the cockpit cannot fold them by identity, and a

@@ -98,9 +98,21 @@ function mcpChild(env) {
 /** The tool's text answer, whatever the shape. */
 const textOf = (msg) => msg?.result?.content?.[0]?.text ?? msg?.error?.message ?? "";
 
-const freshSession = async (title) => (await api("/api/sessions", {
-  method: "POST", body: JSON.stringify({ backend: "mock", cwd: "/tmp", title }),
-})).body;
+const freshSession = async (title) => {
+  const s = (await api("/api/sessions", {
+    method: "POST", body: JSON.stringify({ backend: "mock", cwd: "/tmp", title }),
+  })).body;
+  // POST /api/sessions intentionally returns before the handshake. Prompting a `starting` slot
+  // answers "session not ready" and every assertion below then runs on an empty fixture; with an
+  // empty MCP list on resume the handshake can take a beat longer, so wait for READY explicitly.
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    const { body } = await api("/api/sessions");
+    if ((body?.live ?? []).find((r) => r.id === s?.id)?.status === "ready") break;
+    await sleep(200);
+  }
+  return s;
+};
 
 const statusOf = async (id) => {
   const { body } = await api("/api/sessions");
@@ -243,7 +255,15 @@ check("read_plan round-trips what the cockpit holds",
   /capture the handshake/.test(textOf(readBack)) && /revision 1/.test(textOf(readBack)),
   textOf(readBack).split("\n")[0]);
 
-// --- 3: a bad token can write nothing -------------------------------------------------
+// --- 3: a bad token can write nothing, INCLUDING on an adopted (resumed) session ------
+// The relaxed-auth regression was exactly here: after a resume, `body.session` is caller-controlled,
+// so a blanket "any non-empty token" would let any loopback process write this card. Resume first,
+// then keep the strict cross-session check below as a real guard rather than a fresh-session-only one.
+await api(`/api/sessions/${sid}/restart`, { method: "POST" });
+await idle(sid, 60000);
+const afterResume = await mcp.call("tools/call", { name: "read_plan", arguments: {} });
+check("the same per-session token still works after a resume",
+  /capture the handshake/.test(textOf(afterResume)), textOf(afterResume).split("\n")[0]);
 const rogue = mcpChild({
   HERMES_STUDIO_PLAN_ENDPOINT: env.HERMES_STUDIO_PLAN_ENDPOINT,
   HERMES_STUDIO_PLAN_TOKEN: "not-the-token",

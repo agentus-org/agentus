@@ -232,6 +232,16 @@ function hmac(input: string): string {
   return createHmac("sha256", secret ?? Buffer.from("uninitialised")).update(input).digest("base64url");
 }
 
+/** Per-session token handed to the plan MCP server. It MUST be stable for the life of the session:
+ *  the gateway freezes the MCP server list (env included) into the session policy at create time, and
+ *  a changed list needs an idle-only rebind during `session/load`. A token minted afresh on every
+ *  resume changed that fingerprint every time, so resuming a slot whose turn was still held by the
+ *  gateway failed with `session_busy` — which also broke the operator's stop-and-take-over path.
+ *  Derived from the operator's auth secret, so it is not guessable from the session id alone. */
+export function planTokenFor(sessionId: string): string {
+  return hmac(`hermes-studio:plan:${sessionId}`);
+}
+
 function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);

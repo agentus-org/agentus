@@ -36,6 +36,7 @@ import {
 import { SKILLS_ROOT, installSkills, resolveSkillsDir } from "../skills/install.js";
 import { cockpitEndpoint, publishIdentity, unpublishIdentity } from "../cockpit/identity-file.js";
 import { classifyError, checkedHealth, effectiveArgs, handshakeFrom, rowToSpec } from "./registry.js";
+import { planTokenFor } from "../auth.js";
 import type { BackendHandshake, CheckErrorCode } from "./registry.js";
 import {
   cleanAgentTitle, deriveTitle, isPromptSliceText, titleFromLatestPrompt, TITLE_INSTRUCTION,
@@ -534,10 +535,14 @@ interface LiveSession {
    *  Cleared after the first prompt, because after that the agent maintains the plan itself —
    *  re-sending it every turn would cost context and invite re-deriving finished work. */
   planReminderPending?: boolean;
-  /** Minted per agent process and handed to the plan MCP server through the HANDSHAKE (§4): it is
-   *  what keeps the tool's writes scoped to this one session even if the spawn command is copied
-   *  out of `ps`. Lives and dies with the process that received it. */
+  /** Minted per SESSION (not per agent process) and handed to the plan MCP server through the
+   *  HANDSHAKE (§4): it keeps the tool's writes scoped to this session, and staying stable across
+   *  resumes keeps the gateway's frozen MCP fingerprint unchanged so a busy slot can still load. */
   planToken: string;
+  /** True only when a busy legacy slot forced the EMPTY-list fallback: the gateway kept an old
+   *  frozen token we cannot know, so plan MCP writes stay strictly rejected until the heal timer
+   *  re-sends the full list on an idle slot (see #schedulePlanTokenHeal). Never relaxes auth. */
+  planMcpAdopted?: boolean;
   /** Minted per agent process and handed to the CHILD's ENVIRONMENT (issue #15): the cockpit CLI
    *  (`$HERMES_STUDIO_COCKPIT_BIN`) reads it, so an agent can look at the rest of the cockpit without ever
    *  touching a port or a token itself. Scoped to this one session, like `planToken` — and dies with
@@ -574,6 +579,29 @@ interface LiveSession {
 
 type Emitter = (evt: ServerEvent) => void;
 
+/** The fallback MCP list for `session/load` when the normal list hit a frozen-policy conflict.
+ *
+ *  The gateway freezes the editor's MCP server list into the session policy on create. A normally
+ *  resubmitted list rebinds idle sessions to `planToken` (which is how legacy tokens are healed);
+ *  while a foreign turn holds the lease that rebind answers `session_busy`, so we retry with an
+ *  EMPTY list, which means "keep what is frozen" (fork `gateway_server.py::_resume`). That lets a
+ *  busy viewer adopt and deliver `session/cancel` without ever relaxing the plan-token check. */
+export function resumeMcpServers(): McpServer[] {
+  return [];
+}
+
+/** The gateway answers a changed MCP fingerprint held by a foreign turn with `session_busy`
+ *  (sometimes wrapped as `acp_mcp_policy_conflict`). Only that shape triggers the empty-list
+ *  fallback; every other load failure must keep surfacing. */
+export function isFrozenMcpConflict(err: unknown): boolean {
+  const shape = JSON.stringify({
+    message: String((err as { message?: unknown })?.message ?? err ?? ""),
+    data: (err as { data?: unknown })?.data ?? null,
+    details: (err as { details?: unknown })?.details ?? null,
+  });
+  return /session_busy|mcp_policy_conflict|mcp_policy_unavailable/i.test(shape);
+}
+
 export class SessionManager {
   #sessions = new Map<string, LiveSession>();
   /** 会话 id → 等「agent 里那一轮」跑完再自己重试的定时器（issue #238）。一次性、可被新的 resume 覆盖。 */
@@ -590,6 +618,9 @@ export class SessionManager {
    *  stopped when none remain, and unref'd so it never holds the process open. There is NO per-session
    *  polling and no polling at all for in-process backends or slots with no lease ever seen. */
   #foreignBusyTimer: NodeJS.Timeout | null = null;
+  /** Per-slot one-shot heal for the plan MCP token after a busy fallback. Unref'd, bounded, and only
+   *  created for sessions that actually fell back; cleared on success or teardown. */
+  #planHealTimers = new Map<string, NodeJS.Timeout>();
   /** How the operator wants the plan-tool hint injected into a prompt — read on EVERY prompt, like
    *  the idle thresholds, because the requirement is that a change in 设置 applies to the very next
    *  turn with no restart and no session to hibernate. */
@@ -1269,7 +1300,7 @@ export class SessionManager {
       // session fold itself into a row written hours ago in turn 1 (#104).
       caps: { fork: false, load: false, image: false, gatewayOwned: false },
       turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
-      planToken: randomUUID(),
+      planToken: planTokenFor(id),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
       // activity. Without this the slot inherits the store's message clock — yesterday's — and the
@@ -1477,6 +1508,51 @@ export class SessionManager {
    *
    *  操作者不该因为「上一次发布把自己那一轮掐了」而盯着一个起不来的槽位十几分钟 —— 租约自己说了
    *  什么时候结束，那就到点自己再试。一次只排一个定时器；再试的结果若仍是等待，它会自己排下一次。 */
+  /** Re-send the full MCP list to a slot that adopted with an old frozen token. The gateway only
+   *  rebinds when idle, so poll briefly and give up rather than looping forever. Replay frames are
+   *  suppressed exactly like a normal resume: a second `session/load` replays the transcript. */
+  #schedulePlanTokenHeal(live: LiveSession): void {
+    const id = live.info.id;
+    if (!live.planMcpAdopted || live.tornDown || this.#planHealTimers.has(id)) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries += 1;
+      const s = this.#sessions.get(id);
+      if (!s || s.tornDown || !s.planMcpAdopted || tries > 15) {
+        this.#clearPlanTokenHeal(id);
+        return;
+      }
+      if (s.busy || s.foreignBusy) return;
+      void this.#healPlanTokenOnce(s).catch(() => { /* retry on the next tick */ });
+    }, 2000);
+    timer.unref?.();
+    this.#planHealTimers.set(id, timer);
+  }
+
+  #clearPlanTokenHeal(id: string): void {
+    const timer = this.#planHealTimers.get(id);
+    if (timer) clearInterval(timer);
+    this.#planHealTimers.delete(id);
+  }
+
+  async #healPlanTokenOnce(s: LiveSession): Promise<void> {
+    const spec = this.#specFor(s.info.backend);
+    const meta = this.#handshakeMeta(spec);
+    const wasReplaying = s.replaying;
+    s.replaying = true;
+    try {
+      await s.conn!.loadSession({
+        sessionId: s.info.acpSessionId as string, cwd: s.info.cwd,
+        mcpServers: this.#planMcpServers(spec, s),
+        ...(meta ? { _meta: meta } : {}),
+      });
+      s.planMcpAdopted = false;
+      this.#clearPlanTokenHeal(s.info.id);
+    } finally {
+      s.replaying = wasReplaying;
+    }
+  }
+
   #scheduleBusyRetry(id: string, opts: ResumeOpts, retryAfterMs: number): void {
     if (this.#busyRetries.has(id)) return;
     const delay = Math.min(Math.max(retryAfterMs + 2000, 5000), RESUME_BUSY_MAX_RETRY_MS);
@@ -1703,6 +1779,11 @@ export class SessionManager {
       info: {
         id, backend: row.backend, acpSessionId: row.acpSessionId, cwd: row.cwd,
         workspace: row.workspace ?? null,
+        // A hand-set stage is a row fact. Without these three, the first list after a resume
+        // showed every slot in 未分类 even when the operator had dragged it elsewhere (#review F4).
+        stage: (row.stage as SessionInfo["stage"]) ?? null,
+        stageSource: row.stageSource ?? null,
+        stageAt: row.stageAt ?? null,
         contextLimit: row.contextLimit ?? null,
         status: "starting", pid: child.pid ?? null, title: row.title,
         // a resumed system session is still a system session (issue #16): the observer is reaped and
@@ -1735,7 +1816,7 @@ export class SessionManager {
       // session fold itself into a row written hours ago in turn 1 (#104).
       caps: { fork: false, load: false, image: false, gatewayOwned: false },
       turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
-      planToken: randomUUID(),
+      planToken: planTokenFor(id),
       cockpitToken,
       // A brand-new process is, by definition, freshly used: the click that spawned it is the
       // activity. Without this the slot inherits the store's message clock — yesterday's — and the
@@ -1783,10 +1864,29 @@ export class SessionManager {
       live.caps = readCaps(reloadInit?.agentCapabilities);
       live.caps.gatewayOwned = false; // decided below, from what `session/load` says it adopted
       const loadMeta = this.#handshakeMeta(spec);
-      let loaded = (await conn.loadSession({
-        sessionId: row.acpSessionId, cwd: row.cwd, mcpServers: this.#planMcpServers(spec, live),
+      const loadWith = async (mcpServers: McpServer[]) => (await conn.loadSession({
+        sessionId: row.acpSessionId as string, cwd: row.cwd, mcpServers,
         ...(loadMeta ? { _meta: loadMeta } : {}),
       })) as { modes?: SessionModeState | null; configOptions?: ConfigOptionView[]; sessionId?: string } | undefined;
+      // Send the real list first: on an IDLE legacy session the gateway rebinds the frozen policy to
+      // `planToken`, so the plan MCP tool keeps working and the strict token check stays valid. A
+      // busy foreign turn makes that rebind fail with session_busy; only then fall back to an empty
+      // list, which adopts without touching the policy (plan writes stay refused until a later idle
+      // resume heals the token). Never skip the token check to paper over a legacy fingerprint.
+      live.planMcpAdopted = false;
+      let loaded: Awaited<ReturnType<typeof loadWith>>;
+      try {
+        loaded = await loadWith(this.#planMcpServers(spec, live));
+      } catch (err) {
+        if (!isFrozenMcpConflict(err)) throw err;
+        live.planMcpAdopted = true;
+        loaded = await loadWith(resumeMcpServers());
+        // The agent still holds the OLD frozen token. Strict plan-token auth must stay on, so queue
+        // a bounded retry that re-sends the full list once this slot goes idle and let the gateway
+        // rebind to `planToken`. Without this the plan tool would be dead until the next explicit
+        // resume; do not "fix" that by relaxing the token check (#review R3 F1).
+        this.#schedulePlanTokenHeal(live);
+      }
       // ── Did the agent actually adopt it? ────────────────────────────────────────────────────
       // Measured against the real CLI (scripts/probe-load-missing.mjs): for a session it does not
       // have, hermes answers `session/load` with an EMPTY result and `session/prompt` with
@@ -3172,8 +3272,19 @@ export class SessionManager {
     } as Record<string, unknown>;
   }
 
-  #planMcpServers(spec: BackendSpec, live: LiveSession): McpServer[] {
+  #planMcpServers(
+    spec: BackendSpec,
+    live: LiveSession,
+    sessionId: string = live.info.id,
+    token: string = live.planToken,
+  ): McpServer[] {
     if (nativePlanSourceOf(spec) !== "none") return [];
+    // The token below is stable per session (planTokenFor). Keep it that way: the gateway freezes
+    // this whole server list — env included — into the session policy on create, and a changed
+    // fingerprint needs an idle-only rebind on load. While a foreign turn holds the lease, that
+    // rebind answers `session_busy`, the viewer never adopts, and stop-and-take-over cannot reach
+    // the turn. With a stable token the fingerprint is identical on every resume, so load succeeds
+    // even with the lease held and `session/cancel` can interrupt it.
     return [
       {
         name: "studio-plan",
@@ -3181,8 +3292,8 @@ export class SessionManager {
         args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "../../mcp/plan-server.mjs")],
         env: [
           { name: "HERMES_STUDIO_PLAN_ENDPOINT", value: `http://127.0.0.1:${process.env.HERMES_STUDIO_PORT ?? 8788}` },
-          { name: "HERMES_STUDIO_PLAN_TOKEN", value: live.planToken },
-          { name: "HERMES_STUDIO_PLAN_SESSION", value: live.info.id },
+          { name: "HERMES_STUDIO_PLAN_TOKEN", value: token },
+          { name: "HERMES_STUDIO_PLAN_SESSION", value: sessionId },
         ],
       },
     ];
@@ -3267,9 +3378,10 @@ export class SessionManager {
     this.#emit({ t: "message", message: msg });
   }
 
-  /** The plan MCP tool's READ side. Only a RUNNING session can be read, and only with the token its
-   *  own handshake carried: the token dies with the process that was given it, which is what keeps
-   *  the tool scoped to one session rather than "any plan in this cockpit". */
+  /** The plan MCP tool's READ side. Only a RUNNING session can be read, and the token must be the
+   *  one minted for THIS session. `body.session` is caller-controlled, so it is NOT an authorization
+   *  boundary: a busy legacy slot that fell back to the empty MCP list keeps the old frozen token
+   *  and its plan writes stay refused until a later idle resume rebinds it to `planToken`. */
   planForMcp(sessionId: string, token: string):
     | { ok: true; plan: PlanSnapshot | null }
     | { ok: false; error: string } {
@@ -3542,6 +3654,7 @@ export class SessionManager {
     // better answer than 「closed」, so it keeps it.
     // 先落旗子再改状态：晚到的握手必须在它写 ready 之前看到这一眼（见 LiveSession.tornDown）。
     live.tornDown = true;
+    this.#clearPlanTokenHeal(live.info.id);
     if (live.info.status !== "error") live.info.status = why === "reaped" ? "reaped" : "closed";
     // Anyone waiting for this session's turn gets an answer: the child is about to be signalled and
     // #onChildExit will bail out early (the slot is deleted below), so this is the last moment that
@@ -4717,16 +4830,20 @@ export class SessionManager {
     if (!source.conn || !source.info.acpSessionId) throw new Error("session not ready — resume it first");
     if (source.busy || source.foreignBusy) throw new Error("the session is mid-turn — wait for it to finish before forking");
     const cwd = source.info.workspace || source.info.cwd;
+    // The fork's plan MCP env must name the CHILD, not the parent: the agent freezes this list into
+    // the new session's policy, and the child's slot is authorized by its own id. Generate the id
+    // before the request so the frozen token/session pair is already the child's (#review F1).
+    const newId = randomUUID();
     const res = (await source.conn.request("session/fork", {
       sessionId: source.info.acpSessionId,
       cwd,
-      // A fork is a real session and keeps the parent's backend, so it gets the same plan channel.
-      mcpServers: this.#planMcpServers(this.#specFor(source.info.backend), source),
+      mcpServers: this.#planMcpServers(
+        this.#specFor(source.info.backend), source, newId, planTokenFor(newId),
+      ),
     })) as { sessionId?: unknown; modes?: SessionModeState | null; configOptions?: ConfigOptionView[] } | null;
     const acpSessionId = res?.sessionId ? String(res.sessionId) : "";
     if (!acpSessionId) throw new Error("the agent did not return a session id for the fork");
 
-    const newId = randomUUID();
     const now = Date.now();
     const forkedOptions = normConfigOptions(res?.configOptions);
     this.#store.upsertSession({
