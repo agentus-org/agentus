@@ -985,7 +985,10 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
     document.body.classList.remove("rail-stage-dragging");
     floatRef.current?.el.remove();
     floatRef.current = null;
-    window.getSelection()?.removeAllRanges();
+    // DO NOT clear the window selection here. This runs on EVERY pointerup in the document (the
+    // listener below), so a plain drag-select in the transcript ended with the selection being
+    // wiped on release — text anywhere on the page became unselectable. Selection is cleared at
+    // the two places that actually start a rail drag, where it belongs.
     setDrag(null);
     dropTo(null);
   }, []);
