@@ -54,7 +54,7 @@ import { IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, I
 import { PANES, headPanes, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
 import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, SessionStage, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
-import { STAGE_LABEL } from "../../shared/src/index";
+import { SESSION_STAGES, STAGE_LABEL } from "../../shared/src/index";
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, attachmentError, draftToAttachment, linkDraft, needsPathUpload, uploadAttachment, type Draft } from "./attachmentDraft";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
@@ -654,7 +654,7 @@ function AgentMark({ backend }: { backend: string }): JSX.Element | null {
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onToggleUnread, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onStage, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onToggleUnread, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; /** the operator put it away — independent of `cold` */
   archived: boolean;
@@ -663,6 +663,8 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
   canFork: boolean;
   onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
   onFork: () => void; onWorkspace: () => void;
+  /** 改标签：与拖动同一条写入路径（manual），只是从菜单点一下 —— 手机上不用长按拖。 */
+  onStage: (stage: SessionStage) => void;
   onExport: () => void;
   /** 设为未读 / 设为已读： 「点进去看了，但还没决策」的唯一入口（AionUi 的 手动未读） */
   onToggleUnread: () => void;
@@ -717,6 +719,22 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
       <div className="sess-menu-head">
         <BackendAvatar backend={info.backend} cold={cold} status={info.status} />
         <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
+      </div>
+      {/* 标签：与拖动同一个写口，菜单是手机上更够得着的入口。当前组高亮，点别的即改（不自动流转）。 */}
+      <div className="sess-menu-stage" role="group" aria-label="会话标签">
+        <span className="sess-menu-stage-label">标签</span>
+        <div className="sess-menu-stage-chips">
+          {SESSION_STAGES.map((s) => {
+            const on = (info.stage ?? "unclassified") === s.id;
+            return (
+              <button key={s.id} type="button" role="menuitemradio" aria-checked={on}
+                      data-stage-choice={s.id} className={on ? "on" : ""}
+                      onClick={(e) => { e.stopPropagation(); if (!on) onStage(s.id); }}>
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       {info.role === "main" ? null : item("重命名", <IconPencil size={14} />, onRename)}
       {/* A switch, not a state: the label says what the click will DO. 「设为未读」 is the operator's
@@ -1580,6 +1598,10 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           onRetitle={() => { void regenerateTitle(menuInfo); }}
           onFork={() => { setMenu(null); void onFork(menuInfo.id); }}
           onWorkspace={() => { setMenu(null); setPickFor(menuInfo.id); }}
+          onStage={(stage) => {
+            setMenu(null);
+            void cockpit.setStage(menuInfo.id, stage).catch((e) => { setErr(`移动标签失败：${String((e as Error)?.message ?? e)}`); });
+          }}
           onExport={() => {
             setMenu(null);
             // cookie-auth'd GET with Content-Disposition: attachment — the browser saves it.
