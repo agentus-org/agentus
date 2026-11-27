@@ -27,7 +27,7 @@ const PANEL_MAX_KEY = "hermes-studio.panel-maximized";
 import { MIN_CHAT, usePaneWidth } from "./paneWidth";
 import { onOpenLocalFile, openLocalFile } from "./fileBus";
 import { diffLines, mergeChanges, type DiffLine, type FileChange, type ToolChange } from "./changes";
-import { delegationColor, MAIN_BOT_GROUP, RAIL_RECENT, railRows, splitRecent } from "./rail";
+import { delegationColor, groupByStage, MAIN_BOT_GROUP, RAIL_RECENT, railRows, splitRecent } from "./rail";
 import {
   backspaceToken, caretInsideToken, insertToken, mentionChoices, mentionWorkspaces, stripToken,
   tokenIntact, tokenText, type MentionChoice, type MentionToken,
@@ -53,7 +53,8 @@ import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldTo
 import { IconActivity, IconArrowDown, IconArrowLeft, IconArrowUp, IconArchive, IconCheck, IconChevronDown, IconChevronRight, IconClose, IconCopy, IconDot, IconDotsV, IconDownload, IconEye, IconFile, IconFolder, IconFolderOpen, IconGauge, IconChip, IconFork, IconHome, IconMenu, IconMic, IconPaperclip, IconPencil, IconPhone, IconPlus, IconPower, IconRefresh, IconResume, IconSearch, IconSend, IconSettings, IconShield, IconStop, IconVolume, IconVolumeOff, IconBrain, IconUsers, IconStar, IconClock } from "./Icons";
 import { PANES, headPanes, readPair, useIdeStatus, useWide, type ViewTab } from "./panes";
 import { stripEmoTags } from "./tusMood";
-import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
+import type { ClientCommand, PermissionDecision, PermissionDiff, PermissionRequestView, PromptAttachment, SessionInfo, SessionStage, StatusNoteItem, TurnTrace, UsageView } from "../../shared/src/index";
+import { SESSION_STAGES, STAGE_LABEL } from "../../shared/src/index";
 import { IMAGE_TYPES, MAX_IMAGE_BYTES, attachmentError, draftToAttachment, linkDraft, needsPathUpload, uploadAttachment, type Draft } from "./attachmentDraft";
 import { installNoticeBridge, setNoticeOpener, unlockChime } from "./webNotify";
 
@@ -653,7 +654,7 @@ function AgentMark({ backend }: { backend: string }): JSX.Element | null {
  *  delete. It replaces the row of tiny buttons that used to live on every session row —
  *  the rail is for finding work, the menu is for acting on it (studio's split). On a phone
  *  the same markup is laid out as a bottom sheet by CSS, where a thumb can reach it. */
-function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onToggleUnread, onDelete }: {
+function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onDismiss, onRename, onRetitle, retitling, onFork, onWorkspace, onStage, onExport, onRestart, onResume, onArchive, onUnarchive, onUnarchiveResume, onToggleUnread, onDelete }: {
   x: number; y: number; trigger: HTMLElement | null;
   info: SessionInfo; cold: boolean; /** the operator put it away — independent of `cold` */
   archived: boolean;
@@ -662,6 +663,8 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
   canFork: boolean;
   onDismiss: () => void; onRename: () => void; onRetitle: () => void; retitling: boolean;
   onFork: () => void; onWorkspace: () => void;
+  /** 改标签：与拖动同一条写入路径（manual），只是从菜单点一下 —— 手机上不用长按拖。 */
+  onStage: (stage: SessionStage) => void;
   onExport: () => void;
   /** 设为未读 / 设为已读： 「点进去看了，但还没决策」的唯一入口（AionUi 的 手动未读） */
   onToggleUnread: () => void;
@@ -716,6 +719,22 @@ function SessionMenu({ x, y, trigger, info, cold, archived, unread, canFork, onD
       <div className="sess-menu-head">
         <BackendAvatar backend={info.backend} cold={cold} status={info.status} />
         <span className="sess-menu-title" title={info.workspace || info.cwd}>{info.title}</span>
+      </div>
+      {/* 标签：与拖动同一个写口，菜单是手机上更够得着的入口。当前组高亮，点别的即改（不自动流转）。 */}
+      <div className="sess-menu-stage" role="group" aria-label="会话标签">
+        <span className="sess-menu-stage-label">标签</span>
+        <div className="sess-menu-stage-chips">
+          {SESSION_STAGES.map((s) => {
+            const on = (info.stage ?? "unclassified") === s.id;
+            return (
+              <button key={s.id} type="button" role="menuitemradio" aria-checked={on}
+                      data-stage-choice={s.id} className={on ? "on" : ""}
+                      onClick={(e) => { e.stopPropagation(); if (!on) onStage(s.id); }}>
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       {info.role === "main" ? null : item("重命名", <IconPencil size={14} />, onRename)}
       {/* A switch, not a state: the label says what the click will DO. 「设为未读」 is the operator's
@@ -890,6 +909,135 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   useEffect(() => {
     try { localStorage.setItem(RAIL_FOLD_KEY, JSON.stringify(folded)); } catch { /* private mode: folding just won't stick */ }
   }, [folded]);
+  // 「会话」段怎么分组：工作空间（原样）或标签（未分类 / 进行中 / 已完成）。A layout preference like
+  // the fold state — a per-device view choice, not a property of any session, so localStorage is the
+  // right home for it. The LABEL itself lives on the server (see SessionInfo.stage).
+  const [railGroup, setRailGroup] = useState<"workspace" | "stage">(() => {
+    try { return localStorage.getItem("hermes-studio.railGroup") === "stage" ? "stage" : "workspace"; }
+    catch { return "workspace"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hermes-studio.railGroup", railGroup); } catch { /* private mode */ }
+  }, [railGroup]);
+  // 「已完成」默认折叠：这一组只会越堆越多，不该每次都划过一大片。只折叠显示，不碰任何标签。
+  const [doneOpen, setDoneOpen] = useState(false);
+  // 首次切到「标签」时的一次性说明。只有点「知道了」才关闭并记入 localStorage —— 用户明确要求，
+  // 不要因为拖了一次或改过标签就自己消失，否则「只在首次提示」这件事就没个准。
+  const STAGE_HINT_KEY = "hermes-studio.stageHintSeen";
+  const [stageHintSeen, setStageHintSeen] = useState<boolean>(() => {
+    try { return localStorage.getItem(STAGE_HINT_KEY) === "1"; } catch { return false; }
+  });
+  const [stageHint, setStageHint] = useState(false);
+  const dismissStageHint = (): void => {
+    setStageHint(false);
+    setStageHintSeen(true);
+    try { localStorage.setItem(STAGE_HINT_KEY, "1"); } catch { /* private mode */ }
+  };
+  // A long-press drag in 标签 mode: `armed` is the pointer that MIGHT become a drag, `drag` is one
+  // that HAS (set after the threshold so a tap still just opens the session).
+  const dragArm = useRef<{ id: string; x: number; y: number; timer: number | null; fired: boolean } | null>(null);
+  const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [dropStage, setDropStage] = useState<SessionStage | null>(null);
+  const dropRef = useRef<SessionStage | null>(null);
+  const dropTo = (s: SessionStage | null): void => {
+    dropRef.current = s;
+    setDropStage(s);
+    const f = floatRef.current;
+    if (f) f.badge.textContent = s ? `→ ${STAGE_LABEL[s]}` : "";
+  };
+  // The dragged ROW itself floats under the cursor — not a small text chip. It is a DOM clone of
+  // the row: it keeps the exact card look (avatar, name, timestamp) without duplicating that JSX in
+  // React, and because pointer-events are off, it cannot become a second drop target. The original
+  // row stays in the list at 25% so the columns do not jump while you aim.
+  const floatRef = useRef<{ el: HTMLElement; badge: HTMLElement; dx: number; dy: number } | null>(null);
+  const placeFloat = (x: number, y: number): void => {
+    const f = floatRef.current;
+    if (!f) return;
+    f.el.style.left = `${x - f.dx}px`;
+    f.el.style.top = `${y - f.dy}px`;
+  };
+  const startFloat = (id: string, x: number, y: number): void => {
+    if (floatRef.current) return;
+    const row = [...document.querySelectorAll<HTMLElement>("[data-session]")]
+      .find((el) => el.dataset.session === id);
+    if (!row) return;
+    const r = row.getBoundingClientRect();
+    const layer = document.createElement("div");
+    layer.className = "rail-drag-float";
+    layer.style.width = `${r.width}px`;
+    const clone = row.cloneNode(true) as HTMLElement;
+    clone.removeAttribute("data-session");
+    clone.removeAttribute("data-stage-drop");
+    clone.classList.add("floating");
+    layer.appendChild(clone);
+    const badge = document.createElement("span");
+    badge.className = "rail-drag-target";
+    layer.appendChild(badge);
+    document.body.appendChild(layer);
+    floatRef.current = { el: layer, badge, dx: x - r.left, dy: y - r.top };
+    placeFloat(x, y);
+  };
+  const dragSuppressClick = useRef(false);
+  const clearDrag = useCallback((): void => {
+    const d = dragArm.current;
+    if (d?.timer != null) window.clearTimeout(d.timer);
+    dragArm.current = null;
+    document.body.classList.remove("rail-stage-dragging");
+    floatRef.current?.el.remove();
+    floatRef.current = null;
+    window.getSelection()?.removeAllRanges();
+    setDrag(null);
+    dropTo(null);
+  }, []);
+  const lastPointer = useRef({ x: 0, y: 0 });
+  const stageUnder = (x: number, y: number): SessionStage | null => {
+    const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-stage-drop]");
+    const s = el?.dataset.stageDrop;
+    return s === "unclassified" || s === "todo" || s === "doing" || s === "done" ? s : null;
+  };
+  useEffect(() => {
+    const move = (e: PointerEvent): void => {
+      lastPointer.current = { x: e.clientX, y: e.clientY };
+      const d = dragArm.current;
+      if (!d || d.fired) return;
+      if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 7) return;
+      d.fired = true;
+      if (d.timer != null) { window.clearTimeout(d.timer); d.timer = null; }
+      window.getSelection()?.removeAllRanges();
+      document.body.classList.add("rail-stage-dragging");
+      startFloat(d.id, e.clientX, e.clientY);
+      setDrag({ id: d.id, x: e.clientX, y: e.clientY });
+      dropTo(stageUnder(e.clientX, e.clientY));
+    };
+    const hover = (e: PointerEvent): void => {
+      if (!dragArm.current?.fired) return;
+      placeFloat(e.clientX, e.clientY);
+      setDrag((v) => v ? { ...v, x: e.clientX, y: e.clientY } : v);
+      dropTo(stageUnder(e.clientX, e.clientY));
+    };
+    const up = (): void => {
+      const d = dragArm.current;
+      if (d?.fired) {
+        dragSuppressClick.current = true;
+        const at = lastPointer.current;
+        const target = stageUnder(at.x, at.y);
+        const to = target ?? dropRef.current;
+        if (to) void cockpit.setStage(d.id, to).catch((e) => { setErr(`移动标签失败：${String((e as Error)?.message ?? e)}`); });
+      }
+      clearDrag();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointermove", hover);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", clearDrag);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointermove", hover);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", clearDrag);
+      clearDrag();
+    };
+  }, [clearDrag]);
   const [busyId, setBusyId] = useState("");
   const [err, setErr] = useState("");
   // ---- row menus + inline rename ------------------------------------------------
@@ -1000,9 +1148,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
       const rows = railRows(sessions, cold)
         .filter(({ s }) => s.role !== "main")
         .filter(({ s }) => match(s));
-      return groupSessions(rows);
+      // The same rows, two groupings: directories (the original rail) or the operator's own label.
+      // Only the CHANGE of grouping is new — every fold/recent/search rule below is shared.
+      return railGroup === "stage" ? groupByStage(rows) : groupSessions(rows);
     },
-    [sessions, cold, needle]
+    [sessions, cold, needle, railGroup]
   );
 
   // 已归档 is a section of its own (parallel to 工作空间, as the operator asked), built by the SAME
@@ -1048,7 +1198,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
         // folder header over one session would invite exactly the misreading we are avoiding
         // (`<data>/main-bot` is ours, not a project). It is always open — there is nothing to fold.
         const isMain = g.path === MAIN_BOT_GROUP;
-        const isOpen = isMain || Boolean(needle) || !closed[key];
+        // 标签模式：组头不是目录，而是一颗状态点；「在这里新建会话」没有意义（标签不是目录）。
+        // 组头与组体都是落点，`data-stage-drop` 是拖动的命中区。
+        const isStageGroup = railGroup === "stage" && ns === "ws:" && g.path.startsWith("stage:");
+        const stageId = isStageGroup ? (g.path.slice(6) as SessionStage) : null;
+        const isOpen = isMain || Boolean(needle) || (stageId === "done" ? doneOpen : !closed[key]);
         const liveCount = g.items.filter((i) => !i.cold).length;
         // ---- recent-N: a workspace holds its newest few, the rest behind a click -----------------
         // The rule itself lives in `rail.ts` (with its own suite). No group is exempt any more: the
@@ -1069,13 +1223,16 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
             <div className="rail-group-row">
             <button
               type="button"
-              className={`rail-group-head ${isOpen ? "open" : ""}`}
-              title={g.path}
+              className={`rail-group-head ${isOpen ? "open" : ""} ${isStageGroup ? `stage-group stage-${stageId} ${dropStage === stageId ? "drop-hover" : ""}` : ""}`}
+              title={isStageGroup ? `${g.label} —— 把会话拖到这里改标签（只人拖，不会自动流转）` : g.path}
               aria-expanded={isOpen}
               data-workspace={g.path}
-              onClick={() => setClosed((c) => ({ ...c, [key]: !c[key] }))}
+              data-stage-drop={stageId ?? undefined}
+              onClick={() => stageId === "done" ? setDoneOpen((v) => !v) : setClosed((c) => ({ ...c, [key]: !c[key] }))}
             >
-              {isOpen ? (
+              {stageId ? (
+                <span className="rail-stage-dot" data-stage={stageId} aria-hidden="true" />
+              ) : isOpen ? (
                 <IconFolderOpen size={13} className="rail-group-folder" />
               ) : (
                 <IconFolder size={13} className="rail-group-folder" />
@@ -1085,10 +1242,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                 {g.label && liveCount ? `${liveCount}/${g.items.length}` : g.items.length}
               </span>
             </button>
-            {/* "start a session HERE" — the directory this group is, without re-picking it
-                (AionUi's per-project 「+」 in `GroupedHistory`: the header carries the
-                affordance, and the new-session screen opens pre-pointed at that folder).
-                Hover-revealed on desktop like the row menu, always on a touch screen. */}
+            {/* 「在这里新建」只对目录有意义；标签不是目录，不能拿它当新会话的 cwd。 */}
+            {stageId ? null : (
             <button
               type="button"
               className="item-btn group-add"
@@ -1103,16 +1258,21 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
             >
               <IconPlus size={12} />
             </button>
+            )}
           </div>
             )}
             {isOpen ? (
-              <div className="rail-group-body">
+              <div className={`rail-group-body ${stageId && dropStage === stageId ? "drop-hover" : ""}`} data-stage-drop={stageId ?? undefined}>
+                {stageId && !shown.length ? (
+                  <div className="rail-stage-empty">把会话拖到这里 · 或右键会话改标签</div>
+                ) : null}
                 {shown.map(({ s, cold }) => (
                   <div
                     key={s.id}
                     ref={(el) => { if (el) rows.current.set(s.id, el); else rows.current.delete(s.id); }}
-                    className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""}`}
+                    className={`session-item ${cold ? "cold" : ""} ${s.id === activeId ? "active" : ""} ${editing === s.id ? "editing" : ""} ${drag?.id === s.id ? "dragging" : ""}`}
                     data-session={s.id}
+                    data-stage-drop={stageId ?? undefined}
                     title={(s.archivedAt
                       ? `${s.title} — 已归档${cold ? "（进程已停）" : ""}，点一下打开；菜单里可取消归档并恢复`
                       : `${s.title}${cold ? " — 进程已停，点一下恢复" : ""}`)
@@ -1120,12 +1280,39 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                       // operator should be able to see who made it (titleBy = that session's id)
                       + (s.titleBy ? `\n名字由会话 ${s.titleBy} 的 agent 改的` : "")}
                     onContextMenu={(e) => { e.preventDefault(); openFrom(s.id, e); }}
-                    onTouchStart={(e) => { const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0); }}
+                    onTouchStart={(e) => {
+                      if (isStageGroup) return; // 标签模式下长按是「起拖」，不是开菜单（菜单走 ⋯）
+                      const t = e.touches[0]; pressStart(s.id, t?.clientX ?? 0, t?.clientY ?? 0);
+                    }}
                     onTouchEnd={pressClear}
                     onTouchMove={pressClear}
                     onTouchCancel={pressClear}
+                    onPointerDown={(e) => {
+                      if (!isStageGroup || editing === s.id) return;
+                      // A press that might become a drag must NOT start a text selection. Mouse
+                      // pointerdown is cancellable here; on touch, `user-select:none` + the CSS
+                      // below do it (preventDefault on touch would also kill the scroll gesture).
+                      if (e.pointerType === "mouse") e.preventDefault();
+                      window.getSelection()?.removeAllRanges();
+                      lastPointer.current = { x: e.clientX, y: e.clientY };
+                      clearDrag();
+                      const arm = { id: s.id, x: e.clientX, y: e.clientY, timer: null as number | null, fired: false };
+                      // 长按 380ms 起拖（手机上与滚动区分）；鼠标移动的 7px 阈值会提前触发。
+                      arm.timer = window.setTimeout(() => {
+                        if (dragArm.current !== arm || arm.fired) return;
+                        arm.fired = true;
+                        arm.timer = null;
+                        window.getSelection()?.removeAllRanges();
+                        document.body.classList.add("rail-stage-dragging");
+                        startFloat(s.id, lastPointer.current.x, lastPointer.current.y);
+                        setDrag({ id: s.id, x: lastPointer.current.x, y: lastPointer.current.y });
+                        dropTo(stageUnder(lastPointer.current.x, lastPointer.current.y));
+                      }, 380);
+                      dragArm.current = arm;
+                    }}
                     onClick={(e) => {
                       if (pressFired.current) { pressFired.current = false; e.preventDefault(); return; }
+                      if (dragSuppressClick.current) { dragSuppressClick.current = false; e.preventDefault(); return; }
                       if (editing === s.id) return;
                       // An ARCHIVED row opens for reading: it was put away on purpose, so a plain
                       // click must not quietly undo that (the menu's 「取消归档并恢复」 is the
@@ -1265,7 +1452,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                 className={`rail-more ${more[key] ? "open" : ""}`}
                 onClick={() => setMore((mm) => ({ ...mm, [key]: !mm[key] }))}
                 aria-expanded={Boolean(more[key])}
-                title={more[key] ? "只显示最近几个" : `展开这个工作空间里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
+                title={more[key] ? "只显示最近几个" : `展开${isStageGroup ? "这个标签" : "这个工作空间"}里其余的 ${g.items.length - RAIL_RECENT} 个会话`}
               >
                 <IconChevronRight size={10} className={`rail-more-chev ${more[key] ? "open" : ""}`} />
                 {more[key] ? "收起" : `展开其余 ${g.items.length - RAIL_RECENT} 条`}
@@ -1366,7 +1553,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           <button className="draft-x" aria-label="dismiss" onClick={() => setErr("")}><IconClose size={11} /></button>
         </div>
       ) : null}
-      <div className="session-list">
+      <div className={`session-list ${railGroup === "stage" ? "rail-stage-mode" : ""}`}>
         {/* Two sections, in this order: 团队 above 工作空间 (AionUi's sider puts its team section
             immediately above the project groups, and that is the shape the operator asked for).
             团队 has no backend yet, so its row is a `div` with aria-disabled — nothing to click,
@@ -1410,14 +1597,36 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
         {/* The workspaces themselves are the menu: each row below is one, and its sessions are
             nested inside it. The label exists so the rail reads as a list of sections rather than
             an undifferentiated pile of group headers. */}
+        <div className="rail-section-row" data-section-row="sessions">
         <button type="button" className={`rail-section ${workspacesOpen ? "open" : ""}`} data-section="workspaces"
                 aria-expanded={workspacesOpen} aria-controls="rail-workspaces"
-                title={workspacesOpen ? "折叠工作空间" : "展开工作空间"}
+                title={workspacesOpen ? "折叠会话" : "展开会话"}
                 onClick={() => setFolded((f) => ({ ...f, workspaces: !f.workspaces }))}>
           <IconChevronRight size={11} className={`rail-section-chev ${workspacesOpen ? "open" : ""}`} />
-          <span>工作空间</span>
+          <span>会话</span>
         </button>
+        {/* The grouping switch lives IN the section head: the section is 「会话」, and how its rows
+            are grouped is a view choice. Two chips, one of them on. Deliberately NOT on the archive
+            section — 已归档 is its own shelf and never takes part in this switch. */}
+        <div className="rail-group-switch" role="group" aria-label="会话分组方式">
+          <button type="button" data-rail-group="workspace" className={railGroup === "workspace" ? "on" : ""}
+                  title="按工作空间分组" aria-pressed={railGroup === "workspace"}
+                  onClick={() => setRailGroup("workspace")}>工作空间</button>
+          <button type="button" data-rail-group="stage" className={railGroup === "stage" ? "on" : ""}
+                  title="按标签分组（未分类 / 待办 / 进行中 / 已完成）" aria-pressed={railGroup === "stage"}
+                  onClick={() => { setRailGroup("stage"); if (!stageHintSeen) setStageHint(true); }}>标签</button>
+        </div>
+        </div>
         <div id="rail-workspaces">
+        {workspacesOpen && railGroup === "stage" && stageHint ? (
+          <div className="rail-stage-hint" role="note" data-stage-hint="1">
+            <div className="rail-stage-hint-text">
+              <strong>按标签分组</strong>
+              <span>把会话拖到别的组就能改标签（电脑直接拖、手机长按），或在会话上右键 → 标签。标签只会你手动改，不会自动流转。</span>
+            </div>
+            <button type="button" className="rail-stage-hint-ok" onClick={dismissStageHint}>知道了</button>
+          </div>
+        ) : null}
         {workspacesOpen ? renderGroups(groups, "ws:") : null}
         {workspacesOpen && !groups.length && (
           <div className="rail-empty">
@@ -1463,6 +1672,10 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           onRetitle={() => { void regenerateTitle(menuInfo); }}
           onFork={() => { setMenu(null); void onFork(menuInfo.id); }}
           onWorkspace={() => { setMenu(null); setPickFor(menuInfo.id); }}
+          onStage={(stage) => {
+            setMenu(null);
+            void cockpit.setStage(menuInfo.id, stage).catch((e) => { setErr(`移动标签失败：${String((e as Error)?.message ?? e)}`); });
+          }}
           onExport={() => {
             setMenu(null);
             // cookie-auth'd GET with Content-Disposition: attachment — the browser saves it.

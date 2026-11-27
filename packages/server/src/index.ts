@@ -50,6 +50,7 @@ import {
   COCKPIT_ERRORS, COCKPIT_SCHEMA_VERSION, MESSAGES_TAIL_DEFAULT, MESSAGE_ROLES, capabilities, isMessageRole,
   listSessions, parseSince, sendAllowed, sessionRow, tailMessages, type ListQuery,
 } from "./cockpit/api.js";
+import { isSessionStage } from "../../shared/src/index.js";
 
 const PORT = Number(process.env.HERMES_STUDIO_PORT ?? 8788);
 
@@ -972,6 +973,33 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             id,
             name: info.title,
             titleBy: info.titleBy ?? null,
+          });
+        } catch (e) {
+          return send(res, 404, { error: COCKPIT_ERRORS.outOfScope, message: String((e as Error)?.message ?? e) });
+        }
+      }
+      if (url.pathname === "/api/cockpit/stage" && req.method === "POST") {
+        // 会话标签的 agent 入口。Cockpit channel, not the operator's /api/sessions route: moving a
+        // label is not destructive and is exactly the thing a session may do to ITSELF when the
+        // operator told it to (「开工了」「我做完了」) — while `archive`/`delete` stay operator-only.
+        const body = await readJson(req);
+        const id = String(body.id ?? "");
+        if (!id) return send(res, 400, { error: COCKPIT_ERRORS.badRequest });
+        if (!rowOf(id)) return refuseScope(id);
+        if (!isSessionStage(body.stage)) {
+          return send(res, 400, {
+            error: COCKPIT_ERRORS.badRequest,
+            message: `stage wants unclassified|todo|doing|done, got ${JSON.stringify(body.stage ?? null)}`,
+          });
+        }
+        try {
+          const info = await mgr.setStage(id, body.stage, "cli");
+          return send(res, 200, {
+            schema_version: COCKPIT_SCHEMA_VERSION,
+            id,
+            stage: info.stage ?? "unclassified",
+            stageSource: info.stageSource ?? null,
+            stageAt: info.stageAt ?? null,
           });
         } catch (e) {
           return send(res, 404, { error: COCKPIT_ERRORS.outOfScope, message: String((e as Error)?.message ?? e) });
@@ -2152,6 +2180,22 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         }
         // 稳定码 + 人话分开（#73）：CLI/脚本按 `code` 分支，页面显示 `error` 那句话。
         return send(res, 404, { error: `no such session: ${id}`, code: "not_found", id });
+      }
+      if (req.method === "POST" && sub === "/stage") {
+        // 会话标签 (rail 的第二种分组): the operator's own statement about where this piece of work
+        // stands. Accepts POST as well as PATCH so the browser and the CLI can share one endpoint.
+        try {
+          const body = await readJson(req);
+          const stage = body.stage;
+          if (!isSessionStage(stage)) {
+            return send(res, 400, { error: `stage wants unclassified|todo|doing|done, got ${JSON.stringify(stage ?? null)}`, code: "bad_stage" });
+          }
+          const source = body.source === "cli" ? "cli" : "manual";
+          const info = await mgr.setStage(id, stage, source);
+          return send(res, 200, info);
+        } catch (e) {
+          return send(res, 404, { error: String((e as Error)?.message ?? e) });
+        }
       }
       if (req.method === "POST" && sub === "/archive") {
         // 归档: the operator's own storage decision (and it stops a live process — see

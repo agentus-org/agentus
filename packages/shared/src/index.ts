@@ -59,6 +59,39 @@ export interface SessionModelState {
   availableModels: { modelId: string; name?: string | null; description?: string | null }[];
 }
 
+/** The session's own LABEL on the rail (側邊欄的第二種分組). Deliberately NOT derived from
+ *  `status`: a session's process state answers 「它现在在不在跑」, while this answers 「這件事
+ *  到哪一步了」, and the operator is the only one allowed to move it (plus the cockpit CLI, which
+ *  is the same statement made by hand from a shell — never an inference from a run event).
+ *
+ *  Four values, fixed on purpose. A fifth ("待确认") was considered and dropped: the
+ *  signals it would carry (an approval waiting, a run that ended with steps open) are already drawn
+ *  ON the row (`⚿ N`, the plan ring), so a fourth group would only add upkeep. */
+export type SessionStage = "unclassified" | "todo" | "doing" | "done";
+
+/** The rail's labels, in order. `shared` because the CLI prints them too — a second copy on the
+ *  server side would be a second vocabulary for the same three strings.
+ *  The first group is 未分类, not 待做: a freshly made session has not been sorted yet, and calling
+ *  that a decision ("to do") would claim more than the operator said. */
+export const SESSION_STAGES: { id: SessionStage; label: string }[] = [
+  { id: "unclassified", label: "未分类" },
+  { id: "todo", label: "待办" },
+  { id: "doing", label: "进行中" },
+  { id: "done", label: "已完成" },
+];
+
+export const STAGE_LABEL: Record<SessionStage, string> = {
+  unclassified: "未分类",
+  todo: "待办",
+  doing: "进行中",
+  done: "已完成",
+};
+
+export function isSessionStage(v: unknown): v is SessionStage {
+  // `todo` came back as a real group: 未分类 = not sorted yet, 待办 = sorted but not started.
+  return v === "unclassified" || v === "todo" || v === "doing" || v === "done";
+}
+
 export interface SessionInfo {
   id: string; // our own id (browser-facing)
   backend: BackendId;
@@ -131,6 +164,17 @@ export interface SessionInfo {
    *  `archived` from `has no process`, which filed a crashed slot and a deliberately archived
    *  one in the same place (the operator's complaint: 「我设想的点击归档是一种存储态」). */
   archivedAt?: number | null;
+  /** The operator's own LABEL for this session (未分类 / 进行中 / 已完成) — what the rail groups by
+   *  when 「会话」 is switched to 标签. Storage state, like `archivedAt`, and set ONLY by a hand
+   *  (a drag in the rail, or `hermes-studio session stage`): nothing infers it from a run event, so
+   *  a session that starts running does NOT move by itself. null = a row older than the column that
+   *  the one-time backfill could not classify; the rail draws it under 未分类. */
+  stage?: SessionStage | null;
+  /** Who set `stage`: 'manual' (the rail), 'cli' (the cockpit CLI or another agent through it),
+   *  'migration' (the one-time backfill), 'server' (the insert default). Kept so 「这条是谁改的」
+   *  stays answerable — the same reason `titleBy` exists. */
+  stageSource?: string | null;
+  stageAt?: number | null;
   /** No agent process right now — it was closed, it crashed, or it was REAPED for being idle.
    *  Derived server-side and sent with the row, so the client never infers liveness from which
    *  list a row arrived in (that inference is what merged 已归档 with 死了). */

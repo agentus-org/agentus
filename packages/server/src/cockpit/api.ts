@@ -81,6 +81,13 @@ export type CockpitSessionRow = {
   archived: boolean;
   /** last talked to (wall clock) */
   lastAt: number;
+  /** the operator's LABEL for this session (待做/进行中/已完成) — a hand-set field, never inferred
+   *  from a run. `source` says who set it (manual/cli/migration/server) so an agent reading the list
+   *  can tell 「the operator moved it」 from 「it was born that way」. */
+  stage: string;
+  stageSource?: string | null;
+  /** when the label was last set */
+  stageAt?: number | null;
   /** plan progress as the card shows it (0/0 = no plan) */
   plan: { done: number; total: number; title: string | null };
   /** approvals this session is WAITING on right now — the one thing worth waking someone for */
@@ -185,6 +192,9 @@ export function sessionRow(
     wakeable: Boolean(info.cold) && !info.archivedAt,
     archived: Boolean(info.archivedAt),
     lastAt: info.lastAt ?? info.createdAt,
+    stage: info.stage ?? "unclassified",
+    stageSource: info.stageSource ?? null,
+    stageAt: info.stageAt ?? null,
     plan: {
       done: items.filter((i) => i.status === "completed").length,
       total: items.length,

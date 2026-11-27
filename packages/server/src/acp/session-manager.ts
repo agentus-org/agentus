@@ -55,6 +55,7 @@ import type {
   ServerEvent,
   SessionInfo,
   SessionModeState,
+  SessionStage,
   StatusNoteItem,
   TurnTrace,
   TurnUsage,
@@ -1252,6 +1253,8 @@ export class SessionManager {
         // issue #84: written exactly once, on the insert below — no later upsert can move it.
         ...(opts.role ? { role: opts.role } : {}),
         createdAt: now, modes: null, configOptions: [], commands: [],
+        // A brand-new session is 未分类 — the one default the product sets, and only at birth.
+        stage: "unclassified", stageSource: "server", stageAt: now,
       },
       child, busy: false, pendingPermissions: new Map(), alwaysAllow: new Set(),
       approvalSeq: new Map(), skillNoticeSeq: new Map(), stderrBuf: [],
@@ -2237,6 +2240,9 @@ export class SessionManager {
       lastSeq: this.#store.maxSeq(r.id),
       lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       archivedAt: r.archivedAt ?? null,
+      stage: (r.stage as SessionInfo["stage"]) ?? null,
+      stageSource: r.stageSource ?? null,
+      stageAt: r.stageAt ?? null,
       ...(r.system ? { system: true } : {}),
       // the 主 agent (issue #84) is a row fact like `system`, so every path that rebuilds an info
       // from the store must carry it: a cold 主 agent that came back without its role showed up as
@@ -3466,6 +3472,22 @@ export class SessionManager {
     return this.#sessions.get(id)?.info ?? this.#coldInfo(id);
   }
 
+  /** Move a session's LABEL. The ONLY writers are the operator's drag in the rail and the cockpit
+   *  CLI — nothing here watches runs, so a session that starts working stays where it was put until
+   *  somebody says otherwise (that is the operator's explicit rule: 「都只能人拖，不许机器自动流转」).
+   *  Live and cold rows take the same path; the label is storage, not liveness, so it never wakes or
+   *  stops a process. */
+  async setStage(id: string, stage: SessionStage, source: "manual" | "cli" = "manual"): Promise<SessionInfo> {
+    const live = this.#sessions.get(id);
+    if (!this.#store.getSession(id)) throw new Error(`no such session: ${id}`);
+    this.#store.setStage(id, stage, source);
+    // A live slot holds its own copy of the info object — keep it in step, or the rail would show the
+    // old label until the next unrelated emit rebuilt it.
+    if (live) { live.info.stage = stage; live.info.stageSource = source; live.info.stageAt = Date.now(); }
+    this.#emitSessions();
+    return live?.info ?? this.#coldInfo(id);
+  }
+
   /** Stop a slot's agent process and record WHY it went away. The row always survives with its
    *  transcript: the transcript is the operator's, the process is ours to reclaim.
    *
@@ -4296,6 +4318,9 @@ export class SessionManager {
       models: (row.models ?? null) as SessionInfo["models"],
       contextLimit: row.contextLimit ?? null,
       title: row.title, titleBy: row.titleBy ?? null, status: row.status, pid: null, createdAt: row.createdAt,
+      stage: (row.stage as SessionInfo["stage"]) ?? null,
+      stageSource: row.stageSource ?? null,
+      stageAt: row.stageAt ?? null,
       modes: (row.modes ?? null) as SessionModeState | null,
       configOptions: (row.configOptions ?? []) as ConfigOptionView[],
       usage: (row.usage ?? null) as SessionInfo["usage"],
@@ -5057,6 +5082,9 @@ function sessionRow(i: SessionInfo, home: string | null = null) {
     // never written by this upsert (the archive flag has its own statement — see setArchived):
     // carried here only so the row type stays honest.
     archivedAt: i.archivedAt ?? null,
+    // the LABEL, likewise: an upsert never moves it (its own statement is Store.setStage). Carried in
+    // the INSERT only, which is where a brand-new row gets its 未分类 default.
+    stage: i.stage ?? null, stageSource: i.stageSource ?? null, stageAt: i.stageAt ?? null,
     modes: i.modes ?? null, configOptions: i.configOptions ?? [],
     usage: i.usage ?? null, commands: i.commands ?? [],
     models: i.models ?? null,
