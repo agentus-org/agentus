@@ -2401,7 +2401,12 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   padding: 2px 5px; border-radius: 5px; cursor: pointer; white-space: nowrap;
 }
 .rail-group-switch button:hover { color: var(--text); }
-.rail-group-switch button.on { background: var(--accent); color: var(--on-accent); }
+/* 选中态：淡色底 + 蓝字 + 蓝圈（对比三种做法后选的：纯外圈 7/10、只染字 8/10、
+   淡底 9/10）。实心底会把小 chip 变成一整块深色，压过旁边的文字。 */
+.rail-group-switch button.on {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent); border-color: var(--accent);
+}
 /* Status dots on a LABEL group head: the folder icon would lie (a label is not a directory). */
 .rail-stage-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .rail-stage-dot[data-stage="unclassified"] { background: var(--text-dim); }
@@ -2869,7 +2874,7 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   border-radius: 6px; cursor: pointer; white-space: nowrap;
 }
 .sess-menu-stage-chips button:hover { color: var(--text); }
-.sess-menu-stage-chips button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.sess-menu-stage-chips button.on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--accent); }
 .sess-menu-item {
   display: flex; align-items: center; gap: 9px;
   width: 100%; padding: 7px 8px; text-align: left;
