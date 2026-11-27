@@ -1025,6 +1025,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
         if (to) void cockpit.setStage(d.id, to).catch((e) => { setErr(`移动标签失败：${String((e as Error)?.message ?? e)}`); });
       }
       clearDrag();
+      // The click synthesized after pointerup may land on the rail container, not on a session row,
+      // so nothing would ever reset this flag and the NEXT ordinary click would get swallowed.
+      // Clear it on the next tick: still in time to suppress the drag's own click, gone before the
+      // operator's next click.
+      if (d?.fired) window.setTimeout(() => { dragSuppressClick.current = false; }, 0);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointermove", hover);

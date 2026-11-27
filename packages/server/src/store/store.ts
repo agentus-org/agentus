@@ -582,12 +582,10 @@ export class Store {
     // migration. The label itself ("stage"/"stage_source") rides the text loop above.
     if (!cols.has("stage_at")) this.#db.exec("alter table sessions add column stage_at integer");
     // ONE-TIME backfill for rows born before the label existed. It is NOT an inference engine: it runs
-    // exactly once (guarded by "no row has a stage at all"), and it answers the only two facts a legacy
-    // row carries — 「有没有说过话」. A conversation with a transcript is work in flight; an empty one
-    // is a slot somebody made and never used. Everything after this is the operator's call, by hand.
-    // 未分类 is the birth state (and the one-time backfill for rows with no prior label). A row that
-    // said `todo` was named by the first draft of this feature; rename it in place, once, so an
-    // upgrade cannot leave two names for the same bucket.
+    // only touches rows whose `stage` is still NULL, and it answers the only two facts a legacy row
+    // carries — 「有没有说过话」. A conversation with a transcript is work in flight; an empty one is
+    // a slot somebody made and never used. Everything after this is the operator's call, by hand.
+    // `todo` is now a REAL group (待办), not an alias for 未分类 — no rename is done here.
     this.#db.exec(`update sessions set stage = case
         when exists (select 1 from messages m where m.session_id = sessions.id) then 'doing'
         else 'unclassified' end,
