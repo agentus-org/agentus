@@ -927,13 +927,52 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   const [drag, setDrag] = useState<{ id: string; x: number; y: number } | null>(null);
   const [dropStage, setDropStage] = useState<SessionStage | null>(null);
   const dropRef = useRef<SessionStage | null>(null);
-  const dropTo = (s: SessionStage | null): void => { dropRef.current = s; setDropStage(s); };
+  const dropTo = (s: SessionStage | null): void => {
+    dropRef.current = s;
+    setDropStage(s);
+    const f = floatRef.current;
+    if (f) f.badge.textContent = s ? `→ ${STAGE_LABEL[s]}` : "";
+  };
+  // The dragged ROW itself floats under the cursor — not a small text chip. It is a DOM clone of
+  // the row: it keeps the exact card look (avatar, name, timestamp) without duplicating that JSX in
+  // React, and because pointer-events are off, it cannot become a second drop target. The original
+  // row stays in the list at 25% so the columns do not jump while you aim.
+  const floatRef = useRef<{ el: HTMLElement; badge: HTMLElement; dx: number; dy: number } | null>(null);
+  const placeFloat = (x: number, y: number): void => {
+    const f = floatRef.current;
+    if (!f) return;
+    f.el.style.left = `${x - f.dx}px`;
+    f.el.style.top = `${y - f.dy}px`;
+  };
+  const startFloat = (id: string, x: number, y: number): void => {
+    if (floatRef.current) return;
+    const row = [...document.querySelectorAll<HTMLElement>("[data-session]")]
+      .find((el) => el.dataset.session === id);
+    if (!row) return;
+    const r = row.getBoundingClientRect();
+    const layer = document.createElement("div");
+    layer.className = "rail-drag-float";
+    layer.style.width = `${r.width}px`;
+    const clone = row.cloneNode(true) as HTMLElement;
+    clone.removeAttribute("data-session");
+    clone.removeAttribute("data-stage-drop");
+    clone.classList.add("floating");
+    layer.appendChild(clone);
+    const badge = document.createElement("span");
+    badge.className = "rail-drag-target";
+    layer.appendChild(badge);
+    document.body.appendChild(layer);
+    floatRef.current = { el: layer, badge, dx: x - r.left, dy: y - r.top };
+    placeFloat(x, y);
+  };
   const dragSuppressClick = useRef(false);
   const clearDrag = useCallback((): void => {
     const d = dragArm.current;
     if (d?.timer != null) window.clearTimeout(d.timer);
     dragArm.current = null;
     document.body.classList.remove("rail-stage-dragging");
+    floatRef.current?.el.remove();
+    floatRef.current = null;
     window.getSelection()?.removeAllRanges();
     setDrag(null);
     dropTo(null);
@@ -954,11 +993,13 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
       if (d.timer != null) { window.clearTimeout(d.timer); d.timer = null; }
       window.getSelection()?.removeAllRanges();
       document.body.classList.add("rail-stage-dragging");
+      startFloat(d.id, e.clientX, e.clientY);
       setDrag({ id: d.id, x: e.clientX, y: e.clientY });
       dropTo(stageUnder(e.clientX, e.clientY));
     };
     const hover = (e: PointerEvent): void => {
       if (!dragArm.current?.fired) return;
+      placeFloat(e.clientX, e.clientY);
       setDrag((v) => v ? { ...v, x: e.clientX, y: e.clientY } : v);
       dropTo(stageUnder(e.clientX, e.clientY));
     };
@@ -1251,6 +1292,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                         arm.timer = null;
                         window.getSelection()?.removeAllRanges();
                         document.body.classList.add("rail-stage-dragging");
+                        startFloat(s.id, lastPointer.current.x, lastPointer.current.y);
                         setDrag({ id: s.id, x: lastPointer.current.x, y: lastPointer.current.y });
                         dropTo(stageUnder(lastPointer.current.x, lastPointer.current.y));
                       }, 380);
@@ -1640,14 +1682,6 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
             if (confirm(`删除“${menuInfo.title}”？\n\n记录会从磁盘上移除，无法撤销。`)) cockpit.purgeCold(menuInfo.id);
           }}
         />, document.body) : null}
-      {drag ? createPortal(
-        <div className="rail-drag-ghost" data-drag-id={drag.id}
-             style={{ left: drag.x + 14, top: drag.y + 14 }}>
-          <span className="rail-drag-name">{(sessions.find((s) => s.id === drag.id) ?? archived.find((s) => s.id === drag.id))?.title ?? drag.id}</span>
-          {dropStage ? <span className="rail-drag-target">→ {STAGE_LABEL[dropStage]}</span> : null}
-        </div>,
-        document.body,
-      ) : null}
       {pickFor ? createPortal(
         <div className="modal-bg" onClick={() => setPickFor("")}>
           <div className="modal narrow" onClick={(e) => e.stopPropagation()}>

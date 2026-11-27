@@ -2419,15 +2419,18 @@ body.pane-dragging-row * { cursor: row-resize !important; }
   outline-offset: -1px;
 }
 .rail-stage-empty { padding: 6px 8px; font-size: 11px; color: var(--text-dim); opacity: 0.75; }
-.session-item.dragging { opacity: 0.4; }
-.rail-drag-ghost {
-  position: fixed; z-index: 10000; pointer-events: none; max-width: 260px;
-  display: flex; align-items: center; gap: 6px; padding: 6px 9px;
-  background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 7px;
-  box-shadow: var(--shadow); font-size: 12px; color: var(--text);
+.session-item.dragging { opacity: 0.25; }
+/* The dragged row ITSELF floats: a DOM clone of the real card, following the pointer. */
+.rail-drag-float { position: fixed; z-index: 10000; left: 0; top: 0; pointer-events: none; }
+.rail-drag-float .session-item.floating {
+  opacity: 1; background: var(--bg-raised); border: 1px solid var(--accent);
+  border-radius: 7px; box-shadow: var(--shadow); transform: scale(1.03);
 }
-.rail-drag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-drag-target { color: var(--accent); white-space: nowrap; }
+.rail-drag-target {
+  position: absolute; right: -8px; top: -10px; padding: 2px 6px; border-radius: 6px;
+  background: var(--accent); color: var(--on-accent); font-size: 10px; white-space: nowrap;
+}
+.rail-drag-target:empty { display: none; }
 
 /* 长按拖动不能顺手把文字划选成蓝色：标签模式下整行不可选，拖动中全局再兜一层。 */
 .rail-stage-mode .session-item,
