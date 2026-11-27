@@ -2429,6 +2429,17 @@ body.pane-dragging-row * { cursor: row-resize !important; }
 .rail-drag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-drag-target { color: var(--accent); white-space: nowrap; }
 
+/* 长按拖动不能顺手把文字划选成蓝色：标签模式下整行不可选，拖动中全局再兜一层。 */
+.rail-stage-mode .session-item,
+.rail-stage-mode .rail-group-head,
+.rail-stage-mode .rail-stage-empty {
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  touch-action: pan-y; /* 手机上仍能纵向滚动，横向手势留给拖动 */
+}
+body.rail-stage-dragging, body.rail-stage-dragging * {
+  user-select: none !important; -webkit-user-select: none !important; cursor: grabbing !important;
+}
+
 /* ---- rail: sessions grouped by the directory they work in ------------------- */
 .rail-group { margin-bottom: 2px; }
 /* The head and its 「+」 are two buttons on one line: the head keeps the whole row (clicking

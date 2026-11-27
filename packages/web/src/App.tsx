@@ -933,6 +933,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
     const d = dragArm.current;
     if (d?.timer != null) window.clearTimeout(d.timer);
     dragArm.current = null;
+    document.body.classList.remove("rail-stage-dragging");
+    window.getSelection()?.removeAllRanges();
     setDrag(null);
     dropTo(null);
   }, []);
@@ -950,6 +952,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
       if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 7) return;
       d.fired = true;
       if (d.timer != null) { window.clearTimeout(d.timer); d.timer = null; }
+      window.getSelection()?.removeAllRanges();
+      document.body.classList.add("rail-stage-dragging");
       setDrag({ id: d.id, x: e.clientX, y: e.clientY });
       dropTo(stageUnder(e.clientX, e.clientY));
     };
@@ -1232,6 +1236,11 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                     onTouchCancel={pressClear}
                     onPointerDown={(e) => {
                       if (!isStageGroup || editing === s.id) return;
+                      // A press that might become a drag must NOT start a text selection. Mouse
+                      // pointerdown is cancellable here; on touch, `user-select:none` + the CSS
+                      // below do it (preventDefault on touch would also kill the scroll gesture).
+                      if (e.pointerType === "mouse") e.preventDefault();
+                      window.getSelection()?.removeAllRanges();
                       lastPointer.current = { x: e.clientX, y: e.clientY };
                       clearDrag();
                       const arm = { id: s.id, x: e.clientX, y: e.clientY, timer: null as number | null, fired: false };
@@ -1240,6 +1249,8 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                         if (dragArm.current !== arm || arm.fired) return;
                         arm.fired = true;
                         arm.timer = null;
+                        window.getSelection()?.removeAllRanges();
+                        document.body.classList.add("rail-stage-dragging");
                         setDrag({ id: s.id, x: lastPointer.current.x, y: lastPointer.current.y });
                         dropTo(stageUnder(lastPointer.current.x, lastPointer.current.y));
                       }, 380);
@@ -1488,7 +1499,7 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
           <button className="draft-x" aria-label="dismiss" onClick={() => setErr("")}><IconClose size={11} /></button>
         </div>
       ) : null}
-      <div className="session-list">
+      <div className={`session-list ${railGroup === "stage" ? "rail-stage-mode" : ""}`}>
         {/* Two sections, in this order: 团队 above 工作空间 (AionUi's sider puts its team section
             immediately above the project groups, and that is the shape the operator asked for).
             团队 has no backend yet, so its row is a `div` with aria-disabled — nothing to click,
