@@ -921,6 +921,18 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
   }, [railGroup]);
   // 「已完成」默认折叠：这一组只会越堆越多，不该每次都划过一大片。只折叠显示，不碰任何标签。
   const [doneOpen, setDoneOpen] = useState(false);
+  // 首次切到「标签」时的一次性说明。只有点「知道了」才关闭并记入 localStorage —— 用户明确要求，
+  // 不要因为拖了一次或改过标签就自己消失，否则「只在首次提示」这件事就没个准。
+  const STAGE_HINT_KEY = "hermes-studio.stageHintSeen";
+  const [stageHintSeen, setStageHintSeen] = useState<boolean>(() => {
+    try { return localStorage.getItem(STAGE_HINT_KEY) === "1"; } catch { return false; }
+  });
+  const [stageHint, setStageHint] = useState(false);
+  const dismissStageHint = (): void => {
+    setStageHint(false);
+    setStageHintSeen(true);
+    try { localStorage.setItem(STAGE_HINT_KEY, "1"); } catch { /* private mode */ }
+  };
   // A long-press drag in 标签 mode: `armed` is the pointer that MIGHT become a drag, `drag` is one
   // that HAS (set after the threshold so a tap still just opens the session).
   const dragArm = useRef<{ id: string; x: number; y: number; timer: number | null; fired: boolean } | null>(null);
@@ -1602,10 +1614,19 @@ function Sidebar({ open, mode, onNew, onNewIn, onSettings, settingsOpen, railWid
                   onClick={() => setRailGroup("workspace")}>工作空间</button>
           <button type="button" data-rail-group="stage" className={railGroup === "stage" ? "on" : ""}
                   title="按标签分组（未分类 / 待办 / 进行中 / 已完成）" aria-pressed={railGroup === "stage"}
-                  onClick={() => setRailGroup("stage")}>标签</button>
+                  onClick={() => { setRailGroup("stage"); if (!stageHintSeen) setStageHint(true); }}>标签</button>
         </div>
         </div>
         <div id="rail-workspaces">
+        {workspacesOpen && railGroup === "stage" && stageHint ? (
+          <div className="rail-stage-hint" role="note" data-stage-hint="1">
+            <div className="rail-stage-hint-text">
+              <strong>按标签分组</strong>
+              <span>拖动会话（手机长按）到某个组，或在会话上右键 → 标签，就能改。标签只会你手动改，不会自动流转。</span>
+            </div>
+            <button type="button" className="rail-stage-hint-ok" onClick={dismissStageHint}>知道了</button>
+          </div>
+        ) : null}
         {workspacesOpen ? renderGroups(groups, "ws:") : null}
         {workspacesOpen && !groups.length && (
           <div className="rail-empty">
