@@ -1192,6 +1192,9 @@ code.inline {
    --mic-lv is written every animation frame by DictLevel (0 while silent). */
 .icon-btn.dict-mic {
   animation: none;
+  /* Fallback first: a malformed --accent-rgb must not silently kill the whole rule. */
+  border-color: var(--accent-dim);
+  box-shadow: none;
   box-shadow: 0 0 0 calc(var(--mic-lv, 0) * 6px) rgba(var(--accent-rgb), calc(var(--mic-lv, 0) * .2));
   border-color: rgba(var(--accent-rgb), calc(.35 + var(--mic-lv, 0) * .55));
 }
@@ -1322,6 +1325,7 @@ code.inline {
 .dict-chip {
   display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent-text);
   border: 1px dashed var(--accent-dim); border-radius: 8px; padding: 4px 8px;
+  min-width: 0; overflow: hidden;
 }
 .dict-chip.err { color: var(--err); border-color: var(--err); }
 .dict-chip .interim { color: var(--text-dim); }
@@ -1331,8 +1335,9 @@ code.inline {
   font-size: 11px; color: var(--text-dim); border: 1px solid var(--line);
   border-radius: 6px; padding: 1px 5px; white-space: nowrap;
 }
-@media (max-width: 720px) { .dict-level-wave { width: 52px; flex-basis: 52px; } }
+@media (max-width: 720px) { .dict-level-wave { width: 52px; height: 14px; flex-basis: 52px; } }
 .dict-stop {
+  flex: 0 0 auto;
   margin-left: auto; background: transparent; border: 1px solid var(--line);
   color: var(--text-dim); border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 11px;
 }

@@ -5965,7 +5965,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />
-            <DictLevel glowRef={micBtnRef} />
+            <DictLevel sink="chat" glowRef={micBtnRef} />
             {dict.error
               ? dict.error
               : dict.status === "requesting"
@@ -6749,7 +6749,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
             {listening || dict.status === "transcribing" || dict.error ? (
               <div className={`dict-chip ${dict.error ? "err" : ""}`}>
                 <IconMic size={13} />
-                <DictLevel glowRef={micBtnRef} />
+                <DictLevel sink="start" glowRef={micBtnRef} />
                 {dict.error
                   ? dict.error
                   : dict.status === "requesting"

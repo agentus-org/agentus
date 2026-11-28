@@ -12,7 +12,7 @@
 //     indicator exists to catch.
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { dictation, useDictation } from "./voice";
+import { dictation, useDictation, type DictSink } from "./voice";
 
 const W = 76;
 const H = 20;
@@ -21,11 +21,16 @@ const SAMPLES = 64;
 /** Speech sits around 0.02–0.2 RMS (voice.ts:1707); under this it is room tone at best. */
 const SILENT_RMS = 0.006;
 
-export function DictLevel({ glowRef }: { glowRef?: RefObject<HTMLElement | null> }): JSX.Element | null {
+export function DictLevel({ sink, glowRef }: { sink: DictSink; glowRef?: RefObject<HTMLElement | null> }): JSX.Element | null {
   const state = useDictation();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const buf = useRef(new Float32Array(SAMPLES));
-  const active = (state.status === "listening" || state.status === "recording")
+  // The chat composer stays mounted behind the new-session dialog. Both subscribe to the
+  // same dictation singleton, so only the OWNER of the transcript may draw/glow — otherwise
+  // both microphones light up and the hidden box shows a waveform nobody is looking at.
+  const owns = dictation.owns(sink);
+  const active = owns
+    && (state.status === "listening" || state.status === "recording")
     && dictation.levelSource() === "pcm";
 
   useEffect(() => {
@@ -39,10 +44,16 @@ export function DictLevel({ glowRef }: { glowRef?: RefObject<HTMLElement | null>
     let ink = "#4aacdf";
     let idle = "#b6bec3";
     let rgb = "74, 172, 223";
+    // A frozen frame (suspended AudioContext, dead native bridge) is NOT speech: after
+    // 600 ms without a new sample the meter goes flat instead of holding the last wave.
+    let seq = dictation.frameSeq();
+    let seqAt = performance.now();
+    const themeWatcher = new MutationObserver(() => { themeKey = ""; });
+    themeWatcher.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-theme"] });
     // Read the palette only when it changes — not once per frame.
     const palette = (): void => {
       const cs = getComputedStyle(document.documentElement);
-      const key = `${document.documentElement.dataset.theme ?? ""}|${cs.getPropertyValue("--accent")}|${cs.getPropertyValue("--text-dim")}`;
+      const key = `${document.documentElement.dataset.theme ?? ""}|${cs.getPropertyValue("--accent")}|${cs.getPropertyValue("--accent-rgb")}|${cs.getPropertyValue("--text-dim")}`;
       if (key === themeKey) return;
       themeKey = key;
       ink = cs.getPropertyValue("--accent").trim() || ink;
@@ -53,7 +64,11 @@ export function DictLevel({ glowRef }: { glowRef?: RefObject<HTMLElement | null>
     const draw = (): void => {
       const cv = canvasRef.current;
       const src = dictation.wave();
-      const loud = dictation.levelRms() > SILENT_RMS;
+      const now = performance.now();
+      const frame = dictation.frameSeq();
+      if (frame !== seq) { seq = frame; seqAt = now; }
+      const fresh = now - seqAt < 600;
+      const loud = fresh && dictation.levelRms() > SILENT_RMS;
       if (cv) {
         const ctx = cv.getContext("2d");
         if (ctx) {
@@ -96,10 +111,12 @@ export function DictLevel({ glowRef }: { glowRef?: RefObject<HTMLElement | null>
     raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
+      themeWatcher.disconnect();
       glow?.style.removeProperty("--mic-lv");
     };
   }, [active, glowRef]);
 
+  if (!owns) return null;
   if (state.status !== "listening" && state.status !== "recording") return null;
   if (dictation.levelSource() !== "pcm") {
     return <span className="dict-level-none" title="当前识别引擎不向页面提供音频电平">当前引擎不提供电平</span>;

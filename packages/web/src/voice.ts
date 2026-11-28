@@ -1448,6 +1448,8 @@ export interface DictationState {
   engine: "browser" | "stream" | "server" | null;
   /** seconds of audio captured (server path) */
   seconds: number;
+  /** which composer currently owns the transcript (chat page vs new-session box) */
+  owner: DictSink;
 }
 
 type SpeechRecognitionLike = {
@@ -1548,7 +1550,7 @@ function pickAudioFile(): Promise<File | null> {
 }
 
 class Dictation {
-  #state: DictationState = { status: "idle", text: "", interim: "", error: "", engine: null, seconds: 0 };
+  #state: DictationState = { status: "idle", text: "", interim: "", error: "", engine: null, seconds: 0, owner: "chat" };
   #listeners = new Set<() => void>();
   #rec: SpeechRecognitionLike | null = null;
   #media: MediaRecorder | null = null;
@@ -1576,6 +1578,9 @@ class Dictation {
   #wave = new Float32Array(256);
   /** QA seam's waveform buffer, kept separate so the real capture never allocates per frame. */
   #feedWave = new Float32Array(256);
+  /** Monotonic frame counter: a frozen waveform (suspended AudioContext, dead native bridge)
+   *  must not be read as "still talking" by the composer meter. */
+  #frameSeq = 0;
   /** Set while a call wants its 16 kHz frames scored (see `setVadTap`). */
   #vadTap: ((samples: Float32Array) => void) | null = null;
   #relay = true;
@@ -1644,13 +1649,19 @@ class Dictation {
     // QA seam only: no microphone on the test machine, but the waveform must still be
     // driveable through the same read path the product uses.
     for (let i = 0; i < this.#feedWave.length; i++) this.#feedWave[i] = Number(supplied[i]) || 0;
+    this.#frameSeq++;
     return this.#feedWave;
   };
+  /** Advances on every captured frame (or every QA read of a supplied waveform). */
+  frameSeq = (): number => this.#frameSeq;
   /** Does THIS engine expose a live waveform? The browser SpeechRecognition, batch upload
    *  and device-recorder paths never hand samples to the page; painting their zero as a
    *  flat "no sound" line would be a lie. The composer asks this before drawing anything. */
   levelSource = (): "pcm" | "none" => {
-    if (this.#feed()) return "pcm";
+    const f = this.#feed();
+    // The QA seam only counts as a source when it actually supplies samples; older sweeps
+    // feed a level/text with no waveform and must not make the meter claim a signal it has.
+    if (f) return f.wave ? "pcm" : "none";
     return this.#mic || this.#bridge ? "pcm" : "none";
   };
   /** Hand every 16 kHz microphone frame to a detector (the call's Silero VAD).
@@ -1718,6 +1729,7 @@ class Dictation {
   }
 
   #measure(chan: Float32Array): void {
+    this.#frameSeq++;
     let sum = 0;
     for (let i = 0; i < chan.length; i++) sum += chan[i] * chan[i];
     const rms = Math.sqrt(sum / chan.length);
@@ -1755,7 +1767,8 @@ class Dictation {
     const cur = this.#fedSnap;
     if (cur && cur.text === text && cur.interim === interim
       && cur.status === this.#state.status && cur.error === this.#state.error
-      && cur.engine === this.#state.engine && cur.seconds === this.#state.seconds) {
+      && cur.engine === this.#state.engine && cur.seconds === this.#state.seconds
+      && cur.owner === this.#state.owner) {
       return cur;
     }
     this.#fedSnap = { ...this.#state, text, interim };
@@ -1779,6 +1792,11 @@ class Dictation {
     // This start owns the microphone until something newer (a stop, a cancel, another start) takes the
     // ticket. Every await below is a place the operator can change his mind (#51).
     const gen = ++this.#gen;
+    // A new utterance starts with no measurement. Without this, a stale smoothed #rms
+    // from the previous one would light the composer meter before the first frame arrives.
+    this.#level = 0;
+    this.#rms = 0;
+    this.#wave.fill(0);
     this.#set({ status: "idle", text: "", interim: "", error: "", seconds: 0 });
     this.#committed = "";
     const fed = this.#feed();
@@ -2203,9 +2221,11 @@ class Dictation {
       this.#bridge = null;
     }
     (window as unknown as { __asMic?: unknown }).__asMic = undefined;
-    // the capture graph is gone: a stale level would leave the orb pulsing at nothing
+    // the capture graph is gone: stale levels would leave the orb/meter pulsing at nothing
     this.#level = 0;
+    this.#rms = 0;
     this.#wave.fill(0);
+    this.#feedWave.fill(0);
   }
 
   #finishStream(): void {
@@ -2405,12 +2425,14 @@ class Dictation {
    *
    *  The box on screen takes the transcript; the other one must not touch it. */
   setOwner(who: DictSink): void {
-    this.#owner = who;
+    if (this.#state.owner === who) return;
+    // Ownership decides which composer may draw the meter. It lives in the snapshot so
+    // useSyncExternalStore re-renders both boxes when a dialog opens mid-utterance.
+    this.#set({ owner: who });
   }
   owns(who: DictSink): boolean {
-    return this.#owner === who;
+    return this.#state.owner === who;
   }
-  #owner: DictSink = "chat";
 }
 
 /** Float32 [-1,1] at `from` Hz -> Int16 PCM at `to` Hz (linear interpolation).
