@@ -97,7 +97,10 @@ console.log("\n[3] no cold candidates → no all-table snapshots at all (review 
 for (let i = 0; i < N; i += 1) store.setArchived(`s${i}`, 20000);
 const beforeEmpty = { ...spy };
 const empty = mgr.cold(3, 100);
-check("全归档时 cold() 返回空页", empty.length === 0 && mgr.coldPage(3, 100).total === 0, `rows=${empty.length}`);
+const emptyPage = mgr.coldPage(3, 100);
+check("全归档时 cold() 返回空页",
+  empty.length === 0 && emptyPage.rows.length === 0 && emptyPage.total === 0 && emptyPage.omitted === 0,
+  `rows=${empty.length} page=${emptyPage.total}/${emptyPage.omitted}/${emptyPage.rows.length}`);
 check("空冷列表不再付全表扫描", spy.last === beforeEmpty.last && spy.seqAll === beforeEmpty.seqAll,
   `last=${spy.last - beforeEmpty.last} seqAll=${spy.seqAll - beforeEmpty.seqAll}`);
 
