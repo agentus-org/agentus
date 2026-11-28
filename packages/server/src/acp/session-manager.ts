@@ -881,12 +881,21 @@ export class SessionManager {
           // transcripts are intact and one click resumes them; stamping them `error` + `closedAt`
           // invents a failure and hides them from the cold rail. `reaped` is the existing honest
           // state for "no process, not the operator's doing" — keep closedAt untouched, clear pid,
-          // and let cold()/resume do the rest. Already-errored rows keep their own verdict.
-          this.#store.upsertSession({
-            ...row,
-            status: row.status === "error" ? "error" : "reaped",
-            pid: null,
-          });
+          // and let cold()/resume do the rest.
+          // The exception is a session that died BEFORE its ACP handshake: it never got an
+          // acpSessionId, so resume() cannot revive it. Calling that "已回收（空闲）" promises a
+          // one-click recovery that does not exist — keep it an honest error (review R1).
+          const deadHandshake = row.status === "starting" && !row.acpSessionId;
+          if (row.status === "error" || deadHandshake) {
+            this.#store.upsertSession({
+              ...row,
+              status: "error",
+              closedAt: row.closedAt ?? Date.now(),
+              pid: null,
+            });
+          } else {
+            this.#store.upsertSession({ ...row, status: "reaped", pid: null });
+          }
         }
       }
     }
@@ -2189,12 +2198,16 @@ export class SessionManager {
     // #119: the two all-table snapshots are taken ONCE, and a full SessionInfo is built only
     // for the rows that survive paging. #infoFromRow used to call lastActivityAt() (a full
     // sessions×messages scan) once per row — 1260 scans on the operator's rail.
-    const lastAtAll = this.#store.lastActivityAt();
-    const seqAll = this.#store.maxSeqAll();
-    const sorted = this.#store
+    // Filter first: an all-live cockpit has no cold rows at all, and must not pay for two
+    // all-table snapshots on every sessions broadcast (review R1).
+    const candidates = this.#store
       .listSessions(true)
       // system rows are the cockpit's own (see list()): never offered as a slot to wake
-      .filter((r) => r.archivedAt == null && !r.system && !this.#sessions.has(r.id))
+      .filter((r) => r.archivedAt == null && !r.system && !this.#sessions.has(r.id));
+    if (candidates.length === 0) return { rows: [], total: 0, omitted: 0 };
+    const lastAtAll = this.#store.lastActivityAt();
+    const seqAll = this.#store.maxSeqAll();
+    const sorted = candidates
       .map((r) => ({
         row: r,
         workspace: r.workspace ?? null,
@@ -2222,9 +2235,6 @@ export class SessionManager {
     return this.#store.getSession(id) ? this.#coldInfo(id) : null;
   }
 
-  /** One row in the shape list()/cold()/archived() produce, from a stored row.
-   *  `activity` is the batch snapshot: callers with more than one row MUST pass it, otherwise
-   *  each row re-runs the all-table query those snapshots came from (issue #119). */
   /** #62-3：把这次选择写进 agent 自己的配置。失败只记日志 —— 会话已经在新模型上跑起来了，
    *  配置文件没写成是"下次新会话的默认没跟上"，不该回头把一次成功的切换报成失败。 */
   /** #62-2 兑现"冷会话上选好的模型"。
@@ -2369,6 +2379,9 @@ export class SessionManager {
     }
   }
 
+  /** One row in the shape list()/cold()/archived() produce, from a stored row.
+   *  `activity` is the batch snapshot: callers with more than one row MUST pass it, otherwise
+   *  each row re-runs the all-table query those snapshots came from (issue #119). */
   #infoFromRow(r: SessionRow, activity?: { lastAt: number; lastSeq: number }): SessionInfo {
     return {
       id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,

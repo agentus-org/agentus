@@ -39,9 +39,10 @@ for (let i = 0; i < N; i += 1) {
   }
 }
 
-const spy = { last: 0, seq: 0 };
+const spy = { last: 0, seq: 0, seqAll: 0 };
 const origLast = store.lastActivityAt.bind(store);
 const origSeq = store.maxSeq.bind(store);
+const origSeqAll = store.maxSeqAll.bind(store);
 (store as unknown as { lastActivityAt: () => unknown }).lastActivityAt = () => {
   spy.last += 1;
   return origLast();
@@ -50,9 +51,18 @@ const origSeq = store.maxSeq.bind(store);
   spy.seq += 1;
   return origSeq(id);
 };
+(store as unknown as { maxSeqAll: () => unknown }).maxSeqAll = () => {
+  spy.seqAll += 1;
+  return origSeqAll();
+};
 
 const mgr = new SessionManager(store, () => {}) as unknown as {
   cold(per: number, total: number): { id: string; lastAt: number; lastSeq: number; cwd: string }[];
+  coldPage(per: number, total: number): {
+    rows: { id: string }[];
+    total: number;
+    omitted: number;
+  };
   archived(): { id: string; lastAt: number; lastSeq: number }[];
 };
 
@@ -62,21 +72,34 @@ console.log("[1] cold(): one activity scan for the whole list, not one per row")
 const t0 = performance.now();
 const rows = mgr.cold(3, 100);
 const ms = performance.now() - t0;
-console.log(`      ${rows.length} rows in ${ms.toFixed(1)} ms; lastActivityAt() calls=${spy.last}, maxSeq() calls=${spy.seq}`);
+console.log(`      ${rows.length} rows in ${ms.toFixed(1)} ms; lastActivityAt=${spy.last}, maxSeqAll=${spy.seqAll}, maxSeq(per-row)=${spy.seq}`);
 check("cold() 按工作空间分页（6×3）", rows.length === 18, `got ${rows.length}`);
-check("lastActivityAt() 每次 cold() 最多 1 次（旧代码 = 行数）", spy.last <= 1, `calls=${spy.last}`);
-check("maxSeq() 只查分页后的行（旧代码 = 全表行数）", spy.seq <= rows.length, `calls=${spy.seq} vs rows=${rows.length}`);
+check("lastActivityAt() 每次 cold() 恰好 1 次", spy.last === 1, `calls=${spy.last}`);
+check("maxSeqAll() 每次 cold() 恰好 1 次", spy.seqAll === 1, `calls=${spy.seqAll}`);
+check("maxSeq() 不再逐行调用（旧代码 = 120 次）", spy.seq === 0, `calls=${spy.seq}`);
+const page = mgr.coldPage(3, 100);
+check("coldPage 的 total/omitted 契约未变", page.total === N && page.omitted === N - page.rows.length,
+  `total=${page.total} omitted=${page.omitted} rows=${page.rows.length}`);
 const newest = rows.find((r) => r.id === `s${N - 1}`);
 check("lastAt 取的是该会话最后一条消息的时间", newest?.lastAt === 1000 + (N - 1) * 100 + MSG - 1, `got ${newest?.lastAt}`);
 check("lastSeq 取的是该会话的消息条数", newest?.lastSeq === MSG, `got ${newest?.lastSeq}`);
 
 console.log("\n[2] archived(): same one-scan rule");
 store.setArchived("s0", 20000);
-const before = spy.last;
+const before = { ...spy };
 const archived = mgr.archived();
-console.log(`      ${archived.length} archived row(s); extra lastActivityAt() calls=${spy.last - before}`);
-check("archived() 不会逐行重扫", spy.last - before <= 1, `calls=${spy.last - before}`);
+console.log(`      ${archived.length} archived row(s); extra calls last=${spy.last - before.last}, seqAll=${spy.seqAll - before.seqAll}`);
+check("archived() 不会逐行重扫", spy.last - before.last === 1, `calls=${spy.last - before.last}`);
+check("archived() 也只做一次批量 seq 查询", spy.seqAll - before.seqAll === 1, `calls=${spy.seqAll - before.seqAll}`);
 check("archived 行仍带正确的 lastSeq", archived[0]?.lastSeq === MSG, `got ${archived[0]?.lastSeq}`);
+
+console.log("\n[3] no cold candidates → no all-table snapshots at all (review R1)");
+for (let i = 0; i < N; i += 1) store.setArchived(`s${i}`, 20000);
+const beforeEmpty = { ...spy };
+const empty = mgr.cold(3, 100);
+check("全归档时 cold() 返回空页", empty.length === 0 && mgr.coldPage(3, 100).total === 0, `rows=${empty.length}`);
+check("空冷列表不再付全表扫描", spy.last === beforeEmpty.last && spy.seqAll === beforeEmpty.seqAll,
+  `last=${spy.last - beforeEmpty.last} seqAll=${spy.seqAll - beforeEmpty.seqAll}`);
 
 store.close();
 fs.rmSync(ROOT, { recursive: true, force: true });
