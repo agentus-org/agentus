@@ -95,7 +95,8 @@ row("s3", ours.pid);
 row("s4", foreign.pid);
 row("s5", legacy.pid);
 row("s6", recycled.pid);
-row("s7", 999_999); // 7: dead pid
+row("s7", 999_999); // 7: dead pid — an idle session whose process went away with the server
+row("s8", 999_998, "running"); // 8: a turn WAS in flight — still an honest error + interrupted plan
 await sleep(400); // let the fake agents settle
 
 const mgr = new SessionManager(store, () => {}, { dataDir: DATA, instanceId: RUN });
@@ -123,10 +124,19 @@ check(new RegExp(`pid ${recycled.pid} is not an ACP agent`).test(text), "6 日�
 check(/nothing to kill for session s7/.test(text), "7 已消失的 pid 只记一行、不报警");
 
 // every row lost its pid: a stale number must not be re-examined (or re-endangered) next boot
-const remaining = store.listSessions(true).filter((r) => ["s1", "s2", "s3", "s4", "s5", "s6", "s7"].includes(r.id));
+const remaining = store.listSessions(true).filter((r) => ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"].includes(r.id));
 check(remaining.every((r) => r.pid == null), "所有 pid 都被置空（下轮不再处理同一个数字）");
-// and the live sessions are closed honestly instead of pretending to be ready with no process
-check(remaining.every((r) => r.status === "error"), "没有活进程的会话被标成 error（不假装 ready）");
+// #118: a server restart takes ALL its idle children with it. Those sessions were not broken —
+// stamping them error+closedAt invents a failure and hides them from the cold rail. They fall back
+// to cold with the honest "已回收（空闲）" status. Only a session with a turn in flight is an error.
+const idle = remaining.filter((r) => r.id !== "s8");
+const running = remaining.find((r) => r.id === "s8");
+check(idle.every((r) => r.status === "reaped"), "空闲会话落回 reaped/冷会话，不再批量变红",
+  idle.map((r) => `${r.id}:${r.status}`).join(" "));
+check(idle.every((r) => r.closedAt == null), "空闲会话没有被写入 closedAt（没被正常关闭过）",
+  idle.filter((r) => r.closedAt != null).map((r) => r.id).join(","));
+check(running?.status === "error" && running.closedAt != null, "真正在飞的回合仍然标 error + closedAt",
+  `${running?.status}/${running?.closedAt}`);
 
 for (const p of [orphan, bystander, ours, foreign, legacy, recycled]) p.kill();
 store.close();

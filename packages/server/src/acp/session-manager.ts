@@ -871,10 +871,23 @@ export class SessionManager {
         // "已打断" — a lie the restart invents on its own (measured: a plan the mock had already
         // closed out came back stamped interrupted after a restart).
         const wasRunning = row.status === "running";
-        this.#store.upsertSession({ ...row, status: "error", closedAt: Date.now(), pid: null });
-        // A crash between turns left the plan card mid-work with nothing to finish it; the
-        // startup reclaim is the one that owns the run now, so it closes the card honestly.
-        if (wasRunning) this.#finalizePlan(row.id, "interrupted");
+        if (wasRunning) {
+          // A turn was in flight when its process disappeared: that IS a broken turn, and the
+          // operator needs to see it (plus an interrupted plan card).
+          this.#store.upsertSession({ ...row, status: "error", closedAt: Date.now(), pid: null });
+          this.#finalizePlan(row.id, "interrupted");
+        } else {
+          // #118: a server restart / container swap takes ALL of its idle children with it. Their
+          // transcripts are intact and one click resumes them; stamping them `error` + `closedAt`
+          // invents a failure and hides them from the cold rail. `reaped` is the existing honest
+          // state for "no process, not the operator's doing" — keep closedAt untouched, clear pid,
+          // and let cold()/resume do the rest. Already-errored rows keep their own verdict.
+          this.#store.upsertSession({
+            ...row,
+            status: row.status === "error" ? "error" : "reaped",
+            pid: null,
+          });
+        }
       }
     }
     if (skipped) {
@@ -2132,10 +2145,13 @@ export class SessionManager {
    *  Real removal is the ✕ purge button (DELETE on a cold row). */
   archived(): SessionInfo[] {
     const lastAtAll = this.#store.lastActivityAt();
+    const seqAll = this.#store.maxSeqAll();
     return this.#store
       .listSessions(true)
       .filter((r) => r.archivedAt != null && !r.system)
       .map((r) => {
+        const lastAt = lastAtAll.get(r.id) ?? r.createdAt;
+        const lastSeq = seqAll.get(r.id) ?? 0;
         const live = this.#sessions.get(r.id);
         // An archived row can still have a process — resume does not touch the flag — and then it is
         // NOT cold: the rail must draw a live row (and clicking it hands over the floor rather than
@@ -2143,12 +2159,12 @@ export class SessionManager {
         return live
           ? {
               ...live.info,
-              lastSeq: this.#store.maxSeq(r.id),
-              lastAt: lastAtAll.get(r.id) ?? r.createdAt,
+              lastSeq,
+              lastAt,
               archivedAt: r.archivedAt ?? null,
               cold: false,
             }
-          : this.#infoFromRow(r);
+          : this.#infoFromRow(r, { lastAt, lastSeq });
       })
       .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0) || (b.lastAt ?? 0) - (a.lastAt ?? 0));
   }
@@ -2170,14 +2186,32 @@ export class SessionManager {
   /** The same page plus `total`/`omitted`, so a caller can say "this is a partial view" instead of
    *  presenting a truncated list as the whole cockpit. */
   coldPage(perWorkspace = COLD_PER_WORKSPACE, totalMax = COLD_TOTAL_MAX): ColdPage<SessionInfo> {
+    // #119: the two all-table snapshots are taken ONCE, and a full SessionInfo is built only
+    // for the rows that survive paging. #infoFromRow used to call lastActivityAt() (a full
+    // sessions×messages scan) once per row — 1260 scans on the operator's rail.
+    const lastAtAll = this.#store.lastActivityAt();
+    const seqAll = this.#store.maxSeqAll();
     const sorted = this.#store
       .listSessions(true)
       // system rows are the cockpit's own (see list()): never offered as a slot to wake
       .filter((r) => r.archivedAt == null && !r.system && !this.#sessions.has(r.id))
-      .map((r) => this.#infoFromRow(r))
+      .map((r) => ({
+        row: r,
+        workspace: r.workspace ?? null,
+        cwd: r.cwd,
+        lastAt: lastAtAll.get(r.id) ?? r.createdAt,
+        createdAt: r.createdAt,
+      }))
       // cold rows by the same rule as live ones (recent chat first), THEN take the page
       .sort(byActivity);
-    return pageCold(sorted, perWorkspace, totalMax);
+    const page = pageCold(sorted, perWorkspace, totalMax);
+    return {
+      ...page,
+      rows: page.rows.map((x) => this.#infoFromRow(x.row, {
+        lastAt: x.lastAt,
+        lastSeq: seqAll.get(x.row.id) ?? 0,
+      })),
+    };
   }
 
   /** Full row for one id, regardless of liveness. The rail wire shape deliberately empties
@@ -2188,7 +2222,9 @@ export class SessionManager {
     return this.#store.getSession(id) ? this.#coldInfo(id) : null;
   }
 
-  /** One row in the shape list()/cold()/archived() produce, from a stored row. */
+  /** One row in the shape list()/cold()/archived() produce, from a stored row.
+   *  `activity` is the batch snapshot: callers with more than one row MUST pass it, otherwise
+   *  each row re-runs the all-table query those snapshots came from (issue #119). */
   /** #62-3：把这次选择写进 agent 自己的配置。失败只记日志 —— 会话已经在新模型上跑起来了，
    *  配置文件没写成是"下次新会话的默认没跟上"，不该回头把一次成功的切换报成失败。 */
   /** #62-2 兑现"冷会话上选好的模型"。
@@ -2333,7 +2369,7 @@ export class SessionManager {
     }
   }
 
-  #infoFromRow(r: SessionRow): SessionInfo {
+  #infoFromRow(r: SessionRow, activity?: { lastAt: number; lastSeq: number }): SessionInfo {
     return {
       id: r.id, backend: r.backend, acpSessionId: r.acpSessionId, cwd: r.cwd,
       workspace: r.workspace ?? null,
@@ -2346,8 +2382,8 @@ export class SessionManager {
       configOptions: (r.configOptions ?? []) as ConfigOptionView[],
       usage: (r.usage ?? null) as SessionInfo["usage"],
       commands: normCommands(r.commands),
-      lastSeq: this.#store.maxSeq(r.id),
-      lastAt: this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
+      lastSeq: activity?.lastSeq ?? this.#store.maxSeq(r.id),
+      lastAt: activity?.lastAt ?? this.#store.lastActivityAt().get(r.id) ?? r.createdAt,
       archivedAt: r.archivedAt ?? null,
       stage: (r.stage as SessionInfo["stage"]) ?? null,
       stageSource: r.stageSource ?? null,

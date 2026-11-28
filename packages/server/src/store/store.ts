@@ -1279,6 +1279,16 @@ export class Store {
     return row.m ?? 0;
   }
 
+  /** Highest persisted seq for every session, in ONE grouped query. `list()`/`cold()`/`archived()`
+   *  must not call `maxSeq(id)` per row: on a rail with hundreds of sessions that is hundreds of
+   *  extra message-table probes (issue #119). Sessions with no messages are absent from the map. */
+  maxSeqAll(): Map<string, number> {
+    const rows = this.#db
+      .prepare("select session_id as id, max(seq) as m from messages group by session_id")
+      .all() as unknown as { id: string; m: number | null }[];
+    return new Map(rows.map((r) => [r.id, r.m ?? 0]));
+  }
+
   /** Highest `turn_id` this session's rows carry (0 when none). A rebuilt slot restarts its turn
    *  counter from this, so turn N+1 of the transcript is never mistaken for an old turn N — the fold
    *  rules pair "same kind, same turn, newest row", and a counter that restarts at 0 makes the first
