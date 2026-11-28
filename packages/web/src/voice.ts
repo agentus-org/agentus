@@ -1574,6 +1574,8 @@ class Dictation {
    *  fire at all: a loud reply clamped BOTH meters at 1.0, and 0.45 × 1.0 stayed above any voice. */
   #rms = 0;
   #wave = new Float32Array(256);
+  /** QA seam's waveform buffer, kept separate so the real capture never allocates per frame. */
+  #feedWave = new Float32Array(256);
   /** Set while a call wants its 16 kHz frames scored (see `setVadTap`). */
   #vadTap: ((samples: Float32Array) => void) | null = null;
   #relay = true;
@@ -1616,9 +1618,9 @@ class Dictation {
    *  `window.__asFeed = { level, text, interim }` makes start() succeed with no device and
    *  makes level()/getSnapshot() report exactly that. The product never sets it, and with
    *  nothing set every branch below is the plain microphone path. */
-  #feed = (): { level?: number; rms?: number; text?: string; interim?: string } | null => {
+  #feed = (): { level?: number; rms?: number; wave?: number[] | Float32Array; text?: string; interim?: string } | null => {
     const f = (globalThis as { __asFeed?: unknown }).__asFeed;
-    return f && typeof f === "object" ? (f as { level?: number; rms?: number; text?: string; interim?: string }) : null;
+    return f && typeof f === "object" ? (f as { level?: number; rms?: number; wave?: number[] | Float32Array; text?: string; interim?: string }) : null;
   };
   /** Live microphone amplitude 0..1 — read per animation frame. */
   level = (): number => {
@@ -1635,7 +1637,22 @@ class Dictation {
     return Number.isFinite(n) ? Math.max(0, n) : 0;
   };
   /** Newest input snapshot for the waveform (a flat line while not capturing). */
-  wave = (): Float32Array => this.#wave;
+  wave = (): Float32Array => {
+    const f = this.#feed();
+    const supplied = f?.wave;
+    if (!supplied) return this.#wave;
+    // QA seam only: no microphone on the test machine, but the waveform must still be
+    // driveable through the same read path the product uses.
+    for (let i = 0; i < this.#feedWave.length; i++) this.#feedWave[i] = Number(supplied[i]) || 0;
+    return this.#feedWave;
+  };
+  /** Does THIS engine expose a live waveform? The browser SpeechRecognition, batch upload
+   *  and device-recorder paths never hand samples to the page; painting their zero as a
+   *  flat "no sound" line would be a lie. The composer asks this before drawing anything. */
+  levelSource = (): "pcm" | "none" => {
+    if (this.#feed()) return "pcm";
+    return this.#mic || this.#bridge ? "pcm" : "none";
+  };
   /** Hand every 16 kHz microphone frame to a detector (the call's Silero VAD).
    *  A tap, not a stored queue: the detector owns its own buffering, and a call that hangs up leaves
    *  nothing behind once the sink is nulled. */

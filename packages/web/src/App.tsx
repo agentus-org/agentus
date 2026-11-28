@@ -47,6 +47,7 @@ import {
   useBriefSpeak, useDictation,
   subscribeVoiceCaps, useSpeaker, useVoicePrefs, voiceCaps, type VoicePrefs,
 } from "./voice";
+import { DictLevel } from "./DictLevel";
 import { describeSpeakable } from "./speakable";
 import { settledReplies, type SpeakMode } from "./autoRead";
 import { createHoldToTalk, finePointer, holdHintText, HOLD_HINT_KEY, type HoldToTalk } from "./holdToTalk";
@@ -5662,6 +5663,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
   // 麦克风按钮那一路：pointerleave 绝不参与（按住时布局会动，按钮自己会「离开」指针）
   const micHold = useRef<HoldToTalk | null>(null);
   const micSwallow = useRef(false);
+  const micBtnRef = useRef<HTMLButtonElement>(null);
   if (!micHold.current) {
     micHold.current = createHoldToTalk({
       onHold: () => {
@@ -5963,6 +5965,7 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
         {listening || dict.status === "transcribing" || dict.error ? (
           <div className={`dict-chip ${dict.error ? "err" : ""}`}>
             <IconMic size={13} />
+            <DictLevel glowRef={micBtnRef} />
             {dict.error
               ? dict.error
               : dict.status === "requesting"
@@ -6247,9 +6250,10 @@ function Composer({ v, call, tus, onCloseCall }: { v: SessionView; call: boolean
             ) : null}
             <span className="head-spacer" />
             <button
-              className={`icon-btn ${listening ? "on rec" : ""}`}
+              className={`icon-btn ${listening ? "on rec dict-mic" : ""}`}
               title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（按压住说话 / 按住 Ctrl）"}
               aria-label="dictate"
+              ref={micBtnRef}
               onPointerDown={(e) => {
                 if (call) return;                       // 通话中麦克风归通话
                 try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* older engines */ }
@@ -6409,6 +6413,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
   const listening = dict.status === "listening" || dict.status === "recording" || dict.status === "requesting";
   const composing = useRef(false);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const micBtnRef = useRef<HTMLButtonElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Grow with the content, exactly as the chat composer does: a box frozen at min-height clipped the
@@ -6719,9 +6724,10 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
                 <span className="head-spacer" />
                 {/* Dictation: the same control, and it needs no session to record into this box. */}
                 <button
-                  className={`icon-btn ${listening ? "on rec" : ""}`}
+                  className={`icon-btn ${listening ? "on rec dict-mic" : ""}`}
                   title={dict.error ? dict.error : listening ? "stop dictation（或松开 Ctrl）" : "dictate a prompt（或按住 Ctrl 说话）"}
                   aria-label="dictate"
+                  ref={micBtnRef}
                   onClick={() => {
                     dictation.cancel();
                     void dictation.start(prefs);
@@ -6743,6 +6749,7 @@ function StartPage({ cwd: initialCwd, onClose }: { cwd?: string; onClose: () => 
             {listening || dict.status === "transcribing" || dict.error ? (
               <div className={`dict-chip ${dict.error ? "err" : ""}`}>
                 <IconMic size={13} />
+                <DictLevel glowRef={micBtnRef} />
                 {dict.error
                   ? dict.error
                   : dict.status === "requesting"
