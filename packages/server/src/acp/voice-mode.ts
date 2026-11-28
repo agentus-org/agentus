@@ -12,13 +12,11 @@
 //   · the thinking-depth lookup, because a call is full-duplex and a 20-second first token is
 //     indistinguishable from a hang-up.
 //
-// The block rides the same channel as the plan reminder (`_meta`-tagged resource block), so the
-// transcript keeps the operator's own words and nothing else.
-
-/** The `_meta` key that marks a block as OURS — never the operator's words. */
-export const VOICE_META_KEY = "hermes-studio/voice-mode";
+// issue #120: the boundary sentences ride the ACP `_meta.hermesStudio` surface (surface_v1), so
+// they reach the model as a note while the transcript keeps only the operator's own words.
 
 import { emoTagHint } from "../../../shared/src/index.js";
+import type { StudioSurfaceMeta } from "./surface.js";
 
 export type VoiceBoundary = "enter" | "exit";
 
@@ -61,7 +59,7 @@ export function voiceExitText(turns: number): string {
  *   in call, no boundary   → steady text only (每轮)
  *   exit boundary          → exit text (一次性)
  */
-export function voiceModeBlock(sessionId: string, st: VoiceState): unknown | null {
+export function voiceSurfaceMeta(sessionId: string, st: VoiceState): StudioSurfaceMeta | null {
   const lines: string[] = [];
   if (st.boundary === "enter") {
     lines.push(VOICE_ENTER_TEXT);
@@ -73,13 +71,15 @@ export function voiceModeBlock(sessionId: string, st: VoiceState): unknown | nul
   }
   if (!lines.length) return null;
   return {
-    type: "resource",
-    resource: {
-      uri: `hermes-studio://voice/${sessionId}`,
-      mimeType: "text/plain",
+    surface: "voice-live",
+    studio_context: JSON.stringify({
+      kind: "call",
+      sessionId,
+      state: st.inCall ? "in-call" : "ended",
+      boundary: st.boundary,
+      turns: st.turns,
       text: lines.join("\n"),
-    },
-    _meta: { [VOICE_META_KEY]: true },
+    }),
   };
 }
 

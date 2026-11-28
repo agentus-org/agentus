@@ -24,7 +24,8 @@ import {
   writeContextWindow as writeContextWindowFile,
 } from "../context-win-writeback.js";
 import { forgetAgentOwner, recordAgentOwner, verifyAgentOwner } from "./agent-owner.js";
-import { thinkingOptionOf, voiceAppliesToPrompt, voiceModeBlock } from "./voice-mode.js";
+import { completionSurface, type StudioSurfaceMeta } from "./surface.js";
+import { thinkingOptionOf, voiceAppliesToPrompt, voiceSurfaceMeta } from "./voice-mode.js";
 import {
   byActivity,
   coldPage as pageCold,
@@ -484,7 +485,7 @@ interface LiveSession {
   /** What the agent says it can do (initialize.agentCapabilities). `fork` gates title
    *  regeneration, `load` gates resume; `image` is the one a TURN can be refused on — see
    *  `IMAGE_UNSUPPORTED` in `prompt()`. */
-  caps: { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean };
+  caps: { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean; surfaceV1: boolean };
   /** Incremented when a turn STARTS. An interrupt waits for the specific turn it cancelled,
    *  so a second interrupting utterance that already started its own turn is not mistaken for
    *  "the one I cancelled is still running". */
@@ -1046,13 +1047,14 @@ export class SessionManager {
   /** Attach this prompt's voice block, and settle what it settles. Synchronous on purpose: it runs
    *  inside the send path, and a slow store write must not delay the operator's words.
    *
-   *  Returns a settle() to call once the turn has been dispatched: before that point the boundary is
-   *  still owed, so a failed send does not burn it (review m1). */
-  #applyVoiceMode(s: LiveSession, blocks: unknown[], opts: { operator: boolean }): () => void {
+   *  Returns `{ settle, surface }`: the settle callback is called once the turn has been dispatched
+   *  (before that point the boundary is still owed, so a failed send does not burn it — review m1),
+   *  and `surface` is the model-bound call state sent via ACP `_meta` instead of a fake user block. */
+  #applyVoiceMode(s: LiveSession, opts: { operator: boolean }): { settle: () => void; surface?: StudioSurfaceMeta } {
     // A background-completion wake is not a spoken turn: letting it consume the boundary injected
     // "the call is over" into a synthetic turn nobody reads, so the operator's next real message
     // never learned it, and each wake inflated the turn count (review M1).
-    if (!opts.operator) return () => { /* nothing owed to a synthetic turn */ };
+    if (!opts.operator) return { settle: () => { /* nothing owed to a synthetic turn */ } };
     const live = this.#callLive();
     let v = this.#store.getVoiceMode(s.info.id);
     // Converge on the ONE authority (presence) in both directions: a page that closed mid-call never
@@ -1068,11 +1070,10 @@ export class SessionManager {
     } else if (!v.inCall && live === s.info.id) {
       v = this.#store.upsertVoiceMode(s.info.id, { inCall: true, boundary: v.boundary ?? "enter", turns: 0 });
     }
-    const block = voiceModeBlock(s.info.id, { inCall: v.inCall, boundary: v.boundary, turns: v.turns });
-    if (block) blocks.push(block);
+    const surface = voiceSurfaceMeta(s.info.id, { inCall: v.inCall, boundary: v.boundary, turns: v.turns }) ?? undefined;
     const seenBoundary = v.boundary;
     const counted = v.inCall;
-    if (!seenBoundary && !counted) return () => { /* steady state, nothing to settle */ };
+    if (!seenBoundary && !counted) return { settle: () => { /* steady state, nothing to settle */ }, surface };
     // The turn is counted NOW, not when the prompt returns: hanging up while the agent is still
     // answering is the ordinary way a call ends, and `#endCall` must already see that something was
     // said or it owes no exit boundary (review round 2, A-M1). A prompt that never reaches the agent
@@ -1086,11 +1087,14 @@ export class SessionManager {
     // The generation guards against a same-shaped boundary that arrived AFTER this turn started:
     // consume the enter boundary, hang up and dial again → the new call's enter must survive.
     const gen = this.#callGen(s.info.id);
-    return () => {
-      if (seenBoundary && this.#callGen(s.info.id) === gen) {
-        const cur = this.#store.getVoiceMode(s.info.id);
-        if (cur.boundary === seenBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
-      }
+    return {
+      surface,
+      settle: () => {
+        if (seenBoundary && this.#callGen(s.info.id) === gen) {
+          const cur = this.#store.getVoiceMode(s.info.id);
+          if (cur.boundary === seenBoundary) this.#store.upsertVoiceMode(s.info.id, { boundary: null });
+        }
+      },
     };
   }
 
@@ -1320,7 +1324,7 @@ export class SessionManager {
       // Seeded from the transcript, not from 0: the fold rules pair "same kind, same turn, newest
       // row", so a counter that restarted at 0 would let the first answer of a resumed (or forked)
       // session fold itself into a row written hours ago in turn 1 (#104).
-      caps: { fork: false, load: false, image: false, gatewayOwned: false },
+      caps: { fork: false, load: false, image: false, gatewayOwned: false, surfaceV1: false },
       turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
       planToken: planTokenFor(id),
       cockpitToken,
@@ -1836,7 +1840,7 @@ export class SessionManager {
       // Seeded from the transcript, not from 0: the fold rules pair "same kind, same turn, newest
       // row", so a counter that restarted at 0 would let the first answer of a resumed (or forked)
       // session fold itself into a row written hours ago in turn 1 (#104).
-      caps: { fork: false, load: false, image: false, gatewayOwned: false },
+      caps: { fork: false, load: false, image: false, gatewayOwned: false, surfaceV1: false },
       turnSeq: this.#store.maxTurnId(id), collectors: new Map(), planReminderPending: true,
       planToken: planTokenFor(id),
       cockpitToken,
@@ -2443,6 +2447,13 @@ export class SessionManager {
        * `--interrupt` that is the turn this call just killed.
        */
       onTurnStarted?: (turnSeq: number) => void;
+      /**
+       * issue #120: per-turn metadata that must reach the model without being attributed to the
+       * operator. Sent as ACP `_meta.hermesStudio` and committed by the fork as surface_v1.
+       */
+      surface?: StudioSurfaceMeta;
+      /** Text to keep in Studio's own transcript when the ACP text is intentionally empty. */
+      localText?: string;
     } = {},
   ): Promise<void> {
     const s = this.#need(sessionId);
@@ -2497,7 +2508,14 @@ export class SessionManager {
       }
     }
     const blocks = buildPromptBlocks(text, attachments);
-    if (!blocks.length) throw new Error("empty prompt");
+    // A completion wake has no user words: the whole notice is a surface note. Other empty prompts
+    // are still refused — we never send a blank turn just to wake an agent. Compute the voice
+    // surface BEFORE the guard: `voice.surface` can legitimately carry an ASR turn with no words,
+    // and throwing before #applyVoiceMode would leave a pending call boundary unsettled.
+    const voice = this.#applyVoiceMode(s, { operator: voiceAppliesToPrompt(opts) });
+    const surface = opts.surface ?? voice.surface;
+    if (surface && !s.caps.surfaceV1) throw new Error(SURFACE_UNSUPPORTED);
+    if (!blocks.length && surface?.surface !== "studio-completion" && !voice.surface) throw new Error("empty prompt");
     // 计划提示 / 驾驶舱 CLI 现在都由别处承载，这里一次都不注入：
     //   · 计划用法 → update_plan 工具自己的 description（首句就是触发条件）+ SOUL.md
     //   · 跨会话 CLI → hermes-studio-cockpit skill（握手时经 HERMES_EXTERNAL_SKILLS_DIRS 挂载）
@@ -2506,10 +2524,8 @@ export class SessionManager {
     // 保留 #planReminder() 与 planHint 设置仅为将来需要恢复时改一处即可，当前不接线。
     // 语音通话模式（issue #48）: entering, staying in, and leaving a call each owe the agent one
     // sentence it cannot infer — that its output is being SPOKEN, or that the speaking is over.
-    // Rides the same `_meta`-tagged resource channel as the plan reminder; the operator's own words
-    // are untouched (the transcript stores `text`, never the blocks). A background wake (`origin`)
-    // is not a spoken turn and must not consume a boundary.
-    const settleVoice = this.#applyVoiceMode(s, blocks, { operator: voiceAppliesToPrompt(opts) });
+    // issue #120: it now rides the ACP `_meta` surface, never a fake resource block in the user text.
+    const promptMeta = surface ? { _meta: { hermesStudio: surface } } : {};
     // A turn we actually submit owns its running state: clear the lease-watchdog's foreign marker so
     // it cannot restore this slot to ready while our prompt() is in flight (#115).
     s.foreignBusy = false;
@@ -2535,7 +2551,7 @@ export class SessionManager {
       sessionId,
       kind: "user",
       payload: {
-        text,
+        text: opts.localText ?? text,
         attachments: summarize(attachments),
         ...(opts.origin ? { origin: { sessionId: opts.origin.sessionId, title: opts.origin.title ?? null } } : {}),
       },
@@ -2561,10 +2577,11 @@ export class SessionManager {
         sessionId: s.info.acpSessionId,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ContentBlock union, built by hand
         prompt: blocks as any,
+        ...promptMeta,
       });
       const terminalState = res?.stopReason === "cancelled" ? "interrupted" : "ended";
-      // The agent has the block (a cancelled turn still received it): NOW the boundary is spent.
-      settleVoice();
+      // The agent has the blocks (a cancelled turn still received them): NOW the boundary is spent.
+      voice.settle();
       this.#finalizePlan(sessionId, terminalState);
       const durationMs = Date.now() - turnStartedAt;
       // issue #70: the agent's CUMULATIVE token counters arrive on the prompt RESPONSE — a frame
@@ -2675,8 +2692,13 @@ export class SessionManager {
       // operator typed — the same mechanism the cockpit's cross-session `send` uses. A turn reply
       // names the session that finished rather than "background", so the receiving agent can tell a
       // peer's receipt from a log tail.
-      await this.prompt(s.info.id, item.text, [], {
-        origin: item.origin ?? { sessionId: "background", title: "后台任务完成" },
+      // issue #120: the notice is a model-bound surface note, not a user turn. Studio keeps it in its
+      // own transcript via localText; Hermes persists an empty user row and skips title/memory.
+      const origin = item.origin ?? { sessionId: "background", title: "后台任务完成" };
+      await this.prompt(s.info.id, "", [], {
+        origin,
+        localText: item.text,
+        surface: completionSurface(item.text, origin),
       });
     } catch (err) {
       // Lost a race for the floor (an operator prompt landed first): keep it for the next turn end
@@ -4963,6 +4985,11 @@ export class SessionManager {
 export const IMAGE_UNSUPPORTED =
   "这个后端不支持图片输入（agent 没在 initialize 里声明 promptCapabilities.image）—— 去掉图片再发，或换一个能看图的模型";
 
+/** issue #120: a backend that ignores `_meta.hermesStudio` would silently swallow a completion
+ *  wake (empty text) or a call boundary. Fail closed instead of pretending the notice arrived. */
+export const SURFACE_UNSUPPORTED =
+  "这个后端不支持 surface_v1（agent 没在 initialize 里声明 hermesStudio.surfaceV1）—— 完成回推和通话边界无法送达，换用支持 #120 的 Hermes fork";
+
 /** Does the VENDOR own this session (rather than our child process)?
  *
  *  Hermes 0.23+ answers `session/new` / `session/load` with `_meta.hermes.sessionProvenance` because
@@ -4980,16 +5007,20 @@ function isGatewayOwned(res: unknown): boolean {
 /** Read the three capabilities this cockpit acts on. Defensive on purpose: `promptCapabilities`
  *  is absent on agents that predate it, and an absent field means "no", not "try anyway" — a
  *  silently dropped image is the failure this whole read exists to prevent. */
-function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean } {
+export function readCaps(capabilities: unknown): { fork: boolean; load: boolean; image: boolean; gatewayOwned: boolean; surfaceV1: boolean } {
   const c = (capabilities ?? {}) as {
     loadSession?: boolean;
     sessionCapabilities?: { fork?: unknown };
     promptCapabilities?: { image?: unknown };
+    _meta?: { hermesStudio?: { surfaceV1?: unknown } };
   };
   return {
     fork: Boolean(c.sessionCapabilities?.fork),
     load: Boolean(c.loadSession),
     image: c.promptCapabilities?.image === true,
+    // issue #120: an agent that does not advertise surface_v1 would silently swallow a completion
+    // wake (empty text) and the call-boundary note. Refuse at the turn boundary instead.
+    surfaceV1: c._meta?.hermesStudio?.surfaceV1 === true,
     // Set later, from the session's own provenance: a vendor that answers `session/new` with
     // `_meta.hermes.sessionProvenance` keeps the session in its own service, so our child is a
     // viewer and its exit does not end the turn (see #onChildExit).

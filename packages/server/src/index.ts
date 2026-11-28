@@ -14,8 +14,9 @@ import { Store, textOf } from "./store/store.js";
 import { routeForModel, type SpeechRoute } from "./speech/route.js";
 import { readIncidents, readJobs, readRuns, isCronVerb, runCronVerb, type CronTarget } from "./cron/jobs.js";
 import { exportFilename, renderJson, renderMarkdown, type ExportSessionHeader } from "./store/export.js";
-import { IMAGE_UNSUPPORTED, SessionManager, SessionUnavailable, briefOf } from "./acp/session-manager.js";
+import { IMAGE_UNSUPPORTED, SURFACE_UNSUPPORTED, SessionManager, SessionUnavailable, briefOf } from "./acp/session-manager.js";
 import { describeAcpError } from "./acp/errors.js";
+import { dispatchSurface } from "./acp/surface.js";
 import { BACKENDS } from "./acp/backends.js";
 import { HERMES_DEFAULT_HOME, classifyError, checkedHealth, coerceRow, inspectRow, planFor, rowWarnings, seedRows, startupCheck } from "./acp/registry.js";
 import { ChangedOnDiskError, FsError, listDirs, readTextFile, statFile, writeTextFile } from "./fs.js";
@@ -692,7 +693,7 @@ function runPrompt(
     // Only for the refusals that mean 「你的话我还没收到，不是它失败了」: a busy agent, and an agent that
     // cannot take the picture the operator just attached (issue #17) — there the sentence is still
     // worth keeping, it is the image that has to go.
-    const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED;
+    const lost = msg === "turn already running" || msg === IMAGE_UNSUPPORTED || msg === SURFACE_UNSUPPORTED;
     // 幂等键只在「这句话真的递交了」时才该留着（review D3）。runPrompt 的 catch 就是「没递交」的全集：
     // 槽位刚好冷掉、spawn 失败、conn 断了、unknown session、home_mismatch……任何一条都意味着那句话还在
     // 操作者手里，重排队那一份必须能跑；留着一个烧掉的键，重投会被回 `prompt-duplicate` 并被当成已送达，
@@ -1104,9 +1105,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         try {
           // `origin` is not decoration: without it the target's page shows this as a message the
           // OPERATOR typed. With it the bubble says which session it came from.
+          const origin = caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined;
           const turn = mgr.prompt(to, message, [], {
             interrupt: wantInterrupt,
-            origin: caller ? { sessionId: caller, title: rows.find((s) => s.id === caller)?.title ?? null } : undefined,
+            origin,
+            // issue #120: provenance is model-bound metadata; `message` remains the user's words.
+            ...(origin ? { surface: dispatchSurface(origin) } : {}),
             // 派活落一条边（拓扑面板）；操作者自己从页面发的普通消息 caller 为空，不记。
             originKind: caller ? "dispatch" : undefined,
             ...(wantReply ? { onTurnStarted: (seq: number) => onTurnStarted?.(seq) } : {}),
@@ -2095,10 +2099,18 @@ async function post(path){const r=await fetch(path,{method:'POST'});alert(r.ok?'
         let promptErr: unknown = null;
         let markStarted: (() => void) | null = null;
         const started = new Promise<void>((r) => { markStarted = r; });
-        const turn = mgr.prompt(targetId, envelope, [], {
+        const turn = mgr.prompt(targetId, userText, [], {
           interrupt: true,
           origin: { sessionId: fromRow.id, title: fromRow.title ?? null },
           originKind: created ? "spawn" : "handoff",
+          // issue #120: the envelope is provenance + "how to read the source", never the operator's
+          // words. It rides as a model-bound note; Studio's own transcript keeps it via localText.
+          surface: dispatchSurface(
+            { sessionId: fromRow.id, title: fromRow.title ?? null },
+            created ? "spawn" : "handoff",
+            envelope,
+          ),
+          localText: envelope,
           onTurnStarted: () => markStarted?.(),
         });
         const ok = await Promise.race([

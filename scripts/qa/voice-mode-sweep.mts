@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 
 const REPO = path.resolve(import.meta.dirname, "../..");
-const { voiceModeBlock, voiceExitText, thinkingOptionOf, voiceAppliesToPrompt, VOICE_ENTER_TEXT, VOICE_STEADY_TEXT, VOICE_META_KEY } =
+const { voiceSurfaceMeta, voiceExitText, thinkingOptionOf, voiceAppliesToPrompt, VOICE_ENTER_TEXT, VOICE_STEADY_TEXT } =
   await import("../../packages/server/src/acp/voice-mode.ts");
 const { Store } = await import("../../packages/server/src/store/store.ts");
 
@@ -19,23 +19,31 @@ function check(ok: boolean, name: string, detail = ""): void {
   if (ok) { passed++; console.log(`  ✓ ${name}`); }
   else { failures.push(`${name}${detail ? ` — ${detail}` : ""}`); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); }
 }
-const textOf = (b: unknown): string =>
-  String((b as { resource?: { text?: string } } | null)?.resource?.text ?? "");
-const uriOf = (b: unknown): string => String((b as { resource?: { uri?: string } } | null)?.resource?.uri ?? "");
+const textOf = (b: unknown): string => {
+  const ctx = (b as { studio_context?: string } | null)?.studio_context;
+  if (!ctx) return "";
+  try { return String(JSON.parse(ctx)?.text ?? ""); } catch { return ""; }
+};
+const metaOf = (b: unknown): Record<string, unknown> => {
+  const ctx = (b as { studio_context?: string } | null)?.studio_context;
+  if (!ctx) return {};
+  try { return JSON.parse(ctx) as Record<string, unknown>; } catch { return {}; }
+};
 
 // ---- 1. the three states ------------------------------------------------------------------------
 console.log("\n[1] 三态：进入 / 每轮 / 退出");
 {
-  const enter = voiceModeBlock("sess1", { inCall: true, boundary: "enter", turns: 0 });
+  const enter = voiceSurfaceMeta("sess1", { inCall: true, boundary: "enter", turns: 0 });
   const t = textOf(enter);
+  check((enter as { surface?: string } | null)?.surface === "voice-live", "进入边界：走 surface_v1 的 voice-live 通道");
   check(t.includes(VOICE_ENTER_TEXT), "进入边界：带「开始语音通话」那段约束");
   check(t.includes(VOICE_STEADY_TEXT), "进入边界：约束合一（同一块里带上每轮那句）");
   check(/不要表格|不要代码块/.test(t), "进入边界：明确禁止表格/代码块（TTS 会念符号）");
-  check(uriOf(enter) === "hermes-studio://voice/sess1", "进入边界：uri 指向该会话");
-  check((enter as { _meta?: Record<string, unknown> } | null)?._meta?.[VOICE_META_KEY] === true,
-    "进入边界：带 hermes-studio/voice-mode 标记（可与操作者原话区分）");
+  check(metaOf(enter).sessionId === "sess1" && metaOf(enter).boundary === "enter",
+    "进入边界：通话状态带会话 id 与边界（模型可见）");
+  check(!JSON.stringify(enter).includes('"resource"'), "进入边界：不再伪装成 resource 用户块（issue #120）");
 
-  const steady = voiceModeBlock("sess1", { inCall: true, boundary: null, turns: 4 });
+  const steady = voiceSurfaceMeta("sess1", { inCall: true, boundary: null, turns: 4 });
   check(textOf(steady) === VOICE_STEADY_TEXT, "通话中每轮：只有那句稳定约束（不重复进入边界）");
   check(!textOf(steady).includes(VOICE_ENTER_TEXT), "通话中每轮：不重复进入边界（不刷屏）");
   // 表情通道：提示词里没有这一句，模型永远不会写标签，糯米模式的脸就只剩相位音色在动。
@@ -44,7 +52,7 @@ console.log("\n[1] 三态：进入 / 每轮 / 退出");
     check(textOf(steady).includes(v), `每轮约束点名了 emo 值 ${v}`);
   }
 
-  const exit = voiceModeBlock("sess1", { inCall: false, boundary: "exit", turns: 3 });
+  const exit = voiceSurfaceMeta("sess1", { inCall: false, boundary: "exit", turns: 3 });
   const x = textOf(exit);
   check(/语音通话已结束/.test(x), "退出边界：说清通话结束了");
   check(/3 轮/.test(x), "退出边界：引用刚才几轮是通话（3 轮）", x.slice(0, 60));
@@ -52,7 +60,7 @@ console.log("\n[1] 三态：进入 / 每轮 / 退出");
   check(/语音识别|ASR/.test(x), "退出边界：解释用户那侧是转写（有噪声/碎片）");
   check(voiceExitText(0).includes("的对话"), "退出边界：0 轮时不说「0 轮」");
 
-  check(voiceModeBlock("sess1", { inCall: false, boundary: null, turns: 2 }) === null,
+  check(voiceSurfaceMeta("sess1", { inCall: false, boundary: null, turns: 2 }) === null,
     "挂断后的第 2 条起：什么都不注入（完全恢复原样）");
 }
 

@@ -279,6 +279,9 @@ const agent = () => ({
         // not use it. The cockpit's "regenerate the session name from the conversation"
         // feature is such a client — it forks the session, asks the fork to summarise, and
         // throws the fork away. Advertising it makes that path testable offline.
+        // issue #120: advertise the surface channel so dispatch/completion/voice QA never trips
+        // the fail-closed guard meant for old Hermes backends.
+        _meta: { hermesStudio: { surfaceV1: true } },
         sessionCapabilities: { list: {}, cancel: {}, fork: {} },
         // Issue #17: ACP lets an agent say which prompt parts it takes. This one is SIGHTED by
         // default — a test double that cannot see images used to fail every attachment assertion
@@ -546,7 +549,7 @@ const agent = () => ({
     }
   },
 
-  async _prompt({ sessionId, prompt }) {
+  async _prompt({ sessionId, prompt, _meta }) {
     const s = sessions.get(sessionId);
     if (!s) throw new Error("no such session");
     s.cancelled = false;
@@ -565,9 +568,10 @@ const agent = () => ({
         body: (p.resource?.text || p.text || "").slice(0, 600),
         meta: p._meta ?? null,
       }));
+      const surface = _meta?.hermesStudio ?? null;
       await send(agent._conn, sessionId, {
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "BLOCKS " + JSON.stringify(shape) },
+        content: { type: "text", text: "BLOCKS " + JSON.stringify(shape) + (surface ? "\nSURFACE " + JSON.stringify(surface) : "") },
       });
       return { stopReason: "end_turn" };
     }
@@ -1308,6 +1312,16 @@ const agent = () => ({
         sessionUpdate: "agent_message_chunk",
         messageId,
         content: { type: "text", text: `[emo:${mood}] ` },
+      });
+    }
+    // issue #120: observe surface arrival WITHOUT hijacking command dispatch or echoing the
+    // model-bound note (the note contains call boundaries / provenance that must stay out of the
+    // stored transcript). QA can read this frame; normal `[hold]`/`[echo]` flows are untouched.
+    if (_meta?.hermesStudio) {
+      await send(agent._conn, sessionId, {
+        sessionUpdate: "agent_thought_chunk",
+        _meta: { hermesStudioSurface: { surface: _meta.hermesStudio.surface ?? null } },
+        content: { type: "text", text: "" },
       });
     }
     const words = `Mock echo (${effort} effort) to: "${text}". `.repeat(2).split(" ");
